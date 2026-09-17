@@ -45,10 +45,10 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
 )
 from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_QUEUED_NOTE,
     Drawn,
     Markup,
     offered_controls,
-    position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     activity_log,
@@ -65,7 +65,8 @@ from switch_core.bridges.collaboration.teams.cards import (
     agent_message_card,
     answer_actions,
     card_attachment,
-    read_answer_action,
+    interrupt_action,
+    read_press,
 )
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorClient,
@@ -1360,6 +1361,7 @@ class TeamsAdapter(CollaborationAdapter):
             mention=None,
             responder=None,
             notice=self.unnotified_notice() if content.notify_unreachable else None,
+            stopping=False,
         ).text
 
     def _draw(
@@ -1369,6 +1371,7 @@ class TeamsAdapter(CollaborationAdapter):
         mention: str | None,
         responder: str | None,
         notice: str | None,
+        stopping: bool,
     ) -> Drawn:
         """The body of a publication, as a card will render it.
 
@@ -1390,8 +1393,14 @@ class TeamsAdapter(CollaborationAdapter):
         if isinstance(content, TurnActivity):
             # Charged to the same budget as the status it follows: a body that
             # just fits, plus a line saying it reached nobody, is a body over
-            # the budget.
-            tail = f"\n{notice}" if notice else ""
+            # the budget. The note under a queued turn's stop control is
+            # charged the same way, and for the same reason.
+            lines = []
+            if stopping and content.turn.status == "queued":
+                lines.append(INTERRUPT_QUEUED_NOTE)
+            if notice:
+                lines.append(notice)
+            tail = "".join(f"\n{line}" for line in lines)
             text = (
                 turn_status(
                     content.items,
@@ -1463,17 +1472,54 @@ class TeamsAdapter(CollaborationAdapter):
             f"this {self.platform_name} team is what failed."
         )
 
-    def _below(self, content: RichContent, drawn: Drawn) -> list[dict[str, Any]]:
+    def _below(
+        self, content: RichContent, drawn: Drawn, stopping: str | None
+    ) -> list[dict[str, Any]]:
         """What the card carries under its body.
 
-        Never both of them: a request card is asking the reader for an answer,
-        and a turn's log folded under the options competes for the press that
-        the card exists to collect. A publication is one or the other anyway —
-        only a `TurnActivity` has a log, and only a `RequestCard` has options.
+        Never a card's options and a turn's log together: a request card is
+        asking the reader for an answer, and a log folded under the options
+        competes for the press that the card exists to collect. A publication
+        is one or the other anyway — only a `TurnActivity` has a log, and only
+        a `RequestCard` has options.
+
+        A status's two are exclusive as well, and by the turn's own state
+        rather than by anything decided here: the log is folded under an
+        *ended* turn, and there is nothing to stop once a turn has ended. So a
+        status carries one button while it runs and a different one afterwards,
+        and never two at once.
         """
         if isinstance(content, TurnActivity):
-            return self._activity_detail(content)
+            below = self._activity_detail(content)
+            if stopping is not None:
+                below.extend(interrupt_action(stopping))
+            return below
         return self._controls(content, drawn)
+
+    def _interrupt_turn(self, content: RichContent) -> str | None:
+        """The turn a stop control on this card would end, or None for none.
+
+        Three things have to be true. There has to be something to stop, which
+        the publication decides and puts in the content — one value for the
+        whole session, so a queued turn's card offers to stop the running turn
+        in front of it. The turn this card is about has to be unfinished,
+        because a status kept as the record of a turn that ended is not a place
+        to offer stopping anything. And a press has to have somewhere to land:
+        every press here arrives as an invoke that must be answered, and one
+        answered with nothing to route it to is a button that spins and then
+        reports a failure of its own.
+
+        Nothing measures the id. Teams states no limit on what an action's data
+        carries, and the connector already weighs the whole serialised activity
+        before it is sent — so an id long enough to matter is refused as a card
+        that is too big, with the reason named, rather than as a button whose
+        press the platform would silently decline.
+        """
+        if not isinstance(content, TurnActivity) or self._on_interaction is None:
+            return None
+        if content.interrupt_turn_id is None or content.turn.status in TURN_ENDED:
+            return None
+        return content.interrupt_turn_id
 
     def _activity_detail(self, content: TurnActivity) -> list[dict[str, Any]]:
         """An ended turn's work and its own words, folded away under its status.
@@ -1541,7 +1587,7 @@ class TeamsAdapter(CollaborationAdapter):
             return []
         return answer_actions(content.reference.token, controls)
 
-    def _render_rich(self, content: RichContent) -> Drawn:
+    def _render_rich(self, content: RichContent) -> tuple[Drawn, str | None]:
         """Draw a publication, saying so when the mention could not be made.
 
         Two different failures reach the same reader. The publisher sets
@@ -1549,6 +1595,11 @@ class TeamsAdapter(CollaborationAdapter):
         the other one, where there was and the name could not be resolved here.
         Either way the person who can answer has not been pinged, and the one
         thing that must not happen is a card that looks like it went to them.
+
+        The turn to stop comes back with the drawing rather than being worked
+        out again beside it, so the decision to offer a stop is made once: the
+        note that explains the control and the control itself cannot then
+        disagree about whether there is one.
         """
         mention = self._mention(content.notify_external_id)
         unmentionable = mention is None and content.notify_external_id is not None
@@ -1558,7 +1609,8 @@ class TeamsAdapter(CollaborationAdapter):
                 "nobody and says so.",
                 content.notify_external_id,
             )
-        return self._draw(
+        stopping = self._interrupt_turn(content)
+        drawn = self._draw(
             content,
             mention=mention,
             responder=self._mention(content.responder_external_id)
@@ -1569,7 +1621,9 @@ class TeamsAdapter(CollaborationAdapter):
             else self.unnotified_notice()
             if content.notify_unreachable
             else None,
+            stopping=stopping is not None,
         )
+        return drawn, stopping
 
     def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
         """The reference wins over the thread, where the publication has one.
@@ -1711,7 +1765,7 @@ class TeamsAdapter(CollaborationAdapter):
         that makes a redraw after a restart address the conversation the post
         actually went to.
         """
-        drawn = self._render_rich(content)
+        drawn, stopping = self._render_rich(content)
         text = drawn.text
         if self._connector is None:
             raise RichContentFailed(
@@ -1720,7 +1774,7 @@ class TeamsAdapter(CollaborationAdapter):
         carried = _read_publication_ref(thread_root_id) if thread_root_id else None
         service_url = carried[0] if carried else self._service_url_for(channel_id)
         activity = await self._message_activity(
-            agent_name, text, self._below(content, drawn)
+            agent_name, text, self._below(content, drawn, stopping)
         )
         opening = self._is_channel(channel_id) and thread_root_id is None
         # A new post has no conversation to queue behind yet, so its writes are
@@ -1788,7 +1842,7 @@ class TeamsAdapter(CollaborationAdapter):
         posts for every agent here, so the name is part of what was drawn, and
         an edit that did not know it would republish the turn as somebody else.
         """
-        drawn = self._render_rich(replace(content, notify_external_id=None))
+        drawn, stopping = self._render_rich(replace(content, notify_external_id=None))
         text = drawn.text
         connector = self._connector
         if connector is None:
@@ -1798,7 +1852,7 @@ class TeamsAdapter(CollaborationAdapter):
             )
         address = self._publication_address(channel_id, message_ref, thread_root_id)
         await self._edit_rich(
-            connector, agent_name, address, text, self._below(content, drawn)
+            connector, agent_name, address, text, self._below(content, drawn, stopping)
         )
 
     async def _edit_rich(
@@ -2402,40 +2456,48 @@ class TeamsAdapter(CollaborationAdapter):
     ) -> dict[str, Any] | None:
         """Someone pressed a button on a card this bridge posted.
 
+        Two buttons arrive here — an option on a request card, and the stop
+        control on a turn's status — and everything below is the same for
+        both, which is why they are read into one action and one value before
+        any of it.
+
         Who pressed comes from `from`, which the Bot Connector fills in and the
         button's data cannot: what travels in the button is which card and which
-        option, never who. So a press replayed from another client is still
-        attributed to whoever actually sent it, and the identity check
-        downstream is against a real account rather than a claim.
+        option, or which turn to stop, never who. So a press replayed from
+        another client is still attributed to whoever actually sent it, and the
+        identity check downstream is against a real account rather than a claim.
 
-        Which card comes from the activity too, and for the same reason. Teams
-        names the message the press was on in `replyToId`, and the conversation
-        and the region around it, which is the whole of a publication's address
-        — so the card is found the way an edit finds it rather than by trusting
-        a reference the presser's client could have carried anything in. The
-        token in the button still has to resolve to that same address
-        downstream, so a token lifted from one card cannot be pressed against
-        another.
+        Which message comes from the activity too, and for the same reason.
+        Teams names the message the press was on in `replyToId`, and the
+        conversation and the region around it, which is the whole of a
+        publication's address — so the publication is found the way an edit
+        finds it rather than by trusting a reference the presser's client could
+        have carried anything in. What the button carried still has to resolve
+        against that same address downstream, so a token lifted from one card
+        cannot be pressed against another, and a stop stops the session behind
+        the status it was pressed on.
 
         Every path out of here answers the press. Until it is answered the
         button spins on the presser's client and then reports a failure of its
-        own, which is a worse account of what happened than any of these. A
-        press that landed is answered with nothing at all: the card's own redraw
-        is what says the answer was taken, and saying so here would be saying it
-        before the redraw that proves it. A refusal reaches the presser through
-        `tell_actor`, which leaves it in `_PRESS_NOTICE` for the answer below —
-        seen by them alone, which is the one thing this platform can do that
-        Telegram's alert and Slack's ephemeral also do.
+        own, which is a worse account of what happened than any of these. What
+        the presser is shown is whatever the shared path left in `_PRESS_NOTICE`
+        through `tell_actor` — a refusal, or a stop's acceptance saying Switch
+        has asked the agent to stop — seen by them alone, which is the one thing
+        this platform can do that Telegram's alert and Slack's ephemeral also
+        do. An answer that landed leaves nothing, and is answered with nothing:
+        the card's own redraw is what says it was taken, and saying so here
+        would be saying it before the redraw that proves it.
 
         Nothing here dedupes. Teams retries an invoke it got no answer for, and
-        the same press twice is the same option, by the same person, against the
-        same revision — which the shared layer derives one command id from, so
-        the second is the first rather than a second answer.
+        the same press twice is the same option — or the same turn to stop — by
+        the same person, against the same revision, which the shared layer
+        derives one command id from. So the second is the first rather than a
+        second answer or a second interrupt.
         """
-        press = read_answer_action(activity.get("value") or {})
+        press = read_press(activity.get("value") or {})
         if press is None:
             logger.warning(
-                "Ignoring a card action in channel %s: it is not a Switch answer.",
+                "Ignoring a card action in channel %s: it is not a Switch press.",
                 channel_id,
             )
             return _invoke_error(400, "BadRequest", "This is not a Switch card action.")
@@ -2449,19 +2511,19 @@ class TeamsAdapter(CollaborationAdapter):
             return _invoke_error(
                 500,
                 "InternalServerError",
-                "This card is not connected to anything that can take an answer.",
+                "This card is not connected to anything that can act on it.",
             )
 
-        token, position = press
+        action_id, value = press
         card = self._pressed_card(activity)
         if card is None:
             logger.warning(
                 "Ignoring a press in channel %s: Teams named no message for it, "
-                "so there is no card to match it against.",
+                "so there is no publication to match it against.",
                 channel_id,
             )
             return _invoke_error(
-                400, "BadRequest", "This press does not say which card it is on."
+                400, "BadRequest", "This press does not say which message it is on."
             )
 
         sender = activity.get("from") or {}
@@ -2478,15 +2540,15 @@ class TeamsAdapter(CollaborationAdapter):
                     channel_id=channel_id,
                     sender_id=sender_id,
                     sender_name=sender_name,
-                    action_id=position_action(position),
-                    value=token,
+                    action_id=action_id,
+                    value=value,
                     message_ref=card,
                 )
             )
         except Exception:
             logger.exception("Failed to handle a press on a Teams card")
             return _invoke_error(
-                500, "InternalServerError", "Something went wrong taking that answer."
+                500, "InternalServerError", "Something went wrong handling that press."
             )
         finally:
             _PRESS_NOTICE.reset(held)
@@ -2495,12 +2557,12 @@ class TeamsAdapter(CollaborationAdapter):
         return None
 
     def _pressed_card(self, activity: dict[str, Any]) -> str | None:
-        """The publication reference of the card a press was on.
+        """The publication reference of the message a press was on.
 
         Built from the invoke the same way `post_rich` built the one it handed
         back: the region, the conversation, and the activity the press names.
-        Same three parts, so the string is the one the request was stored
-        under and the cross-check downstream is an equality rather than a
+        Same three parts, so the string is the one the card or the status was
+        stored under and the cross-check downstream is an equality rather than a
         reconstruction that has to be forgiven its differences.
         """
         service_url = str(activity.get("serviceUrl", "")).strip()
@@ -2518,7 +2580,7 @@ class TeamsAdapter(CollaborationAdapter):
         thread_ref: str | None,
         text: str,
     ) -> None:
-        """Tell one person their answer did not land, where they can see it.
+        """Tell one person what came of what they pressed, where they alone see it.
 
         A press is told in the answer to the press itself, which Teams shows to
         whoever pressed and to nobody else — it costs the conversation nothing

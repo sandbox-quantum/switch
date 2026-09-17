@@ -4,7 +4,12 @@ import re
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import AgentRendering
-from switch_core.bridges.collaboration.session.renderers import Control
+from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    INTERRUPT_LABEL,
+    Control,
+    position_action,
+)
 
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 
@@ -13,10 +18,22 @@ ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 # from some other app's card is not one this bridge has any business reading.
 ANSWER_VERB = "switch/answerRequest"
 
+# And what a press on a status card's stop control calls itself. Its own verb
+# rather than a field inside the answer's, because the verb is what a press is
+# recognised by: two controls that arrive under one name have to be told apart
+# by the shape of what they carry, and that is a reading this would rather not
+# have to get right.
+INTERRUPT_VERB = "switch/interruptTurn"
+
 # Where the press carries what it is answering. Nested under one key because
 # Teams merges a card's input values into the same object, and a flat name is a
 # collision waiting for the first card here to grow an input.
 _ANSWER_DATA = "switchAnswer"
+
+# And where a stop press carries the turn it ends. Nested for the same reason,
+# under a key of its own so neither control can read the other's data even if
+# a client sent the wrong verb with it.
+_INTERRUPT_DATA = "switchInterrupt"
 
 # The schema version a card declares once it has something to press.
 # Action.Execute — the only card action that reaches a bot with a reply the
@@ -156,6 +173,41 @@ def answer_actions(token: str, controls: list[Control]) -> list[dict[str, Any]]:
     ]
 
 
+def interrupt_action(turn_id: str) -> list[dict[str, Any]]:
+    """A status card's stop control, as the one button it carries.
+
+    The turn travels in the press because the card cannot supply it: a queued
+    turn's status offers to stop the running turn in front of it, so the turn
+    the button ends is not the turn the card is about. Teams puts no limit on
+    what an action's data may carry — unlike Telegram's 64 bytes and Discord's
+    100 characters — so the id goes whole and the card's own size, which the
+    connector measures on the serialised activity, is the only budget it
+    spends.
+
+    `destructive` rather than the default, because stopping work is the one
+    thing on any Switch card that cannot be undone by pressing something else.
+    `drop` for the fallback, in an `ActionSet` so a client that predates the
+    universal action model honours it: a reader whose client cannot run the
+    button still has `!interrupt`, and the card says so.
+    """
+    return [
+        {
+            "type": "ActionSet",
+            "spacing": "Medium",
+            "actions": [
+                {
+                    "type": "Action.Execute",
+                    "title": INTERRUPT_LABEL,
+                    "style": "destructive",
+                    "verb": INTERRUPT_VERB,
+                    "data": {_INTERRUPT_DATA: {"turn": turn_id}},
+                    "fallback": "drop",
+                }
+            ],
+        }
+    ]
+
+
 def _action_title(control: Control) -> str:
     """What the button says: the option's number, and as much of it as fits.
 
@@ -257,6 +309,46 @@ def read_answer_action(value: dict[str, Any]) -> tuple[str, int] | None:
     if isinstance(position, bool) or not isinstance(position, int) or position < 1:
         return None
     return token, position
+
+
+def read_interrupt_action(value: dict[str, Any]) -> str | None:
+    """The turn a stop press names, or None if the press is not one.
+
+    Read as strictly as the answer beside it, and what comes back is a claim
+    rather than a fact: the session a press stops is the one behind the card
+    the press arrived on, and this says only which of that session's turns the
+    button was drawn against.
+    """
+    action = value.get("action")
+    if not isinstance(action, dict) or action.get("verb") != INTERRUPT_VERB:
+        return None
+    data = action.get("data")
+    carried = data.get(_INTERRUPT_DATA) if isinstance(data, dict) else None
+    if not isinstance(carried, dict):
+        return None
+    turn_id = carried.get("turn")
+    if not isinstance(turn_id, str) or not turn_id:
+        return None
+    return turn_id
+
+
+def read_press(value: dict[str, Any]) -> tuple[str, str] | None:
+    """The Switch action a press carries and what it names, or None if not ours.
+
+    Two kinds of button arrive here and they name different things — an
+    option's press names the card, a stop names the turn — but they leave by
+    the same door, because what happens next is the same for both: hand the
+    press to the shared inbound path and answer the invoke with whatever came
+    back.
+    """
+    turn_id = read_interrupt_action(value)
+    if turn_id is not None:
+        return INTERRUPT_ACTION, turn_id
+    answer = read_answer_action(value)
+    if answer is None:
+        return None
+    token, position = answer
+    return position_action(position), token
 
 
 def _schema_version(below: list[dict[str, Any]]) -> str:

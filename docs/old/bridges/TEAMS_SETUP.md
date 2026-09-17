@@ -1054,6 +1054,39 @@ is no longer what the Teams client picks for a new one.
 
 ---
 
+## Stopping an agent
+
+A working agent's status card carries a red **Stop current work** button while
+there is work to stop. Pressing it ends the turn the agent is running now — the
+same thing `/interrupt @agent-name` does, and subject to the same check on who
+is allowed to ask.
+
+What it does *not* do is cancel your own message. A message waiting behind a
+running turn gets its own status card, and the button on that card stops the
+turn in front of it; the card says so in as many words. When the queue reaches
+your message the card is redrawn, and the button then stops *your* turn.
+
+The button is bound to the turn that was running when the card was last drawn.
+Press one from a stale view — a client that has not caught up, or a card
+scrolled back to — and Switch refuses it rather than stopping whatever happens
+to be running now. Either way the result is shown to you alone, in the reply to
+the press: Teams shows an invoke's answer only to whoever pressed. Nobody else
+in the channel sees that you stopped anything, or that you were not allowed to.
+
+When the turn ends the button goes, and the card gains the **Show activity**
+fold in its place.
+
+**What the button costs the card.** It is an `Action.Execute`, which is the only
+Adaptive Card action whose press reaches the bot with a private reply, and a
+card carrying one declares schema 1.5. A Teams client too old for 1.5 shows the
+card's plain-text fallback instead of the card, and a client that understands
+the schema but not the universal action model drops the button and keeps the
+rest. Both cases lose the button and neither loses the ability to stop the
+agent: `/interrupt @agent-name` is always there. Only a running turn's card asks
+for 1.5 — a card with nothing to stop stays where it was.
+
+---
+
 ## Commands
 
 Both `!list-agents` and `/list-agents` work, and reach the same place. `!help`
