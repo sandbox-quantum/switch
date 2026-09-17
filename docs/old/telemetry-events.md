@@ -527,6 +527,45 @@ The seam with `CHOO-2807`. The catalogue above needs the export path to provide:
 Nothing on that list is specific to product events; each is equally needed for
 operational ones, which is why it belongs to the shared path rather than here.
 
+## Checking it works
+
+Three layers, and they fail differently — a green one above does not prove the
+one below it.
+
+**What Switch would send.** Start the local stand-in for the relay and point a
+development server at it:
+
+```
+just telemetry-listen
+# then, in the server's environment:
+TELEMETRY_ENABLED=true
+TELEMETRY_ENDPOINT=http://localhost:4318/v1/logs
+TELEMETRY_SNAPSHOT_INTERVAL_HOURS=0.02
+```
+
+Every event is printed as it arrives, decoded. Create a room, register an
+agent, connect a bridge, send a message, and watch. The first snapshot lands
+about a minute after boot, so the whole catalogue is exercisable in a few
+minutes without anything leaving the machine.
+
+**That the numbers are right.** Each snapshot pass logs a one-line summary at
+`INFO` before sending — rooms, active rooms, users, agents, messages. Compare
+it against the same counts taken straight from the database. If they disagree,
+the snapshot's query is wrong and the relay would have accepted the wrong
+answer without complaint.
+
+**That the relay accepts it.** This is the layer that fails silently, and the
+only one that cannot be checked locally. A 200 does not mean a record was
+kept: OTLP reports partial success in the response body, so `just
+telemetry-listen --reject 1` is how to check Switch notices — it should log a
+warning naming the event. `--fail 503` checks the other direction, that a
+refused send is logged and dropped rather than raising into whatever was
+happening at the time.
+
+Against the real relay, the only proof is a staging deployment with reporting
+on for one interval, and the events appearing downstream. Nothing short of
+that tests the vendor's own filtering.
+
 ## Open questions
 
 - **Query cost at scale.** The snapshot is roughly fifteen queries per tenant,
