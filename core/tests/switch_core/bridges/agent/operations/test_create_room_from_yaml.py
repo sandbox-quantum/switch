@@ -348,6 +348,8 @@ async def test_kickoff_is_posted_on_behalf_of_the_owner(env):
     assert {(m["on_behalf_of"].name, m["on_behalf_of"].agent_id) for m in sent} == {
         ("claude-code.alice", env["agent_id"])
     }
+    # Named without a mention, which would wake the agent in its own room.
+    assert sent[0]["body"] == "Template kickoff on behalf of claude-code.alice"
 
 
 @pytest.mark.asyncio

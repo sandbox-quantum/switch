@@ -1345,7 +1345,7 @@ class RoomYamlService:
             if acting_agent is not None
             else OnBehalfOf(user_id, user_name or user_id)
         )
-        headline = f"Template kickoff on behalf of @{person.name}"
+        headline = f"Template kickoff on behalf of {person.label}"
         try:
             root_id = await admin.send_platform_message(
                 room.matrix_room_id, headline, on_behalf_of=person
