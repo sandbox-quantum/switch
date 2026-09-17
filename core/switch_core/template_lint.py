@@ -274,7 +274,7 @@ def lint_template(text: str) -> LintResult:
     )
     # An agent template's room half names the agent it was written around as
     # `{agent}`, and the Console fills that in with the name the agent was
-    # actually given. It is the template's to use, not to declare.
+    # given. It is the template's to use, not to declare.
     if "agent" in document:
         declared = declared | {"agent"}
 

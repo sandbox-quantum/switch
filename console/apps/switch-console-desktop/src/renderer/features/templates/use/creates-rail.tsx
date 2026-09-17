@@ -27,7 +27,7 @@ export type AgentSlot = {
   cloneRepo: boolean;
   status: SlotStatus;
   error: string | null;
-  /** The name it was actually created under, once it was. */
+  /** The name it was created under, once it was. */
   createdName: string | null;
   createdSwitchAgentId: string | null;
 };
@@ -94,7 +94,7 @@ export function RoomCard({
 }: {
   room: ParsedRoom;
   values: Values;
-  /** Agent name as written in the template → the name the agent will actually have. */
+  /** Agent name as written in the template → the name the agent will have. */
   renames: Record<string, string>;
   bridgeName: string | null;
   creatorIdentity: string | null;
@@ -161,7 +161,7 @@ export function AgentSlotCard({
   slot: AgentSlot;
   /** The name the template asks for, filled in. */
   wantedName: string;
-  /** The name it will actually get: `wantedName`, or the first free variant. */
+  /** The name it will get: `wantedName`, or the first free variant. */
   finalName: string;
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;

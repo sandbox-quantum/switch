@@ -26,7 +26,7 @@ import {
 export type TemplateKind = 'agent' | 'room' | 'group';
 
 export type ParsedAgentEntry = {
-  /** The name exactly as written in the template, with any `{param}` still unfilled. */
+  /** The name as written in the template, with any `{param}` still unfilled. */
   name: string | null;
   description: string;
   instructions: string;
@@ -215,7 +215,7 @@ export function coreDocumentFor(
  * Replace agent names in the server document.
  *
  * `replacements` maps a name as written in the template (`{team}-triager`)
- * to the name the agent actually has. Two situations need this: the person
+ * to the name the agent has. Two situations need this: the person
  * chose an existing agent for that slot instead of creating one, or the
  * intended name was taken and the agent was created as `name-2`.
  *

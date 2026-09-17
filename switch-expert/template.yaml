@@ -22,7 +22,7 @@
 #
 #   room:         Optional. A room to put the agent in as soon as it exists,
 #                 in the same shape as a room template. `{agent}` is the name
-#                 the agent was actually given; `{$creator}` is the person
+#                 the agent was given; `{$creator}` is the person
 #                 creating it. A template with no `room:` creates the agent
 #                 and stops there.
 #

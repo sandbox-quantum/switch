@@ -640,7 +640,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
 
     // Then the rooms. Agent names in the document are replaced with the names
-    // the agents actually got, so the server finds them.
+    // the agents got, so the server finds them.
     setRoomStatus('creating');
     try {
       const replacements: Record<string, string> = {};
