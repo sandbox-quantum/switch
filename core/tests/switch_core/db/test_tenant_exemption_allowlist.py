@@ -20,8 +20,10 @@ Short in both directions. A module reaches the exemption if it *can* call a
 lookup, not if it happens to; a helper on an injected store, reachable by
 anything that declares the store, put one module on this list and the
 exemption within reach of every endpoint behind it. That is why
-`get_sole_tenant_id` lives in `gateway/auth.py` as a function rather than on a
-`TenantMemberStore`: the one caller it ever had is the one module named here.
+`_resolve_tenant_id` and `list_tenant_memberships` live in `gateway/auth.py`
+as functions rather than on a `TenantMemberStore`: whatever calls them —
+`gateway/tenants.py` included — reaches the exemption through this one
+module, never directly through a store any endpoint could declare for itself.
 
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
@@ -110,6 +112,16 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
+    # The SDK session card, activity and publication layers. Every entry to
+    # them is either an inbound bridge event, which `bridge_core` binds the
+    # channel's tenant around before the handler runs, or the publication
+    # task, created inside that same scope so the task's context carries it.
+    # A caller that arrived with nothing bound would not read an empty set:
+    # publication reads its session row through `require_tenant_id()`, and
+    # every table the other two touch is policied by it.
+    "switch_core.bridges.collaboration.session.inbound",
+    "switch_core.bridges.collaboration.session.outbound",
+    "switch_core.sessions.publication",
     # ── The exemption's own plumbing. It opens a session with nothing bound
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
