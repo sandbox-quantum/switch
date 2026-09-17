@@ -30,6 +30,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
@@ -38,19 +39,23 @@ import { AGENT_NAME_PATTERN } from '@shared/core/agents/agent-slug';
 import {
   AGENT_PROVIDER_IDS,
   type AgentProviderId,
+  providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { findBundledTemplate } from './bundled-templates';
+import { CollapsibleInput } from './use/collapsible-input';
 import {
   type AgentSlot,
   AgentSlotCard,
   newSlot,
   ResolvedDocument,
   RoomCard,
+  SlotDirectoryField,
   type SlotStatus,
   slotWantedName,
 } from './use/creates-rail';
+import { CreatingScreen } from './use/creating-screen';
 import { ParamField } from './use/param-field';
 import {
   LOCAL_RUN_LOCATION,
@@ -59,10 +64,16 @@ import {
   useAllowedHosts,
 } from './use/run-location-select';
 import {
+  agentCreateSteps,
+  bridgeCandidates,
+  type CreateStep,
+  createStepStatus,
   defaultsFor,
+  isEmpty,
   hasPlaceholder,
   interpolate,
   missingParams,
+  prefillChoice,
   serverInputs,
   unsetBridgeParams,
   type Values,
@@ -144,7 +155,14 @@ async function loadUsePageTemplate(serverId: string, params: Params): Promise<Us
     ? await rpc.roomTemplates.parse({ yamlText: forForm, schema: schema ?? undefined })
     : null;
   // A document without rooms can still declare params, used in agent names.
-  const declaredParams = parsed?.params ?? (await rpc.roomTemplates.params({ yamlText }));
+  // `prefill` is read from the full document: the room document above has it
+  // removed, since a server that predates the key refuses it.
+  const written = await rpc.roomTemplates.params({ yamlText });
+  const prefillOf = new Map(written.map((p) => [p.name, p.prefill]));
+  const declaredParams = (parsed?.params ?? written).map((p) => ({
+    ...p,
+    prefill: prefillOf.get(p.name) ?? null,
+  }));
   return {
     name,
     yamlText,
@@ -199,11 +217,28 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const [editedUsers, setEditedUsers] = useState<string[]>([]);
   const [runHost, setRunHost] = useState<string>(LOCAL_RUN_LOCATION);
   const [pickedProvider, setPickedProvider] = useState<AgentProviderId | null>(null);
-  const [phase, setPhase] = useState<'form' | 'creating'>('form');
+  const [phase, setPhase] = useState<'form' | 'creating' | 'done' | 'failed'>('form');
+  const [doneDetail, setDoneDetail] = useState<string | null>(null);
+  // What the server returned for the room, kept so that a step failing after
+  // it does not make Retry create the room a second time.
+  const createdRoom = useRef<Awaited<
+    ReturnType<typeof rpc.switchServers.createRoomFromTemplate>
+  > | null>(null);
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
   // For an agent template the room is optional. When off, only the agent is created.
   const [createRoom, setCreateRoom] = useState(true);
   const [createError, setCreateError] = useState<string | null>(null);
+  // An input the page filled in is shown as one line until the deployer opens it.
+  const [prefilled, setPrefilled] = useState<ReadonlySet<string>>(new Set());
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const markPrefilled = useCallback(
+    (key: string) => setPrefilled((prev) => (prev.has(key) ? prev : new Set(prev).add(key))),
+    []
+  );
+  const open = (key: string) => setOpened((prev) => new Set(prev).add(key));
+  // Params whose `prefill` has been decided, so a value the deployer clears
+  // is not filled in again.
+  const prefillDecided = useRef(new Set<string>());
 
   // Reload only when a different document is requested. Reloading on every
   // render would reset the form.
@@ -216,8 +251,18 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       .then((result) => {
         if (cancelled) return;
         setLoaded(result);
-        setValues(
-          defaultsFor(result.params.filter((p) => !(result.singular && p.name === 'agent')))
+        const formParams = result.params.filter((p) => !(result.singular && p.name === 'agent'));
+        setValues(defaultsFor(formParams));
+        prefillDecided.current = new Set();
+        createdRoom.current = null;
+        setOpened(new Set());
+        const firstName = result.agents[0]?.name ?? '';
+        setPrefilled(
+          new Set([
+            ...formParams.filter((p) => p.default !== null).map((p) => `param:${p.name}`),
+            ...(firstName !== '' && !hasPlaceholder(firstName) ? ['name'] : []),
+            ...(result.agents.length > 0 ? ['location'] : []),
+          ])
         );
         setSlots(result.agents.map(newSlot));
         // The editable member list holds the room's fixed agents that the template
@@ -338,6 +383,29 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     ]
   );
 
+  // Apply `prefill: first`, and select the messaging app when the server has
+  // only one. Each param is decided once, when its list has loaded.
+  useEffect(() => {
+    if (!loaded) return;
+    for (const param of templateParams) {
+      if (prefillDecided.current.has(param.name)) continue;
+      const candidates =
+        param.type === 'bridge'
+          ? bridgesQuery.data && bridgeCandidates(bridgesQuery.data)
+          : param.type === 'agent'
+            ? agents.data?.map((a) => a.name).sort()
+            : param.type === 'room'
+              ? roomsQuery.data?.map((r) => r.name).sort()
+              : [];
+      if (candidates === undefined) continue; // the list is still loading
+      prefillDecided.current.add(param.name);
+      const first = prefillChoice(param, candidates);
+      if (first === null) continue;
+      setValues((prev) => (isEmpty(prev[param.name]) ? { ...prev, [param.name]: first } : prev));
+      markPrefilled(`param:${param.name}`);
+    }
+  }, [loaded, templateParams, bridgesQuery.data, agents.data, roomsQuery.data, markPrefilled]);
+
   // ── Where the agents run, and what runs them ────────────────────────────
   const allowedHosts = useAllowedHosts(serverId);
   useEffect(() => {
@@ -352,6 +420,31 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setSlots((prev) => prev.map((s) => (s.dirPicked ? s : { ...s, dir: '' })));
   }, [runHost]);
   const providerParam = templateParams.find((p) => p.type === 'provider') ?? null;
+  // The first coding agent the run location has is selected for the deployer.
+  const availability = useAgentTypeAvailability(sshHost ?? undefined);
+  useEffect(() => {
+    if (!createsAgents || phase !== 'form') return;
+    const first = availability.data?.find(
+      (a) => a.available && (AGENT_PROVIDER_IDS as readonly string[]).includes(a.agentId)
+    )?.agentId as AgentProviderId | undefined;
+    if (!first) return;
+    if (providerParam) {
+      if (providerParam.default !== null || !isEmpty(values[providerParam.name])) return;
+      setValues((prev) => ({ ...prev, [providerParam.name]: first }));
+      markPrefilled(`param:${providerParam.name}`);
+    } else if (pickedProvider === null) {
+      setPickedProvider(first);
+      markPrefilled('provider');
+    }
+  }, [
+    availability.data,
+    createsAgents,
+    phase,
+    providerParam,
+    values,
+    pickedProvider,
+    markPrefilled,
+  ]);
   const pageProvider: AgentProviderId | null = providerParam
     ? ((values[providerParam.name] as AgentProviderId) ?? null) || null
     : pickedProvider;
@@ -403,10 +496,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             if (!s || s.dirPicked || s.dir === dir) return prev; // same array: no re-run
             return prev.map((x, j) => (j === i ? { ...x, dir } : x));
           });
+          if (i === 0) markPrefilled('dir');
         })
         .catch(() => {});
     });
-  }, [slots, slotNames, sshHost, hostReachable, phase]);
+  }, [slots, slotNames, sshHost, hostReachable, phase, markPrefilled]);
 
   // ── Why Create is disabled ──────────────────────────────────────────────
   const missing = missingParams(templateParams, values);
@@ -528,7 +622,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       const name = slot.createdName ?? finalNames[i];
       const providerId = providerFor(slot.entry);
       if (!providerId) continue;
-      setSlot(i, { status: 'creating', error: null });
+      setSlot(i, { status: 'creating', error: null, step: 'prepare' });
       try {
         // An agent created on an earlier attempt is not created again; only its policy is set.
         let switchAgentId = slot.createdSwitchAgentId;
@@ -539,12 +633,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             sshHost,
           });
           if (prepared.repo?.outcome === 'failed') {
+            setSlot(i, {
+              cloneWarning: `The repository could not be cloned (${prepared.repo.error ?? 'git clone failed'}). The agent clones it on its first run.`,
+            });
             toast({
               title: `Could not fetch the repository for ${name}`,
               description: `${prepared.repo.error ?? 'git clone failed'}. The agent will try to clone it itself on its first run.`,
               variant: 'destructive',
             });
           }
+          setSlot(i, { step: 'create' });
           const result = await rpc.agents.addAgent({
             sshHost,
             dir: slot.dir.trim(),
@@ -565,7 +663,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           });
           if (result.kind !== 'created') {
             setSlot(i, { status: 'failed', error: provisionErrorText(result) });
-            setPhase('form');
+            setPhase('failed');
             return;
           }
           switchAgentId = result.agent.switchAgentId ?? null;
@@ -576,6 +674,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         // A new agent answers only its owner by default. The template's `anyone`
         // must be written as the open policy; leaving the default would keep it closed.
         if (switchAgentId && slot.entry.addressing) {
+          setSlot(i, { step: 'policy' });
           await rpc.switchServers.updateAddressingPolicy({
             serverId,
             agentId: switchAgentId,
@@ -591,13 +690,17 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         setSlot(i, { status: 'created' });
       } catch (e) {
         setSlot(i, { status: 'failed', error: failureText(e, 'Could not create the agent.') });
-        setPhase('form');
+        setPhase('failed');
         return;
       }
     }
     if (created.length > 0) {
-      await agentsStore.load();
-      await queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
+      // The agents exist whether or not the lists refresh, so a refresh that
+      // fails must not fail the run.
+      await agentsStore.load().catch(() => {});
+      await queryClient
+        .invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) })
+        .catch(() => {});
     }
     rpc.roomTemplates
       .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
@@ -611,6 +714,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         )
         .concat(created.map((c) => c.switchAgentId))
         .filter((id): id is string => !!id);
+      setRoomStatus('creating');
       try {
         if (ids.length > 0) {
           await rpc.switchServers.addRoomAgents({
@@ -620,28 +724,37 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             direction: 'agents_to_room',
           });
         }
-        await refreshSidebarRoomState(true);
+        setRoomStatus('created');
+        await refreshSidebarRoomState(true).catch(() => {});
         toast({
           title: 'In the room',
           description: 'Mention an agent there to start it. A message from you is what wakes it.',
         });
-        navigate('room', { roomId: intoRoomId });
+        finish(`Opening ${intoRoomName ?? 'the room'}…`, () =>
+          navigate('room', { roomId: intoRoomId })
+        );
       } catch (e) {
+        setRoomStatus('failed');
         setCreateError(
           failureText(e, 'The agents were created, but could not be added to the room.')
         );
-        setPhase('form');
+        setPhase('failed');
       }
       return;
     }
 
     if (!loaded.coreYaml || !parsed || (loaded.kind === 'agent' && !createRoom)) {
-      const first = created[0];
-      if (first) {
-        const local = agentsStore.agentsOnServer(serverId).find((a) => a.name === first.name);
-        if (local) navigate('location', { locationId: local.locationId, agentName: local.name });
-        else navigate('serverAgents', { serverId });
-      }
+      // No room to make. Every path out of here navigates, so a run that
+      // created nothing new does not stay on the creating screen.
+      const firstName = created[0]?.name ?? slots.find((s) => s.createdName)?.createdName;
+      const local = firstName
+        ? agentsStore.agentsOnServer(serverId).find((a) => a.name === firstName)
+        : undefined;
+      finish(local ? `Opening ${local.name}…` : 'Opening Your Agents…', () =>
+        local
+          ? navigate('location', { locationId: local.locationId, agentName: local.name })
+          : navigate('serverAgents', { serverId })
+      );
       return;
     }
 
@@ -685,9 +798,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         inputs.agent =
           slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? finalNames[0] ?? '');
       }
-      const result = await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs);
+      const result =
+        createdRoom.current ??
+        (await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs));
+      createdRoom.current = result;
       setRoomStatus('created');
-      await refreshSidebarRoomState(true);
+      // The room exists whether or not the sidebar refreshes.
+      await refreshSidebarRoomState(true).catch(() => {});
       if (result.kind === 'room') {
         if (result.failedAttachments.length > 0) {
           const kickoff = result.failedAttachments.find((f) => f.kind === 'kickoff');
@@ -709,7 +826,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         }
         // Open the room. The kickoff and the agents' answers appear there, and the
         // agents' sessions appear in the sidebar.
-        navigate('room', { roomId: result.roomId });
+        finish(`Opening ${result.roomName}…`, () => navigate('room', { roomId: result.roomId }));
       } else {
         const gaps = [
           ...result.errors.map((e) => e.error),
@@ -730,8 +847,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           });
         }
         const first = result.rooms[0];
-        if (first) navigate('room', { roomId: first.roomId });
-        else navigate('serverRooms', { serverId });
+        finish(first ? `Opening ${first.roomName}…` : 'Opening Your Rooms…', () =>
+          first ? navigate('room', { roomId: first.roomId }) : navigate('serverRooms', { serverId })
+        );
       }
     } catch (e) {
       setRoomStatus('failed');
@@ -742,15 +860,24 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       const paramMatch = message.match(/param(?:\(s\))?:?\s*['"]?(\w+)/i);
       if (paramMatch && templateParams.some((p) => p.name === paramMatch[1])) {
         setFieldErrors({ [paramMatch[1]]: message });
-      } else {
-        setCreateError(
-          created.length > 0
-            ? `The agents were created, but the room could not be: ${message}`
-            : message
-        );
+        open(`param:${paramMatch[1]}`);
       }
-      setPhase('form');
+      setCreateError(
+        created.length > 0
+          ? `The agents were created, but the room could not be: ${message}`
+          : message
+      );
+      setPhase('failed');
     }
+  };
+
+  // A short finished state before the page moves on, skipped for a deployer
+  // who asked the system for less motion.
+  const finish = (detail: string, go: () => void) => {
+    setDoneDetail(detail);
+    setPhase('done');
+    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.setTimeout(go, still ? 0 : 900);
   };
 
   // Values for the preview cards: the inputs, `{agent}` for a single-agent
@@ -805,6 +932,209 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const showUserLists =
     parsed !== null && !isGroupDoc && (parsed.hardcodedUsers.length > 0 || editedUsers.length > 0);
 
+  // The rows of the creating screen: one per call the run makes.
+  const createSteps: CreateStep[] = slots.flatMap((slot, i) =>
+    slot.mode === 'new'
+      ? agentCreateSteps(i, {
+          name: slot.createdName ?? slotNames[i]?.final ?? 'the agent',
+          status: slot.status,
+          step: slot.step,
+          clones: slot.cloneRepo && !!slot.entry.repoUrl,
+          setsPolicy: !!slot.entry.addressing,
+          cloneWarning: slot.cloneWarning,
+        })
+      : []
+  );
+  if (intoRoomId) {
+    createSteps.push({
+      key: 'room',
+      label: `Add to ${intoRoomName ?? 'the room'}`,
+      status: createStepStatus(roomStatus),
+    });
+  } else if (loaded?.coreYaml && parsed && !(loaded.kind === 'agent' && !createRoom)) {
+    const count = parsed.rooms.length;
+    const hasKickoff = parsed.kickoff !== null || parsed.rooms.some((r) => r.kickoff);
+    createSteps.push({
+      key: 'room',
+      label:
+        (count > 1 ? `Create ${count} rooms` : 'Create the room') +
+        (hasKickoff ? (count > 1 ? ' and post their kickoffs' : ' and post the kickoff') : ''),
+      status: createStepStatus(roomStatus),
+    });
+  }
+  const runError =
+    createError ?? slots.find((s) => s.status === 'failed')?.error ?? Object.values(fieldErrors)[0];
+
+  const isCollapsed = (key: string) => prefilled.has(key) && !opened.has(key) && phase === 'form';
+  // One new agent: its name, provider and directory are inputs of the page.
+  // With several agents each card in the rail holds its own directory.
+  const singleNewAgent = slots.length === 1 && slots[0].mode === 'new';
+
+  const nameField = showNameField && (
+    <CollapsibleInput
+      label="Name"
+      summary={slotNames[0]?.final || (nameOverride ?? slotNames[0]?.wanted ?? '')}
+      collapsed={isCollapsed('name') && (nameOverride ?? slotNames[0]?.wanted ?? '') !== ''}
+      onOpen={() => open('name')}
+    >
+      <div className="flex flex-col gap-2">
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-[12.5px] font-medium">name</span>
+          <span className="text-[11px] text-foreground-passive">text</span>
+          <span className="flex-1" />
+          <span className="text-[11px] text-amber-600 dark:text-amber-400">Required</span>
+        </div>
+        <p className="text-xs text-foreground-muted">
+          What the agent is called on this server. In rooms it is addressed by this name.
+        </p>
+        <Input
+          className="font-mono"
+          value={nameOverride ?? slotNames[0]?.wanted ?? ''}
+          onChange={(e) => setNameOverride(e.target.value)}
+          disabled={phase === 'creating'}
+        />
+      </div>
+    </CollapsibleInput>
+  );
+
+  const paramFields = templateParams.map((param) => (
+    <CollapsibleInput
+      key={param.name}
+      label={
+        param.type === 'bridge'
+          ? 'Messaging app'
+          : param.type === 'provider'
+            ? 'Provider'
+            : param.name
+      }
+      summary={
+        param.type === 'provider'
+          ? (providerDisplayName(String(values[param.name] ?? '')) ?? String(values[param.name]))
+          : String(values[param.name] ?? '')
+      }
+      collapsed={
+        isCollapsed(`param:${param.name}`) &&
+        !isEmpty(values[param.name]) &&
+        !fieldErrors[param.name]
+      }
+      onOpen={() => open(`param:${param.name}`)}
+    >
+      <ParamField
+        param={param}
+        value={values[param.name] ?? ''}
+        onChange={(v) => setValues((prev) => ({ ...prev, [param.name]: v }))}
+        error={fieldErrors[param.name] ?? null}
+        lists={lists}
+        sshHost={sshHost}
+        onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+      />
+    </CollapsibleInput>
+  ));
+
+  const memberLists = (
+    <>
+      {showAgentLists && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-baseline gap-2">
+            <span className="font-mono text-[12.5px] font-medium">agents</span>
+            <span className="text-[11px] text-foreground-passive">already on the server</span>
+          </div>
+          <AgentListField items={editedAgents} onChange={setEditedAgents} lists={lists} />
+          <p className="text-xs text-foreground-muted">
+            Agents the template puts in the room. Drop any the server does not have, or add more.
+          </p>
+        </div>
+      )}
+      {showUserLists && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-baseline gap-2">
+            <span className="font-mono text-[12.5px] font-medium">users</span>
+            <span className="text-[11px] text-foreground-passive">people</span>
+          </div>
+          <UserListField items={editedUsers} onChange={setEditedUsers} lists={lists} />
+          <p className="text-xs text-foreground-muted">
+            People the template invites. A name the server has not seen is looked up in the
+            messaging app's directory when the room is created.
+          </p>
+        </div>
+      )}
+    </>
+  );
+
+  // Hidden when the server allows no SSH host, since agents can then only run on this computer.
+  const locationField = createsAgents && allowedHosts.length > 0 && (
+    <CollapsibleInput
+      label="Runs on"
+      summary={runLocationLabel(runHost, allowedHosts)}
+      collapsed={isCollapsed('location')}
+      onOpen={() => open('location')}
+    >
+      <div className="flex flex-col gap-2">
+        <span className="text-[12.5px] font-medium">Runs on</span>
+        <RunLocationSelect
+          value={runHost}
+          onChange={setRunHost}
+          hosts={allowedHosts}
+          disabled={phase === 'creating'}
+        />
+        {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
+        {isRemoteRun && hostReachable && !hostReadiness.checking && (
+          <HostReadinessNotice
+            sshHost={runHost}
+            readiness={hostReadiness}
+            onNavigateAway={() => navigate('remoteHosts')}
+          />
+        )}
+      </div>
+    </CollapsibleInput>
+  );
+
+  const providerField = createsAgents && !providerParam && (
+    <CollapsibleInput
+      label="Provider"
+      summary={pickedProvider ? (providerDisplayName(pickedProvider) ?? pickedProvider) : ''}
+      collapsed={isCollapsed('provider') && pickedProvider !== null}
+      onOpen={() => open('provider')}
+    >
+      <div className="flex flex-col gap-2">
+        <span className="text-[12.5px] font-medium">Provider</span>
+        <p className="text-xs text-foreground-muted">
+          Which coding agent backs {slots.length === 1 ? 'it' : 'them'}. Only what{' '}
+          {runLocationLabel(runHost, allowedHosts)} has installed is offered.
+        </p>
+        {hostReachable ? (
+          <AgentTypePicker
+            value={pickedProvider}
+            onChange={setPickedProvider}
+            sshHost={sshHost ?? undefined}
+            onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+          />
+        ) : (
+          <p className="text-xs text-foreground-passive">Waiting for the host…</p>
+        )}
+      </div>
+    </CollapsibleInput>
+  );
+
+  const directoryField = singleNewAgent && (
+    <CollapsibleInput
+      label="Directory"
+      summary={slots[0].dir.replace(/^\/(?:Users|home)\/[^/]+/, '~')}
+      collapsed={isCollapsed('dir') && !slots[0].dirPicked && slots[0].dir !== ''}
+      onOpen={() => open('dir')}
+    >
+      <div className="flex flex-col gap-2">
+        <span className="text-[12.5px] font-medium">Directory</span>
+        <SlotDirectoryField
+          slot={slots[0]}
+          onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === 0 ? next : x)))}
+          sshHost={sshHost}
+          busy={phase === 'creating'}
+        />
+      </div>
+    </CollapsibleInput>
+  );
+
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <div className="flex shrink-0 items-start gap-4 border-b border-border px-8 pt-8 pb-5 [-webkit-app-region:drag]">
@@ -822,18 +1152,23 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             </span>
           )}
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1 [-webkit-app-region:no-drag]">
+        <div
+          className={cn(
+            'flex shrink-0 flex-col items-end gap-1 [-webkit-app-region:no-drag]',
+            phase !== 'form' && 'invisible'
+          )}
+        >
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={cancel} disabled={phase === 'creating'}>
+            <Button variant="outline" size="sm" onClick={cancel} disabled={phase !== 'form'}>
               {params.yamlText && !intoRoomId ? 'Back to the document' : 'Cancel'}
             </Button>
             <Button
               size="sm"
               onClick={() => void createAll()}
-              disabled={blockedReason !== null || phase === 'creating'}
+              disabled={blockedReason !== null || phase !== 'form'}
               title={blockedReason ?? undefined}
             >
-              {phase === 'creating' ? 'Creating…' : primaryLabel}
+              {primaryLabel}
             </Button>
           </div>
           {blockedReason && loaded && phase === 'form' && (
@@ -855,238 +1190,183 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           <Loader2 className="size-5 animate-spin text-foreground-muted" />
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1">
-          {/* Left: inputs */}
-          <div className="flex w-[46%] min-w-[340px] shrink-0 flex-col gap-6 overflow-auto px-8 py-6">
-            {createError && (
-              <Alert variant="destructive">
-                <AlertDescription>{createError}</AlertDescription>
-              </Alert>
-            )}
-            {loaded.warnings.map((w, i) => (
-              <Alert key={i}>
-                <AlertDescription>{w}</AlertDescription>
-              </Alert>
-            ))}
-            {creatorBlocked && !intoRoomId && (
-              <Alert>
-                <AlertDescription>
-                  <div className="flex flex-col gap-2">
-                    <span>
-                      This template puts you in the room, and this server does not know which
-                      account is yours{templateBridge ? ` on ${templateBridge.displayName}` : ''}.
-                    </span>
-                    {linkAccount && (
+        <>
+          {phase !== 'form' && (
+            <CreatingScreen
+              templateName={loaded.name}
+              phase={phase}
+              steps={createSteps}
+              error={runError ?? null}
+              doneDetail={doneDetail}
+              onRetry={() => void createAll()}
+              onBack={() => setPhase('form')}
+            />
+          )}
+          {/* The form stays mounted under the creating screen, so Back to the
+            form finds every choice as it was left. */}
+          <div className={cn('flex min-h-0 flex-1', phase !== 'form' && 'hidden')}>
+            {/* Left: inputs */}
+            <div className="flex w-[46%] min-w-[340px] shrink-0 flex-col gap-6 overflow-auto px-8 py-6">
+              {createError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{createError}</AlertDescription>
+                </Alert>
+              )}
+              {loaded.warnings.map((w, i) => (
+                <Alert key={i}>
+                  <AlertDescription>{w}</AlertDescription>
+                </Alert>
+              ))}
+              {creatorBlocked && !intoRoomId && (
+                <Alert>
+                  <AlertDescription>
+                    <div className="flex flex-col gap-2">
+                      <span>
+                        This template puts you in the room, and this server does not know which
+                        account is yours{templateBridge ? ` on ${templateBridge.displayName}` : ''}.
+                      </span>
+                      {linkAccount && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="self-start"
+                          onClick={linkAccount}
+                        >
+                          Link account
+                        </Button>
+                      )}
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              )}
+              {handoffBlocked.length > 0 && (
+                <Alert>
+                  <AlertDescription>
+                    <div className="flex flex-col gap-2">
+                      <span>
+                        These agents will not hear each other:{' '}
+                        {handoffBlocked.map((b) => `${b.to} ignores ${b.from}`).join(', ')}.
+                      </span>
                       <Button
                         variant="outline"
                         size="sm"
                         className="self-start"
-                        onClick={linkAccount}
+                        disabled={allowingHandoffs}
+                        onClick={() => void allowHandoffs()}
                       >
-                        Link account
+                        {allowingHandoffs ? 'Updating…' : 'Let them hear each other'}
                       </Button>
-                    )}
-                  </div>
-                </AlertDescription>
-              </Alert>
-            )}
-            {handoffBlocked.length > 0 && (
-              <Alert>
-                <AlertDescription>
-                  <div className="flex flex-col gap-2">
-                    <span>
-                      These agents will not hear each other:{' '}
-                      {handoffBlocked.map((b) => `${b.to} ignores ${b.from}`).join(', ')}.
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="self-start"
-                      disabled={allowingHandoffs}
-                      onClick={() => void allowHandoffs()}
-                    >
-                      {allowingHandoffs ? 'Updating…' : 'Let them hear each other'}
-                    </Button>
-                  </div>
-                </AlertDescription>
-              </Alert>
-            )}
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              )}
 
-            <SectionTitle
-              title="Inputs"
-              hint="Values are substituted into the template. Nothing is created until you confirm."
-            />
-            {templateParams.length === 0 && !showNameField && (
-              <p className="text-sm text-foreground-muted">This template asks for nothing.</p>
-            )}
-            {showNameField && (
-              <div className="flex flex-col gap-2">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[12.5px] font-medium">name</span>
-                  <span className="text-[11px] text-foreground-passive">text</span>
-                  <span className="flex-1" />
-                  <span className="text-[11px] text-amber-600 dark:text-amber-400">Required</span>
-                </div>
-                <p className="text-xs text-foreground-muted">
-                  What the agent is called on this server. In rooms it is addressed by this name.
-                </p>
-                <Input
-                  className="font-mono"
-                  value={nameOverride ?? slotNames[0]?.wanted ?? ''}
-                  onChange={(e) => setNameOverride(e.target.value)}
-                  disabled={phase === 'creating'}
-                />
-              </div>
-            )}
-            {templateParams.map((param) => (
-              <ParamField
-                key={param.name}
-                param={param}
-                value={values[param.name] ?? ''}
-                onChange={(v) => setValues((prev) => ({ ...prev, [param.name]: v }))}
-                error={fieldErrors[param.name] ?? null}
-                lists={lists}
-                sshHost={sshHost}
-                onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+              <SectionTitle
+                title="Inputs"
+                hint={
+                  blockedReason === null && prefilled.size > 0
+                    ? 'Filled in for you. Change anything, or create it as it is.'
+                    : 'Values are substituted into the template. Nothing is created until you confirm.'
+                }
               />
-            ))}
-            {showAgentLists && (
-              <div className="flex flex-col gap-2">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[12.5px] font-medium">agents</span>
-                  <span className="text-[11px] text-foreground-passive">already on the server</span>
-                </div>
-                <AgentListField items={editedAgents} onChange={setEditedAgents} lists={lists} />
-                <p className="text-xs text-foreground-muted">
-                  Agents the template puts in the room. Drop any the server does not have, or add
-                  more.
-                </p>
-              </div>
-            )}
-            {showUserLists && (
-              <div className="flex flex-col gap-2">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[12.5px] font-medium">users</span>
-                  <span className="text-[11px] text-foreground-passive">people</span>
-                </div>
-                <UserListField items={editedUsers} onChange={setEditedUsers} lists={lists} />
-                <p className="text-xs text-foreground-muted">
-                  People the template invites. A name the server has not seen is looked up in the
-                  messaging app's directory when the room is created.
-                </p>
-              </div>
-            )}
-
-            {createsAgents && (
-              <>
-                <SectionTitle
-                  title={slots.length === 1 ? 'Where the agent runs' : 'Where the agents run'}
-                  hint="Each new agent gets its own directory there, named after it."
-                />
-                <div className="flex flex-col gap-2">
-                  <span className="text-[11px] text-foreground-passive">Run location</span>
-                  <RunLocationSelect
-                    value={runHost}
-                    onChange={setRunHost}
-                    hosts={allowedHosts}
-                    disabled={phase === 'creating'}
-                  />
-                  {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
-                  {isRemoteRun && hostReachable && !hostReadiness.checking && (
-                    <HostReadinessNotice
-                      sshHost={runHost}
-                      readiness={hostReadiness}
-                      onNavigateAway={() => navigate('remoteHosts')}
-                    />
-                  )}
-                </div>
-                {!providerParam && (
-                  <div className="flex flex-col gap-2">
-                    <p className="text-xs text-foreground-muted">
-                      Which coding agent backs {slots.length === 1 ? 'it' : 'them'}. Only what{' '}
-                      {runLocationLabel(runHost, allowedHosts)} has installed is offered.
-                    </p>
-                    {hostReachable ? (
-                      <AgentTypePicker
-                        value={pickedProvider}
-                        onChange={setPickedProvider}
-                        sshHost={sshHost ?? undefined}
-                        onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+              {templateParams.length === 0 && !showNameField && (
+                <p className="text-sm text-foreground-muted">This template asks for nothing.</p>
+              )}
+              {singleNewAgent ? (
+                <>
+                  {nameField}
+                  {providerField}
+                  {paramFields}
+                  {memberLists}
+                  {locationField}
+                  {directoryField}
+                </>
+              ) : (
+                <>
+                  {nameField}
+                  {paramFields}
+                  {memberLists}
+                  {createsAgents && (
+                    <>
+                      <SectionTitle
+                        title={slots.length === 1 ? 'Where the agent runs' : 'Where the agents run'}
+                        hint="Each new agent gets its own directory there, named after it."
                       />
-                    ) : (
-                      <p className="text-xs text-foreground-passive">Waiting for the host…</p>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+                      {locationField}
+                      {providerField}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
 
-          {/* Right: what this will create */}
-          <div className="flex min-w-0 flex-1 flex-col border-l border-border bg-background-1">
-            <div className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-3">
-              <span className="min-w-0 flex-1 text-[13px] font-semibold">
-                What this will create
-              </span>
-              <span
-                className={cn(
-                  'shrink-0 text-[11.5px]',
-                  missing.length > 0 || slotProblems.length > 0
-                    ? 'text-amber-600 dark:text-amber-400'
-                    : 'text-emerald-700 dark:text-emerald-400'
-                )}
-              >
-                {stillNeeded}
-              </span>
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-5 py-4">
-              <div className="flex flex-col gap-2">
-                {intoRoomId ? (
-                  <p className="text-xs text-foreground-muted">
-                    The new agent joins the room you came from; no room is made.
-                  </p>
-                ) : (
-                  parsed?.rooms.map((room, i) => (
-                    <RoomCard
-                      key={i}
-                      room={room}
-                      values={railValues}
-                      renames={railRenames}
-                      bridgeName={templateBridge?.displayName ?? parsed.bridge}
-                      creatorIdentity={creatorIdentity}
-                      status={roomStatus}
-                      toggle={
-                        loaded?.kind === 'agent' && phase === 'form'
-                          ? { checked: createRoom, onChange: setCreateRoom }
-                          : null
-                      }
-                    />
-                  ))
-                )}
-                {slots.map((slot, i) => (
-                  <AgentSlotCard
-                    key={i}
-                    slot={slot}
-                    wantedName={slotNames[i]?.wanted ?? ''}
-                    finalName={slotNames[i]?.final ?? ''}
-                    onChange={(next) =>
-                      setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
-                    }
-                    lists={{ ...lists, agents: agentsAtLocation }}
-                    locationLabel={runLocationLabel(runHost, allowedHosts)}
-                    sshHost={sshHost}
-                    busy={phase === 'creating'}
-                  />
-                ))}
+            {/* Right: what this will create */}
+            <div className="flex min-w-0 flex-1 flex-col border-l border-border bg-background-1">
+              <div className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-3">
+                <span className="min-w-0 flex-1 text-[13px] font-semibold">
+                  What this will create
+                </span>
+                <span
+                  className={cn(
+                    'shrink-0 text-[11.5px]',
+                    missing.length > 0 || slotProblems.length > 0
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-emerald-700 dark:text-emerald-400'
+                  )}
+                >
+                  {stillNeeded}
+                </span>
               </div>
-              <ResolvedDocument
-                yamlText={loaded.yamlText}
-                values={railValues}
-                renames={railRenames}
-              />
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-5 py-4">
+                <div className="flex flex-col gap-2">
+                  {intoRoomId ? (
+                    <p className="text-xs text-foreground-muted">
+                      The new agent joins the room you came from; no room is made.
+                    </p>
+                  ) : (
+                    parsed?.rooms.map((room, i) => (
+                      <RoomCard
+                        key={i}
+                        room={room}
+                        values={railValues}
+                        renames={railRenames}
+                        bridgeName={templateBridge?.displayName ?? parsed.bridge}
+                        creatorIdentity={creatorIdentity}
+                        status={roomStatus}
+                        toggle={
+                          loaded?.kind === 'agent' && phase === 'form'
+                            ? { checked: createRoom, onChange: setCreateRoom }
+                            : null
+                        }
+                      />
+                    ))
+                  )}
+                  {slots.map((slot, i) => (
+                    <AgentSlotCard
+                      key={i}
+                      slot={slot}
+                      wantedName={slotNames[i]?.wanted ?? ''}
+                      finalName={slotNames[i]?.final ?? ''}
+                      onChange={(next) =>
+                        setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
+                      }
+                      lists={{ ...lists, agents: agentsAtLocation }}
+                      locationLabel={runLocationLabel(runHost, allowedHosts)}
+                      sshHost={sshHost}
+                      busy={phase === 'creating'}
+                      directoryInForm={singleNewAgent}
+                    />
+                  ))}
+                </div>
+                <ResolvedDocument
+                  yamlText={loaded.yamlText}
+                  values={railValues}
+                  renames={railRenames}
+                />
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

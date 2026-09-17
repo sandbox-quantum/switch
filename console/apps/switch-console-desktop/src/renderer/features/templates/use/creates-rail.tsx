@@ -34,7 +34,14 @@ export type AgentSlot = {
   /** Null until the agent is created, then the name it was created under. */
   createdName: string | null;
   createdSwitchAgentId: string | null;
+  /** The call in progress, or the one that failed, while the agent is being created. */
+  step: SlotStep | null;
+  /** Why the repository could not be cloned. The run carries on without the clone. */
+  cloneWarning: string | null;
 };
+
+/** The calls that make one agent: its directory (and clone), the agent, who may address it. */
+export type SlotStep = 'prepare' | 'create' | 'policy';
 
 export function newSlot(entry: ParsedAgentEntry): AgentSlot {
   return {
@@ -48,6 +55,8 @@ export function newSlot(entry: ParsedAgentEntry): AgentSlot {
     error: null,
     createdName: null,
     createdSwitchAgentId: null,
+    step: null,
+    cloneWarning: null,
   };
 }
 
@@ -152,6 +161,53 @@ export function RoomCard({
   );
 }
 
+/** Where a new agent works: its directory, and whether the template's repository is cloned into it. */
+export function SlotDirectoryField({
+  slot,
+  onChange,
+  sshHost,
+  busy,
+}: {
+  slot: AgentSlot;
+  onChange: (next: AgentSlot) => void;
+  sshHost: string | null;
+  busy: boolean;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-1">
+        <span className="text-[11px] text-foreground-passive">Directory</span>
+        {sshHost ? (
+          <Input
+            value={slot.dir}
+            disabled={busy}
+            placeholder="/home/agent/repo"
+            className="font-mono text-xs"
+            onChange={(e) => onChange({ ...slot, dir: e.target.value, dirPicked: true })}
+          />
+        ) : (
+          <LocalDirectorySelector
+            title="Choose the agent's working directory"
+            message="The agent runs from here. A suggested folder is created when the agent is."
+            path={slot.dir}
+            onPathChange={(dir) => onChange({ ...slot, dir, dirPicked: true })}
+          />
+        )}
+      </div>
+      {slot.entry.repoUrl && (
+        <label className="flex w-max cursor-pointer items-center gap-2 text-xs text-foreground-muted">
+          <Switch
+            size="sm"
+            checked={slot.cloneRepo}
+            onCheckedChange={(cloneRepo) => onChange({ ...slot, cloneRepo })}
+          />
+          Clone {slot.entry.repoUrl.replace(/^https?:\/\//, '')} into it
+        </label>
+      )}
+    </>
+  );
+}
+
 export function AgentSlotCard({
   slot,
   wantedName,
@@ -161,6 +217,7 @@ export function AgentSlotCard({
   sshHost,
   locationLabel,
   busy,
+  directoryInForm = false,
 }: {
   slot: AgentSlot;
   /** The name the deployer asked for; see `slotWantedName`. */
@@ -173,6 +230,8 @@ export function AgentSlotCard({
   /** The run location's display name, shown under the existing-agent picker. */
   locationLabel: string;
   busy: boolean;
+  /** The page shows the directory among its inputs, so the card leaves it out. */
+  directoryInForm?: boolean;
 }) {
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
   const shownName =
@@ -199,7 +258,9 @@ export function AgentSlotCard({
         <span className="shrink-0 text-[11px] text-foreground-passive">Agent</span>
       </div>
 
-      {(slot.status === 'idle' || slot.status === 'failed') && (
+      {/* An agent that exists can no longer change how it is made, even when a
+          later step for it failed. */}
+      {(slot.status === 'idle' || slot.status === 'failed') && slot.createdName === null && (
         <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
           <SegmentedControl
             value={slot.mode}
@@ -232,34 +293,8 @@ export function AgentSlotCard({
                   <span className="font-mono">{finalName}</span>.
                 </p>
               )}
-              <div className="flex flex-col gap-1">
-                <span className="text-[11px] text-foreground-passive">Directory</span>
-                {sshHost ? (
-                  <Input
-                    value={slot.dir}
-                    disabled={busy}
-                    placeholder="/home/agent/repo"
-                    className="font-mono text-xs"
-                    onChange={(e) => onChange({ ...slot, dir: e.target.value, dirPicked: true })}
-                  />
-                ) : (
-                  <LocalDirectorySelector
-                    title="Choose the agent's working directory"
-                    message="The agent runs from here. A suggested folder is created when the agent is."
-                    path={slot.dir}
-                    onPathChange={(dir) => onChange({ ...slot, dir, dirPicked: true })}
-                  />
-                )}
-              </div>
-              {slot.entry.repoUrl && (
-                <label className="flex w-max cursor-pointer items-center gap-2 text-xs text-foreground-muted">
-                  <Switch
-                    size="sm"
-                    checked={slot.cloneRepo}
-                    onCheckedChange={(cloneRepo) => onChange({ ...slot, cloneRepo })}
-                  />
-                  Clone {slot.entry.repoUrl.replace(/^https?:\/\//, '')} into it
-                </label>
+              {!directoryInForm && (
+                <SlotDirectoryField slot={slot} onChange={onChange} sshHost={sshHost} busy={busy} />
               )}
             </>
           )}

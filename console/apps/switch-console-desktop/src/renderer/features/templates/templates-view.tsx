@@ -394,6 +394,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   // A caller can open the listing with a kind preselected; the deployer can clear it.
   const initialKind = useParams('templates').params.kind;
   const [kind, setKind] = useState<KindFilter>(initialKind ?? 'all');
+  // Navigating here without the param, as the sidebar does, shows every kind.
+  useEffect(() => setKind(initialKind ?? 'all'), [initialKind]);
   const [onlyMine, setOnlyMine] = useState(false);
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);

@@ -1,5 +1,6 @@
 import type { ParamSpec } from '@main/core/room-templates/controller';
 import type { ParamType } from '@shared/core/switch-servers/room-template-params';
+import type { SlotStatus, SlotStep } from './creates-rail';
 
 export type Values = Record<string, string | number | boolean>;
 
@@ -71,4 +72,93 @@ export function serverInputs(params: ParamSpec[], values: Values): Values {
     inputs[param.name] = param.type === 'number' ? Number(val) : (val as string | boolean);
   }
   return inputs;
+}
+
+/** The messaging apps a room can be created on, the server's default first, then by name. */
+export function bridgeCandidates(
+  bridges: { displayName: string; status: string; isDefault: boolean }[]
+): string[] {
+  return bridges
+    .filter((b) => b.status === 'active')
+    .sort(
+      (a, b) =>
+        Number(b.isDefault) - Number(a.isDefault) || a.displayName.localeCompare(b.displayName)
+    )
+    .map((b) => b.displayName);
+}
+
+/**
+ * The value the form selects for a param before the deployer touches it, or
+ * null to leave it empty. A param with `prefill: first` gets the first
+ * candidate. A messaging app is also selected when it is the only one,
+ * since there is nothing to choose; an agent, room or user never is,
+ * because selecting one silently could add a member nobody asked for.
+ */
+export function prefillChoice(param: ParamSpec, candidates: string[]): string | null {
+  if (param.default !== null || candidates.length === 0) return null;
+  const wanted = param.prefill === 'first' || (param.type === 'bridge' && candidates.length === 1);
+  return wanted ? candidates[0] : null;
+}
+
+export type CreateStepStatus = 'waiting' | 'running' | 'done' | 'failed';
+
+/** One call the page makes while creating, as a row of the creating screen. */
+export type CreateStep = {
+  key: string;
+  label: string;
+  status: CreateStepStatus;
+  /** A problem that did not stop the run, such as a repository that could not be cloned. */
+  warning?: string | null;
+};
+
+export function createStepStatus(status: SlotStatus): CreateStepStatus {
+  return status === 'created'
+    ? 'done'
+    : status === 'creating'
+      ? 'running'
+      : status === 'failed'
+        ? 'failed'
+        : 'waiting';
+}
+
+/**
+ * The rows for one new agent: its directory, the agent, and who may address
+ * it when the template sets that. Rows before the call in progress are done,
+ * the one at it is running or failed, the ones after it wait.
+ */
+export function agentCreateSteps(
+  index: number,
+  agent: {
+    name: string;
+    status: SlotStatus;
+    step: SlotStep | null;
+    clones: boolean;
+    setsPolicy: boolean;
+    cloneWarning: string | null;
+  }
+): CreateStep[] {
+  const order: SlotStep[] = agent.setsPolicy
+    ? ['prepare', 'create', 'policy']
+    : ['prepare', 'create'];
+  const at = agent.step ? order.indexOf(agent.step) : -1;
+  return order.map((step, k) => ({
+    key: `${index}:${step}`,
+    label:
+      step === 'prepare'
+        ? agent.clones
+          ? `Prepare the directory of ${agent.name} and clone the repository`
+          : `Prepare the directory of ${agent.name}`
+        : step === 'create'
+          ? `Create ${agent.name}`
+          : `Set who can talk to ${agent.name}`,
+    status:
+      agent.status === 'created'
+        ? 'done'
+        : agent.status === 'idle' || k > at
+          ? 'waiting'
+          : k < at
+            ? 'done'
+            : createStepStatus(agent.status),
+    warning: step === 'prepare' ? agent.cloneWarning : null,
+  }));
 }
