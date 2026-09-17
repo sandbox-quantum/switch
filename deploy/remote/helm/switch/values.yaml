@@ -240,13 +240,14 @@ switchCore:
   # unset: that is what the adapter checks before drawing a button, and it says
   # so at startup. A bridge configured with an address whose port is not
   # published here is the bad case — the cards carry buttons, and every press
-  # is lost. Enable this, or clear the address; do not leave the two disagreeing.
+  # fails. Enable this, or clear the address; do not leave the two disagreeing.
   #
-  # The in-cluster Mattermost this chart deploys needs only the Service port
-  # below, and is told to accept that address when this is enabled — Mattermost
-  # refuses to call a private host it has not been given. `helm install` prints
-  # the callback_base_url to configure on the bridge. A Mattermost OUTSIDE the
-  # cluster needs a route you own and an allowlist entry of its own: this is a
+  # Any Mattermost inside the cluster needs only the Service port below, and
+  # the one this chart deploys is also told to accept that address when this is
+  # enabled — Mattermost refuses to call a private host it has not been given,
+  # so a server you manage yourself needs that entry adding even in-cluster.
+  # `helm install` prints the callback_base_url to configure on the bridge. A
+  # Mattermost OUTSIDE the cluster needs a route you own as well: this is a
   # port switch-core binds, not necessarily a published host port, and the
   # chart renders no Ingress for it.
   collaborationCallback:

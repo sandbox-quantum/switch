@@ -28,7 +28,7 @@ two of the three fail *silently* — the pods are healthy and the dashboard work
 | Gateway dashboard | 3000 | Your operators | You cannot administer Switch |
 | Agent API + MCP | 8000 | Agents, wherever they run | Remote agents cannot connect; local ones are fine |
 | Teams bridge listener | 3978 | **Microsoft, from the public internet** | The Teams bridge half-works, silently |
-| Collaboration callbacks | 8081 | Your Mattermost server | Cards still show buttons and every press is silently lost |
+| Collaboration callbacks | 8081 | Your Mattermost server | Cards still show buttons and every press fails |
 
 **Only the Teams listener requires public internet exposure**, and only if you
 run a Microsoft Teams bridge. Slack, Discord and Telegram connect *outbound*
@@ -46,8 +46,8 @@ host. A Mattermost you run yourself needs the same entry adding by hand
 
 A bridge with no `callback_base_url` draws no buttons and its requests are
 answered by typing, which is a reduced service and says so in the logs. A
-bridge with an address that nothing can reach is the failure this port exists
-to prevent: the buttons are drawn and the presses go nowhere.
+bridge with an address the Mattermost server cannot reach is the failure this
+port exists to prevent: the buttons are still drawn, and every press fails.
 
 If your agents all run inside the cluster or on operator machines that can reach
 it privately, nothing here needs to be on the public internet.

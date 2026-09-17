@@ -94,32 +94,32 @@ in-cluster half. See docs/bridges/TEAMS_SETUP.md.
 ── Mattermost button presses ───────────────────────────────────────────────────
 Service {{ include "switch.switchCoreHost" . }} now publishes port {{ .Values.switchCore.collaborationCallback.port }}.
 
-{{ if .Values.mattermost.enabled -}}
-For a bridge pointed at the Mattermost this chart deploys — and only that one,
-since the address below resolves inside this cluster and nowhere else — set its
-callback_base_url to exactly:
+For a Mattermost running inside this cluster, set the bridge's callback_base_url
+to exactly:
 
   http://{{ include "switch.switchCoreHost" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.switchCore.collaborationCallback.port }}
 
 That is the address the Mattermost *server* calls, not one a browser follows, so
 it stays the cluster-internal name even where Mattermost itself is reached
-publicly. This release has already told that server it may call it.
+publicly. For a Mattermost outside this cluster, route this port to it yourself
+— the chart renders no Ingress — and the address is whatever you route it from.
 
-For a Mattermost anywhere else, route the port to it yourself, and add the name
-you route it from to that server's ServiceSettings.AllowedUntrustedInternalConnections
-— a space-separated list of hosts. Mattermost refuses to call a private address
-it has not been given, and says so only in its own log.
+Either way, that host has to be on the Mattermost server's
+ServiceSettings.AllowedUntrustedInternalConnections: a whitespace-separated list,
+matched against the URL before DNS resolution. Mattermost will not call a private
+address it has not been given, and says so only in its own log.
+
+{{ if .Values.mattermost.enabled -}}
+This release has already put the Service name there for the Mattermost it
+deploys. Any other server needs the entry adding by hand.
 {{- else -}}
-This release deploys no Mattermost, so the bridge points at one you run. Route
-this port to it yourself, on a name that server can resolve, and add that name
-to its ServiceSettings.AllowedUntrustedInternalConnections — a space-separated
-list of hosts. Mattermost refuses to call a private address it has not been
-given, and says so only in its own log.
+This release deploys no Mattermost, so that entry is yours to add.
 {{- end }}
 
-Leave callback_base_url unset and the bridge still works: its cards arrive with
-no buttons and are answered by typing. Setting an address nothing can reach is
-the one combination to avoid — the buttons are drawn and the presses vanish.
+Leave callback_base_url unset and the bridge draws no buttons at all: its
+requests are answered by typing, which is a reduced service and logs itself.
+Setting an address the server cannot reach is the worse case — the buttons are
+still drawn, and every press fails.
 {{- end }}
 
 ⚠  BACK UP YOUR DATA — this chart ships no backup jobs.
