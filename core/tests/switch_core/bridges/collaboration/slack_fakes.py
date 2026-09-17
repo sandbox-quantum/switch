@@ -20,6 +20,7 @@ class FakeWebClient:
         self.deleted: list[dict[str, Any]] = []
         self.reactions: list[tuple[str, str, str]] = []
         self.reaction_error: str | None = None
+        self.reaction_error_headers: dict[str, str] = {}
         # A thread as conversations.replies hands it back: the root first, then
         # its replies in order.
         self.thread: list[dict[str, Any]] = []
@@ -39,15 +40,23 @@ class FakeWebClient:
         self.api_calls.append((method, kwargs))
         return FakeResponse({"ok": True})
 
+    def _reaction_refusal(self) -> SlackApiError:
+        return SlackApiError(
+            "no",
+            FakeResponse(
+                {"error": self.reaction_error}, headers=self.reaction_error_headers
+            ),
+        )
+
     async def reactions_add(self, **kwargs: Any) -> FakeResponse:
         if self.reaction_error:
-            raise SlackApiError("no", FakeResponse({"error": self.reaction_error}))
+            raise self._reaction_refusal()
         self.reactions.append(("add", kwargs["timestamp"], kwargs["name"]))
         return FakeResponse({"ok": True})
 
     async def reactions_remove(self, **kwargs: Any) -> FakeResponse:
         if self.reaction_error:
-            raise SlackApiError("no", FakeResponse({"error": self.reaction_error}))
+            raise self._reaction_refusal()
         self.reactions.append(("remove", kwargs["timestamp"], kwargs["name"]))
         return FakeResponse({"ok": True})
 

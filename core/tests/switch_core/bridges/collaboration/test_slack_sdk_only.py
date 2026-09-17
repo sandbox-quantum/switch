@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 from slack_sdk.socket_mode.request import SocketModeRequest
 
+from switch_core.bridges.collaboration.slack import adapter as slack_adapter
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
+    SlackReactionsRateLimited,
 )
 
 from .slack_fakes import FakeWebClient
@@ -98,6 +100,47 @@ async def test_a_removal_skipped_for_a_message_slack_lost_earlier_says_so(caplog
 
     assert not client.reactions
     assert "Not asking Slack to take the queued reaction off 1.0 in C1" in caplog.text
+
+
+async def test_a_rate_limited_reaction_stops_the_asking_until_slack_says_when(
+    monkeypatch,
+):
+    """The publisher redraws on a timer, so a refusal it retries costs a call.
+
+    Every few seconds, per turn still wanting its mark — which is how a
+    workspace that metered one reaction call stayed metered, the retries
+    holding the limit open against themselves. The window Slack names is
+    waited out instead, and the turn keeps asking so the mark still lands.
+    """
+    slack, client = adapter()
+    now = 1000.0
+    monkeypatch.setattr(slack_adapter.time, "monotonic", lambda: now)
+    client.reaction_error = "ratelimited"
+    client.reaction_error_headers = {"Retry-After": "7"}
+
+    with pytest.raises(SlackReactionsRateLimited):
+        await slack.mark_activity(
+            "C1", "C1:1.0", agent_name="worker", mark="working", on=False, force=True
+        )
+
+    client.reaction_error = None
+    for now in (1000.0, 1006.9):
+        with pytest.raises(SlackReactionsRateLimited):
+            await slack.mark_activity(
+                "C1",
+                "C1:2.0",
+                agent_name="worker",
+                mark="working",
+                on=False,
+                force=True,
+            )
+    assert not client.reactions
+
+    now = 1007.1
+    await slack.mark_activity(
+        "C1", "C1:2.0", agent_name="worker", mark="working", on=False, force=True
+    )
+    assert client.reactions == [("remove", "2.0", "eyes")]
 
 
 async def test_reaction_force_reconciles_after_restart():

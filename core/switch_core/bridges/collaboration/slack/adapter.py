@@ -146,6 +146,15 @@ def _retry_after_seconds(error: SlackApiError) -> int:
         return _RATE_LIMIT_DEFAULT_DELAY
 
 
+class SlackReactionsRateLimited(RuntimeError):
+    """Slack is metering reaction calls, so this one was not made.
+
+    Deliberately not `ActivityMarkRefused`, which means refused for the life of
+    the turn: this is the case that a later attempt fixes, and the publisher
+    tells the two apart by which one it catches.
+    """
+
+
 class SlackUser(BaseModel):
     name: str
     display_name: str
@@ -300,6 +309,10 @@ class SlackAdapter(CollaborationAdapter):
         # a warning a second for as long as the agent worked.
         self._unmarkable: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._unmarkable_max = 500
+        # Monotonic time before which Slack has asked for no more reaction
+        # calls. The publisher redraws every few seconds and keeps asking until
+        # a mark lands, so without this the retries hold the limit open.
+        self._reaction_after = 0.0
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1452,6 +1465,11 @@ class SlackAdapter(CollaborationAdapter):
         has been told is gone. Neither the caller nor this cache can tell those
         apart, so the removal is said out loud rather than passed over in
         silence.
+
+        A rate limit is neither: the mark is still wanted and the call will
+        work later, so the window Slack named is waited out rather than spent
+        asking. The caller is told the mark did not land, which is what keeps
+        it asking again afterwards.
         """
         ts = thread_ts
         if not ts or not self._web_client:
@@ -1471,6 +1489,11 @@ class SlackAdapter(CollaborationAdapter):
                     channel_id,
                 )
             return
+        waiting = self._reaction_after - time.monotonic()
+        if waiting > 0:
+            raise SlackReactionsRateLimited(
+                f"Slack is rate limiting reactions; not asking for {waiting:.0f}s."
+            )
 
         try:
             if on:
@@ -1505,6 +1528,15 @@ class SlackAdapter(CollaborationAdapter):
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)
                 return
+            if (
+                error == "ratelimited"
+                or getattr(e.response, "status_code", None) == 429
+            ):
+                delay = _retry_after_seconds(e)
+                self._reaction_after = time.monotonic() + delay
+                raise SlackReactionsRateLimited(
+                    f"Slack is rate limiting reactions; not asking for {delay}s."
+                ) from e
             if force:
                 raise
             logger.warning(
