@@ -54,6 +54,9 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
 )
 from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    INTERRUPT_LABEL,
+    INTERRUPT_QUEUED_NOTE,
     Control,
     Drawn,
     offered_controls,
@@ -69,6 +72,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -147,19 +151,25 @@ _PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
 )
 
 
-# The two buttons that are about a turn rather than about a card, and the one
+# The three buttons that are about a turn rather than about a card, and the one
 # thing each of them has to say to be recognised on the way back.
 #
-# Neither carries an identifier that has to be known before the message exists.
-# `View activity` sits on the status message and says only what kind of press
-# it is: which turn it is about is the message it arrived on, which Discord
-# fills in and a client cannot write. `Refresh` sits on a private copy that no
-# journal has a row for, so it carries the address of the public message it was
-# opened from — a locator, resolved and re-authorised from scratch on every
-# press, never taken as evidence of anything.
+# `View activity` sits on the status message and says only what kind of press it
+# is: which turn it is about is the message it arrived on, which Discord fills
+# in and a client cannot write. `Refresh` sits on a private copy that no journal
+# has a row for, so it carries the address of the public message it was opened
+# from — a locator, resolved and re-authorised from scratch on every press,
+# never taken as evidence of anything.
+#
+# `Stop current work` is the one that does carry an identifier, because the
+# message cannot supply it: a queued turn's status offers to stop the turn in
+# front of it rather than itself, and a message nothing has redrawn since names
+# the turn its reader can still see rather than whatever is running by the time
+# they press.
 _ACTIVITY_PREFIX = "swact"
 _ACTIVITY_VIEW_ID = f"{_ACTIVITY_PREFIX}:v"
 _ACTIVITY_REFRESH_ID = f"{_ACTIVITY_PREFIX}:r"
+_INTERRUPT_PREFIX = "swstop"
 _ACTIVITY_LABEL = "View activity"
 _REFRESH_LABEL = "Refresh"
 _CONSOLE_LABEL = "Open in Switch Console"
@@ -167,6 +177,10 @@ _CONSOLE_LABEL = "Open in Switch Console"
 
 def _custom_id(token: str, position: int) -> str:
     return f"{_CUSTOM_ID_PREFIX}:{token}:{position}"
+
+
+def _interrupt_id(turn_id: str) -> str:
+    return f"{_INTERRUPT_PREFIX}:{turn_id}"
 
 
 def _refresh_id(ref: str) -> str:
@@ -221,6 +235,39 @@ def _parse_custom_id(custom_id: str) -> tuple[str, int] | None:
         return None
     position = int(digits)
     return (token, position) if position > 0 else None
+
+
+def _parse_interrupt_id(custom_id: str) -> str | None:
+    """The turn a stop press names, or None if the press is not one.
+
+    Split once, so a turn id a provider chose to put a colon in comes back
+    whole. What comes back is a claim and is treated as one: the session it
+    stops is the one behind the message the press arrived on, and this only
+    says which of that session's turns the button was drawn against.
+    """
+    prefix, separator, turn_id = custom_id.partition(":")
+    if prefix != _INTERRUPT_PREFIX or not separator or not turn_id:
+        return None
+    return turn_id
+
+
+def _press_action(custom_id: str) -> tuple[str, str] | None:
+    """The Switch action a press carries and what it names, or None if not ours.
+
+    Two buttons arrive here and they name different things — a card's option
+    names the card, a stop names the turn — but they leave by the same door,
+    because what happens next is the same for both: acknowledge inside
+    Discord's three seconds, then hand the press to the shared inbound path and
+    tell the presser alone whatever comes back.
+    """
+    turn_id = _parse_interrupt_id(custom_id)
+    if turn_id is not None:
+        return INTERRUPT_ACTION, turn_id
+    press = _parse_custom_id(custom_id)
+    if press is None:
+        return None
+    token, position = press
+    return position_action(position), token
 
 
 def _button_label(control: Control) -> str:
@@ -1011,7 +1058,12 @@ class DiscordAdapter(CollaborationAdapter):
         printing.
         """
         return self._draw(
-            content, mention=None, responder=None, prefix="", controls=False
+            content,
+            mention=None,
+            responder=None,
+            prefix="",
+            controls=False,
+            stopping=False,
         ).text
 
     def _draw(
@@ -1022,6 +1074,7 @@ class DiscordAdapter(CollaborationAdapter):
         responder: str | None,
         prefix: str,
         controls: bool,
+        stopping: bool,
     ) -> Drawn:
         escape = self._rich_escape
         limit = max(1, self.rich_fallback_limit() - len(prefix))
@@ -1029,8 +1082,14 @@ class DiscordAdapter(CollaborationAdapter):
         if isinstance(content, TurnActivity):
             # Charged to the same budget as the status it follows: a message
             # that just fits, plus a line saying it reached nobody, is a
-            # message Discord refuses.
-            tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+            # message Discord refuses. The note under a queued turn's stop
+            # control is charged the same way, and for the same reason.
+            lines = []
+            if stopping and content.turn.status == "queued":
+                lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.notify_unreachable:
+                lines.append(self.unnotified_notice())
+            tail = "".join(f"\n{line}" for line in lines)
             body = (
                 turn_status(
                     content.items,
@@ -1086,14 +1145,18 @@ class DiscordAdapter(CollaborationAdapter):
             else None
         )
         offered = self._offered(content) if controls else []
+        stopping = self._interrupt_turn(content) if controls else None
         drawn = self._draw(
             content,
             mention=self._mention(content.notify_external_id),
             responder=responder,
             prefix=prefix,
             controls=bool(offered),
+            stopping=stopping is not None,
         )
-        return drawn.text, self._controls(content, drawn, offered, controls=controls)
+        return drawn.text, self._controls(
+            content, drawn, offered, stopping, controls=controls
+        )
 
     def _offered(self, content: RichContent) -> list[Control]:
         """The options this card would put on buttons, before it is drawn.
@@ -1119,11 +1182,47 @@ class DiscordAdapter(CollaborationAdapter):
             return []
         return offered
 
+    def _interrupt_turn(self, content: RichContent) -> str | None:
+        """The turn a stop control on this drawing would end, or None for none.
+
+        Three things have to be true. There has to be something to stop, which
+        the publication decides and puts in the content — one value for the
+        whole session, so a queued turn's message offers to stop the running
+        turn in front of it. The turn this message is about has to be unfinished,
+        because a status kept as the record of a turn that ended is not a place
+        to offer stopping anything. And a press has to have somewhere to land.
+
+        The last check is the length, and it is the reason this returns the id
+        rather than a flag: Discord allows a hundred characters in a component
+        id, a provider chooses how long its turn ids are, and a button whose
+        press Discord would refuse to carry is worse than no button, because
+        `!interrupt` is still there and a reader who can see a control does not
+        type one.
+        """
+        if not isinstance(content, TurnActivity) or self._on_interaction is None:
+            return None
+        turn_id = content.interrupt_turn_id
+        if turn_id is None or content.turn.status in TURN_ENDED:
+            return None
+        written = len(_interrupt_id(turn_id))
+        if written > _MAX_CUSTOM_ID:
+            logger.warning(
+                "Not offering the stop control on Discord for turn %s: its "
+                "press would carry %d characters and Discord allows %d. The "
+                "typed command still stops it.",
+                turn_id[:64],
+                written,
+                _MAX_CUSTOM_ID,
+            )
+            return None
+        return turn_id
+
     def _controls(
         self,
         content: RichContent,
         drawn: Drawn,
         offered: list[Control],
+        stopping: str | None,
         *,
         controls: bool,
     ) -> discord.ui.View | None:
@@ -1155,7 +1254,7 @@ class DiscordAdapter(CollaborationAdapter):
         for the life of the process, one per card ever posted.
         """
         if isinstance(content, TurnActivity):
-            return self._activity_control(content) if controls else None
+            return self._activity_control(content, stopping) if controls else None
         if not isinstance(content, RequestCard) or not offered or not drawn.answerable:
             return None
         view = discord.ui.View(timeout=None)
@@ -1178,8 +1277,11 @@ class DiscordAdapter(CollaborationAdapter):
         view.stop()
         return view
 
-    def _activity_control(self, content: TurnActivity) -> discord.ui.View | None:
-        """The way into a turn's tool log, on the status message that hides it.
+    def _activity_control(
+        self, content: TurnActivity, stopping: str | None
+    ) -> discord.ui.View | None:
+        """What a status message offers: the way into its tool log, and the
+        way to end what it is describing.
 
         Discord's status is three lines: where the turn got to, what it is
         doing, and how the calls went. Slack posts the calls themselves into
@@ -1187,28 +1289,46 @@ class DiscordAdapter(CollaborationAdapter):
         whoever presses, which is a placement decision rather than an access
         one — the same list, read by one person instead of by a channel.
 
-        Offered only where this bridge can actually answer it. A publisher is
-        what knows which turn a message is showing, and an adapter running
-        without one — a demo, a test, a bridge whose sessions are not
-        published — would be drawing a button onto a question nobody can
-        resolve.
+        The two are offered on their own terms, because they are answered by
+        different halves of the bridge and either half can be missing. Reading
+        the log needs a publisher that knows which turn a message is showing;
+        stopping needs an inbound path a press can be handed to. An adapter
+        running without one of them — a demo, a test, a bridge whose sessions
+        are not published — would be drawing a button onto a question nobody
+        can answer.
 
-        Nothing is offered beside the attention slot: that message is one
-        sentence saying somebody has to act, and a control under it about tool
-        calls is an invitation away from the thing it is asking for.
+        Nothing about tool calls is offered beside the attention slot: that
+        message is one sentence saying somebody has to act, and a control
+        under it about the log is an invitation away from the thing it is
+        asking for. Stop is offered there, because a session that needs
+        attention is often a session somebody wants to stop, and because the
+        control's presence is settled across platforms by whether there is a
+        turn to end rather than by what each one puts beside it.
+
+        Every redraw builds this again, so the buttons come off at the moment
+        they stop being pressable and the stop control re-points itself when a
+        queued turn becomes the running one, without anything having to
+        remember what the message last carried.
         """
-        if self._resolve_activity is None or content.error_summary:
-            return None
         view = discord.ui.View(timeout=None)
-        view.add_item(
-            discord.ui.Button(
-                label=_ACTIVITY_LABEL,
-                custom_id=_ACTIVITY_VIEW_ID,
-                style=discord.ButtonStyle.secondary,
+        if self._resolve_activity is not None and not content.error_summary:
+            view.add_item(
+                discord.ui.Button(
+                    label=_ACTIVITY_LABEL,
+                    custom_id=_ACTIVITY_VIEW_ID,
+                    style=discord.ButtonStyle.secondary,
+                )
             )
-        )
+        if stopping is not None:
+            view.add_item(
+                discord.ui.Button(
+                    label=INTERRUPT_LABEL,
+                    custom_id=_interrupt_id(stopping),
+                    style=discord.ButtonStyle.danger,
+                )
+            )
         view.stop()
-        return view
+        return view if view.children else None
 
     def _mention(self, external_user_id: str | None) -> str | None:
         """`<@id>` for a Discord user id, or None where there is nothing to name.
@@ -2531,21 +2651,21 @@ class DiscordAdapter(CollaborationAdapter):
     # ── Card presses ─────────────────────────────────────────────────────────
 
     async def _handle_interaction(self, interaction: discord.Interaction) -> None:
-        """Someone pressed a button on a card this bridge posted.
+        """Someone pressed a button on a card or a status this bridge posted.
 
         Who pressed comes from the interaction's own `user`, which Discord
         fills in and the payload cannot: the id in the button says which
-        request and which option, never who. So a press replayed from someone
-        else's client is still attributed to whoever actually sent it, and the
-        identity check downstream is against a real account rather than a
-        claim.
+        request and which option, or which turn to stop, never who. So a press
+        replayed from someone else's client is still attributed to whoever
+        actually sent it, and the identity check downstream is against a real
+        account rather than a claim.
 
-        Which card comes from the message the press arrived on, addressed the
-        same way `post_rich` addressed it when it wrote the reference down —
-        thread or channel, then message. That is what makes a press work after
-        a restart: nothing is remembered between the two, and the button is
-        read against the stored card rather than against a view still in
-        memory.
+        Which card, and which session a stop reaches, come from the message the
+        press arrived on, addressed the same way `post_rich` addressed it when
+        it wrote the reference down — thread or channel, then message. That is
+        what makes a press work after a restart: nothing is remembered between
+        the two, and the button is read against the stored card or the journal
+        entry behind the message rather than against a view still in memory.
 
         The press is acknowledged before any Switch work, because Discord
         allows three seconds and the authority check is not bounded by them.
@@ -2556,10 +2676,10 @@ class DiscordAdapter(CollaborationAdapter):
         the follow-up below — private to them, so a channel does not watch
         somebody be told no.
 
-        Nothing here dedupes. The same press twice is the same option, by the
-        same person, against the same revision — which the shared layer derives
-        one command id from, so the second is the first rather than a second
-        answer.
+        Nothing here dedupes. The same press twice is the same option against
+        the same revision, or the same turn named by the same message — which
+        the shared layer derives one command id from either way, so the second
+        press is the first rather than a second answer.
         """
         if interaction.type is not discord.InteractionType.component:
             return
@@ -2570,8 +2690,8 @@ class DiscordAdapter(CollaborationAdapter):
         if custom_id.split(":", 1)[0] == _ACTIVITY_PREFIX:
             await self._handle_activity(interaction, custom_id)
             return
-        press = _parse_custom_id(custom_id)
-        if press is None:
+        dispatch = _press_action(custom_id)
+        if dispatch is None:
             return
         channel = interaction.channel
         message = interaction.message
@@ -2583,9 +2703,9 @@ class DiscordAdapter(CollaborationAdapter):
             return
         if self._on_interaction is None:
             logger.warning(
-                "A press on a Switch card in Discord channel %s has nowhere to "
-                "go: this bridge handles no interactions, so the card should "
-                "not have been drawn with buttons.",
+                "A press on a Switch message in Discord channel %s has nowhere "
+                "to go: this bridge handles no interactions, so the message "
+                "should not have been drawn with buttons.",
                 channel.id,
             )
             return
@@ -2601,7 +2721,7 @@ class DiscordAdapter(CollaborationAdapter):
             )
             return
 
-        token, position = press
+        action_id, value = dispatch
         user = interaction.user
         name = str(user.name)
         # A press is a sighting of that account in this channel, and the same
@@ -2624,8 +2744,8 @@ class DiscordAdapter(CollaborationAdapter):
                     channel_id=channel_id,
                     sender_id=str(user.id),
                     sender_name=name,
-                    action_id=position_action(position),
-                    value=token,
+                    action_id=action_id,
+                    value=value,
                     message_ref=f"{channel.id}:{message.id}",
                 )
             )

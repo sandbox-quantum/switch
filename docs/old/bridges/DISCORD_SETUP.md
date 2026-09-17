@@ -138,6 +138,25 @@ When a Switch Console-managed agent starts on a message, two things appear:
   2m 14s." when it finishes. It stays in the channel after the turn rather than
   being deleted, so someone scrolling back can still see that the turn ran.
 
+**Stopping an agent.** The status message carries a red **Stop current work**
+button while there is something to stop, beside the **View activity** button
+that opens the turn's tool log. Pressing it asks the agent to end its current
+turn; the agent decides how quickly it can, and the same message says when it
+has. The control names the turn it was drawn for, so a press on a message that
+has not been redrawn since a new turn started is refused rather than stopping
+the newer one. It disappears when the turn ends. On a queued message the button
+stops the work in front of it, not the queued message, and the message says so.
+Whoever presses it must be allowed to stop that agent — the same check a typed
+`!interrupt` goes through — and the result, accepted or refused, is shown to
+them alone.
+
+The button needs a publication webhook this application owns (see below); a
+status published through somebody else's carries no components, and `!interrupt`
+is then the whole of what is on offer. Discord also caps a button's hidden id at
+100 characters, so a provider whose turn ids are longer than about 90 gets no
+button and a warning in the log rather than a control whose press Discord would
+refuse.
+
 **What Discord cannot do here.** There is no native progress surface — nothing
 like Slack's agent card — so the working message is one Switch renders itself.
 The typing indicator is not usable as a real indicator either: it expires after
