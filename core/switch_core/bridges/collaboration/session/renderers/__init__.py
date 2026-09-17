@@ -249,6 +249,26 @@ def parse_answer_position(action_id: str) -> int | None:
     return position if position > 0 else None
 
 
+# The control on an activity message rather than on a card, and the only one
+# that acts on the session instead of answering it. Its id is fixed: which turn
+# it stops is the turn the message named when it was drawn, carried in the
+# press's own payload, because a platform hands an action id back unchanged and
+# the id is therefore the wrong place for something that changes per render.
+INTERRUPT_ACTION = "switch:turn-interrupt"
+
+# What it stops is the agent's current work, which on a queued turn's message is
+# not that message's turn. "Stop" alone would read as stopping this one, and
+# "Stop session" would promise something else entirely: the session keeps its
+# queue and needs no resume, and only `session.stop` does otherwise.
+INTERRUPT_LABEL = "Stop current work"
+
+# Said on a queued turn's message, where the control stops something other than
+# what the reader is looking at. Without it the button reads as a cancel.
+INTERRUPT_QUEUED_NOTE = (
+    "Stops what the agent is working on now. This message stays queued."
+)
+
+
 @dataclass(frozen=True)
 class Control:
     """One press a card offers: what it says, and where on the card it is.

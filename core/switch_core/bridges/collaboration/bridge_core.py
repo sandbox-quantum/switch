@@ -34,11 +34,13 @@ from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
     Refused,
     SessionInteractions,
+    interrupt_command,
 )
 from switch_core.bridges.collaboration.session.outbound import (
     SessionRequestCards,
     SessionTurnActivity,
 )
+from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
@@ -60,7 +62,7 @@ from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.sessions.attachments import normalise_mime_type
-from switch_core.sessions.contract import Command, Surface
+from switch_core.sessions.contract import Command, Origin, Surface
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport import (
     InboundMedia as TransportMedia,
@@ -77,7 +79,7 @@ if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
 
-from switch_core.sessions.publication import SessionPublisher
+from switch_core.sessions.publication import ActivityControlTarget, SessionPublisher
 from switch_core.sessions.service import SessionAuthority, SessionError
 
 logger = logging.getLogger(__name__)
@@ -1346,6 +1348,9 @@ class BridgeCore:
         self, interaction: InboundInteraction
     ) -> None:
         """Someone operated a control on a message this bridge posted."""
+        if interaction.action_id == INTERRUPT_ACTION:
+            await self._handle_interrupt_press(interaction)
+            return
         interactions = self._session_interactions
         if interactions is None:
             return
@@ -1362,7 +1367,109 @@ class BridgeCore:
         # Both ways a press can be turned down go the same way out. The two
         # were split once, and the half that went through the channel put one
         # person's rejected approval in front of everybody in it.
-        await self._submit_session_command(outcome, interaction, thread_ref=None)
+        await self._submit_session_command(
+            outcome,
+            interaction,
+            thread_ref=None,
+            refusal="Your answer was not accepted",
+        )
+
+    async def _handle_interrupt_press(self, interaction: InboundInteraction) -> None:
+        """Someone pressed stop on the message showing what an agent is doing.
+
+        Two things are taken from the press and no more: which message it was
+        on, and who the platform says pressed it. The session, its epoch and
+        the room come from the journal entry behind that message; the turn to
+        stop comes from the control, bound when the message was drawn. So a
+        payload cannot name a session it was never shown, and a press on a
+        message that has not been redrawn since another turn started names the
+        turn the reader could see rather than the one running now.
+
+        Authority is not decided here. The session checks a press from a
+        channel against the same room membership it checks `!interrupt`
+        against, and its refusal comes back privately like any other.
+        """
+        publisher = self._session_publisher
+        if publisher is None or interaction.message_ref is None:
+            return
+        target = await self._activity_control_at(
+            interaction.channel_id, interaction.message_ref
+        )
+        if target is None:
+            logger.warning(
+                "Ignoring a stop press in %s on bridge %s: message %s shows no "
+                "turn this bridge can still reach.",
+                interaction.channel_id,
+                self._bridge_id,
+                interaction.message_ref,
+            )
+            await self._adapter.tell_actor(
+                interaction.channel_id,
+                interaction.sender_id,
+                interaction.sender_name,
+                None,
+                "That message is no longer connected to a live session, so "
+                "there is nothing here to stop.",
+            )
+            return
+        actor_id = await self._identify_actor(interaction)
+        if actor_id is None:
+            logger.warning(
+                "Ignoring a stop press on session %s: no Switch identity for %s "
+                "on bridge %s. Stopping an agent is only ever attributed to a "
+                "verified actor.",
+                target.session_id,
+                interaction.sender_id,
+                self._bridge_id,
+            )
+            await self._adapter.tell_actor(
+                interaction.channel_id,
+                interaction.sender_id,
+                interaction.sender_name,
+                None,
+                "Switch does not know who this account belongs to, and "
+                "stopping an agent is only ever recorded against someone it "
+                "can name.",
+            )
+            return
+        command = interrupt_command(
+            target,
+            turn_id=interaction.value,
+            origin=Origin(
+                surface=cast(Surface, self._bridge_type),
+                actor_id=actor_id,
+                room_id=target.room_id,
+                thread_id=target.thread_id,
+                message_id=interaction.message_ref,
+            ),
+        )
+        await self._submit_session_command(
+            command,
+            interaction,
+            thread_ref=None,
+            refusal="The agent was not stopped",
+        )
+
+    async def _activity_control_at(
+        self, channel_id: str, ref: str
+    ) -> ActivityControlTarget | None:
+        """Where a control on one of our messages submits, tenant-bound.
+
+        Scoped the same way as `_activity_shown_at` and for the same reason:
+        a press arrives from the platform's own event loop carrying nothing
+        that says which tenant its channel belongs to.
+        """
+        publisher = self._session_publisher
+        if publisher is None:
+            return None
+        room_ids = self._channel_to_room.get(channel_id)
+        tenant_id = (
+            self._bridge_tenant_id
+            if room_ids is None
+            else await self._room_tenant(room_ids[0])
+        )
+        with tenant_scope(tenant_id):
+            return await publisher.activity_control_at(channel_id, ref)
 
     async def _activity_shown_at(
         self, channel_id: str, ref: str
@@ -1407,7 +1514,10 @@ class BridgeCore:
             await self._tell_refused(msg, outcome, thread_ref=outcome.card_ref)
             return
         await self._submit_session_command(
-            outcome, msg, thread_ref=msg.root_id or msg.message_ref
+            outcome,
+            msg,
+            thread_ref=msg.root_id or msg.message_ref,
+            refusal="Your answer was not accepted",
         )
 
     async def _tell_refused(
@@ -1472,7 +1582,11 @@ class BridgeCore:
             self._session_publisher.wake()
 
     async def _submit_session_command(
-        self, command: Command | None, actor: InboundActor, thread_ref: str | None
+        self,
+        command: Command | None,
+        actor: InboundActor,
+        thread_ref: str | None,
+        refusal: str,
     ) -> None:
         """Give the session the answer, and tell the answerer if it bounced.
 
@@ -1488,6 +1602,10 @@ class BridgeCore:
         `thread_ref` is None for a press: the reply to a press is addressed by
         the press itself, and the channel root would be a wider audience than
         the card's own thread rather than a narrower one.
+
+        `refusal` opens that sentence, because not every control is an answer:
+        a stop button turned down has to say the agent is still running, not
+        that an answer did not land.
         """
         if command is None:
             return
@@ -1501,7 +1619,7 @@ class BridgeCore:
                 actor.sender_id,
                 actor.sender_name,
                 thread_ref,
-                f"Answer was not accepted ({error.code}): {error}",
+                f"{refusal} ({error.code}): {error}",
             )
             return
         await self.refresh_sdk_session(command.session_id)

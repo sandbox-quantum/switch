@@ -3,6 +3,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,6 +35,7 @@ from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import (
     TURN_ENDED,
     Command,
+    Origin,
     Snapshot,
     TurnUpsert,
     decided,
@@ -690,6 +692,19 @@ async def refresh_activity(
                     else "error",
                 )
             )
+        # What a stop control on any of this session's messages would end. One
+        # value for the whole sweep because there is one thing being worked on:
+        # a queued turn's message offers to stop what is in front of it, which
+        # is the same running turn the running message's own control names.
+        # None where there is nothing to stop, and no control is drawn.
+        interruptible = (
+            next(
+                (turn.turn_id for turn in snapshot.turns if turn.status == "running"),
+                None,
+            )
+            if snapshot.session.capabilities.interrupt
+            else None
+        )
         for turn in turns:
             if already_held_back(session_id, turn.turn_id):
                 continue
@@ -703,8 +718,15 @@ async def refresh_activity(
                 online=online,
                 unconfirmed=turn.turn_id in unconfirmed,
             )
+            interrupt_turn_id = None if turn.status in TURN_ENDED else interruptible
+            # The stop control's target belongs in the redraw guard as well as
+            # in the message: a queued turn whose target has just ended changes
+            # nothing else about itself, and left out of here it would keep
+            # offering to stop an ended turn until something else moved it.
             state = (
-                turn.status + (":" + error_summary if error_summary else ""),
+                turn.status
+                + (":" + error_summary if error_summary else "")
+                + (":" + interrupt_turn_id if interrupt_turn_id else ""),
                 revisions,
             )
             if (
@@ -809,6 +831,7 @@ async def refresh_activity(
                     and recipient is None
                     and activity.notifies_only_by_mention,
                     "error_summary": error_summary,
+                    "interrupt_turn_id": interrupt_turn_id,
                 }.items()
                 if value is not None
             }
@@ -872,6 +895,104 @@ async def refresh_activity(
     return any(turn.status == "running" for turn in turns)
 
 
+@dataclass(frozen=True)
+class ActivityControlTarget:
+    """Where a control on an activity message submits to.
+
+    A press carries what the reader could see and nothing else. Which session
+    it reaches, on whose behalf and into which room is read back here from the
+    journal entry behind the message, so a payload cannot name a session it was
+    never drawn for.
+
+    Deliberately not the turn to act on: that is on the control itself, bound
+    when the message was drawn, so a press on a message the reader has not seen
+    redrawn names the turn they were looking at rather than whatever is running
+    now.
+    """
+
+    session_id: str
+    epoch: str
+    room_id: str
+    thread_id: str | None
+
+
+async def _activity_behind(
+    db: AsyncSession,
+    bridge_id: str,
+    session_id: str,
+    command_id: str,
+    channel_id: str,
+) -> tuple[SdkSession, Origin, Room, Agent] | None:
+    """What a message of ours in this channel still resolves to, or nothing.
+
+    Every check `refresh_activity` makes before it may draw a turn in a channel
+    is made again here, against the same sources, because the answer can have
+    changed since the drawing: a command reattributed, a room moved to another
+    bridge, an agent removed from it. Shared by both reads below so neither can
+    drift into trusting something the other re-checks.
+    """
+    row = await db.get(SdkSession, (require_tenant_id(), session_id))
+    if row is None:
+        return None
+    stored = await db.get(
+        SdkSessionCommand, (require_tenant_id(), session_id, command_id)
+    )
+    if stored is None:
+        return None
+    origin = Command.model_validate(stored.command).origin
+    if origin.room_id is None:
+        return None
+    room = await db.get(Room, origin.room_id)
+    if room is None or room.bridge_id != bridge_id:
+        return None
+    if room.external_channel_id != channel_id:
+        return None
+    agent = await db.get(Agent, row.agent_id)
+    if agent is None:
+        return None
+    if await db.get(ClientRoom, (agent.client_id, room.id)) is None:
+        return None
+    return row, origin, room, agent
+
+
+async def activity_control_at(
+    session_factory: async_sessionmaker[AsyncSession],
+    bridge_id: str,
+    activity: SessionTurnActivity,
+    channel_id: str,
+    ref: str,
+) -> ActivityControlTarget | None:
+    """Where a control on the message at `ref` submits, or None if nowhere.
+
+    The same read as `activity_shown_at` and for the same reason — a reader
+    operated something on a message — but a press acts rather than looks, so it
+    wants the session to address and not the turn to draw. None is an ordinary
+    answer: a message this bridge did not draw a turn into, or one whose turn
+    has since stopped resolving, has no control to honour.
+
+    Whether this particular reader may stop this particular agent is not
+    decided here. The session authority decides it, against the same room
+    membership every other command from a channel is checked against.
+    """
+    found = await activity.shown_at(channel_id, ref)
+    if found is None:
+        return None
+    session_id, command_id = found
+    async with session_factory() as db:
+        behind = await _activity_behind(
+            db, bridge_id, session_id, command_id, channel_id
+        )
+        if behind is None:
+            return None
+        row, origin, room, _ = behind
+        return ActivityControlTarget(
+            session_id=session_id,
+            epoch=row.epoch,
+            room_id=room.id,
+            thread_id=origin.thread_id,
+        )
+
+
 async def activity_shown_at(
     session_factory: async_sessionmaker[AsyncSession],
     bridge_id: str,
@@ -889,10 +1010,9 @@ async def activity_shown_at(
     turn is wanted rather than all of them, and somebody is waiting.
 
     Every check the publisher makes before it may draw a turn in a channel is
-    made again here, against the same sources, because the answer can have
-    changed since the drawing: a command reattributed, a room moved to another
-    bridge, an agent removed from it. Each of them is None, and so is a message
-    showing nothing — this is a read on a reference a caller got off a
+    made again here — `_activity_behind` above — because the answer can have
+    changed since the drawing. Each of them is None, and so is a message
+    showing nothing: this is a read on a reference a caller got off a
     platform, so "no such thing" is an ordinary answer rather than a fault.
 
     The surface a command arrived on is deliberately not among them. A turn is
@@ -909,27 +1029,12 @@ async def activity_shown_at(
         return None
     session_id, command_id = found
     async with session_factory() as db:
-        row = await db.get(SdkSession, (require_tenant_id(), session_id))
-        if row is None:
-            return None
-        stored = await db.get(
-            SdkSessionCommand, (require_tenant_id(), session_id, command_id)
+        behind = await _activity_behind(
+            db, bridge_id, session_id, command_id, channel_id
         )
-        if stored is None:
+        if behind is None:
             return None
-        origin = Command.model_validate(stored.command).origin
-        if origin.room_id is None:
-            return None
-        room = await db.get(Room, origin.room_id)
-        if room is None or room.bridge_id != bridge_id:
-            return None
-        if room.external_channel_id != channel_id:
-            return None
-        agent = await db.get(Agent, row.agent_id)
-        if agent is None:
-            return None
-        if await db.get(ClientRoom, (agent.client_id, room.id)) is None:
-            return None
+        row, _, room, agent = behind
         snapshot = Snapshot.model_validate(row.snapshot)
         turn = next(
             (turn for turn in snapshot.turns if turn.command_id == command_id), None
@@ -1138,6 +1243,20 @@ class SessionPublisher:
 
     def wake(self) -> None:
         self._wake.set()
+
+    async def activity_control_at(
+        self, channel_id: str, ref: str
+    ) -> ActivityControlTarget | None:
+        """Where a control on a status message submits, for the press handler."""
+        if self._activity is None:
+            return None
+        return await activity_control_at(
+            self._sessions,
+            self._bridge_id,
+            self._activity,
+            channel_id,
+            ref,
+        )
 
     async def activity_shown_at(
         self, channel_id: str, ref: str

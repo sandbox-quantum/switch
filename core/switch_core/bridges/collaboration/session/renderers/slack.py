@@ -53,6 +53,9 @@ from switch_core.sessions.contract import (
 from . import (
     ANSWER_ACTION,
     CLOSED,
+    INTERRUPT_ACTION,
+    INTERRUPT_LABEL,
+    INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
     SURFACES,
     RequestReference,
@@ -211,6 +214,12 @@ _STEP_BLOCKS = ("switch-steps-top", "switch-steps-middle", "switch-steps-bottom"
 # both sections is deliberate and Slack takes it: a reader opens one section or
 # the other, and the link has to be in whichever one they chose.
 _SESSION_CARD = "switch-session"
+
+# The stop control's own block. Fixed, because a stream addresses a block by id
+# and this one is rewritten every time the turn it stops changes; and created in
+# the same append as the first section so that Slack fixes it below the steps
+# rather than wherever the turn happened to acquire something to stop.
+INTERRUPT_BLOCK_ID = "switch-interrupt"
 
 # Slack's three task states against the contract's four. `declined` is not an
 # error — the call did what it was told, and what it was told was no — but
@@ -1172,6 +1181,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     session_url: str | None = None,
+    interrupt_turn_id: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1215,6 +1225,13 @@ def render_activity_plan(
         }
     ]
     _fit_details(blocks, _MAX_POST_BYTES)
+    # After the fit, and never part of it: the control is a fixed few hundred
+    # bytes that must survive whatever trimming the steps need, and a message
+    # that dropped its stop button to make room for one more step line would
+    # have traded the only thing on it a reader can act on.
+    control = _interrupt_block(interrupt_turn_id, turn)
+    if control is not None:
+        blocks.append(control)
     return SlackMessage(text=title, blocks=blocks)
 
 
@@ -1242,6 +1259,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     session_url: str | None = None,
+    interrupt_turn_id: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1272,7 +1290,31 @@ def render_activity_stream(
         turn.status not in TURN_ENDED,
     )
     _fit_details(blocks, _MAX_STREAM_BYTES)
-    return StreamedActivity(title=blocks[-1]["title"], blocks=blocks)
+    # Read off the last section before the control is appended: the title is the
+    # heading of the newest plan block, and the control has no title at all.
+    title = blocks[-1]["title"]
+    control = _interrupt_block(interrupt_turn_id, turn)
+    if control is not None:
+        blocks.append(control)
+    return StreamedActivity(title=title, blocks=blocks)
+
+
+def spent_interrupt_block() -> dict[str, Any]:
+    """What a stream puts where its stop control was, once there is none.
+
+    A stream cannot take a block back. Measured: a block left out of an append
+    stays exactly as it was drawn — the reader keeps a live-looking button over
+    a turn that has ended — and the only way to be rid of one is to send
+    something else under the same `block_id`. So the control is not omitted at
+    the end of a turn, it is overwritten, and this is what with.
+
+    A divider because it is the emptiest block Slack has: it carries no text to
+    read and nothing to press, and a thin rule under a finished turn reads as
+    the end of it rather than as a leftover. An ordinary post has no such
+    problem and simply stops drawing the control, so this is the streamed path's
+    alone.
+    """
+    return {"type": "divider", "block_id": INTERRUPT_BLOCK_ID}
 
 
 def _session_card(session_url: str | None, *, live: bool) -> dict[str, Any]:
@@ -1335,6 +1377,59 @@ def _session_card(session_url: str | None, *, live: bool) -> dict[str, Any]:
                 }
             ],
         },
+    }
+
+
+def _interrupt_block(
+    interrupt_turn_id: str | None, turn: TurnUpsert
+) -> dict[str, Any] | None:
+    """The stop control, or None where there is nothing for it to stop.
+
+    Three things have to hold before it is drawn, and each removes it on its
+    own. There has to be a running turn to name — a session between turns has
+    nothing to interrupt, and a button that can only be refused is worse than no
+    button. The message's own turn has to be unfinished — a reader scrolling
+    past yesterday's turn is not offered a control over today's work, whatever
+    is running now. And the caller has to have found the session interruptible
+    at all; a session whose provider cannot be interrupted never gets one.
+
+    `value` carries the turn rather than the `action_id` because Slack hands
+    both back unchanged and only one of them is bounded generously enough to
+    stop mattering: 2000 characters against 255. The id stays constant so the
+    press can be routed on it without parsing.
+
+    A queued turn's control has to say what it does, because there the button is
+    not about the message it sits on, and a bare "Stop current work" under a
+    message reading "Queued" invites a reader to take it as a cancel. An
+    `actions` block holds interactive elements and nothing else, so the sentence
+    needs a block that can carry text: the button becomes the accessory of a
+    section instead. A running turn needs no such sentence and keeps the plain
+    `actions` block, so the control is a button and not a paragraph.
+
+    Measured against Slack before it was written: both shapes are accepted in a
+    stream and in an ordinary post, and a stream accepts one replacing the other
+    under the same `block_id`, which is what a turn leaving the queue does.
+    """
+    if interrupt_turn_id is None or turn.status in TURN_ENDED:
+        return None
+    button = {
+        "type": "button",
+        "action_id": INTERRUPT_ACTION,
+        "text": {"type": "plain_text", "text": INTERRUPT_LABEL},
+        "style": "danger",
+        "value": _truncate(interrupt_turn_id, _MAX_VALUE),
+    }
+    if turn.status == "queued":
+        return {
+            "type": "section",
+            "block_id": INTERRUPT_BLOCK_ID,
+            "text": {"type": "plain_text", "text": INTERRUPT_QUEUED_NOTE},
+            "accessory": button,
+        }
+    return {
+        "type": "actions",
+        "block_id": INTERRUPT_BLOCK_ID,
+        "elements": [button],
     }
 
 

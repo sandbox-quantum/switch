@@ -314,6 +314,7 @@ class SessionTurnActivity:
         items: list[Item],
         elapsed_seconds: float | None,
         session_url: str | None,
+        interrupt_turn_id: str | None,
     ) -> tuple[str, str, str | None]:
         """What the status message is already showing.
 
@@ -330,6 +331,13 @@ class SessionTurnActivity:
         the fold — and an edit closes a fold for the reader who has. It goes
         out with the next call, and with the edit that ends the turn, which is
         the one a finished turn's fold is drawn by.
+
+        The turn a stop control offers to end counts, and it goes inside the
+        state string rather than beside it so a row written by an older build
+        still reads back as three parts. A queued message's control names the
+        turn in front of it, so it changes without anything else here changing:
+        left out, a queued message would keep offering to stop a turn that has
+        already ended until something else moved.
         """
         clock = (
             f"{int(elapsed_seconds) if elapsed_seconds is not None else ''}"
@@ -341,7 +349,11 @@ class SessionTurnActivity:
             for item in items
             if item.kind == "tool-activity"
         )
-        return (turn.turn_id, f"{turn.status}:{drawn}", session_url)
+        return (
+            turn.turn_id,
+            f"{turn.status}:{interrupt_turn_id or ''}:{drawn}",
+            session_url,
+        )
 
     async def recorded_commands(self, session_id: str) -> set[str]:
         return (
@@ -365,6 +377,7 @@ class SessionTurnActivity:
         notify_external_id: str | None = None,
         notify_unreachable: bool = False,
         error_summary: str | None = None,
+        interrupt_turn_id: str | None = None,
     ) -> bool:
         async def attend() -> None:
             if not self._separate_attention_slot:
@@ -401,6 +414,7 @@ class SessionTurnActivity:
                     agent_name=agent_name,
                     elapsed_seconds=elapsed_seconds,
                     session_url=session_url,
+                    interrupt_turn_id=interrupt_turn_id,
                 )
             except ActivityAbandoned:
                 # Settled, but only for the status. The turn can still change,
@@ -717,7 +731,8 @@ class SessionTurnActivity:
         asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
-        session_url: str | None = None,
+        session_url: str | None,
+        interrupt_turn_id: str | None,
     ) -> bool:
         """Draw the turn where it already is, or where it is not yet.
 
@@ -765,6 +780,7 @@ class SessionTurnActivity:
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
                 session_url=session_url,
+                interrupt_turn_id=interrupt_turn_id,
             )
             if anchor is None:
                 return False
@@ -780,6 +796,7 @@ class SessionTurnActivity:
                     session_id=session_id,
                     ended=ended,
                     elapsed_seconds=elapsed_seconds,
+                    interrupt_turn_id=interrupt_turn_id,
                 )
                 if self._journal
                 else True
@@ -795,6 +812,7 @@ class SessionTurnActivity:
                 session_id=session_id,
                 ended=ended,
                 elapsed_seconds=elapsed_seconds,
+                interrupt_turn_id=interrupt_turn_id,
             )
 
         # What the messages are now showing, so the next process to pick this
@@ -829,7 +847,8 @@ class SessionTurnActivity:
         asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
-        session_url: str | None = None,
+        session_url: str | None,
+        interrupt_turn_id: str | None,
     ) -> _Anchor | None:
         """Post the turn where the caller put it: in a thread, or the channel
         root if there was nothing to thread under.
@@ -864,6 +883,7 @@ class SessionTurnActivity:
                     turn,
                     elapsed_seconds,
                     session_url=session_url,
+                    interrupt_turn_id=interrupt_turn_id,
                 ),
                 thread_root_id,
                 "status",
@@ -888,7 +908,9 @@ class SessionTurnActivity:
             reaction_ref=asked_on,
             agent_name=agent_name,
             session_url=session_url,
-            status_state=self._status_state(turn, items, elapsed_seconds, session_url)
+            status_state=self._status_state(
+                turn, items, elapsed_seconds, session_url, interrupt_turn_id
+            )
             if self._journal is None
             else None,
         )
@@ -902,9 +924,12 @@ class SessionTurnActivity:
         session_id: str,
         ended: bool,
         elapsed_seconds: float | None,
+        interrupt_turn_id: str | None,
     ) -> bool:
         """Rewrite the posted message with the turn as it now stands."""
-        state = self._status_state(turn, items, elapsed_seconds, anchor.session_url)
+        state = self._status_state(
+            turn, items, elapsed_seconds, anchor.session_url, interrupt_turn_id
+        )
         if not ended and anchor.status_state == state:
             # Nothing this message shows has changed. Where the status is a
             # line of its own, tool-only changes belong to the separate log;
@@ -921,6 +946,7 @@ class SessionTurnActivity:
                     turn,
                     elapsed_seconds,
                     session_url=anchor.session_url,
+                    interrupt_turn_id=interrupt_turn_id,
                 ),
                 anchor.thread_root_id,
             )

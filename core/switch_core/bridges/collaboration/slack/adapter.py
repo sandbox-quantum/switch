@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
+    INTERRUPT_BLOCK_ID,
     SlackMessage,
     render_activity,
     render_activity_plan,
@@ -52,6 +53,7 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_attention,
     render_request,
     render_turn_with_request,
+    spent_interrupt_block,
     with_session_context,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
@@ -865,11 +867,18 @@ class SlackAdapter(CollaborationAdapter):
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
             session_url=content.session_url,
+            interrupt_turn_id=content.interrupt_turn_id,
         )
+        blocks = drawn.blocks
+        if INTERRUPT_BLOCK_ID in stream.blocks and not any(
+            block["block_id"] == INTERRUPT_BLOCK_ID for block in blocks
+        ):
+            # A stream keeps a block it is no longer sent — measured — so the
+            # turn ending is not enough to take the stop control away. It has to
+            # be written over, and only this end knows it was ever there.
+            blocks = [*blocks, spent_interrupt_block()]
         moved = [
-            block
-            for block in drawn.blocks
-            if stream.blocks.get(block["block_id"]) != block
+            block for block in blocks if stream.blocks.get(block["block_id"]) != block
         ]
         if moved:
             try:
@@ -952,6 +961,7 @@ class SlackAdapter(CollaborationAdapter):
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
                     session_url=content.session_url,
+                    interrupt_turn_id=content.interrupt_turn_id,
                 )
                 if not content.status_only
                 else render_activity(

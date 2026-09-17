@@ -34,7 +34,7 @@ from switch_core.db.models import (
     SdkSession,
     require_tenant_id,
 )
-from switch_core.sessions.publication import activity_shown_at
+from switch_core.sessions.publication import activity_control_at, activity_shown_at
 
 from .test_activity_durability import ActivitySlack, activity, publish
 from .test_authority import opened, setup
@@ -50,6 +50,18 @@ async def read_back(session_factory, renderer, channel="channel-demo", ref=STATU
         channel,
         ref,
         gateway_public_url="https://switch.example.test",
+    )
+
+
+async def control_target(
+    session_factory, renderer, channel="channel-demo", ref=STATUS_REF
+):
+    return await activity_control_at(
+        session_factory,
+        "bridge",
+        renderer,
+        channel,
+        ref,
     )
 
 
@@ -238,3 +250,111 @@ async def test_a_session_that_is_gone_is_not_read_back(session_factory):
         await db.delete(row)
 
     assert await read_back(session_factory, renderer) is None
+
+
+# ── The other read: where a control on that message submits ──────────────────
+#
+# A press acts rather than looks, so it wants the session to address and not the
+# turn to draw. It runs the same checks — they are the same function — and the
+# tests below are the difference: what it gives back, and that nothing about the
+# turn to stop is among it.
+
+
+async def test_a_press_on_a_running_turns_message_finds_its_session(session_factory):
+    renderer = await published(session_factory, status="running")
+
+    target = await control_target(session_factory, renderer)
+
+    assert target is not None
+    assert target.session_id == "session-demo"
+    assert target.room_id == "room-demo"
+
+
+async def test_the_target_carries_the_epoch_the_message_was_drawn_under(
+    session_factory,
+):
+    """A command is refused outright against the wrong epoch, so a press that
+    guessed one would be a press that never worked after a restart."""
+    renderer = await published(session_factory, status="running")
+
+    target = await control_target(session_factory, renderer)
+
+    assert target is not None
+    assert target.epoch
+
+
+async def test_the_target_names_no_turn_at_all(session_factory):
+    """The whole stale-press guarantee rests on this.
+
+    Which turn to stop comes off the control, bound when the message was drawn.
+    If this read handed one back as well, a press on a message nobody had
+    redrawn would quietly stop whatever happened to be running instead.
+    """
+    renderer = await published(session_factory, status="running")
+
+    target = await control_target(session_factory, renderer)
+
+    assert not hasattr(target, "turn_id")
+
+
+async def test_a_press_on_a_finished_turns_message_still_resolves(session_factory):
+    """Resolving is not permission. A turn that has ended has nothing to stop,
+    and the session says so — this read is not the place that decides it."""
+    renderer = await published(session_factory)
+
+    assert await control_target(session_factory, renderer) is not None
+
+
+async def test_a_press_on_a_message_this_bridge_drew_nothing_in_goes_nowhere(
+    session_factory,
+):
+    renderer = await published(session_factory, status="running")
+
+    assert (
+        await control_target(session_factory, renderer, ref="channel-demo:9999") is None
+    )
+
+
+async def test_an_agent_taken_out_of_the_room_can_no_longer_be_stopped_from_it(
+    session_factory,
+):
+    """Losing the room is how an agent stops publishing into it. A button it
+    left behind in that channel must stop reaching it for the same reason."""
+    renderer = await published(session_factory, status="running")
+    async with session_factory() as db, db.begin():
+        agent = await db.get(Agent, "agent-demo")
+        assert agent is not None
+        membership = await db.get(ClientRoom, (agent.client_id, "room-demo"))
+        assert membership is not None
+        await db.delete(membership)
+
+    assert await control_target(session_factory, renderer) is None
+
+
+async def test_a_press_naming_another_bridges_room_goes_nowhere(session_factory):
+    renderer = await published(session_factory, status="running")
+    async with session_factory() as db, db.begin():
+        db.add(
+            Client(
+                id="other-bridge-client",
+                matrix_user_id="@other-bridge:example.test",
+                display_name="Other bridge",
+                type="bridge",
+            )
+        )
+        await db.flush()
+        db.add(
+            CollaborationBridge(
+                id="other-bridge",
+                type="slack",
+                display_name="Elsewhere",
+                client_id="other-bridge-client",
+                status="active",
+            )
+        )
+        await db.flush()
+        room = await db.get(Room, "room-demo")
+        assert room is not None
+        room.bridge_id = "other-bridge"
+
+    assert await control_target(session_factory, renderer) is None

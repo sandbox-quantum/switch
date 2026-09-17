@@ -102,6 +102,17 @@ class TurnActivity:
     notify_unreachable: bool = False
     # Canned, room-safe attention message. Never raw host/provider output.
     error_summary: str | None = None
+    # The turn a stop control on this message interrupts, which is the session's
+    # running turn and not necessarily `turn`: a queued turn's message offers to
+    # stop whatever is in front of it, because that is what has to end before
+    # this one starts. None where there is nothing to stop — no running turn, or
+    # a session that cannot be interrupted — and the control is not drawn.
+    #
+    # It is carried rather than looked up when the press arrives, because the
+    # reader pressed what they could see. A message drawn against turn A and not
+    # yet redrawn still names A after B has started, so a press on it is refused
+    # for naming an ended turn rather than silently stopping B.
+    interrupt_turn_id: str | None = None
 
 
 @dataclass(frozen=True)

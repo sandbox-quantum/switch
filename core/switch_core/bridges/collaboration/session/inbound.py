@@ -47,6 +47,7 @@ from switch_core.sessions.contract import (
     RequestAnswer,
     RequestResult,
     Surface,
+    TurnInterrupt,
 )
 
 from .form import (
@@ -61,6 +62,8 @@ from .text import TextAnswer, parse_text_answer
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from switch_core.sessions.publication import ActivityControlTarget
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,51 @@ def answer_command(
             answer=answer,
         ),
     )
+
+
+def interrupt_command(
+    target: ActivityControlTarget, *, turn_id: str, origin: Origin
+) -> Command:
+    """The `turn.interrupt` a press on a stop control amounts to.
+
+    `turn_id` comes off the control, which was bound to the running turn when
+    the message was drawn, rather than from a fresh read of what is running
+    now. That is the whole guarantee: a reader pressing a message they have not
+    seen redrawn names a turn that has since ended, and the session refuses it
+    for that instead of stopping work nobody asked to stop.
+
+    Everything else comes off `target`, which was read back from the journal
+    entry behind the message. The press itself names no session and no room.
+    """
+    return Command(
+        contract_version=1,
+        command_id=_interrupt_command_id(
+            target, turn_id=turn_id, actor_id=origin.actor_id
+        ),
+        session_id=target.session_id,
+        epoch=target.epoch,
+        origin=origin,
+        body=TurnInterrupt(type="turn.interrupt", turn_id=turn_id),
+    )
+
+
+def _interrupt_command_id(
+    target: ActivityControlTarget, *, turn_id: str, actor_id: str
+) -> str:
+    """Derived, so that one person pressing stop twice is one command.
+
+    A second press while the first is still in flight is the same command
+    again, which is what someone pressing a button that has not visibly done
+    anything yet will do. The actor is part of the key because two people
+    stopping the same turn are two commands, not a conflict: the session
+    compares everything about a command but the message it arrived on, so a
+    shared id would have the second press refused as a contradiction of the
+    first rather than settled as the same intent.
+    """
+    key = "|".join(
+        [target.session_id, target.epoch, "turn.interrupt", turn_id, actor_id]
+    )
+    return str(uuid.uuid5(_COMMAND_NAMESPACE, key))
 
 
 def _command_id(
