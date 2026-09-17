@@ -57,6 +57,14 @@ def _failure_reason(exc: BaseException) -> str:
     return "unknown"
 
 
+def _age_days(moment: object) -> float:
+    """How old a row is, in days, for reporting. Zero if unknown."""
+    if not isinstance(moment, datetime):
+        return 0.0
+    anchored = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - anchored).total_seconds() / 86400.0, 0.0)
+
+
 def _seconds_since(moment: object) -> float:
     """Seconds since a timestamp column, or -1 when it is not a timestamp.
 
@@ -847,10 +855,13 @@ class CollaborationBridgeLifecycleService:
         external-user rows point at them, so those go first or the foreign keys
         refuse.
         """
+        # Read before `stop`, which clears the connected set this reports from.
+        was_connected = bridge_id in self._connected
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)
             dependent_rooms = await self._room_store.get_by_bridge(session, bridge_id)
+            room_count = len(dependent_rooms)
             if dependent_rooms:
                 logger.warning(
                     "Detaching %d room(s) from collaboration bridge %s before removal; "
@@ -884,6 +895,23 @@ class CollaborationBridgeLifecycleService:
             bridge_id,
             len(removed),
         )
+
+        if bridge is not None:
+            emit_safely(
+                self._telemetry,
+                "connector_removed",
+                {
+                    "bridge_platform": normalise_platform(bridge.type),
+                    "age_days": _age_days(bridge.created_at),
+                    # A connector removed having never connected is a failed
+                    # setup; one removed after months of service is a
+                    # decision. Reporting both as "removed" would hide the
+                    # first, which is the one worth acting on.
+                    "was_ever_connected": was_connected,
+                    "room_count": room_count,
+                },
+            )
+        self._bridge_facts.pop(bridge_id, None)
 
     def get(self, bridge_id: str) -> BridgeCore | None:
         return self._bridges.get(bridge_id)

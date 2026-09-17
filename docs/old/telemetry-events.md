@@ -248,7 +248,7 @@ never invisible.
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
-| `room_active_1d` | number | user-created rooms with an interaction in 24h |
+| `room_active_1d` | number | rooms of any origin with an interaction in 24h |
 | `room_active_7d` | number | same over 7 days |
 | `room_archived_count` | number | archived rooms, both kinds |
 | `room_internal_only_count` | number | rooms with no external channel |
@@ -261,8 +261,8 @@ never invisible.
 | `agent_codex_count` | number | |
 | `agent_opencode_count` | number | |
 | `agent_other_count` | number | including agents with no known runtime |
-| `session_live_count` | number | sessions live at snapshot time |
-| `connector_slack_count` | number | connected bridges by platform |
+| `session_live_count` | number | connections open at snapshot time |
+| `connector_slack_count` | number | **configured** bridges by platform |
 | `connector_mattermost_count` | number | |
 | `connector_discord_count` | number | |
 | `connector_teams_count` | number | |
@@ -391,21 +391,55 @@ a slow average.
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind`.
 
+**`room_agents_removed`** — `agent_count` (number), `removed_by_kind`.
+
+### Removals
+
+Every count in the snapshot can fall, and on its own a falling line says
+nothing about why. A drop in `room_count` is a customer tidying up, a bridge
+being disconnected, or a deployment being abandoned — three opposite readings,
+and the difference is only recoverable if the removal was reported when it
+happened.
+
+Each carries the lifespan of the thing removed, because "deleted after an hour"
+and "deleted after a year" are opposite signals: the first is a mistake or an
+experiment, the second a deliberate clean-up.
+
+**`room_deleted`** — `bridge_platform`, `channel_type`, `created_by_kind`,
+`age_days`, `was_ever_active`, `agent_count`. The activity flag is read before
+the delete, because the cascade takes the room's messages with it and
+afterwards every room looks like it was never used.
+
+**`agent_deleted`** — `known_agent_type`, `age_days`, `room_count`,
+`had_parent`.
+
+**`connector_removed`** — `bridge_platform`, `age_days`, `was_ever_connected`,
+`room_count`. `was_ever_connected` is the one that matters: a connector removed
+having never connected is a failed setup, and one removed after months of
+service is a decision. Reporting both as "removed" would hide the first, which
+is the one worth acting on.
+
 **`agent_registered`**
 
 | Property | Type |
 |---|---|
 | `agent_type` | `always_on` \| `session_addressable` \| `session_passive` |
 | `known_agent_type` | `claude-code` \| `codex` \| `opencode` \| `other` \| `none` |
-| `registration_path` | `bootstrap` \| `personal_key` \| `console` \| `other` |
+| `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 
-**`agent_session_started`** — `known_agent_type`, `start_source`
-(`auto` \| `manual` \| `api`).
+**`agent_session_started`** — `known_agent_type`. Deliberately nothing about
+*how* the session was started: the server sees an authenticated connection
+whether a person launched it or Switch Console spawned it, and a property that
+takes the same value on every emission is a dimension that cannot segment
+anything.
 
-**`agent_session_ended`** — `known_agent_type`, `duration_seconds` (number),
-`reason` (`normal` \| `heartbeat_lapsed` \| `replaced` \| `room_claimed` \|
-`error`).
+**`agent_session_ended`** — `duration_seconds` (number), `reason` (`normal` \|
+`heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). No runtime: the
+connection registry is the only thing that knows a session ended and it holds
+none, the client's self-declared artifact is free text and may not be sent, and
+looking the agent up would put a query on the connection sweep. Session starts
+carry the runtime, so the mix is available from those.
 
 The connection registry already records a reason on every close, which is where
 these values come from; the set is closed here so a new reason string added in

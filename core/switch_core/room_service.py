@@ -39,6 +39,7 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import (
+    normalise_actor_kind,
     normalise_channel_type,
     normalise_platform,
     room_had_human_activity,
@@ -727,6 +728,15 @@ class RoomService:
             bridge_id = room.bridge_id
 
             client_ids = await self._room_store.get_client_ids(session, room_id)
+            agent_count = (
+                len(await self._room_store.get_agent_ids(session, room_id))
+                if self._telemetry is not None
+                else 0
+            )
+
+        # Read before the delete, not after: the cascade takes the messages
+        # with the room, so afterwards every room looks like it was never used.
+        was_ever_active = await self._was_ever_active(room.tenant_id, room_id)
 
         # `kick_user` and the delete below both write rows scoped to this
         # room's tenant (a membership removal, then the room itself), so both
@@ -752,6 +762,25 @@ class RoomService:
                 bridge_core.remove_room_mapping(room.id, room.matrix_room_id)
 
         logger.info("Deleted room %s", room_id)
+
+        if self._telemetry is None:
+            return
+        emit_safely(
+            self._telemetry,
+            "room_deleted",
+            {
+                "bridge_platform": await self._bridge_platform(bridge_id),
+                "channel_type": normalise_channel_type(room.channel_type),
+                "created_by_kind": normalise_actor_kind(
+                    (room.metadata_ or {}).get("created_by_kind")
+                ),
+                "age_days": _age_days(room.created_at),
+                # Asked before the rows go, or there would be nothing left to
+                # ask: `room_store.delete` cascades the messages away.
+                "was_ever_active": was_ever_active,
+                "agent_count": agent_count,
+            },
+        )
 
     async def _resolve_names_to_ids(self, agent_names: list[str]) -> list[str]:
         unique_names = list(dict.fromkeys(agent_names))
@@ -851,7 +880,12 @@ class RoomService:
             },
         )
 
-    async def remove_agents_from_room(self, room_id: str, agent_ids: list[str]) -> None:
+    async def remove_agents_from_room(
+        self,
+        room_id: str,
+        agent_ids: list[str],
+        removed_by_kind: Literal["user", "agent", "system"] = "user",
+    ) -> None:
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -870,6 +904,12 @@ class RoomService:
                 await session.commit()
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
+
+        emit_safely(
+            self._telemetry,
+            "room_agents_removed",
+            {"agent_count": len(agent_ids), "removed_by_kind": removed_by_kind},
+        )
 
     async def _load_room(self, room_id: str) -> Room:
         """A room row, read on the caller's session.

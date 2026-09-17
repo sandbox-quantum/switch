@@ -249,10 +249,51 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "was_ever_active": BOOLEAN,
     },
     "room_agents_added": {"agent_count": NUMBER, "added_by_kind": ACTOR_KIND},
+    "room_agents_removed": {"agent_count": NUMBER, "removed_by_kind": ACTOR_KIND},
+    # ── Removals ─────────────────────────────────────────────────────────────
+    # Every count in the snapshot can fall, and without these nothing says
+    # why. A drop in `room_count` is a customer tidying up, a bridge being
+    # disconnected, or a deployment being abandoned — three very different
+    # readings of the same line on a chart, and the difference is only
+    # recoverable if the removal was reported when it happened.
+    #
+    # Each carries the lifespan of the thing removed, because "deleted after
+    # an hour" and "deleted after a year" are opposite signals: the first is a
+    # mistake or an experiment, the second is a deliberate clean-up.
+    "room_deleted": {
+        "bridge_platform": BRIDGE_PLATFORM,
+        "channel_type": CHANNEL_TYPE,
+        "created_by_kind": ACTOR_KIND,
+        "age_days": NUMBER,
+        "was_ever_active": BOOLEAN,
+        "agent_count": NUMBER,
+    },
+    "agent_deleted": {
+        "known_agent_type": KNOWN_AGENT_TYPE,
+        "age_days": NUMBER,
+        "room_count": NUMBER,
+        "had_parent": BOOLEAN,
+    },
+    "connector_removed": {
+        "bridge_platform": BRIDGE_PLATFORM,
+        "age_days": NUMBER,
+        # Whether it ever worked. A connector removed having never connected
+        # is a failed setup; one removed after months of service is a
+        # decision. Counting both as "removed" hides the first, which is the
+        # one worth acting on.
+        "was_ever_connected": BOOLEAN,
+        "room_count": NUMBER,
+    },
     "agent_registered": {
         "agent_type": AGENT_TYPE,
         "known_agent_type": KNOWN_AGENT_TYPE,
-        "registration_path": one_of("bootstrap", "personal_key", "console", "other"),
+        # What the server can actually distinguish, which is not quite what
+        # a reader might expect. `gateway` covers both Switch Console and the
+        # browser dashboard: they authenticate the same session-backed way
+        # against the same endpoint, so telling them apart would need the
+        # client to say which it is. `console` would have been a value that
+        # looked precise and was a guess.
+        "registration_path": one_of("bootstrap", "personal_key", "gateway", "other"),
         "has_parent": BOOLEAN,
     },
     # Deliberately only the runtime. How a session was *started* — a person

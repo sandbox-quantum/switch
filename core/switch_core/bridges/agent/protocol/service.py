@@ -128,6 +128,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _age_days(created_at: object) -> float:
+    """How old a row is, in days, for reporting. Zero if unknown.
+
+    Takes `object` because the timestamp columns are annotated `Mapped[str]`
+    while carrying real `datetime`s, so the honest signature is "whatever the
+    column hands back", checked here rather than trusted.
+    """
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
+
+
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
 # trailing newline, which would let an identifier carry a line break.
 _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
@@ -917,6 +931,15 @@ class ProtocolService:
         client_id = agent.client_id
         resolved_id = agent.id
         resolved_name = agent.name
+        # Captured before the row goes: afterwards there is nothing left to
+        # describe what was removed, and "an agent was deleted" without its
+        # runtime or its age says almost nothing.
+        removed: dict[str, str | int | float | bool] = {
+            "known_agent_type": normalise_known_agent_type(agent.metadata_),
+            "age_days": _age_days(agent.created_at),
+            "had_parent": agent.parent_agent_id is not None,
+        }
+        removed["room_count"] = await self._room_count_for(resolved_id)
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 
@@ -928,6 +951,29 @@ class ProtocolService:
         self.api_key_cache.invalidate_agent(resolved_id)
 
         await self.client_lifecycle.remove(client_id)
+
+        emit_safely(self.telemetry, "agent_deleted", removed)
+
+    async def _room_count_for(self, agent_id: str) -> int:
+        """How many rooms an agent is in, for reporting only.
+
+        Never raises, and skipped when nothing is listening: this exists to
+        label an analytics event, and deleting an agent must not fail because
+        a count did.
+        """
+        if self.telemetry is None:
+            return 0
+        try:
+            async with self.session_factory() as session:
+                return len(await self.room_store.get_rooms_for_agent(session, agent_id))
+        except Exception:
+            logger.warning(
+                "Could not count rooms for agent %s while reporting its "
+                "deletion; reporting 0.",
+                agent_id,
+                exc_info=True,
+            )
+            return 0
 
     # ── Rooms ──────────────────────────────────────────────────────────────────
 
