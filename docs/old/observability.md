@@ -26,18 +26,53 @@ alerts are checked in under [`deploy/observability/`](../../deploy/observability
 You do not need a Datadog account, or the relay, or a cluster. Run a collector
 on your laptop and read what the server sends it.
 
+### The self-contained way
+
+This touches nothing you already have: its own database on its own port, its
+own settings, no `.env`, and it cleans up after itself. Worth preferring even
+if you do have a working local stack, because nothing it does can disturb one.
+
 ```bash
+# A throwaway database.
+docker run -d --name switch-obs-check \
+  -e POSTGRES_PASSWORD=check -e POSTGRES_DB=switch \
+  -p 55432:5432 postgres:16-alpine
+
 # One terminal: a stand-in collector that prints what arrives.
 python scripts/otlp_sink.py
 
-# Another: the server, reporting to it. Point DB_* at your usual local stack.
+# Another: the server, reporting to it.
+DB_HOST=localhost DB_PORT=55432 DB_USER=postgres DB_PASSWORD=check DB_NAME=switch \
+DB_REQUIRE_RESTRICTED_ROLE=false \
+MATRIX_SERVER_NAME=switch.local \
+AGENT_REGISTRATION_TOKEN=check JWT_SECRET_KEY=check-jwt-secret-key-long-enough \
+GATEWAY_ADMIN_EMAIL=admin@switch.local GATEWAY_ADMIN_PASSWORD=check \
+SERVER_PORT=8099 LOG_FORMAT=json ENVIRONMENT=local \
 OTLP_ENDPOINT=http://localhost:4318 \
 DEPLOYMENT_ID=$(uuidgen) \
 OTLP_EXPORT_INTERVAL_SECONDS=5 \
 OTLP_LOGS_ENABLED=true \
-ENVIRONMENT=local \
-just run
+uv run --project core python -m switch_core.main
 ```
+
+`DB_REQUIRE_RESTRICTED_ROLE=false` is what lets this run as the superuser
+against a throwaway database. It logs an error saying tenant isolation is not
+in force, which is correct and is why it is not a default — never set it on
+anything real.
+
+`uv run` directly rather than `just run`, because `just` loads `.env` from the
+working directory and this recipe deliberately has none. Clean up with
+`docker rm -f switch-obs-check`.
+
+### Using your own local stack instead
+
+`just run` reads `.env` from the directory you run it in. **A git worktree has
+no `.env`** — it is untracked, so it does not come across with the branch — and
+without one every database and secret setting is missing and `SwitchConfig`
+refuses to start, listing all ten. Copy one in (`cp ../switch/.env .`), and
+check it against `.env.example` first: an older one predates the
+runtime/owner database roles and `just up` will refuse it. Add
+`SERVER_PORT=8099` if your usual server is already on 8000.
 
 Within a few seconds the sink prints each interval. Make some requests
 (`curl localhost:8000/health`) and the next one carries them:
@@ -63,8 +98,13 @@ way this could be quietly wrong rather than visibly broken:
 - **Log records carry `tenant_id` and `request_id`**, which is the whole reason
   for shipping them rather than counting them.
 
-Off Linux, `switch.runtime.memory_rss` and `switch.runtime.open_fds` are
-absent and a warning at startup says so — that is correct, not a fault.
+Two things that look like faults and are not. Off Linux,
+`switch.runtime.memory_rss` and `switch.runtime.open_fds` are absent, and a
+warning at startup says so. And for the first few intervals after boot,
+`switch.health.check{check:message_listener}` reads 0 — the checks begin before
+the notification listener has finished connecting, and it reports what is true
+at the time rather than assuming the best. It goes to 1 on its own, and
+readiness never gated on it.
 
 ### Checking readiness for real
 

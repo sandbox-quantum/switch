@@ -164,12 +164,28 @@ def main() -> None:
     args = parser.parse_args()
 
     Handler.raw = args.raw
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as error:
+        # Almost always a sink from a previous run still holding the port. A
+        # traceback here sends the reader into this file rather than into the
+        # one command that fixes it.
+        raise SystemExit(
+            f"Cannot listen on port {args.port}: {error}\n"
+            f"Something is already there — most likely an earlier sink. "
+            f"Find it with `lsof -nP -iTCP:{args.port} -sTCP:LISTEN`, stop it "
+            f"with `pkill -f otlp_sink.py`, or pass --port."
+        ) from error
+
     print(
         f"OTLP sink listening on http://localhost:{args.port}\n"
         f"Point a deployment at it with OTLP_ENDPOINT=http://localhost:{args.port}\n",
         flush=True,
     )
-    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped", flush=True)
 
 
 if __name__ == "__main__":
