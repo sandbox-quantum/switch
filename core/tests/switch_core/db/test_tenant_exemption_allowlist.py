@@ -116,6 +116,12 @@ _RAW_SESSION_FACTORY_MODULES = {
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
     "switch_core.db.tenant_lookup",
+    # ── The readiness check, which issues `SELECT 1` and reads no table at
+    # all. Unbound on purpose: binding a tenant would make the health of the
+    # database a question about one customer's rows, and reading a scoped
+    # table here would be the one check that passes in development and raises
+    # under the restricted runtime role in production.
+    "switch_core.observability.health",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
     # came off this list with the runtime role: the transport learned its own
     # tenant from its client row and the middleware learned a credential's

@@ -1,5 +1,6 @@
 import re
 import ssl
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -164,6 +165,50 @@ class SwitchConfig(BaseSettings):
     # `tenant_id`.
     tenant_id: str = "default"
 
+    # ── Observability ────────────────────────────────────────────────────────
+    # The OTLP/HTTP collector everything is reported to, as a base URL with no
+    # path: signals are appended as `/v1/metrics` and `/v1/logs`, which is the
+    # convention `OTEL_EXPORTER_OTLP_ENDPOINT` follows, so an operator who has
+    # configured any other OTLP client already knows what to set here.
+    #
+    # Unset is the default and means the server reports nothing anywhere. That
+    # is the whole switch: a deployment opts in by naming a collector, and
+    # until it does, no measurement leaves the process.
+    otlp_endpoint: str | None = None
+
+    # Per-signal, because the two do not cost the same. Metrics are the point
+    # of the exercise and are on as soon as a collector is named. Logs are off
+    # because they already go to the container's output where a cluster's own
+    # collector can read them, and sending a second copy over the network is a
+    # volume decision that belongs to whoever pays for it.
+    #
+    # There is deliberately no traces setting. Nothing produces spans yet, so a
+    # flag here would be one a deployment could turn on and see no difference
+    # from — a configuration surface that lies about what it controls. It comes
+    # back when there is something for it to switch off (CHOO-2807).
+    otlp_metrics_enabled: bool = True
+    otlp_logs_enabled: bool = False
+
+    # `key=value` pairs, comma-separated, sent on every OTLP request. The relay
+    # Switch reports to is unauthenticated and needs none; a deployment
+    # pointing at its own collector usually needs an API key here.
+    otlp_headers: str | None = None
+
+    otlp_timeout_seconds: float = 10.0
+    otlp_export_interval_seconds: float = 60.0
+
+    # Which deployment a measurement came from: a UUID, stable across restarts,
+    # chosen by the operator and set once.
+    #
+    # Not optional when reporting is on, and not defaulted. The collector
+    # requires it and drops payloads that arrive without one — in silence, with
+    # a 200 — so a deployment that omitted it would look configured, log
+    # nothing wrong, and appear in no dashboard. Better to refuse to start.
+    #
+    # Not generated per process either: a fresh id on every restart would make
+    # one deployment look like an unbounded population of one-off installs.
+    deployment_id: str | None = None
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
@@ -309,6 +354,108 @@ class SwitchConfig(BaseSettings):
                 f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_observability(self) -> "SwitchConfig":
+        if self.otlp_endpoint is None:
+            # Nothing else in the block means anything without a collector, and
+            # a deployment that has set an interval but no endpoint has not
+            # half-configured reporting — it has not configured it.
+            return self
+
+        if self.otlp_endpoint != self.otlp_endpoint.strip():
+            # `urlsplit` puts a trailing space inside the host rather than the
+            # path, so this passes every check below and then percent-encodes
+            # into a hostname that resolves nowhere. The export failure that
+            # follows is loud but names a connection problem, not the stray
+            # character that caused it — and a value pasted out of a wrapped
+            # YAML line is exactly where this comes from.
+            raise ValueError(
+                "OTLP_ENDPOINT has leading or trailing whitespace: "
+                f"{self.otlp_endpoint!r}."
+            )
+
+        parts = urlsplit(self.otlp_endpoint)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError(
+                f"OTLP_ENDPOINT must be an http(s) URL, got {self.otlp_endpoint!r}."
+            )
+        if not parts.netloc:
+            raise ValueError(
+                f"OTLP_ENDPOINT must include a host, got {self.otlp_endpoint!r}."
+            )
+        if parts.path.strip("/"):
+            # The signal path is appended, so a value that already carries one
+            # would be posted to `/v1/logs/v1/metrics`. Worth catching by hand:
+            # the endpoint most people have seen written down is the full logs
+            # URL, and pasting it here is the obvious mistake.
+            raise ValueError(
+                "OTLP_ENDPOINT is the collector's base URL and the signal path "
+                "is appended to it, so it must have no path of its own. Got "
+                f"{self.otlp_endpoint!r} — drop the {parts.path!r}."
+            )
+        if parts.query or parts.fragment:
+            # Resolving the signal path against the base discards both, so a
+            # credential or routing parameter put here would never be sent and
+            # nothing would say so. Some OTLP-compatible endpoints are written
+            # down with an api-key query parameter, which is how this arrives.
+            raise ValueError(
+                "OTLP_ENDPOINT must not carry a query string or fragment — the "
+                "signal path is resolved against it and both are discarded, so "
+                f"they would silently never be sent. Got {self.otlp_endpoint!r}. "
+                "Put a credential in OTLP_HEADERS instead."
+            )
+
+        if not self.deployment_id:
+            raise ValueError(
+                "DEPLOYMENT_ID must be set when OTLP_ENDPOINT is: the collector "
+                "drops payloads that do not identify the deployment, and it "
+                "does so silently, so without one this server would report "
+                "nothing while looking correctly configured."
+            )
+        try:
+            uuid.UUID(self.deployment_id)
+        except ValueError as error:
+            raise ValueError(
+                f"DEPLOYMENT_ID must be a UUID, got {self.deployment_id!r}. "
+                "The collector's guard rejects anything else."
+            ) from error
+
+        for name, value in (
+            ("OTLP_TIMEOUT_SECONDS", self.otlp_timeout_seconds),
+            ("OTLP_EXPORT_INTERVAL_SECONDS", self.otlp_export_interval_seconds),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than 0, got {value!r}.")
+
+        # Parsed here so a malformed header is a startup error rather than a
+        # `ValueError` from inside the export loop every interval.
+        self._parse_otlp_headers()
+        return self
+
+    def _parse_otlp_headers(self) -> dict[str, str]:
+        if not self.otlp_headers:
+            return {}
+        headers: dict[str, str] = {}
+        for pair in self.otlp_headers.split(","):
+            if not pair.strip():
+                continue
+            key, separator, value = pair.partition("=")
+            if not separator or not key.strip():
+                raise ValueError(
+                    "OTLP_HEADERS must be comma-separated key=value pairs, got "
+                    f"{pair!r}."
+                )
+            headers[key.strip()] = value.strip()
+        return headers
+
+    @property
+    def otlp_header_map(self) -> dict[str, str]:
+        return self._parse_otlp_headers()
+
+    @property
+    def observability_enabled(self) -> bool:
+        return self.otlp_endpoint is not None
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":
