@@ -74,7 +74,14 @@ DEFAULT_BATCH_SIZE = 500
 # How long a shutdown will keep draining the queue before giving up and
 # saying what is left. Shutdown is not the moment to block on a collector
 # that has stopped answering.
-SHUTDOWN_FLUSH_SECONDS = 5.0
+#
+# Deliberately under `main._FORCED_EXIT_GRACE_SECONDS`, which is the whole
+# window the lifespan's teardown gets before the process is killed. Set above
+# it and this flush is not merely cut short — the line below that reports what
+# was lost never runs either, so the records disappear with nothing said. That
+# is the failure this module exists to prevent, and it is only visible by
+# running a real shutdown and reading the log.
+SHUTDOWN_FLUSH_SECONDS = 2.0
 
 
 def severity_of(level: int) -> tuple[int, str]:

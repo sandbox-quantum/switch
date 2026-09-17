@@ -144,6 +144,12 @@ _RUNTIME_STATE_SWEEP_INTERVAL = 5.0
 # promptly rather than at the next unrelated request.
 _CONNECTION_SWEEP_INTERVAL = 2.0
 
+# How long a shutdown is given after uvicorn is told to stop before the
+# process is killed regardless. It is a safety net against a client that will
+# not stop, not a target — but it is also the entire window the lifespan's
+# teardown runs in, so see `_shutdown` before shortening it.
+_FORCED_EXIT_GRACE_SECONDS = 3.0
+
 
 async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
     # `no_tenant` for the reason every other long-lived task does it: a task
@@ -1082,7 +1088,13 @@ async def _shutdown(
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 
-    await asyncio.sleep(1)
+    # `should_exit` above starts uvicorn's own shutdown, which runs the
+    # lifespan's teardown — including the observability handle's final flush.
+    # This sleep is the whole budget that teardown gets before the process is
+    # killed out from under it, so anything with a deadline of its own must fit
+    # inside it: see `observability.logs.SHUTDOWN_FLUSH_SECONDS`, which is set
+    # against this number.
+    await asyncio.sleep(_FORCED_EXIT_GRACE_SECONDS)
     logger.info("Forcing exit")
     os._exit(0)
 

@@ -21,6 +21,68 @@ OTLP_LOGS_ENABLED=true                                # optional
 In Helm the same settings are `switchCore.observability.*`. Dashboards and
 alerts are checked in under [`deploy/observability/`](../../deploy/observability/).
 
+## Checking it actually works
+
+You do not need a Datadog account, or the relay, or a cluster. Run a collector
+on your laptop and read what the server sends it.
+
+```bash
+# One terminal: a stand-in collector that prints what arrives.
+python scripts/otlp_sink.py
+
+# Another: the server, reporting to it. Point DB_* at your usual local stack.
+OTLP_ENDPOINT=http://localhost:4318 \
+DEPLOYMENT_ID=$(uuidgen) \
+OTLP_EXPORT_INTERVAL_SECONDS=5 \
+OTLP_LOGS_ENABLED=true \
+ENVIRONMENT=local \
+just run
+```
+
+Within a few seconds the sink prints each interval. Make some requests
+(`curl localhost:8000/health`) and the next one carries them:
+
+```
+[15:37:39] POST /v1/metrics
+  resource: service=switch-core version=0.26.0 env=local deployment=0e5d1b3a-…
+    switch.http.requests +9  {method=GET, route=/health, status_class=2xx}
+    switch.http.requests +4  {method=GET, route=unmatched, status_class=4xx}
+    switch.http.request.duration n=9 mean=0.3ms  {method=GET, route=/health}
+    switch.health.check = 1  {check=database}
+    switch.db.pool.in_use = 0
+```
+
+Four things in that output are worth checking deliberately, because each is a
+way this could be quietly wrong rather than visibly broken:
+
+- **Routes are templates.** Requests to several unknown paths collapse into one
+  `unmatched` series rather than one series each.
+- **Counters are deltas.** An interval with no traffic carries no
+  `switch.http.requests` line at all, rather than repeating the last total.
+- **`switch.db.pool.overflow` reads 0 on an idle pool**, not a negative number.
+- **Log records carry `tenant_id` and `request_id`**, which is the whole reason
+  for shipping them rather than counting them.
+
+Off Linux, `switch.runtime.memory_rss` and `switch.runtime.open_fds` are
+absent and a warning at startup says so — that is correct, not a fault.
+
+### Checking readiness for real
+
+Stop the database out from under a running server:
+
+```bash
+docker stop <your postgres container>
+curl -s localhost:8000/health/ready   # 503, naming the database
+curl -so /dev/null -w '%{http_code}' localhost:8000/health   # still 200
+docker start <your postgres container>
+curl -s localhost:8000/health/ready   # back to 200 within ~15s
+```
+
+Both halves matter. Readiness failing is what takes the pod out of service;
+liveness staying up is what stops Kubernetes restarting a server whose only
+problem is a database it does not own. A restart would not fix it and would
+drop every live session to find that out.
+
 ## The three things it emits
 
 **Logs** go to the container's output, with `tenant_id`, `request_id`,
