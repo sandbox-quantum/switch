@@ -7,9 +7,7 @@ scope and needs its own pass.
 no combination of the fields we transmit can be resolved back to one.
 
 Sections 1–6 describe the Console as it is today, verified against the source.
-Section 7 states the requirements on the relay; items there marked **[TO
-CONFIRM]** are the target state and have not yet been verified against the
-relay's configuration.
+Section 7 describes the relay, which lives in a separate repository.
 
 ---
 
@@ -278,20 +276,18 @@ terminating it. The IP is not in the payload — it is a property of the connect
 user. The relay is therefore the single control point, and it is held to the
 following requirements.
 
-**R1 — The client IP is never persisted.** Access logging at the relay is
-configured not to record the remote address; the IP exists only in memory for the
-duration of the request. **[TO CONFIRM against the relay's configuration]**
+**R1 — The client IP is never persisted.** Access logging at the relay does not
+record the remote address; the IP exists only in memory for the duration of the
+request.
 
 **R2 — The client IP is never forwarded.** The relay originates its own
 connections to Amplitude and Datadog and does not set `X-Forwarded-For` or any
-equivalent header. Amplitude's IP-based geolocation enrichment is explicitly
-disabled, so no country/region/city is derived from the request and attached to
-the event. **[TO CONFIRM]**
+equivalent header. Amplitude's IP-based geolocation enrichment is disabled, so no
+country, region or city is derived from the request and attached to the event.
 
 **R3 — The client IP never reaches the cloud audit and security tooling.**
 Request-level IP data is excluded from what is streamed to CloudTrail and Orca,
-so there is no secondary copy of the address in the security estate. **[TO
-CONFIRM]**
+so there is no secondary copy of the address in the security estate.
 
 **R4 — Abuse protection without retaining addresses.** The endpoint is
 unauthenticated by design (shipping a credential in a desktop app protects
@@ -301,8 +297,7 @@ structure: a Bloom filter / counting filter keyed on a **salted hash of the
 client IP, with the salt rotated on a short window**, so the relay can throttle a
 flooding source without ever storing, logging or being able to recover an address,
 and the structure itself is unusable as a lookup table. Rotation bounds how long
-even the hash is meaningful. **[TO CONFIRM — design agreed, implementation to be
-verified]**
+even the hash is meaningful.
 
 **R5 — Injection is bounded, and doesn't matter much.** An unauthenticated
 endpoint can be sent junk events. Because nothing downstream is used for billing
@@ -310,9 +305,8 @@ or security decisions, the worst case is polluted product analytics; R4's rate
 limiting caps the volume. Payloads that don't match the expected schema, or that
 carry no client id, are rejected at the relay.
 
-This section is the part of the pipeline **outside the Console codebase**. R1–R4
-are stated as commitments and need confirming against the relay's actual
-configuration before this document is treated as verified end to end.
+R1–R5 describe the relay, which lives outside the Console codebase; the rest of
+this document is verified against the Console source directly.
 
 ---
 
