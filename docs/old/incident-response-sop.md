@@ -911,6 +911,84 @@ whose entire purpose is to be there at 03:00, that is a real availability gap,
 and it is the one operational item on this list that could embarrass the SOP on
 its first weekend. [Gaps](#gaps) G22.
 
+### Whose host is it?
+
+A shared responder should not run on an engineer's personal VM. That is not
+fastidiousness — the agent is the team's, so every substrate under it should be
+too, and a personal box makes the team's on-call coverage depend on one person's
+machine, cloud account and availability. Switch's own documentation names the
+failure: a host that depends on one person "is fine if you're the only one who
+relies on that agent. It's a blocker when a teammate in another time zone needs
+it while you're asleep."
+
+**Switch has no concept of a team-owned host.** A remote host is a record in
+Switch Console's *own local database* — an `~/.ssh/config` alias, a display name,
+and nothing else. No user column, no tenant, no server-side row: Switch core has
+never heard of hosts. Two engineers onboarding the same machine create two
+unrelated records in two separate local databases, with nothing linking them.
+Host sharing is not modelled; it is *defended against*, with a deployer identity
+and a cross-install deploy lock that exist because two apps pointed at one host
+would otherwise trade the sidecar back and forth indefinitely.
+
+**And nothing provisions one.** No Terraform, no Ansible, no cloud-init, no
+image, and no agent workload anywhere in the Helm chart — the chart deploys the
+Switch *server* and nothing else. Host *setup* exists, as an ordered plan of
+install steps, but it is manual by design, per operator, with deliberately no
+run-everything control. The documented provisioning step is to go and obtain a
+Linux machine you can reach over SSH.
+
+Note also that a Switch Console-managed server on a remote host is **not** the
+answer to this. It binds to the host's loopback and is reached through a port
+forward belonging to one install, with its credentials in that install's secret
+store. The documentation puts it plainly: *"Your agents are shareable; the server
+is yours."* A team that wants a shared server deploys one properly, with the
+chart. That is a separate, well-supported thing from where an agent runs.
+
+#### The three options, and the trade that decides it
+
+**1. A shared host, team-owned by convention.** Put the machine in team
+infrastructure with a shared service account, give the rotation SSH access, and
+pick one working directory. This works today, and better than it first appears:
+the agent's credentials and the sidecar's state live *on the host*, not in
+anyone's app, and Switch Console can adopt an existing remote agent by reading
+them over SFTP. So any engineer with SSH can take the agent over. What is missing
+is that nothing records the host as shared — each of them holds a private record
+of it — and the reboot gap still needs a service unit somebody writes by hand.
+
+**2. No host at all: a server-side connector.** Connector agents run inside
+Switch's own process. They are always-on, they survive a server restart, they
+need no machine anywhere, and they are registered `owner_only=False` by
+construction — the code comment could have been written for this problem: *"a
+service the deployment offers everyone, not one person's assistant."* The single
+connector type today is OpenCode, which talks to an OpenCode server over HTTP, so
+a team could run one on its own infrastructure, expose exactly one agent through
+the allowlist, and have a responder that belongs to the deployment rather than to
+a person.
+
+**3. Build the missing piece** — a host record that lives server-side, or a
+containerised sidecar the chart could schedule. Neither exists in any form today;
+the sidecar assumes SSH, tmux and SFTP delivery.
+
+**The trade between 1 and 2 is the decision, and it is uncomfortable.** A
+connector agent has **no pre-invocation mediation and auto-approves permissions
+permanently** — tool calls are reported after the fact rather than gated, and the
+permission response is set to `"always"` so a given tool is never re-asked. It
+also gives up hooks, the task protocol, compact and interrupt, and it is
+undocumented in the user-facing docs.
+
+So: **the option that solves ownership is the one with the least governance, and
+the option with full mediation is the one that has to live on somebody's box.**
+For an agent with shell access, addressed by six people during the worst hour of
+the quarter, that is not a footnote.
+
+**Recommendation: take option 1 now** — a shared host in team infrastructure,
+under a service account, never a personal VM — and treat option 2 as the right
+destination once a connector agent can be governed. Option 1 keeps hook
+mediation, keeps the Claude Code host the rest of this design assumes, and its
+weaknesses (G22, G24) are small, well-understood pieces of work. Option 2's
+weakness is that it removes the only enforcement layer standing between a shared
+agent and a production system, which is the wrong thing to trade away first.
+
 ## Making the agent user-agnostic
 
 The rotation is the problem the agent has to survive. Six engineers take the
@@ -1127,9 +1205,10 @@ instructions must say so explicitly, because the tool surface will not.
 
 ## Gaps
 
-Twenty-three, grouped by what they block. Each says what is missing, why it matters
+Twenty-six, grouped by what they block. Each says what is missing, why it matters
 here, and a ticket to file. Sizes are rough: **S** is days, **M** is a sprint,
-**L** is a project.
+**L** is a project. The numbers are stable identifiers, not an ordering — they
+are in the order they were found, and the grouping is what to read by.
 
 **Read the header of group A first.** The gap that looked hardest is largely not
 a gap.
@@ -1374,7 +1453,7 @@ it.
 > rest, injected into that agent's sessions only, revocable independently of the
 > agent's own key. **M**
 
-### F. Fidelity of app-posted messages
+### F. Fidelity of delivery
 
 **G21 — A third-party app's message reaches Switch lossily, and its edits not at
 all.**
@@ -1396,6 +1475,19 @@ alerts, but any team that wires alerts straight into a room will hit it.
 > **Proposed ticket:** *Bridge message edits* — relay `message_changed` as an
 > edit, or at minimum as a new message noting the original was amended. **M**
 
+**G23 — Nothing detects a host that cannot receive pushed events.**
+An agent registered as session-addressable whose host authenticates through a
+third-party provider silently receives nothing: the enabling flag is ignored with
+no error. Switch records the distinction at registration and the internals
+documentation says outright that nothing detects the mismatch afterwards. The
+room waits for an agent that will never answer.
+
+> **Proposed ticket:** *Detect a session that cannot receive events* — have the
+> runtime confirm delivery once at session start and downgrade the agent to
+> passive, loudly, when it cannot. **S**
+
+### G. Where the agent runs
+
 **G22 — A remote agent does not survive a host reboot.**
 Switch Console deploys the sidecar into a tmux session on the host; nothing
 registers a service, so after a restart the agent and any Console-managed server
@@ -1408,18 +1500,49 @@ requirement it really has.
 > it back, and surface "host up, sidecar down" as a distinct state rather than an
 > unreachable agent. **M**
 
-**G23 — Nothing detects a host that cannot receive pushed events.**
-An agent registered as session-addressable whose host authenticates through a
-third-party provider silently receives nothing: the enabling flag is ignored with
-no error. Switch records the distinction at registration and the internals
-documentation says outright that nothing detects the mismatch afterwards. The
-room waits for an agent that will never answer.
+**G24 — A remote host is one person's record, not a team resource.**
+The host record lives in Switch Console's own local database — an SSH alias and a
+display name, with no user, tenant or server-side row. Two engineers onboarding
+the same machine hold two unrelated records and cannot see each other's.
+Everything that manages the host — setup steps, sidecar redeploy, session restart
+— runs over that person's SSH connection. The agent keeps working when they are
+away; nothing about it can be *managed* without them, unless a colleague
+independently onboards the same alias.
 
-> **Proposed ticket:** *Detect a session that cannot receive events* — have the
-> runtime confirm delivery once at session start and downgrade the agent to
-> passive, loudly, when it cannot. **S**
+> **Proposed ticket:** *Server-side host records* — move the host to Switch so it
+> is a shared, tenant-scoped resource an operator can see and manage without
+> having onboarded it privately. **L**
 
-### G. Closing the incident out
+> **Proposed interim:** document the shared-host convention — team service
+> account, one working directory, rotation-wide SSH — and the adoption path,
+> since it works today and nothing says so. **S**
+
+**G25 — Nothing provisions an agent host.**
+No Terraform, Ansible, cloud-init or image; no agent workload in the Helm chart,
+which deploys the server only. Host setup exists but is a manual per-operator
+walkthrough with deliberately no run-everything control. The documented
+provisioning step is to go and obtain a Linux machine. For one hobby agent that
+is fine; for an agent a rotation depends on, "somebody set up a box once" is not
+an operational posture.
+
+> **Proposed ticket:** *A reference agent host* — a cloud-init or container
+> definition that stands up a host with the dependencies, the connector and a
+> supervised sidecar, so an agent host is reproducible rather than
+> hand-assembled. **M**
+
+**G26 — The only host-free option has no tool mediation.**
+A server-side connector agent is the one team-owned, always-on shape Switch has —
+and it declares no pre-invocation mediation and auto-approves permissions with
+`"always"`, so tool calls are reported after the fact rather than gated. It also
+has no hooks, no task protocol, and no compact or interrupt. The result is that
+the ownership problem and the governance problem cannot currently be solved at
+the same time.
+
+> **Proposed ticket:** *Mediation for server-side connector agents* — gate tool
+> calls through the same pre-invocation path client-side agents use, so a
+> deployment-owned agent is not automatically the least governed one. **M**
+
+### H. Closing the incident out
 
 **G18 — There is no transcript export.**
 The postmortem is written from the room, but no endpoint produces a room's
@@ -1444,21 +1567,30 @@ definition:
    card: the SOP, the room-writing rules, the bindings block — with the
    **internal** bridge id pinned.
 2. Define the exclusive `responder` role in the hub.
-3. Onboard an always-on SSH host and register the responder as a **remote**
-   agent on it, so the sidecar holds its event stream and it stays up with no
-   app running. Widen its addressing policy **through the API, not the
-   dashboard** (G12).
+3. Stand up an always-on host **in team infrastructure, under a service account
+   the rotation shares — not anyone's personal VM** — and register the responder
+   as a **remote** agent on it, so the sidecar holds its event stream and it
+   stays up with no app running. Widen its addressing policy **through the API,
+   not the dashboard** (G12). Write a service unit for the sidecar by hand until
+   G22 lands.
 4. Install a PagerDuty MCP server on that host and put a `pagerduty` reference
    type and its references in the hub.
 5. Register the room YAML as a template so the shape is reviewable — as
    documentation, not as the mechanism.
 6. Put the SITREP cadence in a scheduled Slack workflow that mentions the agent.
 
-Two compromises in that list, both worth naming out loud rather than
-discovering. Agent ownership: until G11 exists the responder is owned by a person
-or by Admin, and neither is right. And a host reboot takes the responder offline
-until someone notices (G22) — which, for the one agent whose job is to be
-present, is the compromise to fix first if the SOP is going to be relied on.
+Three compromises in that list, all worth naming out loud rather than
+discovering. **Identity**: until G11 exists the responder is owned by a person or
+by Admin, and neither is right. **Host**: the machine is the team's by convention
+only — each engineer holds a private record of it (G24) and nothing provisions it
+(G25). **Availability**: a reboot takes the responder offline until someone
+notices (G22).
+
+Those three are the same problem seen three times. A shared agent needs a
+team-owned identity, a team-owned host and team-owned credentials, and today each
+of them resolves to a particular person's. Nothing about incident response caused
+that — it is the first use case where it stops being untidy and starts being
+unacceptable.
 
 **Then, in order of value per unit of work:**
 
@@ -1482,11 +1614,17 @@ present, is the compromise to fix first if the SOP is going to be relied on.
    `join_event_listeners` first. Closes the distance between the reviewable
    artifact and the capable one.
 8. **G7 — scheduled room actions.** Retires the per-incident Slack workflow.
-9. Everything else, as it starts to hurt.
+9. **G25 — a reference agent host**, then **G24 — server-side host records.** The
+   first makes an agent host reproducible instead of hand-assembled; the second
+   makes it a thing the team owns rather than a row in one person's app. Both are
+   larger, and neither blocks a first incident — but together they are what turns
+   "we run a responder" from a favour someone is doing into infrastructure.
+10. Everything else, as it starts to hurt.
 
 The honest summary: **the design needs no Switch changes to run, and two small
 ones — a supervised sidecar and a service account — before anyone should depend
-on it.** Both are hosting and identity problems rather than incident-response
-problems, which is a good sign: the SOP itself is not blocked on Switch growing
-any new concepts, and the template work is worth doing on its own merits rather
-than for this.
+on it.** Neither is an incident-response problem; both are about a shared agent
+needing a substrate that belongs to the team. That is a good sign for the SOP —
+it is not blocked on Switch growing any new concepts — and a fair warning for
+Switch, because the same three gaps will surface for every shared agent after
+this one.
