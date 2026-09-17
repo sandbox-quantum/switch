@@ -923,7 +923,6 @@ def render_activity(
     turn: TurnUpsert,
     *,
     elapsed_seconds: float | None = None,
-    tool_log: bool = False,
     status_only: bool = False,
 ) -> SlackMessage:
     """One turn, as the channel sees it: what was said, over what was done.
@@ -978,28 +977,6 @@ def render_activity(
                 ],
             )
         return SlackMessage(text=state, blocks=[_context(state)])
-    if tool_log:
-        did = [item for item in items if item.kind == "tool-activity"]
-        if not did:
-            text = (
-                "No tool calls." if turn.status in TURN_ENDED else "No tool calls yet."
-            )
-            return SlackMessage(text=text, blocks=[_context(text)])
-        plan = _plan(did, did, turn)
-        count = len(did)
-        title = f"{count} tool {'call' if count == 1 else 'calls'}"
-        hidden = max(0, count - _MAX_PLAN_TASKS)
-        if hidden:
-            title += f" · {hidden} earlier not shown"
-        running = _running(did, turn)
-        if running:
-            title += f" · {running[1]}"
-        plan["title"] = _truncate(title, _MAX_PLAN_TITLE)
-        for task, item in zip(plan["tasks"], did[-_MAX_PLAN_TASKS:]):
-            _settled(task, item, turn)
-        return SlackMessage(
-            text=plan["title"] + "\n" + "\n".join(_activity_lines(did)), blocks=[plan]
-        )
     said = [item for item in items if item.kind == "assistant-message"]
     did = [item for item in items if item.kind == "tool-activity"]
 

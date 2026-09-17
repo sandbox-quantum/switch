@@ -207,7 +207,6 @@ def test_teams_reaches_a_reader_by_naming_them_and_in_no_other_way() -> None:
 
     assert adapter.notifies_only_by_mention is True
     assert adapter.separate_attention_slot is True
-    assert adapter.separate_activity_log is False
     assert adapter.redraws_for_elapsed_time is False
     # The Bot Connector gives a bot no way to react to a message at all.
     assert adapter.supports_activity_reactions is False

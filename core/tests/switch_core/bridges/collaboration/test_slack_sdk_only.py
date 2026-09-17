@@ -6,14 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 from slack_sdk.socket_mode.request import SocketModeRequest
 
-from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
 
 from .slack_fakes import FakeWebClient
-from .test_session_activity import _turn
 
 
 def adapter():
@@ -74,39 +72,6 @@ def test_native_progress_setting_is_absent_from_registration():
     assert (
         "agent_sessions" not in SlackConnectionConfig.model_json_schema()["properties"]
     )
-
-
-async def test_activity_layout_is_an_adapter_capability_not_a_slack_type_check():
-    platform = SimpleNamespace(
-        separate_activity_log=True,
-        supports_activity_reactions=True,
-        post_rich=AsyncMock(side_effect=["C1:status", "C1:log"]),
-        update_rich=AsyncMock(),
-        mark_activity=AsyncMock(),
-        notify_working=AsyncMock(),
-    )
-    activity = SessionTurnActivity(platform)
-    kwargs = dict(
-        session_id="s",
-        channel_id="C1",
-        thread_root_id="C1:root",
-        asked_on="C1:asker",
-        agent_name="worker",
-        elapsed_seconds=5,
-    )
-    await activity.publish([], _turn("running"), **kwargs)
-    await activity.publish([], _turn("completed"), **kwargs)
-    status, log = platform.post_rich.call_args_list
-    assert status.args[2].status_only
-    assert log.args[2].tool_log
-    assert [call.args[1:3] for call in platform.update_rich.call_args_list] == [
-        ("worker", "C1:status"),
-        ("worker", "C1:log"),
-    ]
-    assert [call.kwargs["on"] for call in platform.mark_activity.call_args_list] == [
-        True,
-        False,
-    ]
 
 
 async def test_typed_interrupt_still_routes_to_the_global_command():

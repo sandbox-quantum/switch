@@ -32,23 +32,22 @@ def test_waiting_link_is_visible_in_the_compact_status_without_expanding():
 async def test_plan_keeps_tool_details_but_fallback_is_compact():
     adapter, _ = _adapter()
     message = adapter._render_rich(
-        TurnActivity(await _items(), _turn("running"), tool_log=True, session_url=URL)
+        TurnActivity(await _items(), _turn("running"), session_url=URL)
     )
-    assert len(message.blocks) == 1
     assert message.blocks[0]["type"] == "plan"
     assert len(message.blocks[0]["tasks"]) > 1
-    assert URL not in json.dumps(message.blocks)
+    assert URL not in json.dumps(message.blocks[0])
     assert len(message.text.splitlines()) == 1
 
 
-async def test_completed_log_keeps_tools_without_console_links():
+async def test_a_finished_plan_keeps_its_tools_and_stays_off_the_fallback():
     adapter, _ = _adapter()
     message = adapter._render_rich(
-        TurnActivity(await _items(), _turn("completed"), tool_log=True, session_url=URL)
+        TurnActivity(await _items(), _turn("completed"), session_url=URL)
     )
-    assert len(message.blocks) == 1
     assert message.blocks[0]["type"] == "plan"
-    assert URL not in json.dumps(message.blocks)
+    assert len(message.blocks[0]["tasks"]) > 1
+    assert URL not in json.dumps(message.blocks[0])
     assert "Worked for" not in message.text
 
 
