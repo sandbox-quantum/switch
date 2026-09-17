@@ -150,6 +150,12 @@ export type TelemetryCliFailure =
  * update: a host with no update verb removes the connector and puts it back, and
  * which half failed is the difference between "nothing changed" and "the agent
  * now has no connector at all".
+ *
+ * There is deliberately no `error` catch-all. Every variant here is produced by
+ * a named branch, so the set describes what the code can actually report; a
+ * bucket nothing fills would imply a coverage this has not got. An operation
+ * that throws reports nothing at all today — see the note on
+ * `connector_installed`.
  */
 export type TelemetryConnectorFailure =
   | 'none'
@@ -163,8 +169,7 @@ export type TelemetryConnectorFailure =
   /** The app writes this connector itself, and the write failed. */
   | 'files_write_failed'
   /** The agent declares a file-based connector and implements no behavior for it. */
-  | 'files_unimplemented'
-  | 'error';
+  | 'files_unimplemented';
 
 /**
  * How long an operation took, in whole milliseconds.
@@ -175,11 +180,22 @@ export type TelemetryConnectorFailure =
  * waking mid-install cannot produce a negative number or an hour that never
  * passed.
  *
- * **Nothing is capped.** A capped duration is a number the operation did not
- * take, and inventing one is exactly what the rest of this catalogue refuses to
- * do. Some of these legitimately include a password prompt somebody left on
- * screen, so read them as percentiles rather than as a mean — a p50 that moves
- * is a real regression, an arithmetic mean over this is meaningless.
+ * **Nothing is rounded into buckets and nothing is clamped**, so read these as
+ * percentiles rather than as a mean: some legitimately include a password prompt
+ * somebody left on screen, and an arithmetic mean over that is meaningless.
+ *
+ * Two things do bound it, and both shape the distribution:
+ *
+ * - Every command the connector drivers run carries `EXEC_TIMEOUT_MS` (120 s),
+ *   so a `plugin install` that hangs on an auth prompt reports ~120000 rather
+ *   than however long it would have hung. Expect a pile-up there, and at
+ *   multiples of it for a reinstall-style update, which runs two commands. It is
+ *   the timeout wall, not a latency distribution.
+ * - The connector events time the **whole operation the user waited on**, which
+ *   includes registering the plugin marketplace. On a machine that has never had
+ *   it, that step clones a repository; on every later install it is a no-op. So
+ *   the first install on a machine is legitimately much slower than the rest,
+ *   and a p50 that moves can be a change in that mix rather than a regression.
  *
  * It carries nothing about the machine: an elapsed time is not a fingerprint at
  * this resolution, and it names no path, host or command.
@@ -376,6 +392,10 @@ export type TelemetryEventMap = {
    * plugin marketplace is driven through its CLI, and a host without one has its
    * connector written by the app. The two fail in entirely different places,
    * which is what `failure_reason` separates.
+   *
+   * Known gap: an operation that *throws* rather than returning a failed result
+   * is not reported at all, so the denominator is attempts that got far enough
+   * to produce a result. The same is true of `agent_cli_action`.
    */
   connector_installed: {
     agent_type: TelemetryAgentType;

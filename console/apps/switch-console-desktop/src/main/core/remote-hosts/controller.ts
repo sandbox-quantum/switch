@@ -240,9 +240,8 @@ export const remoteHostsController = createRPCController({
     method?: InstallMethod;
   }): Promise<DependencyInstallResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
-    // Timed around the operation alone: resolving the manager may open the SSH
-    // connection, which is not part of how long an install takes and would show
-    // up only on the first one of a session.
+    // Resolving the manager is outside the timer because it may open the SSH
+    // connection, which is not part of how long an install takes.
     const elapsed = startTimer();
     const result = await manager.install(params.id, params.method);
     reportRemoteCliAction('install', params.id, params.method, result, elapsed());

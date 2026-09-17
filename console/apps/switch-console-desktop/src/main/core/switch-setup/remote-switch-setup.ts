@@ -11,14 +11,16 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
-import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
-import type { ConnectorRun, SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
 import {
+  type ConnectorRun,
   connectorFailed,
   connectorSucceeded,
   connectorUnsupported,
-  marketplaceMatchesSource,
-} from './switch-setup-service';
+  type SwitchSetupResult,
+} from './connector-run';
+import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
+import type { SwitchSetupStatus } from './switch-setup-service';
+import { marketplaceMatchesSource } from './switch-setup-service';
 
 const EXEC_TIMEOUT_MS = 120_000;
 
@@ -392,48 +394,43 @@ export class RemoteSwitchSetupService {
     return { ...(await this.getStatus(agentId)), refreshError };
   }
 
+  /**
+   * Install the connector on this host, reporting the outcome. The `none` guard
+   * and the reporting of `unsupported` mirror the local driver exactly — see the
+   * note there for why the two must not differ.
+   */
   async install(agentId: string): Promise<SwitchSetupResult> {
-    const elapsed = startTimer();
-    const { run, attempted } = await this.runInstall(agentId);
-    // An agent type with no connector to install did not fail to install one.
-    if (attempted) {
-      trackEvent('connector_installed', {
-        agent_type: agentTypeOf(agentId),
-        target: 'remote',
-        outcome: run.result.success ? 'success' : 'failure',
-        failure_reason: run.failure,
-        duration_ms: elapsed(),
-      });
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
+      return connectorUnsupported().result;
     }
+    const elapsed = startTimer();
+    const run = await this.runInstall(agentId);
+    trackEvent('connector_installed', {
+      agent_type: agentTypeOf(agentId),
+      target: 'remote',
+      outcome: run.result.success ? 'success' : 'failure',
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
+    });
     return run.result;
   }
 
-  private async runInstall(agentId: string): Promise<{ run: ConnectorRun; attempted: boolean }> {
+  private async runInstall(agentId: string): Promise<ConnectorRun> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const run = await this.runFiles(agentId, (files, fs, version) =>
-        files.install(fs, { version })
-      );
-      return { run, attempted: true };
+      return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved) return { run: connectorUnsupported(), attempted: false };
+    if (!resolved) return connectorUnsupported();
     const { descriptor, bin, ref, marketplaceSource, rules } = resolved;
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
-      return {
-        run: connectorFailed(`Could not add marketplace: ${String(err)}`, 'marketplace_failed'),
-        attempted: true,
-      };
+      return connectorFailed(`Could not add marketplace: ${String(err)}`, 'marketplace_failed');
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
-    return {
-      run:
-        res.code === 0
-          ? connectorSucceeded()
-          : connectorFailed(res.stderr.trim() || 'Install failed.', 'install_command_failed'),
-      attempted: true,
-    };
+    return res.code === 0
+      ? connectorSucceeded()
+      : connectorFailed(res.stderr.trim() || 'Install failed.', 'install_command_failed');
   }
 
   /**

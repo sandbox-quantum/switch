@@ -101,9 +101,6 @@ export const providersController = createRPCController({
 
   install: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
-    // Timed around the operation alone. Resolving the manager is a lookup that
-    // says nothing about how long an install takes, and including it would make
-    // the first measurement of a session differ from the rest for no reason.
     const elapsed = startTimer();
     const result = await mgr.install(id, method);
     reportCliAction('install', id, method, result, elapsed());

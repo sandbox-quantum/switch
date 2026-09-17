@@ -463,6 +463,8 @@ describe('switchSetupService mutations', () => {
   });
 
   it('reports nothing when the agent type has no Switch setup to attempt', async () => {
+    // Not a failed install — there was never one to attempt. Reporting it would
+    // put every agent type in the app into the connector failure rate.
     mocks.getPlugin.mockReturnValue(NONE_AGENT);
 
     const result = await switchSetupService.install('no-switch-agent');
@@ -472,6 +474,29 @@ describe('switchSetupService mutations', () => {
       message: 'Switch setup is not supported for this agent.',
     });
     expect(mocks.trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports `unsupported` when a declared connector has no binary to drive it', async () => {
+    // The other way an install ends with nothing installed, and this one IS a
+    // failure of what the user asked for: the agent type declares a CLI
+    // connector and the host binary cannot be resolved. It used to be silenced
+    // by the same flag as the case above while `update` and `uninstall`
+    // reported it, so the condition looked like it only happened on update.
+    mocks.getPlugin.mockReturnValue({
+      ...CLI_AGENT,
+      capabilities: { ...CLI_AGENT.capabilities, hostDependency: { binaryNames: [] } },
+    });
+
+    const result = await switchSetupService.install('claude');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'claude',
+      target: 'local',
+      outcome: 'failure',
+      failure_reason: 'unsupported',
+      duration_ms: expect.any(Number),
+    });
   });
 });
 

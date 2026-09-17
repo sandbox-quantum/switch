@@ -7,13 +7,19 @@ import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { startTimer } from '@main/core/telemetry/duration';
-import type { TelemetryConnectorFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
 import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
 import { createPluginFs } from '../providers/plugin-fs';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
+import {
+  type ConnectorRun,
+  connectorFailed,
+  connectorSucceeded,
+  connectorUnsupported,
+  type SwitchSetupResult,
+} from './connector-run';
 import {
   cliRulesFor,
   type InstalledPlugin,
@@ -41,37 +47,6 @@ export type SwitchSetupStatus = {
 /** Whether a registered marketplace entry points at the expected source. */
 export function marketplaceMatchesSource(entry: RegisteredMarketplace, source: string): boolean {
   return entry.source === source;
-}
-
-/** Outcome of a mutating operation, mirroring the providers controller shape. */
-export type SwitchSetupResult = { success: boolean; message?: string };
-
-/**
- * A completed connector operation: what the caller gets back, and the
- * enumerated reason it failed.
- *
- * The two travel together because a `SwitchSetupResult` carries only a message,
- * and a message cannot be reported — so the code has to be named where the
- * failure is known rather than recovered from the text afterwards. Shared with
- * the remote driver, which reports the same event from the same points.
- */
-export type ConnectorRun = {
-  result: SwitchSetupResult;
-  failure: TelemetryConnectorFailure;
-};
-
-/** A connector operation that did what was asked. */
-export function connectorSucceeded(): ConnectorRun {
-  return { result: { success: true }, failure: 'none' };
-}
-
-export function connectorFailed(message: string, failure: TelemetryConnectorFailure): ConnectorRun {
-  return { result: { success: false, message }, failure };
-}
-
-/** The answer for an agent whose connector nothing here can manage. */
-export function connectorUnsupported(): ConnectorRun {
-  return connectorFailed('Switch setup is not supported for this agent.', 'unsupported');
 }
 
 const EXEC_TIMEOUT_MS = 120_000;
@@ -414,7 +389,7 @@ class SwitchSetupService {
       resolved = this.resolveFiles(agentId);
     } catch (err) {
       log.error('switch-setup: file-based connector declares no behavior', { agentId, err });
-      return connectorFailed(installFailureMessage(String(err)), 'files_unimplemented');
+      return connectorFailed(String(err), 'files_unimplemented');
     }
     if (!resolved) return connectorUnsupported();
     try {
@@ -429,31 +404,39 @@ class SwitchSetupService {
     }
   }
 
+  /**
+   * Install the connector, reporting the outcome.
+   *
+   * An agent type that declares no connector did not fail to install one, so it
+   * returns before the timer and reports nothing — the same guard `update` and
+   * `uninstall` use. Everything past it is an attempt a person made and is
+   * reported, `unsupported` included: a `cli` descriptor whose binary cannot be
+   * resolved is a real failure of the thing the user asked for, and suppressing
+   * it here while `update` reports it made the same condition look like it only
+   * ever happened on update.
+   */
   async install(agentId: string): Promise<SwitchSetupResult> {
-    const elapsed = startTimer();
-    const { run, attempted } = await this.runInstall(agentId);
-    // An agent type with no connector to install did not fail to install one.
-    if (attempted) {
-      trackEvent('connector_installed', {
-        agent_type: agentTypeOf(agentId),
-        target: 'local',
-        outcome: run.result.success ? 'success' : 'failure',
-        failure_reason: run.failure,
-        duration_ms: elapsed(),
-      });
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
+      return connectorUnsupported().result;
     }
+    const elapsed = startTimer();
+    const run = await this.runInstall(agentId);
+    trackEvent('connector_installed', {
+      agent_type: agentTypeOf(agentId),
+      target: 'local',
+      outcome: run.result.success ? 'success' : 'failure',
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
+    });
     return run.result;
   }
 
-  private async runInstall(agentId: string): Promise<{ run: ConnectorRun; attempted: boolean }> {
+  private async runInstall(agentId: string): Promise<ConnectorRun> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const run = await this.runFiles(agentId, (files, fs, version) =>
-        files.install(fs, { version })
-      );
-      return { run, attempted: true };
+      return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved) return { run: connectorUnsupported(), attempted: false };
+    if (!resolved) return connectorUnsupported();
     const { descriptor, bin, ref, rules } = resolved;
     try {
       await this.ensureMarketplace(
@@ -463,19 +446,12 @@ class SwitchSetupService {
         rules
       );
     } catch (err) {
-      return {
-        run: connectorFailed(installFailureMessage(String(err)), 'marketplace_failed'),
-        attempted: true,
-      };
+      return connectorFailed(installFailureMessage(String(err)), 'marketplace_failed');
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
-    return {
-      run:
-        res.code === 0
-          ? connectorSucceeded()
-          : connectorFailed(installFailureMessage(res.stderr.trim()), 'install_command_failed'),
-      attempted: true,
-    };
+    return res.code === 0
+      ? connectorSucceeded()
+      : connectorFailed(installFailureMessage(res.stderr.trim()), 'install_command_failed');
   }
 
   /**
