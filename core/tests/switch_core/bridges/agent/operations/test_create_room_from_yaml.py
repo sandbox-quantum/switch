@@ -8,6 +8,7 @@ Same FakeRoomService pattern as test_rooms_yaml.py: real PostgreSQL, no Matrix.
 from __future__ import annotations
 
 import uuid
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +24,7 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.definitions import create_room_from_yaml
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.admin_client import AdminClient
 from switch_core.db.models import (
@@ -79,6 +81,8 @@ class FakeRoomService:
                 bridge_id=config.bridge_id,
                 instructions=config.instructions,
                 created_by=config.created_by,
+                created_by_agent_id=config.created_by_agent_id,
+                agent_creation_depth=config.agent_creation_depth,
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
@@ -183,6 +187,15 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         external_user_store=ExternalUserStore(),
         room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
+        config=SimpleNamespace(agent_rooms_per_hour=20),
+        connections={},
+    )
+    # The cap and the depth are the real service's; only its collaborators are fakes.
+    fake_protocol.check_agent_room_cap = partial(
+        ProtocolService.check_agent_room_cap, fake_protocol
+    )
+    fake_protocol.agent_creation_depth = partial(
+        ProtocolService.agent_creation_depth, fake_protocol
     )
 
     async with session_factory() as session:
@@ -206,6 +219,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
             "user_id": user_id,
             "session_factory": session_factory,
             "admin": admin,
+            "protocol": fake_protocol,
         }
     finally:
         op_context._protocol = old_protocol
@@ -251,8 +265,10 @@ links:
 """
 
 
-async def _call(agent_id: str, **kwargs: Any) -> dict[str, Any]:
-    token = set_call_context(CallContext(agent_id=agent_id, session_key=None))
+async def _call(
+    agent_id: str, session_key: str | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    token = set_call_context(CallContext(agent_id=agent_id, session_key=session_key))
     try:
         return await create_room_from_yaml(**kwargs)
     finally:
@@ -311,7 +327,65 @@ async def test_kickoff_is_posted_on_behalf_of_the_owner(env):
     assert result["failed_attachments"] == []
     sent = env["admin"].sent
     assert [m["body"] for m in sent][-1] == "Start on the brief."
-    assert all(m["on_behalf_of"].name == "alice" for m in sent)
+    # The kickoff speaks for the agent that created the room, so the agents
+    # it mentions wake only if their addressing admits that agent.
+    assert {(m["on_behalf_of"].name, m["on_behalf_of"].agent_id) for m in sent} == {
+        ("claude-code.alice", env["agent_id"])
+    }
+
+
+@pytest.mark.asyncio
+async def test_room_records_the_agent_that_created_it(env):
+    result = await _call(env["agent_id"], yaml=SINGLE_ROOM_YAML)
+
+    async with env["session_factory"]() as session:
+        room = await session.get(Room, result["room_id"])
+    assert room.created_by_agent_id == env["agent_id"]
+    assert room.created_by == env["user_id"]
+    assert room.agent_creation_depth == 1
+
+
+@pytest.mark.asyncio
+async def test_kickoff_is_withheld_in_a_room_made_from_an_agent_made_room(env):
+    """One hop of kickoffs: an agent woken in a room an agent created can
+    still create a room, but that room's kickoff is not posted."""
+    first = await _call(env["agent_id"], yaml=SINGLE_ROOM_YAML)
+    env["protocol"].connections["s1"] = SimpleNamespace(rooms={first["room_id"]})
+
+    second = await _call(env["agent_id"], session_key="s1", yaml=KICKOFF_YAML)
+
+    assert [f["kind"] for f in second["failed_attachments"]] == ["kickoff"]
+    assert "created by an agent" in second["failed_attachments"][0]["error"]
+    assert env["admin"].sent == []
+    async with env["session_factory"]() as session:
+        room = await session.get(Room, second["room_id"])
+    assert room.agent_creation_depth == 2
+
+
+@pytest.mark.asyncio
+async def test_hourly_cap_refuses_the_room_past_the_allowance(env):
+    env["protocol"].config.agent_rooms_per_hour = 2
+    await _call(env["agent_id"], yaml=SINGLE_ROOM_YAML)
+    await _call(env["agent_id"], yaml=PARAMETERIZED_YAML, inputs={"project": "p"})
+
+    with pytest.raises(ValueError, match="created 2 room"):
+        await _call(env["agent_id"], yaml=KICKOFF_YAML)
+
+    async with env["session_factory"]() as session:
+        names = (await session.execute(select(Room.name))).scalars().all()
+    assert "Kickoff Room" not in names
+
+
+@pytest.mark.asyncio
+async def test_hourly_cap_refuses_a_group_whole(env):
+    env["protocol"].config.agent_rooms_per_hour = 2
+    await _call(env["agent_id"], yaml=SINGLE_ROOM_YAML)
+
+    with pytest.raises(ValueError, match="may create 2"):
+        await _call(env["agent_id"], yaml=GROUP_YAML, inputs={"team": "alpha"})
+
+    async with env["session_factory"]() as session:
+        assert (await session.execute(select(RoomGroup))).scalars().all() == []
 
 
 @pytest.mark.asyncio

@@ -117,6 +117,8 @@ class FakeRoomService:
                 bridge_id=config.bridge_id,
                 instructions=config.instructions,
                 created_by=config.created_by,
+                created_by_agent_id=config.created_by_agent_id,
+                agent_creation_depth=config.agent_creation_depth,
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,

@@ -625,6 +625,12 @@ class Room(TenantScoped, Base):
         # and the ON DELETE SET NULL when a group is removed both scan the
         # table. Mirrors ix_agents_parent_agent_id.
         Index("ix_rooms_group_id", "group_id"),
+        # The hourly cap counts an agent's recent rooms on every create.
+        Index(
+            "ix_rooms_created_by_agent_id_created_at",
+            "created_by_agent_id",
+            "created_at",
+        ),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -639,6 +645,12 @@ class Room(TenantScoped, Base):
             ["room_groups.tenant_id", "room_groups.id"],
             name="fk_rooms_group",
             ondelete="SET NULL (group_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_rooms_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
         ),
     )
 
@@ -657,6 +669,16 @@ class Room(TenantScoped, Base):
     observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
+    )
+    # The agent that created the room through an agent operation. NULL for a
+    # room a person created. `created_by` is the agent's owner in both cases.
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How many agent-created rooms lie between this room and one a person
+    # created: 0 for a person's room, 1 for a room an agent created while
+    # working in a person's room, and so on. Bounds how far a chain of
+    # templates can carry kickoffs (see `MAX_KICKOFF_DEPTH`).
+    agent_creation_depth: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
     )
     group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str | None] = mapped_column(
