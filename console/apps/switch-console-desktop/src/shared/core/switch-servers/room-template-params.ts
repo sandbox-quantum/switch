@@ -38,3 +38,7 @@ export function isConsoleParamType(type: ParamType): type is ConsoleParamType {
 export function isEntityParamType(type: ParamType): type is EntityParamType {
   return (ENTITY_PARAM_TYPES as readonly string[]).includes(type);
 }
+
+/** Param types that accept `prefill: first`. A `user` param has no first:
+ * `{$creator}` already names the deployer. */
+export const PREFILL_PARAM_TYPES: readonly ParamType[] = ['agent', 'bridge', 'room'];

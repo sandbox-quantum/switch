@@ -28,6 +28,12 @@
 #                 creating it. A template with no `room:` creates the agent
 #                 and stops there.
 #
+#   params:       Optional. Values the deployer fills in, referred to as
+#                 `{name}` anywhere below. On a param of type `bridge`,
+#                 `agent` or `room`, `prefill: first` selects the server's
+#                 default messaging app, or its first agent or room by name,
+#                 so the deployer only confirms it.
+#
 #   kickoff:      Optional, needs `room:`. Posted into the room on behalf of
 #                 the deployer, once the room exists. An agent
 #                 starts working when a message addresses it, so mention the
@@ -52,6 +58,11 @@
 # AGENT.md next to this file, so the instructions are written once. A
 # template saved to a workspace carries its instructions inline instead.
 version: 1
+params:
+  bridge:
+    type: bridge
+    description: The messaging app the room is created in.
+    prefill: first
 agent:
   name: switch-expert
   description: >-
@@ -71,6 +82,7 @@ room:
     Where {$creator} asks {agent} about Switch: how it works, how to set
     something up, why something is not behaving.
   channel_type: channel_private
+  bridge: "{bridge}"
   agents: ["{agent}"]
   users: ["{$creator}"]
   instructions: |

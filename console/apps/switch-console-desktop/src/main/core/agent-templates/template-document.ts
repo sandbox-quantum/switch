@@ -168,8 +168,10 @@ function isProviderParam(spec: unknown): boolean {
  * Kept: `room:` (or `group:`, `rooms:`, `links:`), `params:`, `kickoff:`,
  * `version:`. Dropped: the agent entries, which the server does not
  * understand, and any `type: provider` param, which only the Console can
- * answer. For the singular `agent:` form, an `agent` param is added so the
- * room's `{agent}` reference resolves on the server.
+ * answer. A param's `prefill` key is dropped too: the form has already
+ * applied it, and a server that predates the key refuses the document.
+ * For the singular `agent:` form, an `agent` param is added so the room's
+ * `{agent}` reference resolves on the server.
  *
  * Returns null when the document has no room part.
  */
@@ -185,9 +187,14 @@ export function serverDocument(
   // The Use page also parses this document to build its form, and the form
   // must show provider params. Only the copy sent to the server drops them.
   const declared = Object.fromEntries(
-    Object.entries(asRecord(doc.params) ?? {}).filter(
-      ([, spec]) => options.keepConsoleParams || !isProviderParam(spec)
-    )
+    Object.entries(asRecord(doc.params) ?? {})
+      .filter(([, spec]) => options.keepConsoleParams || !isProviderParam(spec))
+      .map(([name, spec]) => {
+        const record = asRecord(spec);
+        if (record === null || record.prefill === undefined) return [name, spec];
+        const { prefill: _prefill, ...rest } = record;
+        return [name, rest];
+      })
   );
   const params: Record<string, unknown> =
     asRecord(doc.agent) !== null && !Array.isArray(doc.agents)

@@ -103,6 +103,26 @@ describe('serverDocument', () => {
     expect(Object.keys(doc.params)).toEqual(['team', 'provider', 'bridge']);
   });
 
+  it('drops prefill, which a server that predates the key refuses', () => {
+    const doc = load(
+      serverDocument(
+        [
+          'params:',
+          '  bridge:',
+          '    type: bridge',
+          '    description: Where the room lives',
+          '    prefill: first',
+          'room:',
+          '  name: n',
+          '  description: d',
+          '  bridge: "{bridge}"',
+        ].join('\n'),
+        { keepConsoleParams: true }
+      ) ?? ''
+    ) as { params: Record<string, unknown> };
+    expect(doc.params.bridge).toEqual({ type: 'bridge', description: 'Where the room lives' });
+  });
+
   it('declares {agent} for a lone agent', () => {
     const doc = load(serverDocument(SOLO) ?? '') as { params: Record<string, unknown> };
     expect(Object.keys(doc.params)).toEqual(['agent']);

@@ -65,8 +65,8 @@ async function remoteContext(sshHost: string): Promise<IExecutionContext> {
 
 // On a host, agents get the same one-folder-per-agent layout as on this
 // machine, under the host's home. The Console's default on this machine is
-// `~/switchdash/repositories`.
-const REMOTE_LOCATIONS_DIR = 'switchdash/repositories';
+// `~/.switch/agents`.
+const REMOTE_LOCATIONS_DIR = '.switch/agents';
 
 function failedRepo(dir: string, target: string, e: unknown): PrepareWorkspaceResult {
   const stderr = (e as { stderr?: string }).stderr;

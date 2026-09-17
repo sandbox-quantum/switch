@@ -2,7 +2,11 @@ import Ajv from 'ajv';
 import { dump, load } from 'js-yaml';
 import type { KV } from '@main/db/kv';
 import exampleTemplateYaml from '@root/../../../examples/room-templates/red-blue-workroom.template.yaml?raw';
-import { PARAM_TYPES, type ParamType } from '@shared/core/switch-servers/room-template-params';
+import {
+  PARAM_TYPES,
+  PREFILL_PARAM_TYPES,
+  type ParamType,
+} from '@shared/core/switch-servers/room-template-params';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
 export type ParamSpec = {
@@ -14,6 +18,9 @@ export type ParamSpec = {
   /** String params carrying long text render as a textarea (a one-line input
    * would strip pasted newlines). Declared in the template: `multiline: true`. */
   multiline: boolean;
+  /** With `first`, the form selects the first agent, room or messaging app
+   * and the deployer can change it. Declared in the template: `prefill: first`. */
+  prefill: 'first' | null;
 };
 
 /** One room of a template, with the fields the Use page shows and edits. */
@@ -64,6 +71,7 @@ export function extractParams(raw: unknown): ParamSpec[] {
         default: null,
         enum: null,
         multiline: false,
+        prefill: null,
       };
     }
     const s = spec as Record<string, unknown>;
@@ -78,6 +86,10 @@ export function extractParams(raw: unknown): ParamSpec[] {
       default: s.default !== undefined ? (s.default as ParamSpec['default']) : null,
       enum: Array.isArray(s.enum) ? (s.enum as string[]) : null,
       multiline: validType === 'string' && s.multiline === true,
+      prefill:
+        s.prefill === 'first' && PREFILL_PARAM_TYPES.includes(validType)
+          ? ('first' as const)
+          : null,
     };
   });
 }
