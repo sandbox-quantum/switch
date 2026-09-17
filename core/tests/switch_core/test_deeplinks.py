@@ -70,6 +70,12 @@ class TestSwitchdashToGateway:
             is None
         )
 
+    def test_mixed_case_host_still_rewrites(self) -> None:
+        result = switchdash_to_gateway(
+            "switchdash://Session?agent=a&room=r", "https://gw.example"
+        )
+        assert result == "https://gw.example/deeplink/session?agent=a&room=r"
+
 
 class TestGatewayQueryToSwitchdash:
     def test_reconstructs_deeplink_from_query(self) -> None:
