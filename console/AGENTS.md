@@ -425,7 +425,10 @@ pnpm run lint
   enough — excess-property checking does not apply through a spread — so the runtime
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
-  success-vs-failure, app version, operating system, and the random install id. Never:
+  success-vs-failure, how long an operation took, app version, operating system, and the
+  random install id. A duration is the one permitted value that is not from a fixed set,
+  so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
+  milliseconds, and never a span that could encode something else. Never:
   prompts, code, file paths, working directories, error messages or stack traces (use an
   enumerated code), machine or user names, IP or MAC addresses, email or sign-in, and no
   agent, room, project, location or server names or ids. Widening this is a consent

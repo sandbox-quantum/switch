@@ -6,13 +6,20 @@ import { resolveCommandPath } from '@switch-console/core/deps/runtime';
 import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import { startTimer } from '@main/core/telemetry/duration';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
-import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
 import { createPluginFs } from '../providers/plugin-fs';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
+import {
+  type ConnectorRun,
+  connectorFailed,
+  connectorSucceeded,
+  connectorUnsupported,
+  type SwitchSetupResult,
+} from './connector-run';
 import {
   cliRulesFor,
   type InstalledPlugin,
@@ -41,9 +48,6 @@ export type SwitchSetupStatus = {
 export function marketplaceMatchesSource(entry: RegisteredMarketplace, source: string): boolean {
   return entry.source === source;
 }
-
-/** Outcome of a mutating operation, mirroring the providers controller shape. */
-export type SwitchSetupResult = { success: boolean; message?: string };
 
 const EXEC_TIMEOUT_MS = 120_000;
 
@@ -363,7 +367,15 @@ class SwitchSetupService {
     return { ...(await this.getStatus(agentId)), refreshError };
   }
 
-  /** Install, update and uninstall for a file-based connector. */
+  /**
+   * Install, update and uninstall for a file-based connector.
+   *
+   * Resolving is inside the try because it throws for a connector that declares
+   * files and implements none. An operation the user asked for must come back as
+   * a failed result either way — a rejection would skip the report and reach the
+   * UI as a stack — and that case is its own failure code rather than a write
+   * that went wrong, because it is a fault in the plugin and not on the machine.
+   */
   private async runFiles(
     agentId: string,
     action: (
@@ -371,58 +383,60 @@ class SwitchSetupService {
       homeFs: PluginFs,
       version: string
     ) => Promise<unknown>
-  ): Promise<SwitchSetupResult> {
-    const resolved = this.resolveFiles(agentId);
-    if (!resolved)
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+  ): Promise<ConnectorRun> {
+    let resolved: ReturnType<typeof this.resolveFiles>;
+    try {
+      resolved = this.resolveFiles(agentId);
+    } catch (err) {
+      log.error('switch-setup: file-based connector declares no behavior', { agentId, err });
+      return connectorFailed(String(err), 'files_unimplemented');
+    }
+    if (!resolved) return connectorUnsupported();
     try {
       await action(resolved.files, resolved.homeFs, resolved.version);
-      return { success: true };
+      return connectorSucceeded();
     } catch (err) {
       log.error('switch-setup: file-based connector operation failed', { agentId, err });
-      return { success: false, message: err instanceof Error ? err.message : String(err) };
+      return connectorFailed(
+        err instanceof Error ? err.message : String(err),
+        'files_write_failed'
+      );
     }
   }
 
+  /**
+   * Install the connector, reporting the outcome.
+   *
+   * An agent type that declares no connector did not fail to install one, so it
+   * returns before the timer and reports nothing — the same guard `update` and
+   * `uninstall` use. Everything past it is an attempt a person made and is
+   * reported, `unsupported` included: a `cli` descriptor whose binary cannot be
+   * resolved is a real failure of the thing the user asked for, and suppressing
+   * it here while `update` reports it made the same condition look like it only
+   * ever happened on update.
+   */
   async install(agentId: string): Promise<SwitchSetupResult> {
-    const { result, attempted } = await this.runInstall(agentId);
-    // An agent type with no connector to install did not fail to install one.
-    if (attempted) {
-      trackEvent('connector_installed', {
-        agent_type: isValidProviderId(agentId) ? agentId : 'unknown',
-        target: 'local',
-        outcome: result.success ? 'success' : 'failure',
-      });
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
+      return connectorUnsupported().result;
     }
-    return result;
+    const elapsed = startTimer();
+    const run = await this.runInstall(agentId);
+    trackEvent('connector_installed', {
+      agent_type: agentTypeOf(agentId),
+      target: 'local',
+      outcome: run.result.success ? 'success' : 'failure',
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
+    });
+    return run.result;
   }
 
-  private async runInstall(
-    agentId: string
-  ): Promise<{ result: SwitchSetupResult; attempted: boolean }> {
+  private async runInstall(agentId: string): Promise<ConnectorRun> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      // `runFiles` resolves the behavior outside its own try, and that throws
-      // for a connector that declares files and implements none. An install the
-      // user asked for must come back as a failed result either way — a
-      // rejection here would skip the report and reach the UI as a stack.
-      try {
-        const result = await this.runFiles(agentId, (files, fs, version) =>
-          files.install(fs, { version })
-        );
-        return { result, attempted: true };
-      } catch (err) {
-        return {
-          result: { success: false, message: installFailureMessage(String(err)) },
-          attempted: true,
-        };
-      }
+      return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved)
-      return {
-        result: { success: false, message: 'Switch setup is not supported for this agent.' },
-        attempted: false,
-      };
+    if (!resolved) return connectorUnsupported();
     const { descriptor, bin, ref, rules } = resolved;
     try {
       await this.ensureMarketplace(
@@ -432,19 +446,12 @@ class SwitchSetupService {
         rules
       );
     } catch (err) {
-      return {
-        result: { success: false, message: installFailureMessage(String(err)) },
-        attempted: true,
-      };
+      return connectorFailed(installFailureMessage(String(err)), 'marketplace_failed');
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
-    return {
-      result:
-        res.code === 0
-          ? { success: true }
-          : { success: false, message: installFailureMessage(res.stderr.trim()) },
-      attempted: true,
-    };
+    return res.code === 0
+      ? connectorSucceeded()
+      : connectorFailed(installFailureMessage(res.stderr.trim()), 'install_command_failed');
   }
 
   /**
@@ -466,16 +473,19 @@ class SwitchSetupService {
    */
   async update(agentId: string): Promise<SwitchSetupResult> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+      return connectorUnsupported().result;
     }
-    const { result, wasReinstall } = await this.runUpdate(agentId);
+    const elapsed = startTimer();
+    const { run, wasReinstall } = await this.runUpdate(agentId);
     trackEvent('connector_updated', {
       agent_type: agentTypeOf(agentId),
       target: 'local',
-      outcome: result.success ? 'success' : 'failure',
+      outcome: run.result.success ? 'success' : 'failure',
       was_reinstall: wasReinstall,
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
     });
-    return result;
+    return run.result;
   }
 
   /**
@@ -484,25 +494,18 @@ class SwitchSetupService {
    * verb, so for it every update is the second kind, with a window in between
    * where nothing is installed.
    */
-  private async runUpdate(
-    agentId: string
-  ): Promise<{ result: SwitchSetupResult; wasReinstall: boolean }> {
+  private async runUpdate(agentId: string): Promise<{ run: ConnectorRun; wasReinstall: boolean }> {
     // Installing a file-based connector overwrites in place, so update is the
     // same operation — there is no removed-but-not-reinstalled window.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const result = await this.runFiles(agentId, (files, fs, version) =>
+      const run = await this.runFiles(agentId, (files, fs, version) =>
         files.install(fs, { version })
       );
       // Overwritten in place: neither a verb update nor a remove-and-replace.
-      return { result, wasReinstall: false };
+      return { run, wasReinstall: false };
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved) {
-      return {
-        result: { success: false, message: 'Switch setup is not supported for this agent.' },
-        wasReinstall: false,
-      };
-    }
+    if (!resolved) return { run: connectorUnsupported(), wasReinstall: false };
     const { descriptor, bin, ref, rules } = resolved;
 
     try {
@@ -514,7 +517,7 @@ class SwitchSetupService {
       );
     } catch (err) {
       return {
-        result: { success: false, message: `Could not add marketplace: ${String(err)}` },
+        run: connectorFailed(`Could not add marketplace: ${String(err)}`, 'marketplace_failed'),
         wasReinstall: false,
       };
     }
@@ -523,10 +526,10 @@ class SwitchSetupService {
     if (updateArgs) {
       const res = await this.run(bin, updateArgs);
       return {
-        result:
+        run:
           res.code === 0
-            ? { success: true }
-            : { success: false, message: res.stderr.trim() || 'Update failed.' },
+            ? connectorSucceeded()
+            : connectorFailed(res.stderr.trim() || 'Update failed.', 'update_command_failed'),
         wasReinstall: false,
       };
     }
@@ -534,53 +537,54 @@ class SwitchSetupService {
     const removed = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
     if (removed.code !== 0) {
       return {
-        result: {
-          success: false,
-          message: removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
-        },
+        run: connectorFailed(
+          removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
+          'uninstall_command_failed'
+        ),
         wasReinstall: true,
       };
     }
     const added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
     return {
-      result:
+      run:
         added.code === 0
-          ? { success: true }
-          : {
-              success: false,
-              message:
-                added.stderr.trim() ||
+          ? connectorSucceeded()
+          : connectorFailed(
+              added.stderr.trim() ||
                 'Update failed: the plugin was removed but could not be reinstalled. Install it again from Settings → Agents.',
-            },
+              'install_command_failed'
+            ),
       wasReinstall: true,
     };
   }
 
   async uninstall(agentId: string): Promise<SwitchSetupResult> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+      return connectorUnsupported().result;
     }
-    const result = await this.runUninstall(agentId);
+    const elapsed = startTimer();
+    const run = await this.runUninstall(agentId);
     trackEvent('connector_uninstalled', {
       agent_type: agentTypeOf(agentId),
       target: 'local',
-      outcome: result.success ? 'success' : 'failure',
+      outcome: run.result.success ? 'success' : 'failure',
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
     });
-    return result;
+    return run.result;
   }
 
-  private async runUninstall(agentId: string): Promise<SwitchSetupResult> {
+  private async runUninstall(agentId: string): Promise<ConnectorRun> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
       return this.runFiles(agentId, (files, fs) => files.uninstall(fs));
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved)
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+    if (!resolved) return connectorUnsupported();
     const { descriptor, bin, ref, rules } = resolved;
     const res = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
     return res.code === 0
-      ? { success: true }
-      : { success: false, message: res.stderr.trim() || 'Uninstall failed.' };
+      ? connectorSucceeded()
+      : connectorFailed(res.stderr.trim() || 'Uninstall failed.', 'uninstall_command_failed');
   }
 }
 

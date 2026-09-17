@@ -14,6 +14,7 @@ export const TELEMETRY_SHARED = [
   'Which features are used, and how often',
   'Which coding agents you use, and whether they run here or on a remote host',
   'Whether sessions end normally or fail',
+  'How long installs and setup steps take',
   'App version and operating system',
   'A random id for this install, so one copy of the app can be told from another',
 ];

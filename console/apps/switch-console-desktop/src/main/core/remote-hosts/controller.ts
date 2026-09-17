@@ -15,6 +15,7 @@ import {
 import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { cliFailureReason } from '@main/core/telemetry/cli-failure';
+import { startTimer } from '@main/core/telemetry/duration';
 import type { TelemetryCliAction } from '@main/core/telemetry/events';
 import { installMethodOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -102,7 +103,8 @@ function reportRemoteCliAction(
   action: TelemetryCliAction,
   id: string,
   method: InstallMethod | undefined,
-  result: { success: boolean; error?: { type?: string } }
+  result: { success: boolean; error?: { type?: string } },
+  durationMs: number
 ): void {
   trackEvent('agent_cli_action', {
     agent_type: agentTypeOf(id),
@@ -111,6 +113,7 @@ function reportRemoteCliAction(
     action,
     outcome: result.success ? 'success' : 'failure',
     failure_reason: cliFailureReason(result),
+    duration_ms: durationMs,
   });
 }
 
@@ -237,15 +240,19 @@ export const remoteHostsController = createRPCController({
     method?: InstallMethod;
   }): Promise<DependencyInstallResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
+    // Resolving the manager is outside the timer because it may open the SSH
+    // connection, which is not part of how long an install takes.
+    const elapsed = startTimer();
     const result = await manager.install(params.id, params.method);
-    reportRemoteCliAction('install', params.id, params.method, result);
+    reportRemoteCliAction('install', params.id, params.method, result, elapsed());
     return result;
   },
 
   updateDep: async (params: { sshHost: string; id: string }): Promise<DependencyUpdateResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
+    const elapsed = startTimer();
     const result = await manager.update(params.id);
-    reportRemoteCliAction('update', params.id, undefined, result);
+    reportRemoteCliAction('update', params.id, undefined, result, elapsed());
     return result;
   },
 
@@ -254,8 +261,9 @@ export const remoteHostsController = createRPCController({
     id: string;
   }): Promise<DependencyUninstallResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
+    const elapsed = startTimer();
     const result = await manager.uninstall(params.id);
-    reportRemoteCliAction('uninstall', params.id, undefined, result);
+    reportRemoteCliAction('uninstall', params.id, undefined, result, elapsed());
     return result;
   },
 

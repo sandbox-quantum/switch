@@ -32,12 +32,13 @@ const CONTEXT: TelemetryContext = {
 /**
  * A value of the right kind for each property, chosen by name.
  *
- * Counts are numbers, the yes/no properties are booleans, and everything else
- * is a placeholder string — the builder does not check a string against the
- * catalogue's unions, so any string exercises the same path.
+ * Counts and durations are numbers, the yes/no properties are booleans, and
+ * everything else is a placeholder string — the builder does not check a string
+ * against the catalogue's unions, so any string exercises the same path.
  */
 function sampleFor(property: string): string | number | boolean {
   if (property.endsWith('_count')) return 3;
+  if (property.endsWith('_ms')) return 1234;
   if (
     property.startsWith('has_') ||
     property.startsWith('was_') ||

@@ -408,6 +408,9 @@ describe('RemoteSwitchSetupService.install', () => {
       agent_type: 'codex',
       target: 'remote',
       outcome: 'success',
+      failure_reason: 'none',
+      // Elapsed wall time: a real number, but not one a test can pin.
+      duration_ms: expect.any(Number),
     });
   });
 
@@ -430,6 +433,8 @@ describe('RemoteSwitchSetupService.install', () => {
       agent_type: 'codex',
       target: 'remote',
       outcome: 'failure',
+      failure_reason: 'install_command_failed',
+      duration_ms: expect.any(Number),
     });
   });
 
@@ -489,6 +494,8 @@ describe('RemoteSwitchSetupService.install', () => {
         agent_type: 'opencode',
         target: 'remote',
         outcome: 'success',
+        failure_reason: 'none',
+        duration_ms: expect.any(Number),
       });
     });
 
@@ -503,6 +510,8 @@ describe('RemoteSwitchSetupService.install', () => {
         agent_type: 'opencode',
         target: 'remote',
         outcome: 'failure',
+        failure_reason: 'files_write_failed',
+        duration_ms: expect.any(Number),
       });
     });
 
@@ -519,10 +528,14 @@ describe('RemoteSwitchSetupService.install', () => {
       const result = await service.install('opencode');
 
       expect(result.success).toBe(false);
+      // Its own code, not `files_write_failed`: a fault in the plugin rather
+      // than on the host, and the two would otherwise be one number.
       expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
         agent_type: 'opencode',
         target: 'remote',
         outcome: 'failure',
+        failure_reason: 'files_unimplemented',
+        duration_ms: expect.any(Number),
       });
     });
   });

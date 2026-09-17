@@ -7,6 +7,7 @@ import type {
 } from '@switch-console/core/deps/runtime';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { cliFailureReason } from '@main/core/telemetry/cli-failure';
+import { startTimer } from '@main/core/telemetry/duration';
 import type { TelemetryCliAction } from '@main/core/telemetry/events';
 import { installMethodOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -43,7 +44,8 @@ function reportCliAction(
   action: TelemetryCliAction,
   id: string,
   method: InstallMethod | undefined,
-  result: { success: boolean; error?: { type?: string } }
+  result: { success: boolean; error?: { type?: string } },
+  durationMs: number
 ): void {
   trackEvent('agent_cli_action', {
     agent_type: agentTypeOf(id),
@@ -52,6 +54,7 @@ function reportCliAction(
     action,
     outcome: result.success ? 'success' : 'failure',
     failure_reason: cliFailureReason(result),
+    duration_ms: durationMs,
   });
 }
 
@@ -98,8 +101,9 @@ export const providersController = createRPCController({
 
   install: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
+    const elapsed = startTimer();
     const result = await mgr.install(id, method);
-    reportCliAction('install', id, method, result);
+    reportCliAction('install', id, method, result, elapsed());
     if (result.success) {
       // Persist the chosen method as an override, or clear to auto when no method was chosen.
       // Do NOT auto-promote the inferred method — that would freeze a heuristic guess.
@@ -112,15 +116,17 @@ export const providersController = createRPCController({
 
   update: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
+    const elapsed = startTimer();
     const result = await mgr.update(id, method);
-    reportCliAction('update', id, method, result);
+    reportCliAction('update', id, method, result, elapsed());
     return result;
   },
 
   uninstall: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
+    const elapsed = startTimer();
     const result = await mgr.uninstall(id, method);
-    reportCliAction('uninstall', id, method, result);
+    reportCliAction('uninstall', id, method, result, elapsed());
     return result;
   },
 

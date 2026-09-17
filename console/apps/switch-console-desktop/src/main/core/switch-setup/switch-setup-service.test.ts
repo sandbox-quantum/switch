@@ -407,6 +407,9 @@ describe('switchSetupService mutations', () => {
       agent_type: 'claude',
       target: 'local',
       outcome: 'success',
+      failure_reason: 'none',
+      // Elapsed wall time: a real number, but not one a test can pin.
+      duration_ms: expect.any(Number),
     });
   });
 
@@ -448,14 +451,20 @@ describe('switchSetupService mutations', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toBe('no write access');
+    // The host CLI refused the plugin — distinct from the marketplace failing
+    // to register, which is the other way this same button fails.
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
       agent_type: 'claude',
       target: 'local',
       outcome: 'failure',
+      failure_reason: 'install_command_failed',
+      duration_ms: expect.any(Number),
     });
   });
 
   it('reports nothing when the agent type has no Switch setup to attempt', async () => {
+    // Not a failed install — there was never one to attempt. Reporting it would
+    // put every agent type in the app into the connector failure rate.
     mocks.getPlugin.mockReturnValue(NONE_AGENT);
 
     const result = await switchSetupService.install('no-switch-agent');
@@ -465,6 +474,29 @@ describe('switchSetupService mutations', () => {
       message: 'Switch setup is not supported for this agent.',
     });
     expect(mocks.trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports `unsupported` when a declared connector has no binary to drive it', async () => {
+    // The other way an install ends with nothing installed, and this one IS a
+    // failure of what the user asked for: the agent type declares a CLI
+    // connector and the host binary cannot be resolved. It used to be silenced
+    // by the same flag as the case above while `update` and `uninstall`
+    // reported it, so the condition looked like it only happened on update.
+    mocks.getPlugin.mockReturnValue({
+      ...CLI_AGENT,
+      capabilities: { ...CLI_AGENT.capabilities, hostDependency: { binaryNames: [] } },
+    });
+
+    const result = await switchSetupService.install('claude');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'claude',
+      target: 'local',
+      outcome: 'failure',
+      failure_reason: 'unsupported',
+      duration_ms: expect.any(Number),
+    });
   });
 });
 
@@ -726,6 +758,8 @@ describe('file-based connector version', () => {
       agent_type: 'opencode',
       target: 'local',
       outcome: 'success',
+      failure_reason: 'none',
+      duration_ms: expect.any(Number),
     });
   });
 
@@ -735,10 +769,14 @@ describe('file-based connector version', () => {
     const result = await switchSetupService.install('opencode');
 
     expect(result.success).toBe(false);
+    // The app's own write failed. Nothing about a marketplace or a host CLI is
+    // involved in this connector, and the code has to say so.
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
       agent_type: 'opencode',
       target: 'local',
       outcome: 'failure',
+      failure_reason: 'files_write_failed',
+      duration_ms: expect.any(Number),
     });
   });
 
@@ -751,10 +789,143 @@ describe('file-based connector version', () => {
     const result = await switchSetupService.install('opencode');
 
     expect(result.success).toBe(false);
+    // Its own code, not `files_write_failed`: nothing was written because there
+    // was nothing to write it with, which is a fault in the plugin rather than
+    // on this machine — and the two would otherwise be one number.
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
       agent_type: 'opencode',
       target: 'local',
       outcome: 'failure',
+      failure_reason: 'files_unimplemented',
+      duration_ms: expect.any(Number),
+    });
+  });
+});
+
+/**
+ * The codes exist to tell apart failures a user experiences identically.
+ *
+ * Every case below reaches the UI as some variant of "it did not work", and
+ * each one needs a different fix — a marketplace source that will not resolve,
+ * a host CLI that refuses the plugin, an update that got halfway. Counting them
+ * as one number answers none of those questions, which is what this pins.
+ */
+describe('why a connector operation failed', () => {
+  function reported(name: string): Record<string, unknown> {
+    const call = mocks.trackEvent.mock.calls.find((c) => c[0] === name);
+    if (!call) throw new Error(`nothing reported ${name}`);
+    return call[1] as Record<string, unknown>;
+  }
+
+  /** Every exec fails, except the listings the operation reads first. */
+  function execFailingAfterListings(stderr: string) {
+    return (_bin: string, args: string[] = []) => {
+      const a = args.join(' ');
+      if (a === 'plugin list --json' || a === 'plugin marketplace list --json') {
+        return Promise.resolve({ stdout: JSON.stringify([]), stderr: '' });
+      }
+      return Promise.reject(Object.assign(new Error('boom'), { code: 1, stderr }));
+    };
+  }
+
+  it('blames the marketplace when it is the marketplace that would not register', async () => {
+    // An empty listing sends `install` through `marketplace add`, which fails
+    // here — before the plugin command is ever reached.
+    mocks.exec.mockImplementation(execFailingAfterListings('could not resolve source'));
+
+    await switchSetupService.install('claude');
+
+    expect(reported('connector_installed')).toMatchObject({
+      outcome: 'failure',
+      failure_reason: 'marketplace_failed',
+    });
+  });
+
+  it('blames the update verb when the host has one and it failed', async () => {
+    const base = execImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ').startsWith('plugin update')) {
+        return Promise.reject(Object.assign(new Error('boom'), { code: 1, stderr: 'locked' }));
+      }
+      return base(bin, args);
+    });
+
+    await switchSetupService.update('claude');
+
+    expect(reported('connector_updated')).toMatchObject({
+      outcome: 'failure',
+      failure_reason: 'update_command_failed',
+      was_reinstall: false,
+    });
+  });
+
+  it('blames the uninstall when a reinstall-style update cannot remove the old plugin', async () => {
+    // Codex has no update verb, so an update is remove-then-add. Failing at the
+    // remove leaves the previous connector in place: nothing was lost.
+    mocks.getPlugin.mockReturnValue(CODEX_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/codex');
+    const base = codexExecImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin remove ${CODEX_REF}`) {
+        return Promise.reject(Object.assign(new Error('boom'), { code: 1, stderr: 'in use' }));
+      }
+      return base(bin, args);
+    });
+
+    await switchSetupService.update('codex');
+
+    expect(reported('connector_updated')).toMatchObject({
+      outcome: 'failure',
+      failure_reason: 'uninstall_command_failed',
+      was_reinstall: true,
+    });
+  });
+
+  it('blames the install when a reinstall-style update removed the plugin and could not put it back', async () => {
+    // The same button, one step later, and a materially worse outcome: the
+    // agent now has no connector at all. `was_reinstall` alone cannot separate
+    // this from the case above — both are true — so the code has to.
+    mocks.getPlugin.mockReturnValue(CODEX_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/codex');
+    const base = codexExecImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin add ${CODEX_REF}`) {
+        return Promise.reject(Object.assign(new Error('boom'), { code: 1, stderr: 'no network' }));
+      }
+      return base(bin, args);
+    });
+
+    await switchSetupService.update('codex');
+
+    expect(reported('connector_updated')).toMatchObject({
+      outcome: 'failure',
+      failure_reason: 'install_command_failed',
+      was_reinstall: true,
+    });
+  });
+
+  it('blames the uninstall command when removing the connector failed', async () => {
+    mocks.exec.mockImplementation(execFailingAfterListings('permission denied'));
+
+    await switchSetupService.uninstall('claude');
+
+    expect(reported('connector_uninstalled')).toMatchObject({
+      outcome: 'failure',
+      failure_reason: 'uninstall_command_failed',
+    });
+  });
+
+  it('reports no reason at all when the operation worked', async () => {
+    // `none` rather than an absent property: every connector_installed then
+    // carries the same keys, so a gap in the data is a send that went wrong
+    // rather than an outcome nobody thought about.
+    mocks.exec.mockImplementation(execImpl(null));
+
+    await switchSetupService.install('claude');
+
+    expect(reported('connector_installed')).toMatchObject({
+      outcome: 'success',
+      failure_reason: 'none',
     });
   });
 });
