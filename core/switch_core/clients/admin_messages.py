@@ -45,6 +45,13 @@ class OnBehalfOf(NamedTuple):
     name: str
     agent_id: str | None = None
 
+    @property
+    def label(self) -> str:
+        """How a message names whom it speaks for. A person is written as a
+        mention. An agent is not: the mention would address it, and it would
+        wake on the kickoff of the room it has just created."""
+        return self.name if self.agent_id is not None else f"@{self.name}"
+
 
 def platform_replies_in_channel(content: Mapping[str, object]) -> bool:
     """Whether a platform message asks the agents it addresses to answer in
