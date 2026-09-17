@@ -210,8 +210,6 @@ describe('ClaudeTrustService', () => {
     expect(JSON.parse(String(claudeJson?.[1]))).not.toHaveProperty('hasCompletedOnboarding');
   });
 
-
-
   it('is idempotent when already trusted', async () => {
     const service = makeService();
     const trustedPath = '/already/trusted';

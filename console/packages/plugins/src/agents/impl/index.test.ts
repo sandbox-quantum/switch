@@ -150,5 +150,4 @@ describe('pluginRegistry', () => {
       expect(typeof p.behavior.prompt?.buildCommand).toBe('function');
     }
   });
-
 });
