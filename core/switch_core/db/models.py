@@ -1607,6 +1607,13 @@ class Message(TenantScoped, Base):
         # is what a caller asking for a time window filters by, so it needs an
         # index of its own rather than a scan back along seq.
         Index("ix_messages_room_sent_at", "room_id", "sent_at"),
+        # The usage snapshot's shape: this tenant's messages since a moment,
+        # across every room. The index above cannot serve it — its leading
+        # column is the room, and the snapshot names none — so without this
+        # each pass sequentially scans the whole table, several times, per
+        # tenant. Nothing else asks that question, which is why it is here
+        # rather than in the original schema.
+        Index("ix_messages_tenant_sent_at", "tenant_id", "sent_at"),
         Index(
             "ix_messages_thread_root",
             "room_id",
