@@ -20,6 +20,7 @@ the thing to diff against.
 - [Mapping the SOP onto rooms](#mapping-the-sop-onto-rooms)
 - [The incident-response agent](#the-incident-response-agent)
 - [Reaching PagerDuty](#reaching-pagerduty)
+- [Where the agent runs](#where-the-agent-runs)
 - [Making the agent user-agnostic](#making-the-agent-user-agnostic)
 - [Gaps](#gaps)
 - [What to build first](#what-to-build-first)
@@ -801,13 +802,114 @@ spawned to handle it.
 - **`!commands` from a workflow never wake a dormant agent**, though they work
   against a live session. Native slash commands are human-only.
 
-**So: use pull, and declare by hand.** A human addresses the responder in the hub
-to declare. This matches the pull model the workstream hubs adopted deliberately
-— "nothing happens automatically; work proceeds when someone requests it" — it
-needs no Slack plumbing, and the SOP already has a human in exactly that spot
-making exactly that decision. The auto-wake path is a legitimate option for the
-*cadence nudge*, where the content does not matter and only the mention does. It
-is a poor foundation for declaration, where the content is the whole point.
+**So the declaration is a mention, and the safest mention is a human's.** A human
+addresses the responder in the hub. This matches the pull model the workstream
+hubs adopted deliberately — "nothing happens automatically; work proceeds when
+someone requests it" — it needs no Slack plumbing, and the SOP already has a
+human in exactly that spot making exactly that decision.
+
+An app-posted mention works too, and is the right answer for the cadence nudge,
+where only the mention matters and the content does not. It is a weaker
+foundation for declaration, where the content is the whole point and most of it
+is what gets dropped.
+
+### Why not a PagerDuty MCP channel
+
+The obvious-looking alternative is to have a PagerDuty MCP server *push* into the
+agent's session, the way the Switch runtime pushes room events. It is worth
+walking through, because it is real, and because it is the wrong call.
+
+**The mechanism exists.** Claude Code has a feature called **channels**: an MCP
+server declares `experimental: {"claude/channel": {}}` and emits
+`notifications/claude/channel`, and the host renders it into the session's
+context as a `channel` block — starting a turn if the session is idle. This is
+not part of the base MCP protocol; ordinary MCP tools are strictly pull, and the
+standard server→client notifications (`list_changed`, logging) only refresh a
+cache. Switch's own runtime is built on the channel, so the pattern is proven in
+this codebase.
+
+**Four gates stand between that and a working PagerDuty push.**
+
+1. **It must ship as a marketplace plugin.** The enabling flag takes
+   `plugin:<name>@<marketplace>`, not a bare server name, so a plain `.mcp.json`
+   entry can never be named.
+2. **The flag must be on argv at launch** — `--dangerously-load-development-channels`.
+   Not settings, not config. Whatever starts the session has to pass it.
+3. **The install must authenticate through Anthropic.** On Vertex, Bedrock or any
+   third-party provider the flag is **ignored silently** — no error, no warning,
+   no events.
+4. **It is a research preview**, and the flag name is itself a stability
+   statement. The protocol contract may change.
+
+Gate 3 should decide it. Switch already carries this hazard for its own channel,
+and the internals documentation is blunt about the consequence: registering an
+agent as addressable when its host cannot receive notifications "leaves the room
+expecting answers it will never send. **Nothing detects this.**" An on-call agent
+that looks online and is not is the worst failure mode in this document.
+
+**And the behavioural evidence is stronger than the documentary evidence.**
+Switch built the channel, ships it, and documents it — and then disables it for
+every session Switch Console manages, passes the flag nowhere in the app, and
+reaches for keystroke injection into the TUI instead. Codex and OpenCode have no
+channel at all; for them Switch Console or its sidecar is mandatory for any live
+delivery. The configuration almost everyone actually runs does not use this
+mechanism.
+
+**The cheaper route gets the same outcome.** There is already a push path, it is
+already load-bearing, and it needs nothing built: the responder's watcher holds
+an event stream filtered to *addressed* events and spawns a session when one
+arrives. So the job is not "build a push channel" — it is "make a PagerDuty
+incident arrive as an addressed message in a room", which the Slack path above
+already does. Same mechanism local or remote, every auth provider, and it reuses
+the in-flight and already-attending guards that exist.
+
+## Where the agent runs
+
+The responder must be online when nobody's laptop is. Switch has a first-class
+answer, and it is the same one the existing always-on agents use.
+
+### The remote host and its sidecar
+
+A **remote agent** is the same agent with its process on an SSH host. Nothing in
+Switch core distinguishes it — same registration, same connection model, same
+heartbeat. The difference is entirely in where the process runs and what
+supervises it:
+
+- Switch Console onboards a host by SSH alias and stores no credentials of its
+  own, using the operator's existing SSH agent and config.
+- Setting a host up runs an ordered **plan** — core tools (git, Node, tmux), then
+  per agent type its CLI and the Switch connector. Nothing advances the plan on
+  its own; each step runs when asked, and a check that could not run is not a
+  passing check.
+- The agent runs inside `tmux`, beside a **sidecar** the app deploys: a headless
+  re-implementation of the session logic that starts sessions, keeps them
+  connected to their rooms, and injects messages into their pane, with no app
+  running anywhere.
+- The sidecar — not the desktop app — holds the notification stream for a remote
+  agent, filtered to addressed events, and spawns a session per room.
+
+That sidecar is the push receiver this design needs, and it already exists. It is
+why a remote host is the right call for the responder, and it is worth saying
+plainly that this is a *hosting* decision rather than an architectural one: the
+agent, the hub, the role and the room-building are identical either way.
+
+Two consequences specific to running unattended, both of which matter more for an
+incident responder than for anything else Switch hosts:
+
+**Permission bypass defaults on.** A remote agent is onboarded with permission
+bypass enabled, deliberately — it "runs unattended on the VM with no operator",
+so a prompt nobody can answer is a hang. For a responder with shell access during
+an incident, that is a decision to take explicitly rather than inherit. It is
+also the strongest argument for
+[the rule that makes it safe](#the-rule-that-makes-it-safe): if the agent is
+never going to be stopped by a permission prompt, its restraint has to come from
+its instructions and from the narrowness of what it is asked to do.
+
+**A reboot ends it, and nothing brings it back.** Nothing registers a service;
+after a host restart someone has to start things again by hand. For an agent
+whose entire purpose is to be there at 03:00, that is a real availability gap,
+and it is the one operational item on this list that could embarrass the SOP on
+its first weekend. [Gaps](#gaps) G22.
 
 ## Making the agent user-agnostic
 
@@ -1025,7 +1127,7 @@ instructions must say so explicitly, because the tool surface will not.
 
 ## Gaps
 
-Twenty-one, grouped by what they block. Each says what is missing, why it matters
+Twenty-three, grouped by what they block. Each says what is missing, why it matters
 here, and a ticket to file. Sizes are rough: **S** is days, **M** is a sprint,
 **L** is a project.
 
@@ -1294,6 +1396,29 @@ alerts, but any team that wires alerts straight into a room will hit it.
 > **Proposed ticket:** *Bridge message edits* — relay `message_changed` as an
 > edit, or at minimum as a new message noting the original was amended. **M**
 
+**G22 — A remote agent does not survive a host reboot.**
+Switch Console deploys the sidecar into a tmux session on the host; nothing
+registers a service, so after a restart the agent and any Console-managed server
+on that host stay down until someone starts them by hand. Every other gap here
+degrades a feature. This one makes the responder absent, which is the only
+requirement it really has.
+
+> **Proposed ticket:** *Supervise the remote sidecar* — install it as a user
+> service (systemd `--user`, or the platform equivalent) so a host reboot brings
+> it back, and surface "host up, sidecar down" as a distinct state rather than an
+> unreachable agent. **M**
+
+**G23 — Nothing detects a host that cannot receive pushed events.**
+An agent registered as session-addressable whose host authenticates through a
+third-party provider silently receives nothing: the enabling flag is ignored with
+no error. Switch records the distinction at registration and the internals
+documentation says outright that nothing detects the mismatch afterwards. The
+room waits for an agent that will never answer.
+
+> **Proposed ticket:** *Detect a session that cannot receive events* — have the
+> runtime confirm delivery once at session start and downgrade the agent to
+> passive, loudly, when it cannot. **S**
+
 ### G. Closing the incident out
 
 **G18 — There is no transcript export.**
@@ -1316,36 +1441,52 @@ with no change to Switch at all.** Standing it up is configuration and one agent
 definition:
 
 1. Adopt the product's alert channel as the incident hub. Write its instruction
-   card: the SOP, the room-writing rules, the bindings block.
+   card: the SOP, the room-writing rules, the bindings block — with the
+   **internal** bridge id pinned.
 2. Define the exclusive `responder` role in the hub.
-3. Register the responder agent, widen its addressing policy **through the API,
-   not the dashboard** (G12), and run its watcher on an always-on host.
+3. Onboard an always-on SSH host and register the responder as a **remote**
+   agent on it, so the sidecar holds its event stream and it stays up with no
+   app running. Widen its addressing policy **through the API, not the
+   dashboard** (G12).
 4. Install a PagerDuty MCP server on that host and put a `pagerduty` reference
    type and its references in the hub.
 5. Register the room YAML as a template so the shape is reviewable — as
    documentation, not as the mechanism.
 6. Put the SITREP cadence in a scheduled Slack workflow that mentions the agent.
 
-The one compromise in that list is agent ownership: until G11 exists, the
-responder is owned by a person or by Admin, and neither is right.
+Two compromises in that list, both worth naming out loud rather than
+discovering. Agent ownership: until G11 exists the responder is owned by a person
+or by Admin, and neither is right. And a host reboot takes the responder offline
+until someone notices (G22) — which, for the one agent whose job is to be
+present, is the compromise to fix first if the SOP is going to be relied on.
 
 **Then, in order of value per unit of work:**
 
-1. **G11 — a service account.** Small, and the recommendation is unsound without
+1. **G22 — supervise the remote sidecar.** Moved to the top after the hosting
+   decision. Everything else on this list degrades a feature; this one makes the
+   responder absent, and absent at 03:00 on a Sunday is the failure the whole
+   design exists to prevent.
+2. **G11 — a service account.** Small, and the recommendation is unsound without
    it. Every day it is missing is a day the responder is either one person's
    agent or an admin.
-2. **G12 — the policy editor bug.** Hours of work, and it otherwise gets
+3. **G12 — the policy editor bug.** Hours of work, and it otherwise gets
    discovered by whoever widens the responder's policy, during an incident.
-3. **G9 — pass the remaining room fields through the template provisioner**,
-   `join_event_listeners` first. Small, and it is what closes the distance
-   between the reviewable artifact and the capable one.
-4. **G1 — surface unresolved invitees.** Small, and it turns "the war room quietly
+4. **G23 — detect a session that cannot receive events.** Small, and it removes
+   the only failure mode in this document where the room believes an agent is
+   listening and it is not.
+5. **G1 — surface unresolved invitees.** Small, and it turns "the war room quietly
    came up one person short" into something someone notices.
-5. **G8 — mirror to a linked room.** Removes the SOP's most tedious manual step,
+6. **G8 — mirror to a linked room.** Removes the SOP's most tedious manual step,
    posting the same situation report into two channels.
-6. **G7 — scheduled room actions.** Retires the per-incident Slack workflow.
-7. Everything else, as it starts to hurt.
+7. **G9 — pass the remaining room fields through the template provisioner**,
+   `join_event_listeners` first. Closes the distance between the reviewable
+   artifact and the capable one.
+8. **G7 — scheduled room actions.** Retires the per-incident Slack workflow.
+9. Everything else, as it starts to hurt.
 
-The honest summary: **the design needs no Switch changes to run, one small change
-to be safe, and two more to be pleasant.** The template work is worth doing on its
-own merits, and this SOP is not blocked on any of it.
+The honest summary: **the design needs no Switch changes to run, and two small
+ones — a supervised sidecar and a service account — before anyone should depend
+on it.** Both are hosting and identity problems rather than incident-response
+problems, which is a good sign: the SOP itself is not blocked on Switch growing
+any new concepts, and the template work is worth doing on its own merits rather
+than for this.
