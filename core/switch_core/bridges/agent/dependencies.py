@@ -23,6 +23,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.room_service import RoomService
+from switch_core.telemetry import TelemetryService
 
 _state: dict[str, Any] = {}
 
@@ -45,6 +46,7 @@ def init_dependencies(
     bridge_store: CollaborationBridgeStore,
     session_factory: Any,
     config: Any,
+    telemetry: TelemetryService | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
     _state["agent_session_store"] = agent_session_store
@@ -62,6 +64,7 @@ def init_dependencies(
     _state["bridge_store"] = bridge_store
     _state["session_factory"] = session_factory
     _state["config"] = config
+    _state["telemetry"] = telemetry
 
     _state["protocol"] = ProtocolService(
         agent_store=agent_store,
@@ -80,6 +83,7 @@ def init_dependencies(
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        telemetry=telemetry,
     )
 
 

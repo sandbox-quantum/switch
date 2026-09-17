@@ -586,6 +586,7 @@ class RoomYamlService:
             user_names=spec.users or None,
             bridge_id=bridge_id,
             created_by=user_id,
+            from_template=True,
             owner_id=user_id,
             acting_user_id=user_id,
             acting_is_admin=is_admin,

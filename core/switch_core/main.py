@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.api.handlers import session_end_reporter
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -117,9 +119,19 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
+from switch_core.observability.bootstrap import (
+    Observability,
+    RuntimeProbes,
+    start_observability,
+)
+from switch_core.observability.pool import pool_stats
+from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.telemetry.reporter import SnapshotReporter
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -137,6 +149,12 @@ _RUNTIME_STATE_SWEEP_INTERVAL = 5.0
 # promptly rather than at the next unrelated request.
 _CONNECTION_SWEEP_INTERVAL = 2.0
 
+# How long a shutdown is given after uvicorn is told to stop before the
+# process is killed regardless. It is a safety net against a client that will
+# not stop, not a target — but it is also the entire window the lifespan's
+# teardown runs in, so see `_shutdown` before shortening it.
+_FORCED_EXIT_GRACE_SECONDS = 3.0
+
 
 async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
     # `no_tenant` for the reason every other long-lived task does it: a task
@@ -152,7 +170,7 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: ProtocolService) -> None:
+async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -161,11 +179,16 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
     leases, then every client reconnects together, which is a worse stall. The
     clients were never given the chance to beat, so the honest reading is "we
     were not listening", not "they went away".
+
+    This runs on a fixed short interval and is therefore also the process's
+    most sensitive witness to the loop being blocked at all, so every round's
+    oversleep is reported — not only the ones large enough to skip a sweep.
     """
     while True:
         started = time.monotonic()
         await asyncio.sleep(_CONNECTION_SWEEP_INTERVAL)
         overslept = (time.monotonic() - started) - _CONNECTION_SWEEP_INTERVAL
+        lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
                 "Connection sweep skipped: the event loop was blocked for %.1fs, "
@@ -186,6 +209,48 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
                 )
         except Exception:
             logger.exception("Connection sweep failed")
+
+
+# What shutdown will spend on in-flight product events before giving up. Well
+# under `observability.logs.SHUTDOWN_FLUSH_SECONDS`, which is itself under
+# `_FORCED_EXIT_GRACE_SECONDS`: the three budgets nest, and this is the
+# innermost because a lost usage count matters least of the three.
+_TELEMETRY_DRAIN_SECONDS = 1.0
+
+
+async def _drain_telemetry(
+    telemetry: TelemetryService, http_client: httpx.AsyncClient | None
+) -> None:
+    """Let in-flight product events finish, then close their client.
+
+    Never raises and never overruns: a relay that has stopped answering must
+    not be able to hold the process past the point where it is killed, taking
+    the operational flush with it.
+    """
+    try:
+        async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
+            await telemetry.aclose()
+    except TimeoutError:
+        logger.warning(
+            "Gave up waiting for in-flight telemetry after %.1fs; those events "
+            "are lost.",
+            _TELEMETRY_DRAIN_SECONDS,
+        )
+    except Exception:
+        logger.warning("Telemetry shutdown failed; continuing.", exc_info=True)
+    if http_client is not None:
+        try:
+            await http_client.aclose()
+        except Exception:
+            logger.warning("Telemetry HTTP client did not close.", exc_info=True)
+
+
+async def _snapshot_loop(reporter: SnapshotReporter) -> None:
+    # `no_tenant` for the reason every other long-lived task does it: the
+    # snapshot binds each tenant in turn as it counts, and must not inherit
+    # whichever one happened to be bound when the task was created.
+    with no_tenant():
+        await reporter.run_forever()
 
 
 class _QuietPollFilter(logging.Filter):
@@ -315,6 +380,14 @@ async def run(config: SwitchConfig) -> None:
     event_buffer = EventBuffer()
     connector_store = ServerConnectorStore()
 
+    # ── Product telemetry ────────────────────────────────────────────────────
+    # Built before the services that report through it, and built whether or
+    # not it is switched on: disabled is a sink that discards, so nothing
+    # downstream has to ask.
+    telemetry, installed_at, telemetry_http = await build_telemetry(
+        config, session_factory, switch_core_version()
+    )
+
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -358,6 +431,10 @@ async def run(config: SwitchConfig) -> None:
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = ConnectionRegistry()
+    # Every connection this registry closes reports the session that ended,
+    # whichever of the five paths closed it. Installed here because this is the
+    # one registry the whole process shares.
+    connections.set_close_listener(session_end_reporter(telemetry))
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
@@ -413,6 +490,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
+        telemetry=telemetry,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
@@ -425,6 +503,7 @@ async def run(config: SwitchConfig) -> None:
         collab_bridge_store=bridge_store,
         resource_service=resource_service,
         session_factory=session_factory,
+        telemetry=telemetry,
     )
     collab_lifecycle._room_service = room_service
 
@@ -462,6 +541,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         connections=connections,
+        telemetry=telemetry,
     )
     # ── Server-side connector lifecycle ─────────────────────────────────────
     connector_lifecycle = ServerSideConnectorLifecycleService(
@@ -511,26 +591,79 @@ async def run(config: SwitchConfig) -> None:
         "telegram", TelegramAdapter, TelegramConnectionConfig
     )
 
-    # Health check mounted on the agent bridge app
+    # Liveness. Deliberately unconditional and deliberately cheap: besides the
+    # kubelet's liveness probe, the gateway Deployment and the setup Job both
+    # wait on this before they start, so anything it checked would become a
+    # boot-ordering dependency for them. Readiness is /health/ready below.
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    # Set by the lifespan. Readiness is answerable only once the monitor that
+    # answers it is running, and before that the honest answer is "no".
+    observability: Observability | None = None
+
+    @agent_bridge_app.get("/health/ready")
+    async def readiness_check() -> JSONResponse:
+        if observability is None:
+            return JSONResponse(
+                {"status": "not ready", "checks": {"startup": {"healthy": False}}},
+                status_code=503,
+            )
+        report = observability.monitor.current()
+        return JSONResponse(
+            report.as_response(), status_code=200 if report.ready else 503
+        )
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
     await client_lifecycle.ensure_system_client("admin")
 
+    probes = RuntimeProbes(
+        listener_connected=message_listener.connected.is_set,
+        bridges_running=collab_lifecycle.running_count,
+        bridges_configured=collab_lifecycle.expected_count,
+        clients_running=client_lifecycle.running_count,
+        agents_connected=lambda: len(connections.live_agent_ids()),
+        pool_stats=lambda: pool_stats(engine),
+    )
+
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
+    snapshot_reporter = SnapshotReporter(
+        telemetry=telemetry,
+        session_factory=session_factory,
+        interval_hours=config.telemetry_snapshot_interval_hours,
+        installed_at=installed_at,
+        live_session_count=connections.live_connection_count,
+    )
+
     @asynccontextmanager
     async def lifespan(app: object) -> AsyncIterator[None]:
+        nonlocal observability
         async with original_lifespan(app):  # type: ignore[arg-type]
+            observability = start_observability(
+                config=config,
+                version=switch_core_version(),
+                session_factory=session_factory,
+                probes=probes,
+            )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             connection_sweep_task = asyncio.create_task(
-                _connection_sweep_loop(protocol)
+                _connection_sweep_loop(protocol, observability.lag)
+            )
+            # Only when telemetry is on. "Off" is documented — in the Helm
+            # chart a customer reads — as nothing being collected, and running
+            # the per-tenant fan-out anyway would make that false: it is a
+            # seven-day scan over `messages` per tenant, per interval, for an
+            # analytics payload the deployment has declined.
+            snapshot_task = (
+                asyncio.create_task(_snapshot_loop(snapshot_reporter))
+                if telemetry.enabled
+                else None
             )
             await message_listener.start()
             try:
@@ -538,7 +671,23 @@ async def run(config: SwitchConfig) -> None:
             finally:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
+                if snapshot_task is not None:
+                    snapshot_task.cancel()
                 await message_listener.stop()
+                # Bounded, and *before* the operational flush rather than
+                # after. The whole teardown runs inside
+                # `_FORCED_EXIT_GRACE_SECONDS`, and the log exporter's own
+                # budget is deliberately sized to fit under it — so an
+                # unbounded drain here, ahead of that, spends the grace period
+                # on analytics and takes the "N log record(s) never exported"
+                # line down with it. A product event is the least valuable
+                # thing in this block; it must be the first to be given up.
+                await _drain_telemetry(telemetry, telemetry_http)
+                await observability.aclose()
+                # Cleared so a probe landing during teardown gets the honest
+                # "no health check has completed" 503 rather than the last
+                # cached answer, which may still say ready.
+                observability = None
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 
@@ -554,6 +703,11 @@ async def run(config: SwitchConfig) -> None:
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
+
+    telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
+    # The funnel's first step. Claimed once, and only by a deployment that
+    # knows when it was installed — see telemetry/deployment.py.
+    await telemetry.emit_milestone("deployment_installed")
 
     server_config = uvicorn.Config(
         agent_bridge_app,
@@ -1030,7 +1184,13 @@ async def _shutdown(
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 
-    await asyncio.sleep(1)
+    # `should_exit` above starts uvicorn's own shutdown, which runs the
+    # lifespan's teardown — including the observability handle's final flush.
+    # This sleep is the whole budget that teardown gets before the process is
+    # killed out from under it, so anything with a deadline of its own must fit
+    # inside it: see `observability.logs.SHUTDOWN_FLUSH_SECONDS`, which is set
+    # against this number.
+    await asyncio.sleep(_FORCED_EXIT_GRACE_SECONDS)
     logger.info("Forcing exit")
     os._exit(0)
 

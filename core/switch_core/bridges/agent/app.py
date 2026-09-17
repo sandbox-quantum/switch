@@ -12,7 +12,7 @@ from switch_core.bridges.agent.api.version_routes import router as version_route
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
-from switch_core.bridges.agent.dependencies import init_dependencies
+from switch_core.bridges.agent.dependencies import get_protocol, init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -30,8 +30,10 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.observability.http import MetricsMiddleware
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
+from switch_core.telemetry import TelemetryService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,7 @@ def create_agent_bridge_app(
     session_factory: object,
     config: SwitchConfig,
     connections: ConnectionRegistry | None = None,
+    telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, ProtocolService]:
     # One registry for the whole process: the live connection set is the source
     # of truth for reachability, so every service must see the same one. The
@@ -86,26 +89,15 @@ def create_agent_bridge_app(
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        telemetry=telemetry,
     )
 
-    protocol = ProtocolService(
-        agent_store=agent_store,
-        agent_session_store=agent_session_store,
-        room_store=room_store,
-        room_service=room_service,
-        client_lifecycle=client_lifecycle,
-        collab_lifecycle=collab_lifecycle,
-        event_buffer=event_buffer,
-        connections=connections,
-        task_store=task_store,
-        resource_service=resource_service,
-        api_key_store=api_key_store,
-        api_key_cache=api_key_cache,
-        external_user_store=external_user_store,
-        bridge_store=bridge_store,
-        session_factory=session_factory,  # type: ignore[arg-type]
-        config=config,
-    )
+    # The one `init_dependencies` just built, not a second of its own. Every
+    # HTTP handler resolves that instance through `Depends(get_protocol)`, so
+    # a second one here is an object whose wiring no request ever sees — which
+    # is how the agent bridge came to emit every session event into a
+    # telemetry service that was None.
+    protocol = get_protocol()
 
     app = FastAPI(title="Switch Agent Bridge API")
 
@@ -160,6 +152,10 @@ def create_agent_bridge_app(
         api_key_cache=api_key_cache,
         session_factory=session_factory,  # type: ignore[arg-type]
     )
+    # Outside the bearer middleware, so a request rejected for bad credentials
+    # is still counted and timed — an authentication failure is traffic, and a
+    # spike of it is the thing you most want a dashboard to show.
+    app.add_middleware(MetricsMiddleware)
     # Added last, so it wraps the bearer middleware: a request rejected for bad
     # credentials is logged with a request id like any other.
     app.add_middleware(RequestContextMiddleware)

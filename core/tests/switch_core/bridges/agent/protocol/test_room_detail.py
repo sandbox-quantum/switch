@@ -174,6 +174,16 @@ def _build_service(
         return resolved_roles
 
     svc.list_room_roles = _fake_roles  # type: ignore[assignment]
+
+    # Archiving goes through RoomService rather than straight at the store, so
+    # that an agent's archive is reported like any other. This stand-in keeps
+    # the fake store as the thing under test.
+    class _RoomServiceStub:
+        async def set_room_archived(self, room_id: str, archived: bool) -> None:
+            async with _session_factory() as session:
+                await svc.room_store.set_archived(session, room_id, archived)
+
+    svc.room_service = _RoomServiceStub()  # type: ignore[assignment]
     return svc
 
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -228,6 +228,12 @@ class ConnectionRegistry:
     """The live set of agent connections. Authoritative, in memory."""
 
     def __init__(self) -> None:
+        # Called with every Connection this registry closes, whoever closed it.
+        # A callback rather than a report at each call site: `close` is reached
+        # from five places — the sweep, the stale-connection check, the stream,
+        # and two room-claim failures — and a sixth added later would silently
+        # report nothing. The registry stays unaware of what the callback does.
+        self._on_close: Callable[[Connection], None] = lambda conn: None
         self._by_id: dict[str, Connection] = {}
         self._by_agent: dict[str, set[str]] = {}
 
@@ -346,6 +352,16 @@ class ConnectionRegistry:
                 connection_id,
             )
 
+    def set_close_listener(self, listener: Callable[[Connection], None]) -> None:
+        """Observe every connection this registry closes.
+
+        One listener, set once at wiring time. It must not raise — a bad
+        observer cannot be allowed to leave a connection half-closed — and it
+        is called after the registry's own bookkeeping, so what it sees is the
+        closed state rather than a connection mid-teardown.
+        """
+        self._on_close = listener
+
     def close(self, connection_id: str, reason: str) -> Connection | None:
         conn = self._by_id.pop(connection_id, None)
         if conn is None:
@@ -371,6 +387,19 @@ class ConnectionRegistry:
             conn.beats,
             time.monotonic() - conn.last_beat,
         )
+        # After the bookkeeping and the log, so an observer sees the closed
+        # state. Guarded because the registry's own contract — the connection
+        # is closed and the caller gets it back — must not depend on whoever
+        # is watching.
+        try:
+            self._on_close(conn)
+        except Exception:
+            logger.warning(
+                "A close listener raised for connection %s; the connection is "
+                "closed regardless.",
+                connection_id,
+                exc_info=True,
+            )
         return conn
 
     def sweep(self) -> list[Connection]:
@@ -559,6 +588,18 @@ class ConnectionRegistry:
             conn.spawn_capable and self.covers(conn, room_id)
             for conn in self.for_agent(agent_id)
         )
+
+    def live_connection_count(self) -> int:
+        """How many connections are open right now.
+
+        Distinct from `live_agent_ids`, which answers how many *agents* hold
+        one: an agent may hold several (the cap is
+        `MAX_CONNECTIONS_PER_AGENT`), so ten people running two windows each
+        against one agent is twenty connections and one agent. Telemetry
+        reports sessions, and a session is a connection.
+        """
+        now = time.monotonic()
+        return sum(1 for conn in self._by_id.values() if conn.is_alive(now))
 
     def live_agent_ids(self) -> set[str]:
         """Every agent with at least one live connection.
