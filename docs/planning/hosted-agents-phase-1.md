@@ -93,3 +93,26 @@ live provider authentication, cloud deployment or GitHub mutation behavior. Clau
 API-key and setup-token environment mapping is implemented but not live verified;
 Antigravity's non-browser authentication route remains unresolved. See the
 [provider authentication review](hosted-provider-auth-feasibility.md).
+
+
+## Adversarial review follow-up
+
+The first Astra medium review reproduced one P1 integration issue: the existing
+Claude MCP mapping copied the mounted Switch token into the SDK's `--mcp-config`
+argument. The hosted launch therefore did not satisfy the no-secret-argv gate,
+despite the bootstrap itself keeping values out of its persisted configuration.
+The follow-up maps forwarded MCP environment names to `${NAME}` references, leaving
+values in the Claude process environment and preserving explicit MCP overrides.
+A test using the installed Agent SDK intercepts its actual spawn options and checks
+that both synthetic credential values are absent from argv, present in the process
+environment, and represented only by references in `--mcp-config`.
+
+Astra medium's follow-up adversarial review found no further actionable issues.
+It independently ran all 47 Claude adapter/spawn tests and inspected the installed
+Claude 2.1.274 implementation to verify variable expansion for dynamic MCP config.
+An offline probe using bundled Claude 2.1.260 also confirmed that the MCP child
+received the synthetic Switch token and an explicit environment override. No provider authentication or model
+request was made. The process-recovery, Windows shutdown and live-authentication
+verification limits above still apply; a clean review is not proof of deployment
+readiness. The final combined Claude and hosted-runtime regression run passed all
+83 tests; package build, typecheck, focused lint and formatting checks also passed.

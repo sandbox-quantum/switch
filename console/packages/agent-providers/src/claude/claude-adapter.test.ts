@@ -138,17 +138,23 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
   });
 
-  it('resolves the variables a stdio server asks to forward into its env', async () => {
+  it('references variables a stdio server asks to forward without copying their values', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
     await adapter.startSession(
       startInput({
+        env: {
+          PATH: '/usr/bin',
+          HOME: '/home/agent',
+          SWITCH_API_TOKEN: 'synthetic-switch-token',
+        },
         mcpServers: {
           switch: {
             transport: 'stdio',
             command: 'npx',
             args: ['-y', 'runtime'],
-            envVars: ['HOME', 'SWITCH_ABSENT'],
+            env: { HOME: '/explicit/home' },
+            envVars: ['HOME', 'SWITCH_API_TOKEN', 'SWITCH_ABSENT'],
           },
         },
       })
@@ -158,7 +164,10 @@ describe('ClaudeAdapter session lifecycle', () => {
         type: 'stdio',
         command: 'npx',
         args: ['-y', 'runtime'],
-        env: { HOME: '/home/agent' },
+        env: {
+          HOME: '/explicit/home',
+          SWITCH_API_TOKEN: '${SWITCH_API_TOKEN}',
+        },
       },
     });
   });
