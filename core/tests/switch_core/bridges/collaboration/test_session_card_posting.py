@@ -163,13 +163,15 @@ def _steps(message: dict[str, Any]) -> list[str]:
     The recording has nine calls and one remark, and the count is the claim:
     one message now carries the turn's state, its tool calls and what the agent
     said, so a title matching says a card is drawn and nothing about the nine
-    that should be beside it.
+    that should be beside it. The Console link heads every section as a card of
+    its own and is not one of the turn's, so it is left out of the count.
     """
     return [
         task["title"]
         for block in message["blocks"]
         if block.get("type") == "plan"
         for task in block["tasks"]
+        if task["task_id"] != "switch-session"
     ]
 
 

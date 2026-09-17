@@ -127,6 +127,11 @@ _MAX_ACTIVITY_LINES = 12
 # dropped. The per-task budgets are ours: nothing here is near a documented
 # limit, and a card is read at a glance.
 _MAX_PLAN_TASKS = 50
+# What a section spends on the turn, the remaining row being the session card.
+# Fixed rather than widened when there is no session url to put in that card:
+# the url can arrive after the stream has opened, and a boundary that moved with
+# it would re-cut every page already drawn.
+_MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
 _MAX_PLAN_TASK_DETAILS = 200
@@ -202,11 +207,9 @@ _TRUNCATED = " […truncated]"
 # that line when there is something to disclose.
 _STEP_BLOCKS = ("switch-steps-top", "switch-steps-middle", "switch-steps-bottom")
 
-# The single card in the stream's own plan. Its `details` is sent once and
-# never again: `details` on a `task_update` appends to what the card already
-# has rather than replacing it, so a card re-sent with the same link shows the
-# link twice. Title and status can be re-sent freely, and have to be together —
-# an update that leaves the title out stores an empty one.
+# The first card of every section, carrying the Console link. The same id in
+# both sections is deliberate and Slack takes it: a reader opens one section or
+# the other, and the link has to be in whichever one they chose.
 _SESSION_CARD = "switch-session"
 
 # Slack's three task states against the contract's four. `declined` is not an
@@ -1185,53 +1188,51 @@ def render_activity_plan(
     posted to the room unless the agent posts it — so without this the turn's
     reasoning is simply not available to a reader who wants it.
 
-    A turn that has neither called nor said anything has no plan to show, so it
-    falls back to the spinning card the status line used to be — this one
-    message stands in for both of the two it replaced.
+    One section and no more, which is the one place this path cannot follow the
+    streamed one: `chat.postMessage` refuses a message holding two plan blocks
+    outright, where a stream accepts any number of them. So a long turn shows
+    its newest section and says in the header what it dropped, rather than the
+    previous section a streamed turn keeps.
+
+    A turn that has neither called nor said anything still draws the section,
+    because the session card in it is a card — this one message stands in for
+    both of the two it replaced, and the second of those was a status line that
+    appeared before the turn had done anything.
     """
     shown = [item for item in items if in_activity_log(item)]
-    kept = shown[len(shown) - _MAX_PLAN_TASKS :]
+    kept = shown[len(shown) - _MAX_SECTION_ITEMS :]
     title = _activity_title(
         items, turn, elapsed_seconds=elapsed_seconds, omitted=len(shown) - len(kept)
     )
-    blocks: list[dict[str, Any]] = []
-    if kept:
-        blocks.append(
-            {
-                "type": "plan",
-                "title": _truncate(title, _MAX_PLAN_TITLE),
-                "tasks": [_settled(_plan_task(item), item, turn) for item in kept],
-            }
-        )
-    elif turn.status not in TURN_ENDED:
-        blocks.append(
-            {
-                "type": "task_card",
-                "task_id": _task_id(turn.turn_id),
-                "title": _truncate(title, _MAX_PLAN_TASK_TITLE),
-                "status": "in_progress",
-            }
-        )
-    else:
-        blocks.append(_context(title))
-    if session_url and urlsplit(session_url).scheme in {"https", "http", "switchdash"}:
-        blocks.append(_context(f"<{session_url}|Open in Console app>"))
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "plan",
+            "title": _truncate(title, _MAX_PLAN_TITLE),
+            "tasks": [
+                _session_card(session_url, live=turn.status not in TURN_ENDED),
+                *(_settled(_plan_task(item), item, turn) for item in kept),
+            ],
+        }
+    ]
     _fit_details(blocks, _MAX_POST_BYTES)
     return SlackMessage(text=title, blocks=blocks)
 
 
 @dataclass
 class StreamedActivity:
-    """A turn's activity as the pieces a stream is built from.
+    """A turn's activity as the blocks a stream is built from.
 
     The whole turn every time, not a delta: which of these Slack has already
     been told is the streaming adapter's bookkeeping, because only it knows
     what its own appends landed. Keeping that out of here leaves this a pure
     function of the turn, testable without a stream.
+
+    `title` is not one of the blocks and is never sent. It is the one line the
+    message amounts to, which is what a failed publication has to report to a
+    caller that cannot know how Slack was going to draw it.
     """
 
     title: str
-    session: dict[str, Any]
     blocks: list[dict[str, Any]]
 
 
@@ -1242,52 +1243,55 @@ def render_activity_stream(
     elapsed_seconds: float | None = None,
     session_url: str | None = None,
 ) -> StreamedActivity:
-    """The same turn as `render_activity`, shaped for `chat.appendStream`.
+    """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
-    Three pieces, because a streamed message is drawn in two different ways at
-    once. The header and the card under it belong to the stream's own plan,
-    which is addressed with chunks and can only ever be added to. The steps
-    belong to ordinary `plan` blocks carried inside the stream, which are
-    addressed by `block_id` and are replaced whole — so unlike the stream's
-    plan they can drop a step, reorder one, or hold a different fifty than
-    they held a minute ago.
+    Sections and nothing else. A stream can carry its own plan, addressed with
+    chunks, and that is what used to hold the status line — but a plan that
+    grows cannot take a card back, so it could never hold the steps, and it
+    cost the message a line of its own above them. The whole turn is drawn
+    instead in ordinary `plan` blocks carried inside the stream, addressed by
+    `block_id` and replaced whole, which can hold a different fifty than they
+    held a minute ago.
 
-    That is what lets a long turn stay one readable message. The stream's plan
-    holds the status line and nothing that grows; the steps live in three
-    blocks that rotate, so a turn of any length draws the same four blocks.
+    So the message collapses to the heading of its newest section: where the
+    turn got to and how long it has been there, on the section a reader would
+    open to watch it carry on. A settled section above it is headed by the range
+    it holds, which is what makes it legible as history rather than as a second
+    thing to read.
 
-    The header says where the turn is, and the section holding the live step
-    says what it is doing. Naming the step in both would say it twice, and the
-    section is the useful half: it is the one a reader wants to open, and the
-    glyph beside it is already the thing that says work is happening there.
+    Measured before it was built: a stream with no plan chunks at all still
+    draws its blocks, and the title of a plan with no cards in it draws nothing
+    — so there is no invisible header left behind by dropping it.
     """
     shown = [item for item in items if in_activity_log(item)]
-    title = _truncate(
-        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
-        _MAX_PLAN_TITLE,
-    )
-    session = _session_card(session_url, turn)
     blocks = _step_blocks(
         [_settled(_plan_task(item), item, turn) for item in shown],
         _running(shown, turn),
+        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
+        session_url,
+        turn.status not in TURN_ENDED,
     )
-    # The message the steps accumulate into carries the header and the session
-    # card too, so what they weigh is not available to the steps to spend.
-    _fit_details(blocks, _MAX_STREAM_BYTES - _weigh([title, session]))
-    return StreamedActivity(title=title, session=session, blocks=blocks)
+    _fit_details(blocks, _MAX_STREAM_BYTES)
+    return StreamedActivity(title=blocks[-1]["title"], blocks=blocks)
 
 
-def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
-    """The one card in the stream's own plan, and where the link lives.
+def _session_card(session_url: str | None, *, live: bool) -> dict[str, Any]:
+    """The first card of a section, and where the Console link lives.
 
-    A streamed plan with no cards in it does not draw at all, so without this
-    the status line would have nowhere to appear. It doubles as the place the
-    Console link is asked to be: first row of the first block, visible in the
-    same expansion that opens the plan.
+    Asked for as the first row of the block rather than a line beside it: a
+    link on its own line is a line every reader pays for and few use, and the
+    same expansion that opens the turn's activity is the one a reader reaches
+    for when they want the session itself.
 
-    Its status is the turn's, so the block it sits in shows a spinner while the
-    turn runs rather than the check a settled card would give it. Slack draws
-    that glyph from the cards, and this is the only card in there.
+    It is repeated in every section on purpose. A reader opens one section, and
+    a link that is only in the other one is a link they have to go looking for.
+
+    `live` rather than the turn's status, because only the section holding the
+    live end of the turn should spin: Slack draws a block's glyph from the cards
+    in it, and a settled section showing a spinner would point at a place where
+    nothing is happening. On the live section it is this card that guarantees
+    the spinner, which the steps cannot — between two calls every step card is
+    settled, and the heading would show a check beside "Working…".
 
     The whole url goes in or the card carries no link at all. A session url is
     built from a configured origin and three ids rather than written by an
@@ -1298,14 +1302,14 @@ def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
     With the link there, the title is hidden and the link is the whole card: a
     row reading "Switch session" above a row reading "Open in Console app" says
     the same thing twice, and the second row says it better. Without the link
-    the title is all there is, so it stays — the card still has to hold the
-    plan open for the status line above it.
+    the title is all there is, so it stays — the card is still what holds the
+    section's glyph, and a section is still drawn for a turn that has not done
+    anything yet.
     """
     card: dict[str, Any] = {
-        "type": "task_update",
-        "id": _SESSION_CARD,
+        "task_id": _SESSION_CARD,
         "title": "Switch session",
-        "status": "complete" if turn.status in TURN_ENDED else "in_progress",
+        "status": "in_progress" if live else "complete",
     }
     if not session_url or urlsplit(session_url).scheme not in {
         "https",
@@ -1316,41 +1320,64 @@ def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
     return {
         **card,
         "hide_title": True,
-        "details": f"<{session_url}|Open in Console app>",
+        "details": {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [
+                        {
+                            "type": "link",
+                            "url": session_url,
+                            "text": "Open in Console app",
+                        }
+                    ],
+                }
+            ],
+        },
     }
 
 
 def _step_blocks(
-    steps: list[dict[str, Any]], running: tuple[int, str] | None
+    steps: list[dict[str, Any]],
+    running: tuple[int, str] | None,
+    header: str,
+    session_url: str | None,
+    live: bool,
 ) -> list[dict[str, Any]]:
-    """The steps as the three blocks that hold them: what is gone, then two pages.
+    """The turn as the three blocks that hold it: what is gone, then two sections.
 
-    Pages are cut on fixed boundaries — the first fifty, the next fifty — so a
-    step never moves between pages once it has landed in one, which keeps a
-    settled page from being rewritten under a reader who has it open.
+    Sections are cut on fixed boundaries — the first forty-nine, the next
+    forty-nine — so a step never moves between them once it has landed in one,
+    which keeps a settled section from being rewritten under a reader who has it
+    open. Forty-nine rather than fifty because Slack caps a plan block at fifty
+    cards and the session card takes the first of them.
 
-    Only the newest two pages are drawn, and everything before them is gone from
-    the message. That is said on one line of its own above them, naming the
+    Only the newest two sections are drawn, and everything before them is gone
+    from the message. That is said on one line of its own above them, naming the
     whole range rather than only the most recent thing dropped, so the reader is
-    never left to add up several disclosures to find out what is missing.
+    never left to add up several disclosures to find out what is missing. Below
+    two sections there is nothing to disclose and no line: a turn that has not
+    overflowed twice collapses to a single heading.
 
     The line has to be the first of the three blocks written, because Slack
     fixes a block where it was created and one made later would render *below*
-    the pages it is describing. So the top block starts life as the first page
-    of steps and is replaced by the line when there is finally something to
+    the sections it is describing. So the top block starts life as the first
+    section and is replaced by the line when there is finally something to
     disclose — a substitution in place, which keeps its position. There is no
     call that removes a block, and this needs none.
     """
-    if not steps:
-        return []
     top, middle, bottom = _STEP_BLOCKS
-    last = (len(steps) - 1) // _MAX_PLAN_TASKS
+    last = max(len(steps) - 1, 0) // _MAX_SECTION_ITEMS
     if last < 2:
-        pages = [top, middle]
+        pages = (top, middle)
         return [
-            _step_page(steps, page, pages[page], running) for page in range(last + 1)
+            _step_page(
+                steps, page, pages[page], running, header, session_url, live, last
+            )
+            for page in range(last + 1)
         ]
-    gone = (last - 1) * _MAX_PLAN_TASKS
+    gone = (last - 1) * _MAX_SECTION_ITEMS
     return [
         {
             "type": "context",
@@ -1359,8 +1386,8 @@ def _step_blocks(
                 {"type": "mrkdwn", "text": f"_Activity 1–{gone} no longer shown_"}
             ],
         },
-        _step_page(steps, last - 1, middle, running),
-        _step_page(steps, last, bottom, running),
+        _step_page(steps, last - 1, middle, running, header, session_url, live, last),
+        _step_page(steps, last, bottom, running, header, session_url, live, last),
     ]
 
 
@@ -1369,27 +1396,37 @@ def _step_page(
     page: int,
     block_id: str,
     running: tuple[int, str] | None,
+    header: str,
+    session_url: str | None,
+    live: bool,
+    newest: int,
 ) -> dict[str, Any]:
-    """One fifty-card page as the plan block that draws it.
+    """One section as the plan block that draws it.
 
-    A page holds the turn as it happened, so a card in it is a call or a thing
-    the agent said. It is headed "Activity" rather than "Steps" because half of
-    what can be in there is not a step.
+    A section holds the turn as it happened, so a card in it is a call or a
+    thing the agent said. It is headed "Activity" rather than "Steps" because
+    half of what can be in there is not a step.
 
-    The page holding the live step names it, so the heading a reader is drawn
-    to is the one where something is happening. Only that page: the same
-    sentence on a settled page would be pointing somewhere the step is not.
+    The newest section carries the header instead: the turn's state and its
+    clock. That is where a reader looking for the live end of the turn should be
+    sent, and putting it on the section rather than on a line above them is what
+    says which of two sections is still moving.
+
+    The live step is named on the section actually holding it, which is usually
+    but not always that one — a call left open while the agent talks past it
+    stays where it landed. Naming it on the newest section regardless would
+    point a reader at a section they can see it is not in.
     """
-    start = page * _MAX_PLAN_TASKS
-    shown = steps[start : start + _MAX_PLAN_TASKS]
-    title = f"Activity {start + 1}–{start + len(shown)}"
+    start = page * _MAX_SECTION_ITEMS
+    shown = steps[start : start + _MAX_SECTION_ITEMS]
+    title = header if page == newest else f"Activity {start + 1}–{start + len(shown)}"
     if running and start <= running[0] < start + len(shown):
         title += f" · {running[1]}"
     return {
         "type": "plan",
         "block_id": block_id,
         "title": _truncate(title, _MAX_PLAN_TITLE),
-        "tasks": shown,
+        "tasks": [_session_card(session_url, live=live and page == newest), *shown],
     }
 
 
@@ -1655,15 +1692,21 @@ def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
     which is why running out of retreat here is an exception rather than a
     smaller cut: it would mean cards arriving from somewhere this was not
     written to bound.
+
+    So is the session card, whose detail is a link rather than prose. Cutting
+    its label would leave a link reading "Open in Cons…", and cutting two of
+    them buys back nothing worth having.
     """
     if _weigh(blocks) <= limit:
         return
     details = [
-        task["details"]["elements"][0]["elements"][0]
+        element
         for block in blocks
         if block.get("type") == "plan"
         for task in block["tasks"]
         if "details" in task
+        for element in [task["details"]["elements"][0]["elements"][0]]
+        if element["type"] == "text"
     ]
     for budget in _DETAIL_RETREAT:
         for element in details:

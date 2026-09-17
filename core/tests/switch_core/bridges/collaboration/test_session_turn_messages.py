@@ -541,7 +541,8 @@ async def test_the_clock_and_the_tool_log_share_one_message_and_keep_warnings() 
     plan = client.updated[-1]["blocks"][0]
     assert client.updated[-1]["ts"] == "1.0"
     assert "Worked for 10s" in plan["title"]
-    task = plan["tasks"][0]
+    assert plan["tasks"][0]["task_id"] == "switch-session"
+    task = plan["tasks"][1]
     assert task["status"] == "complete"
     assert "Read" in task["title"] and task["title"] != "Read"
     assert client.api_calls == []

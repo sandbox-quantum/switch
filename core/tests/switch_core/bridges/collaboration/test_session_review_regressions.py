@@ -37,8 +37,9 @@ def test_a_plan_header_always_discloses_the_steps_it_left_out(status):
     plan = render_activity_plan(items, _turn(status), elapsed_seconds=90).blocks[0]
 
     assert len(plan["tasks"]) == 50
-    assert "10 earlier lines not shown" in plan["title"]
-    assert plan["tasks"][0]["task_id"] == "step-10"
+    assert "11 earlier lines not shown" in plan["title"]
+    assert plan["tasks"][0]["task_id"] == "switch-session"
+    assert plan["tasks"][1]["task_id"] == "step-11"
 
 
 def test_a_finished_plan_counts_the_steps_it_ran_not_the_ones_it_shows():

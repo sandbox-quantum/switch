@@ -23,8 +23,8 @@ from switch_core.bridges.collaboration.session.renderers import (
     turn_state,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
-    _MAX_PLAN_TASKS,
     _MAX_SAID_DETAILS,
+    _MAX_SECTION_ITEMS,
     StreamedActivity,
     render_activity,
     render_activity_plan,
@@ -122,6 +122,18 @@ def _plan(items: list[Item]) -> dict[str, Any]:
     block = render_activity(items, _turn()).blocks[-1]
     assert block["type"] == "plan"
     return block
+
+
+def _turn_cards(block: dict[str, Any]) -> list[dict[str, Any]]:
+    """A section's cards without the session card that heads every one of them.
+
+    The Console link is the first row of every section by design, so a test
+    about what the turn drew has to say which cards it means — otherwise every
+    one of them is also a test of where the link sits.
+    """
+    tasks = block["tasks"]
+    assert tasks[0]["task_id"] == "switch-session"
+    return list(tasks[1:])
 
 
 def _cards(items: list[Item]) -> dict[str, dict[str, Any]]:
@@ -800,18 +812,22 @@ async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> N
     assert plan["type"] == "plan"
     assert plan["title"].endswith("· Running: Read")
     assert "40s" in plan["title"]
-    assert plan["tasks"][-1]["title"] == "Read"
+    assert _turn_cards(plan)[-1]["title"] == "Read"
 
 
 async def test_a_turn_with_nothing_to_plan_yet_still_shows_it_is_working() -> None:
-    """A plan block with no tasks says nothing, and the message this replaced
-    spun a card from the moment the turn opened."""
+    """The message this replaced spun a card from the moment the turn opened.
+
+    A plan block with no tasks says nothing, and the section is never empty:
+    the session card is in it before the turn has done anything, which is what
+    lets one shape serve a turn at both ends of its life.
+    """
     running = render_activity_plan([], _turn(), elapsed_seconds=3)
     ended = render_activity_plan([], _turn("completed"))
 
-    assert running.blocks[0]["type"] == "task_card"
-    assert running.blocks[0]["status"] == "in_progress"
-    assert ended.blocks[0]["type"] == "context"
+    assert running.blocks[0]["type"] == "plan"
+    assert [task["status"] for task in running.blocks[0]["tasks"]] == ["in_progress"]
+    assert [task["status"] for task in ended.blocks[0]["tasks"]] == ["complete"]
 
 
 # ── What the agent said, in the one block a reader opens ─────────────────────
@@ -833,7 +849,7 @@ async def test_what_the_agent_said_is_a_card_in_the_plan_marked_as_speech() -> N
         _turn("completed"),
     )
 
-    titles = [task["title"] for task in drawn.blocks[0]["tasks"]]
+    titles = [task["title"] for task in _turn_cards(drawn.blocks[0])]
     assert titles == ["Ran the tests", "» All green."]
 
 
@@ -845,7 +861,7 @@ async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> No
         [_said("Handing it over.", status="in-progress")], _turn("completed")
     )
 
-    card = drawn.blocks[0]["tasks"][0]
+    card = _turn_cards(drawn.blocks[0])[0]
     assert card["title"] == "» Handing it over."
     assert "Unfinished" not in card["title"]
 
@@ -856,7 +872,7 @@ async def test_a_turn_that_only_talked_has_a_plan_rather_than_a_bare_line() -> N
     drawn = render_activity_plan([_said("Fixed that yesterday.")], _turn("completed"))
 
     assert drawn.blocks[0]["type"] == "plan"
-    assert drawn.blocks[0]["tasks"][0]["title"] == "» Fixed that yesterday."
+    assert _turn_cards(drawn.blocks[0])[0]["title"] == "» Fixed that yesterday."
 
 
 async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> None:
@@ -866,7 +882,9 @@ async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> No
         [_said("First thought.\n\nSecond thought.")], _turn("completed")
     )
 
-    assert drawn.blocks[0]["tasks"][0]["title"] == "» First thought. Second thought."
+    assert (
+        _turn_cards(drawn.blocks[0])[0]["title"] == "» First thought. Second thought."
+    )
 
 
 async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() -> None:
@@ -876,7 +894,7 @@ async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() 
     said = "Right. " + "The failure is in the retry path. " * 12
     drawn = render_activity_plan([_said(said)], _turn("completed"))
 
-    card = drawn.blocks[0]["tasks"][0]
+    card = _turn_cards(drawn.blocks[0])[0]
     assert card["title"].endswith("…")
     assert len(card["title"]) <= 200
     assert _detail(card).startswith("Right. The failure is in the retry path.")
@@ -888,7 +906,7 @@ async def test_even_a_remark_that_would_fit_a_line_is_drawn_in_the_detail() -> N
     is hidden, so a remark left out of the detail is a remark nobody sees."""
     drawn = render_activity_plan([_said("All green.")], _turn("completed"))
 
-    card = drawn.blocks[0]["tasks"][0]
+    card = _turn_cards(drawn.blocks[0])[0]
     assert card["hide_title"] is True
     assert _detail(card) == "All green."
 
@@ -898,7 +916,7 @@ async def test_a_hidden_title_still_says_what_the_card_is() -> None:
     the title, and an empty one would leave the remark showing as nothing."""
     drawn = render_activity_plan([_said("All green.")], _turn("completed"))
 
-    assert drawn.blocks[0]["tasks"][0]["title"] == "» All green."
+    assert _turn_cards(drawn.blocks[0])[0]["title"] == "» All green."
 
 
 async def test_prose_and_calls_are_told_apart_by_the_glyph_not_by_the_status() -> None:
@@ -910,7 +928,7 @@ async def test_prose_and_calls_are_told_apart_by_the_glyph_not_by_the_status() -
         _turn("completed"),
     )
 
-    said, call = drawn.blocks[0]["tasks"]
+    said, call = _turn_cards(drawn.blocks[0])
     assert said["icon"] == {"type": "icon", "name": "comment"}
     assert call["icon"] == {"type": "icon", "name": "code"}
 
@@ -925,7 +943,7 @@ async def test_the_markdown_an_agent_wrote_reaches_the_reader_unstripped() -> No
     )
 
     assert (
-        _detail(drawn.blocks[0]["tasks"][0])
+        _detail(_turn_cards(drawn.blocks[0])[0])
         == "The failure is in **retry** — see `backoff.reset()`."
     )
 
@@ -937,7 +955,7 @@ async def test_the_expansion_keeps_the_breaks_the_line_had_to_fold_out() -> None
     said = "First thought.\n\nSecond thought. " + "More on that. " * 20
     drawn = render_activity_plan([_said(said)], _turn("completed"))
 
-    card = drawn.blocks[0]["tasks"][0]
+    card = _turn_cards(drawn.blocks[0])[0]
     assert "\n" not in card["title"]
     assert "First thought.\n\nSecond thought." in _detail(card)
 
@@ -951,7 +969,7 @@ async def test_a_remark_longer_than_the_expansion_is_says_so_where_it_was_cut() 
     """
     drawn = render_activity_plan([_said("word " * 4000)], _turn("completed"))
 
-    detail = _detail(drawn.blocks[0]["tasks"][0])
+    detail = _detail(_turn_cards(drawn.blocks[0])[0])
     assert len(detail) <= _MAX_SAID_DETAILS
     assert detail.endswith("[…truncated]")
 
@@ -960,7 +978,7 @@ async def test_a_remark_that_fits_is_not_accused_of_being_cut() -> None:
     """The notice is a claim about missing text, so it has to be false silently."""
     drawn = render_activity_plan([_said("A short remark. " * 30)], _turn("completed"))
 
-    assert "truncated" not in _detail(drawn.blocks[0]["tasks"][0])
+    assert "truncated" not in _detail(_turn_cards(drawn.blocks[0])[0])
 
 
 def _talkative(count: int, text: str) -> list[Item]:
@@ -972,54 +990,53 @@ def _streamed_bytes(drawn: StreamedActivity) -> int:
     """The turn as the adapter sends it, weighed the way Slack weighs it."""
     return len(
         json.dumps(
-            [
-                {"type": "plan_update", "title": drawn.title},
-                drawn.session,
-                *({"type": "blocks", "blocks": [block]} for block in drawn.blocks),
-            ]
+            [{"type": "blocks", "blocks": [block]} for block in drawn.blocks]
         ).encode()
     )
 
 
 async def test_the_worst_streamed_message_is_one_slack_would_accept() -> None:
-    """A hundred cards, all at the budget, in the language that costs the most.
+    """Every card a stream can draw, all at the budget, in the costliest language.
 
-    No per-card number holds this. A stream draws two fifty-card pages, and a
-    hundred details at 3,000 characters is nearly two million bytes once the
-    serialiser has escaped them — so the budget that has to bind is the one on
-    the assembled message, applied after the turn is drawn and the card count
-    is finally known.
+    No per-card number holds this. A stream draws two sections of forty-nine,
+    and ninety-eight details at 3,000 characters is over a million bytes once
+    the serialiser has escaped them — so the budget that has to bind is the one
+    on the assembled message, applied after the turn is drawn and the card
+    count is finally known.
 
     CJK rather than English because the escaping is what makes the arithmetic
     counter-intuitive: six bytes a character is the worst any prose can cost,
     and a margin that only survives ASCII is not a margin.
     """
     drawn = render_activity_stream(
-        _talkative(2 * _MAX_PLAN_TASKS, "漢" * _MAX_SAID_DETAILS),
+        _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
         session_url="switchdash://session?server=https%3A%2F%2Fswitch.example&session=s",
     )
 
-    assert sum(len(block["tasks"]) for block in drawn.blocks) == 2 * _MAX_PLAN_TASKS
+    assert (
+        sum(len(_turn_cards(block)) for block in drawn.blocks) == 2 * _MAX_SECTION_ITEMS
+    )
     assert _streamed_bytes(drawn) < ACCEPTED_BYTES
 
 
 async def test_the_worst_ordinary_post_is_one_slack_would_accept() -> None:
     """The same defect on the path a thread without a stream falls back to.
 
-    Half the cards, so it is the easier case — but it is refused by a different
-    guard with a different error, so it is a separate measurement and gets a
-    separate check. Fifty cards of 3,000-character details is 900,000 bytes in
-    CJK; the post that was seen to go through carried a quarter of that.
+    One section rather than two, because `chat.postMessage` refuses a second
+    plan block outright — so it is the easier case, and it is refused by a
+    different guard with a different error, which makes it a separate
+    measurement. Forty-nine cards of 3,000-character details is 880,000 bytes
+    in CJK; the post that was seen to go through carried a quarter of that.
     """
     drawn = render_activity_plan(
-        _talkative(_MAX_PLAN_TASKS, "漢" * _MAX_SAID_DETAILS),
+        _talkative(_MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
     )
 
-    assert len(drawn.blocks[0]["tasks"]) == _MAX_PLAN_TASKS
+    assert len(_turn_cards(drawn.blocks[0])) == _MAX_SECTION_ITEMS
     assert len(json.dumps(drawn.blocks).encode()) < POST_ACCEPTED_BYTES
 
 
@@ -1030,13 +1047,13 @@ async def test_a_message_cut_down_to_fit_says_so_on_every_card_it_cut() -> None:
     remark simply stops — either reads as a remark that had no more to say.
     """
     drawn = render_activity_stream(
-        _talkative(2 * _MAX_PLAN_TASKS, "漢" * _MAX_SAID_DETAILS),
+        _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
     )
 
-    details = [_detail(task) for block in drawn.blocks for task in block["tasks"]]
-    assert len(details) == 2 * _MAX_PLAN_TASKS
+    details = [_detail(task) for block in drawn.blocks for task in _turn_cards(block)]
+    assert len(details) == 2 * _MAX_SECTION_ITEMS
     assert all(detail.endswith("[…truncated]") for detail in details)
 
 
@@ -1051,7 +1068,7 @@ async def test_a_turn_that_fits_keeps_every_word_the_per_card_budget_allows() ->
         [_said("漢" * 10_000)], _turn("completed"), elapsed_seconds=90
     )
 
-    assert len(_detail(drawn.blocks[0]["tasks"][0])) == _MAX_SAID_DETAILS
+    assert len(_detail(_turn_cards(drawn.blocks[0])[0])) == _MAX_SAID_DETAILS
 
 
 async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> None:

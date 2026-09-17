@@ -195,17 +195,12 @@ class _ActivityStream:
     said to work out what is worth saying next — resending a page of fifty
     cards that has not changed costs an append and risks nothing useful.
 
-    `session` is the card the status line is drawn around, held here because it
-    can only be sent once — and holding what was *sent* rather than what was
-    last drawn, so a redraw that happens to be missing the link cannot make the
-    stream forget the link it already sent. `blocks` is the last thing written
-    to each step block, by `block_id`, so a redraw sends only what moved.
+    `blocks` is the last thing written to each section, by `block_id`, so a
+    redraw sends only what moved.
     """
 
     channel_id: str
     ts: str
-    title: str = ""
-    session: dict[str, Any] | None = None
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -794,16 +789,20 @@ class SlackAdapter(CollaborationAdapter):
     async def _extend_stream(
         self, stream: _ActivityStream, message_ref: str, content: TurnActivity
     ) -> None:
-        """Send what changed since the last append, and close a finished turn.
+        """Send the sections that moved, and close a finished turn.
 
-        Only the header, the session card while it is still owed, and the step
-        blocks that actually moved. Each goes in its own `blocks` chunk: Slack
-        replaces the block it names and leaves the rest of the message — and
-        whatever the reader has open — alone.
+        Each goes in its own `blocks` chunk: Slack replaces the block it names
+        and leaves the rest of the message — and whatever the reader has open —
+        alone.
 
         One chunk per plan. Slack refuses a `blocks` chunk holding more than a
-        single plan block, though any number of such chunks ride in one append
-        alongside the header and the card.
+        single plan block, though any number of such chunks ride in one append.
+
+        The clock lives in the newest section's heading, so a tick rewrites that
+        section rather than a header of its own. It is the price of the heading
+        being the whole collapsed message: a block has no title to move on its
+        own. Settled sections above it do not move, so what a tick costs is the
+        section still being filled and never more than one of them.
         """
         client = self._web_client
         if client is None:
@@ -817,60 +816,27 @@ class SlackAdapter(CollaborationAdapter):
             elapsed_seconds=content.elapsed_seconds,
             session_url=content.session_url,
         )
-        chunks: list[dict[str, Any]] = []
-        if drawn.title != stream.title:
-            chunks.append({"type": "plan_update", "title": drawn.title})
-        owed = self._session_owed(stream.session, drawn.session)
-        if owed:
-            chunks.append(owed)
         moved = [
             block
             for block in drawn.blocks
             if stream.blocks.get(block["block_id"]) != block
         ]
-        chunks.extend({"type": "blocks", "blocks": [block]} for block in moved)
-
-        if chunks:
+        if moved:
             try:
                 await client.chat_appendStream(
-                    channel=stream.channel_id, ts=stream.ts, chunks=chunks
+                    channel=stream.channel_id,
+                    ts=stream.ts,
+                    chunks=[{"type": "blocks", "blocks": [block]} for block in moved],
                 )
             except SlackApiError as error:
                 # Nothing below runs: every path out of here raises. The
                 # stream's record of what Slack holds stays as it was, so a
                 # retry sends the same chunks rather than assuming they landed.
                 self._stream_failed(error, message_ref, drawn.title)
-            stream.title = drawn.title
-            if owed:
-                stream.session = {**(stream.session or {}), **owed}
             for block in moved:
                 stream.blocks[block["block_id"]] = block
         if content.turn.status in TURN_ENDED:
             await self._close_stream(client, stream, message_ref)
-
-    @staticmethod
-    def _session_owed(
-        sent: dict[str, Any] | None, drawn: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        """The part of the session card Slack has not been told, or nothing.
-
-        The card is not written once and left. Its status follows the turn, so
-        it goes out spinning and comes back complete, and the link may only
-        turn up after the stream has opened.
-
-        What can only happen once is `details`. It *appends* to what the card
-        already holds rather than replacing it, so the link is dropped from
-        every chunk after the one that carried it — otherwise the card comes
-        back holding the link twice. Everything else is compared against what
-        Slack was actually sent, which is why a redraw that happens to arrive
-        without the url cannot make the stream forget it already sent one.
-        """
-        if sent is None:
-            return drawn
-        owed = {
-            k: v for k, v in drawn.items() if k != "details" or "details" not in sent
-        }
-        return owed if {**sent, **owed} != sent else None
 
     async def _close_stream(
         self, client: AsyncWebClient, stream: _ActivityStream, message_ref: str

@@ -36,7 +36,8 @@ async def test_plan_keeps_tool_details_but_fallback_is_compact():
     )
     assert message.blocks[0]["type"] == "plan"
     assert len(message.blocks[0]["tasks"]) > 1
-    assert URL not in json.dumps(message.blocks[0])
+    assert URL in json.dumps(message.blocks[0]["tasks"][0])
+    assert URL not in message.text
     assert len(message.text.splitlines()) == 1
 
 
@@ -47,7 +48,8 @@ async def test_a_finished_plan_keeps_its_tools_and_stays_off_the_fallback():
     )
     assert message.blocks[0]["type"] == "plan"
     assert len(message.blocks[0]["tasks"]) > 1
-    assert URL not in json.dumps(message.blocks[0])
+    assert URL in json.dumps(message.blocks[0]["tasks"][0])
+    assert URL not in message.text
     assert "Worked for" not in message.text
 
 
