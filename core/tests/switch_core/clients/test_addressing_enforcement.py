@@ -169,6 +169,58 @@ class TestResolveSenderPrincipal:
         )
         assert result == ("platform", "c1", [], None, "user-9")
 
+    async def test_admin_client_speaking_for_an_agent_resolves_to_that_agent(
+        self,
+    ) -> None:
+        # A kickoff in a room an agent created is judged as that agent
+        # speaking, so an agent that answers only its owner stays asleep.
+        client = self._client(
+            client=SimpleNamespace(id="c1", type="admin"),
+            agent=None,
+            external_user=None,
+        )
+
+        async def _get(_session, agent_id):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(id=agent_id, owner_id="user-9")
+
+        client._agent_store.get = _get
+        content = {
+            _PLATFORM_MARKER: {
+                "on_behalf_of": {
+                    "user_id": "user-9",
+                    "name": "triager",
+                    "agent_id": "agent-7",
+                }
+            }
+        }
+        result = await AddressingResolver.resolve_sender(
+            client, object(), "@switch-admin:switch.local", content
+        )
+        assert result == ("agent", "agent-7", [], "user-9", None)
+
+    async def test_admin_client_speaking_for_a_deleted_agent_is_bare_platform(
+        self,
+    ) -> None:
+        client = self._client(
+            client=SimpleNamespace(id="c1", type="admin"),
+            agent=None,
+            external_user=None,
+        )
+
+        async def _get(_session, _agent_id):  # type: ignore[no-untyped-def]
+            return None
+
+        client._agent_store.get = _get
+        content = {
+            _PLATFORM_MARKER: {
+                "on_behalf_of": {"user_id": "user-9", "name": "gone", "agent_id": "x"}
+            }
+        }
+        result = await AddressingResolver.resolve_sender(
+            client, object(), "@switch-admin:switch.local", content
+        )
+        assert result == ("platform", "c1", [], None, None)
+
     async def test_marker_on_a_human_sender_is_ignored(self) -> None:
         # Only the admin client's marker is read: a human or agent event that
         # carries a copy of it borrows no authority.

@@ -34,7 +34,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
@@ -103,6 +103,24 @@ NEW = "$new"
 # room drops out of the list it was written in (an agent's ``join``, where
 # it means "no room").
 OPTIONAL_WITHOUT_DEFAULT_TYPES = ("string", "bridge", "room")
+
+# A kickoff wakes the agents it mentions, and a woken agent can create a room
+# with a kickoff of its own. A room this many agent-created rooms away from
+# one a person created still gets its kickoff; a deeper one is created
+# without it, so a chain of templates stops after one hop and the agents
+# there wait to be addressed.
+MAX_KICKOFF_DEPTH = 1
+
+
+class ActingAgent(NamedTuple):
+    """The agent provisioning through ``create_room_from_yaml``.
+
+    ``depth`` is the ``agent_creation_depth`` its rooms get.
+    """
+
+    agent_id: str
+    name: str
+    depth: int
 
 ParamType = Literal[
     "string",
@@ -973,6 +991,7 @@ class RoomYamlService:
         kickoff: str | None = None,
         creator_name: str | None = None,
         group_id: str | None = None,
+        acting_agent: ActingAgent | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
 
@@ -980,6 +999,11 @@ class RoomYamlService:
         creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
         message names them. ``group_id`` files the room under a group that
         already exists (see ``provision_group``).
+
+        With ``acting_agent`` the room is recorded as created by that agent,
+        and the kickoff carries the agent's authority, not its owner's: the
+        agents it mentions wake only if their addressing admits that agent.
+        Past ``MAX_KICKOFF_DEPTH`` the kickoff is withheld.
         """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -1003,6 +1027,8 @@ class RoomYamlService:
             group_id=group_id,
             created_by=user_id,
             from_template=True,
+            created_by_agent_id=acting_agent.agent_id if acting_agent else None,
+            agent_creation_depth=acting_agent.depth if acting_agent else 0,
             owner_id=user_id,
             acting_user_id=user_id,
             acting_is_admin=is_admin,
@@ -1023,7 +1049,19 @@ class RoomYamlService:
             room_id, spec.docs, user_id=user_id, failures=failures
         )
 
-        if kickoff:
+        if kickoff and acting_agent and acting_agent.depth > MAX_KICKOFF_DEPTH:
+            failures.append(
+                {
+                    "kind": "kickoff",
+                    "id": "kickoff",
+                    "error": (
+                        "not posted: this room was created by an agent working "
+                        "in a room that an agent created. Address the agents "
+                        "here yourself to start them."
+                    ),
+                }
+            )
+        elif kickoff:
             # The room exists at this point. A kickoff failure is recorded on
             # the result; raising here would report the room as not created.
             try:
@@ -1033,6 +1071,7 @@ class RoomYamlService:
                     agent_names=spec.agents,
                     user_id=user_id,
                     user_name=creator_name,
+                    acting_agent=acting_agent,
                     failures=failures,
                 )
             except Exception as e:  # noqa: BLE001 - reported on the result
@@ -1055,6 +1094,7 @@ class RoomYamlService:
         user_id: str,
         is_admin: bool,
         creator_name: str | None = None,
+        acting_agent: ActingAgent | None = None,
     ) -> GroupProvisionResult:
         """Provision a room group, its rooms, and the links between them.
 
@@ -1086,6 +1126,7 @@ class RoomYamlService:
                     is_admin=is_admin,
                     kickoff=room_spec.kickoff,
                     creator_name=creator_name,
+                    acting_agent=acting_agent,
                     group_id=group_id,
                 )
             except Exception as e:  # noqa: BLE001 - reported, not swallowed
@@ -1264,6 +1305,7 @@ class RoomYamlService:
         user_id: str,
         user_name: str | None,
         failures: list[dict[str, Any]],
+        acting_agent: ActingAgent | None = None,
     ) -> None:
         """Post the kickoff into the room the template just created.
 
@@ -1298,7 +1340,11 @@ class RoomYamlService:
         if "the platform" in late:
             return
 
-        person = OnBehalfOf(user_id, user_name or user_id)
+        person = (
+            OnBehalfOf(user_id, acting_agent.name, acting_agent.agent_id)
+            if acting_agent is not None
+            else OnBehalfOf(user_id, user_name or user_id)
+        )
         headline = f"Template kickoff on behalf of @{person.name}"
         try:
             root_id = await admin.send_platform_message(

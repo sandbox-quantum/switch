@@ -6,7 +6,7 @@ import re
 import secrets
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
@@ -2444,9 +2444,13 @@ class ProtocolService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         aliases: dict[str, str] | None = None,
+        from_room_id: str | None = None,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
+
+        `from_room_id` is the room the agent is working in, which decides the
+        new room's `agent_creation_depth`.
 
         `group_name`, when given, files the room under an existing room group;
         it is resolved to a group id here (agents work in names, not ids)."""
@@ -2461,6 +2465,8 @@ class ProtocolService:
                 session, agent_id
             )
             group_id = await self._resolve_group_name(session, group_name)
+        await self.check_agent_room_cap(agent_id, wanted=1)
+        depth = await self.agent_creation_depth(from_room_id)
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
@@ -2482,6 +2488,8 @@ class ProtocolService:
             instructions=instructions,
             created_by=agent.owner_id,
             created_by_kind="agent",
+            created_by_agent_id=agent.id,
+            agent_creation_depth=depth,
             owner_id=agent.owner_id,
             group_id=group_id,
             read_visibility=read_visibility,
@@ -2505,6 +2513,40 @@ class ProtocolService:
         except RuntimeError as e:
             raise RuntimeError(f"Room service error: {str(e)}") from e
         return result
+
+    async def check_agent_room_cap(self, agent_id: str, *, wanted: int) -> None:
+        """Refuse when `wanted` more rooms would take the agent past its
+        hourly allowance (`agent_rooms_per_hour`).
+
+        Agents can wake each other and each can create rooms, so two agents
+        whose instructions feed each other would otherwise create rooms and
+        channels without end. The cap turns that into an error the agent
+        reports. It is checked before anything is created, so a group is
+        refused whole and never made in part.
+        """
+        limit = self.config.agent_rooms_per_hour
+        if limit == 0:
+            return
+        since = datetime.now(UTC) - timedelta(hours=1)
+        async with self.session_factory() as session:
+            recent = await self.room_store.count_created_by_agent_since(
+                session, agent_id, since
+            )
+        if recent + wanted > limit:
+            raise ValueError(
+                f"This agent has created {recent} room(s) in the last hour and "
+                f"may create {limit}. Ask the user before creating more."
+            )
+
+    async def agent_creation_depth(self, from_room_id: str | None) -> int:
+        """The `agent_creation_depth` of a room an agent creates while working
+        in `from_room_id`: one more than that room's. An agent working in no
+        room counts as working in a room a person created."""
+        if from_room_id is None:
+            return 1
+        async with self.session_factory() as session:
+            room = await self.room_store.get(session, from_room_id)
+        return (room.agent_creation_depth if room is not None else 0) + 1
 
     async def _resolve_group_name(
         self, session: AsyncSession, group_name: str | None

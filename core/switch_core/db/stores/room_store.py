@@ -76,6 +76,18 @@ class RoomStore:
         )
         return result.scalar_one_or_none()
 
+    async def count_created_by_agent_since(
+        self, session: AsyncSession, agent_id: str, since: datetime
+    ) -> int:
+        """Rooms the agent created at or after ``since``, archived ones included:
+        archiving a room does not give the agent its allowance back."""
+        result = await session.execute(
+            select(sa_func.count())
+            .select_from(Room)
+            .where(Room.created_by_agent_id == agent_id, Room.created_at >= since)
+        )
+        return int(result.scalar_one())
+
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
     ) -> list[Room]:

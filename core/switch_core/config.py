@@ -308,6 +308,12 @@ class SwitchConfig(BaseSettings):
     # migration. Oversize uploads are refused rather than truncated.
     template_max_bytes: int = 1024 * 1024
 
+    # How many rooms one agent may create in an hour, through `create_room`
+    # and `create_room_from_yaml` together. Agents can wake each other and
+    # each can create rooms, so a mistake in two agents' instructions could
+    # otherwise create rooms and channels without end. 0 disables the cap.
+    agent_rooms_per_hour: int = 20
+
     # Every authenticated agent request resolves its bearer token against the
     # database before the handler runs, and each live agent connection beats
     # every 2s, so the pool is sized against connection count rather than
@@ -483,6 +489,10 @@ class SwitchConfig(BaseSettings):
                     f"{self.telemetry_timeout_seconds!r}."
                 )
 
+        if self.agent_rooms_per_hour < 0:
+            raise ValueError(
+                f"AGENT_ROOMS_PER_HOUR must be 0 or more, got {self.agent_rooms_per_hour}."
+            )
         if self.template_max_bytes < 1:
             raise ValueError(
                 f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."
