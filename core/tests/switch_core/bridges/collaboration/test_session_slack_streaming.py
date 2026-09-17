@@ -900,6 +900,56 @@ async def test_a_turn_of_two_sections_is_left_as_the_stream_drew_it(
     ]
 
 
+async def test_a_turn_whose_last_append_was_refused_is_still_drawn_by_an_edit() -> None:
+    """The guard preserves a finished turn, not an interrupted one.
+
+    If the append carrying the end of the turn is refused, the message is still
+    showing the turn mid-flight. Declining to edit it would leave it that way
+    for good and report success for a completion nobody ever saw. A collapsed
+    message that says the turn ended beats a whole one that says it is running.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    client.append_error = "stopped_by_user"
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
+        )
+    client.append_error = None
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
+    )
+
+    assert adapter._unredrawable == {}
+    assert [call["ts"] for call in client.updated] == ["1.0"]
+
+
+async def test_a_stream_dropped_to_make_room_leaves_its_message_editable() -> None:
+    """Same eligibility: its turn never ended, so it never drew the end."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
+
+    first = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    for index in range(_MAX_OPEN_STREAMS):
+        await adapter.post_rich(
+            CHANNEL,
+            "Agent",
+            TurnActivity([_tool(f"x{index}", "Read")], _turn()),
+            THREAD,
+        )
+
+    assert first not in adapter._streams
+    assert adapter._unredrawable == {}
+
+
 async def test_a_message_that_says_it_cannot_be_redrawn_says_it_once(
     caplog: Any,
 ) -> None:

@@ -260,9 +260,11 @@ class SlackAdapter(CollaborationAdapter):
         # Open activity streams by message ref, holding what has already been
         # appended so a redraw can send only what changed.
         self._streams: OrderedDict[str, _ActivityStream] = OrderedDict()
-        # Messages a stream drew in more than one section, which nothing can
-        # redraw. The value records whether that has already been reported, so
-        # a turn asked for repeatedly says it once. See `_forget_stream`.
+        # Messages a finished stream drew in more than one section, which
+        # nothing can redraw. The value records whether that has already been
+        # reported, so a turn asked for repeatedly says it once. Bounded and
+        # in-memory, so a restart or enough later turns lose the protection and
+        # a publication after that collapses the message. See `_settle_stream`.
         self._unredrawable: OrderedDict[str, bool] = OrderedDict()
         # Folded Slack username → user id, for resolving outbound @mentions to
         # real Slack mentions. Primed from the bridge's known external users and
@@ -793,8 +795,7 @@ class SlackAdapter(CollaborationAdapter):
         stream = _ActivityStream(channel_id=channel_id, ts=str(ts))
         self._streams[ref] = stream
         while len(self._streams) > _MAX_OPEN_STREAMS:
-            abandoned = next(iter(self._streams))
-            self._forget_stream(abandoned)
+            abandoned, _ = self._streams.popitem(last=False)
             logger.warning(
                 "Forgetting the activity stream %s to make room; its turn never "
                 "ended, so the message is left in its streaming state.",
@@ -803,8 +804,8 @@ class SlackAdapter(CollaborationAdapter):
         await self._extend_stream(stream, ref, content)
         return ref
 
-    def _forget_stream(self, message_ref: str) -> None:
-        """Drop a stream, and note whether its message can still be redrawn.
+    def _settle_stream(self, message_ref: str) -> None:
+        """Drop a finished stream, and note whether its message can be redrawn.
 
         A message a stream drew in two sections cannot be redrawn by anything.
         Measured: `chat.update` refuses a message carrying two plan blocks
@@ -815,9 +816,14 @@ class SlackAdapter(CollaborationAdapter):
 
         Remembering which messages those are is what lets a later publication
         be declined rather than drawn. The message is already showing the turn
-        as the stream finally left it, so there is nothing owed to a reader in
-        the ordinary case — only a revision that landed after the turn ended
-        goes unshown, which is why it is said out loud rather than passed over.
+        as the stream finally left it, so there is nothing owed to a reader —
+        only a revision that landed after the turn ended goes unshown, which is
+        why it is said out loud rather than passed over.
+
+        Only a stream whose last append landed comes through here. One that was
+        refused, or dropped to make room, has not drawn the end of its turn
+        yet, and a collapsed message showing that end beats a whole one that
+        stops mid-turn.
         """
         stream = self._streams.pop(message_ref, None)
         if stream is None:
@@ -890,7 +896,7 @@ class SlackAdapter(CollaborationAdapter):
         The turn is over and the plan is the record of what it did, so unlike
         the old progress card there is nothing here to delete.
         """
-        self._forget_stream(message_ref)
+        self._settle_stream(message_ref)
         try:
             await client.chat_stopStream(channel=stream.channel_id, ts=stream.ts)
         except SlackApiError as error:
@@ -915,7 +921,7 @@ class SlackAdapter(CollaborationAdapter):
         """
         code = error.response.get("error")
         if code in _STREAM_CLOSED_ERRORS:
-            self._forget_stream(message_ref)
+            self._streams.pop(message_ref, None)
             logger.warning(
                 "The activity stream %s is no longer accepting appends (%s); "
                 "later updates will be drawn as an ordinary message.",
