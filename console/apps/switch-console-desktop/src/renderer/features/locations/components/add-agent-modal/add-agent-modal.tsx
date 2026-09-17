@@ -391,6 +391,19 @@ export const AddAgentModal = observer(function AddAgentModal({
       header={
         <DialogHeader showCloseButton={submitState === 'idle'}>
           <DialogTitle>New agent</DialogTitle>
+          {targetServerId && (
+            <button
+              type="button"
+              disabled={submitState !== 'idle'}
+              onClick={() => {
+                onClose();
+                navigate('templates', { serverId: targetServerId, kind: 'agent' });
+              }}
+              className="w-fit cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-default disabled:opacity-50"
+            >
+              Or start from a template
+            </button>
+          )}
         </DialogHeader>
       }
       footer={

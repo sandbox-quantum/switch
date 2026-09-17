@@ -391,7 +391,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [kind, setKind] = useState<KindFilter>('all');
+  // A caller can open the listing with a kind preselected; the deployer can clear it.
+  const initialKind = useParams('templates').params.kind;
+  const [kind, setKind] = useState<KindFilter>(initialKind ?? 'all');
   const [onlyMine, setOnlyMine] = useState(false);
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -659,7 +661,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 });
 
 export const templatesView = {
-  WrapView: ({ children }: { children: React.ReactNode; serverId: string }) => <>{children}</>,
+  WrapView: ({ children }: { children: React.ReactNode; serverId: string; kind?: Kind }) => (
+    <>{children}</>
+  ),
   TitlebarSlot: TemplatesTitlebar,
   MainPanel: TemplatesPanel,
   canActivate: (params: unknown): GuardResult => {
@@ -670,4 +674,4 @@ export const templatesView = {
     if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
     return { ok: true };
   },
-} satisfies ViewDefinition<{ serverId: string }>;
+} satisfies ViewDefinition<{ serverId: string; kind?: Kind }>;
