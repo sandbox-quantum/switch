@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import pytest
 
@@ -253,18 +254,26 @@ async def test_shutdown_drains_the_whole_queue_not_one_batch():
 
 
 @pytest.mark.asyncio
-async def test_a_dead_collector_at_shutdown_still_drains_and_says_so(caplog):
-    """The records are lost either way; what matters is that they are counted."""
+async def test_a_dead_collector_at_shutdown_reports_every_lost_record(caplog):
+    """The records are lost either way; what matters is that they are counted.
+
+    Counted from what was taken, not from what is left in the queue: a batch
+    is removed before it is posted, so a queue that has been drained into a
+    collector that refused it all looks identical to one that sent everything.
+    """
     handler = OtlpLogHandler(capacity=2000)
     for index in range(1200):
         handler.emit(_record(message="line %d", args=(index,)))
     exporter = LogExporter(handler, _Client(fail=True), RESOURCE, 1.0, 500)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         await exporter._flush_on_shutdown()
 
-    assert handler.pending() == 0
-    assert "Log export failed" in caplog.text
+    # It stops at the first refusal rather than feeding the rest to a collector
+    # that has already said no — but the count covers the batch it lost as well
+    # as the ones still queued.
+    assert handler.pending() == 700
+    assert "1200 log record(s) never exported" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -289,4 +298,70 @@ async def test_shutdown_gives_up_on_a_hanging_collector_and_reports_the_rest(
 
     assert handler.pending() > 0
     # What could not be sent leaves a number behind rather than vanishing.
+    assert "never exported" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_shutdown_deadline_bounds_a_single_hanging_request(
+    caplog, monkeypatch
+):
+    """One post can outlast the whole budget, so the budget has to cut it off.
+
+    Checking the deadline only between attempts bounds how many are made, not
+    how long they take: an export timeout raised for a distant collector can
+    then run past the pod's termination grace period, and the SIGKILL that
+    follows takes the "never exported" line with it.
+    """
+    monkeypatch.setattr("switch_core.observability.logs.SHUTDOWN_FLUSH_SECONDS", 0.05)
+
+    class _Hangs(_Client):
+        async def post(self, signal: str, payload: dict) -> None:
+            await asyncio.sleep(30)
+
+    handler = OtlpLogHandler(capacity=10)
+    handler.emit(_record(message="one"))
+    exporter = LogExporter(handler, _Hangs(), RESOURCE, 1.0, 500)
+
+    started = time.monotonic()
+    with caplog.at_level(logging.ERROR):
+        await exporter._flush_on_shutdown()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"shutdown waited {elapsed:.1f}s on a hanging collector"
+    assert "never exported" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_deadline_holds_when_the_task_is_already_being_cancelled(
+    caplog, monkeypatch
+):
+    """The real path: the drain runs inside `except CancelledError`.
+
+    `asyncio.timeout` cancels the task it is guarding, and here that task is
+    one already unwinding from a cancellation — so this pins that the two do
+    not interfere rather than assuming it.
+    """
+    monkeypatch.setattr("switch_core.observability.logs.SHUTDOWN_FLUSH_SECONDS", 0.05)
+
+    class _Hangs(_Client):
+        async def post(self, signal: str, payload: dict) -> None:
+            await asyncio.sleep(30)
+
+    handler = OtlpLogHandler(capacity=10)
+    handler.emit(_record(message="one"))
+    exporter = LogExporter(
+        handler, _Hangs(), RESOURCE, interval_seconds=30.0, batch_size=500
+    )
+
+    task = asyncio.create_task(exporter.run_forever())
+    await asyncio.sleep(0)
+    started = time.monotonic()
+    task.cancel()
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    elapsed = time.monotonic() - started
+
+    # Cancellation still propagates, and it is not held up by the drain.
+    assert elapsed < 1.0, f"cancellation took {elapsed:.1f}s"
     assert "never exported" in caplog.text

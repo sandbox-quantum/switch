@@ -1446,3 +1446,23 @@ class TestWhatIsMeasured:
             if p.name == "switch.messages.delivery_failures"
         )
         assert payload.numbers[0].value >= 1.0
+
+    async def test_a_send_that_never_persists_is_not_counted(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        """The counter goes after the commit, and this is what proves it.
+
+        Counted before it, a database outage draws an unbroken send rate on
+        the dashboard while nothing is written — and there is no paired
+        failure counter to contradict it. Every happy-path assertion looks
+        identical either way, so only a failing send can tell the two apart.
+        """
+        transport, _, _ = await self._receiving(session_factory)
+
+        with pytest.raises(Exception):
+            await transport.send_message(
+                "!room-that-does-not-exist:test", "hello", sender_name="agent one"
+            )
+
+        recorded = {payload.name for payload in _registry.collect()}
+        assert "switch.messages.sent" not in recorded

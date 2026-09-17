@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from collections import deque
 
 from switch_core.logging_context import CONTEXT_FIELDS
@@ -249,18 +248,60 @@ class LogExporter:
         Bounded by a deadline rather than by the queue emptying, because
         shutdown is not the moment to block on a collector that has stopped
         answering: whatever is left is reported as lost and the process goes.
+
+        The deadline is enforced *during* a request, not only between them.
+        Checking it between iterations would bound the number of attempts and
+        not the time: a single post may take up to the configured export
+        timeout, which an operator is invited to raise for a distant
+        collector. Five seconds of attempts plus one unbounded attempt can run
+        past the pod's termination grace period, and a SIGKILL landing there
+        would take with it the very line below that exists to say what was
+        lost.
+
+        Written out rather than looping on :meth:`flush_once`, because the
+        accounting differs. A batch is removed from the queue *before* it is
+        posted, so a request abandoned at the deadline takes its records with
+        it and leaves `pending()` at zero — the queue looks drained and a count
+        taken from it reports nothing lost. Every record has to be accounted
+        for here: still queued, or taken and not confirmed.
         """
-        deadline = time.monotonic() + SHUTDOWN_FLUSH_SECONDS
+        lost = 0
         try:
-            while self._handler.pending() and time.monotonic() < deadline:
-                await self.flush_once()
+            async with asyncio.timeout(SHUTDOWN_FLUSH_SECONDS):
+                while True:
+                    batch, dropped = self._handler.take(self._batch_size)
+                    lost += dropped
+                    if not batch:
+                        break
+                    sent = False
+                    try:
+                        await self._client.post(
+                            "logs", build_logs_payload(batch, self._resource)
+                        )
+                        sent = True
+                    except OtlpSendError:
+                        # The collector refused this or could not be reached.
+                        # Feeding it the rest would spend what is left of the
+                        # shutdown budget losing them more slowly; stop, and
+                        # count everything below.
+                        break
+                    finally:
+                        # `finally` rather than `except`: cancellation at the
+                        # deadline is a BaseException and loses the batch just
+                        # as completely as a refused request does.
+                        if not sent:
+                            lost += len(batch)
+        except TimeoutError:
+            # Expected when the collector has stopped answering. Everything is
+            # reported together below, so both paths say the same thing.
+            pass
         except Exception:
             logger.warning("Final log flush failed.", exc_info=True)
 
-        remaining = self._handler.pending()
-        if remaining:
+        lost += self._handler.pending()
+        if lost:
             logger.error(
                 "Shut down with %d log record(s) never exported. They are in "
                 "this container's output and nowhere else.",
-                remaining,
+                lost,
             )
