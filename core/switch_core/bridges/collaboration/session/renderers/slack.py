@@ -136,13 +136,19 @@ _MAX_PLAN_TASK_DETAILS = 200
 #
 # Where the ceiling is, observed against a real workspace because Slack
 # documents none of it. A streamed turn draws up to two fifty-card pages into
-# one message; a hundred cards carrying 2,180 ASCII characters of detail each
-# was accepted at 257,615 bytes and 2,181 was refused. That is a boundary
-# someone watched, not a published contract — it sits near 256 KiB, and nothing
-# says it is exactly that or that it will hold. The unit is bytes on the wire
-# rather than characters: the payload is serialised with `ensure_ascii=True`, so
-# a non-ASCII character leaves as a six-byte `\uXXXX` escape and the same
-# message would tolerate only about 200 characters a card in Japanese.
+# one message, and a hundred cards of ASCII detail were pushed at it two ways:
+# sent as one append it took 2,180 characters a card, 257,715 bytes, and refused
+# 2,181; delivered a chunk at a time, the way a turn that is still running
+# arrives, it took 2,179 and refused 2,180. So the binding figure is the second,
+# 257,615 bytes — and the two arms landing 100 bytes apart say the ceiling is on
+# what the message now holds rather than on how much was sent to build it.
+#
+# That is a boundary someone watched, not a published contract: it sits near
+# 256 KiB, and nothing says it is exactly that or that it will hold. The unit is
+# bytes on the wire rather than characters, because the payload is serialised
+# with `ensure_ascii=True` — a non-ASCII character leaves as a six-byte
+# `\uXXXX` escape, so the same message would tolerate only about 200 characters
+# a card in Japanese.
 #
 # Why this number is not sized against that worst case: it does not occur. Over
 # 445 real turns the largest message reached a tenth of the ceiling, and
@@ -160,9 +166,10 @@ _MAX_SAID_DETAILS = 3000
 # case is caught on the assembled message instead.
 #
 # Two numbers because the two paths refuse differently, and both are boundaries
-# someone watched rather than published contracts. A stream took a hundred cards
-# at 257,615 bytes and refused the next; an ordinary post refused fifty cards of
-# 4,743 characters each with a different error, `msg_blocks_too_long`. Each
+# someone watched rather than published contracts. A stream grown a chunk at a
+# time took a hundred cards at 257,615 bytes and refused a hundred bytes more
+# with `msg_too_long`; an ordinary post took fifty cards of 4,743 characters
+# each and refused the message above that with `msg_blocks_too_long`. Each
 # budget sits under its measurement, which buys room for the request envelope
 # weighed nowhere here — channel, timestamp, chunk wrappers — and for Slack
 # tightening a limit it never published in the first place.

@@ -60,10 +60,13 @@ TURN = "turn-activity"
 
 # What a whole streamed message may weigh, measured against a real workspace
 # and documented by Slack nowhere. A hundred cards — the two fifty-card pages a
-# stream draws — carrying 2,180 ASCII characters of detail each was accepted at
-# 257,615 bytes on the wire, and a hundred bytes more was refused. Bytes rather
-# than characters: the payload is serialised with `ensure_ascii=True`, so a
-# non-ASCII character leaves as a six-byte escape.
+# stream draws — were pushed at it two ways. Delivered a chunk at a time, the
+# way a turn that is still running arrives, 2,179 ASCII characters of detail a
+# card went through at 257,615 bytes on the wire and a hundred bytes more was
+# refused. Sent as a single append it took one character a card more, 257,715.
+# The binding figure is the first, because the adapter appends as the turn
+# grows. Bytes rather than characters: the payload is serialised with
+# `ensure_ascii=True`, so a non-ASCII character leaves as a six-byte escape.
 ACCEPTED_BYTES = 257_615
 
 # The same question asked of an ordinary post, which refuses with a different
