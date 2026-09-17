@@ -97,6 +97,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.package_store import PackageStore
@@ -108,6 +109,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -280,6 +282,7 @@ async def run(config: SwitchConfig) -> None:
     bridge_message_map_store = BridgeMessageMapStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
+    invitation_store = InvitationStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -290,6 +293,7 @@ async def run(config: SwitchConfig) -> None:
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
     media_store = MediaStore()
+    template_store = TemplateStore()
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -487,6 +491,8 @@ async def run(config: SwitchConfig) -> None:
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        invitation_store=invitation_store,
+        template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
         config=config,
@@ -1071,6 +1077,33 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
         "Database migrations applied as %s",
         config.db_owner_user or config.db_user,
     )
+
+
+def migrate() -> None:
+    """Entry point for migrating a deployment without starting a server.
+
+    Exists so a deploy can bring the schema up in a job of its own, ahead of
+    the pods that will serve on it, and still run *this* code rather than a
+    bare `alembic upgrade head`. The difference is everything `_migrate_and_grant`
+    adds around the upgrade: the boot lock, so the job and a replica that
+    starts while it is running cannot both be applying DDL, and the grant
+    re-issue, without which a table the migration just created is invisible to
+    the runtime role. A job that skipped either would leave the deployment in a
+    state the server then has to repair at boot, one replica at a time.
+
+    Boot runs the same function, and must keep doing so: nothing guarantees a
+    deployment has a migration job, and a developer running the server against
+    a fresh database has none. Running it twice is not wasted work — the second
+    pass finds no pending revisions and re-issues grants that are already
+    correct.
+    """
+    config = SwitchConfig()
+    running_version = switch_core_version()
+    configure_logging(config, running_version)
+
+    logger.info("Migrating switch-core %s", running_version or "(version unknown)")
+
+    asyncio.run(_migrate_and_grant(config))
 
 
 def main() -> None:

@@ -9,6 +9,19 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Agent, ApiKey, Client, User
+from switch_core.db.stores.user_store import UserStore
+
+_USER_STORE = UserStore()
+
+
+async def is_admin(session: AsyncSession, user: User) -> bool:
+    """The bit `get_tenant_is_admin` hands a route, resolved the same way.
+
+    A route takes it as an argument now, so a test calling the coroutine
+    directly has to supply one. Reading it through the store rather than
+    passing a literal keeps a `role="admin"` on the user row meaningful.
+    """
+    return await _USER_STORE.administers(session, user)
 
 
 async def add_user(session: AsyncSession, *, name: str, role: str = "user") -> User:

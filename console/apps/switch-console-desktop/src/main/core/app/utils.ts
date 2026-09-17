@@ -155,7 +155,7 @@ export const resolveAppVersion = async (): Promise<string> => {
   }
 
   const possiblePaths = [
-    join(__dirname, '../../package.json'),
+    join(import.meta.dirname, '../../package.json'),
     join(process.cwd(), 'package.json'),
     join(app.getAppPath(), 'package.json'),
   ];

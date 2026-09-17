@@ -3,6 +3,7 @@ import {
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   FormControlLabel,
   IconButton,
@@ -51,6 +52,12 @@ interface RuleState {
   room_groups: DimState;
   users: DimState;
   agents: DimState;
+  // The owner and owner-agents subjects and the platform opt-in are carried
+  // through untouched: this editor does not offer them, and saving must not
+  // strip what another surface set.
+  owner?: boolean;
+  owner_agents?: boolean;
+  platform: boolean;
 }
 
 function toDimState(value: AddressingDimension, allowNone: boolean): DimState {
@@ -73,16 +80,23 @@ function toRuleState(rule: AddressingRule): RuleState {
     room_groups: toDimState(rule.room_groups, false),
     users: toDimState(rule.users, true),
     agents: toDimState(rule.agents, true),
+    owner: rule.owner,
+    owner_agents: rule.owner_agents,
+    platform: rule.platform === true,
   };
 }
 
 function fromRuleState(state: RuleState): AddressingRule {
-  return {
+  const rule: AddressingRule = {
     rooms: fromDimState(state.rooms),
     room_groups: fromDimState(state.room_groups),
     users: fromDimState(state.users),
     agents: fromDimState(state.agents),
   };
+  if (state.owner !== undefined) rule.owner = state.owner;
+  if (state.owner_agents !== undefined) rule.owner_agents = state.owner_agents;
+  if (state.platform) rule.platform = true;
+  return rule;
 }
 
 // A rule that can never match (so it would silently never apply): a context
@@ -103,6 +117,7 @@ const EMPTY_RULE: RuleState = {
   room_groups: { mode: "any", ids: [] },
   users: { mode: "any", ids: [] },
   agents: { mode: "any", ids: [] },
+  platform: false,
 };
 
 function DimensionField({
@@ -341,6 +356,19 @@ export default function AddressingPolicySection({
                   allowNone
                   disabled={!canEdit}
                   onChange={(agents) => updateRule(index, { ...rule, agents })}
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={rule.platform}
+                      disabled={!canEdit}
+                      onChange={(e) =>
+                        updateRule(index, { ...rule, platform: e.target.checked })
+                      }
+                    />
+                  }
+                  label="Switch itself: let the platform address this agent on its own account. A message it sends for a person, such as a template kickoff, is judged as that person and needs no opt-in."
                 />
                 {ruleIsDead(rule) && (
                   <Alert severity="warning">

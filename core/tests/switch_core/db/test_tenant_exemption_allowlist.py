@@ -20,8 +20,10 @@ Short in both directions. A module reaches the exemption if it *can* call a
 lookup, not if it happens to; a helper on an injected store, reachable by
 anything that declares the store, put one module on this list and the
 exemption within reach of every endpoint behind it. That is why
-`get_sole_tenant_id` lives in `gateway/auth.py` as a function rather than on a
-`TenantMemberStore`: the one caller it ever had is the one module named here.
+`_resolve_tenant_id` and `list_tenant_memberships` live in `gateway/auth.py`
+as functions rather than on a `TenantMemberStore`: whatever calls them —
+`gateway/tenants.py` included — reaches the exemption through this one
+module, never directly through a store any endpoint could declare for itself.
 
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived

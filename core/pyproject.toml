@@ -50,6 +50,7 @@ Issues = "https://github.com/sandbox-quantum/switch/issues"
 
 [project.scripts]
 switch-core = "switch_core.main:main"
+switch-migrate = "switch_core.main:migrate"
 
 [build-system]
 requires = ["hatchling"]

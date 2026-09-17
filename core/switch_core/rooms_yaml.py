@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
@@ -29,12 +32,16 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
+from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.bridges.resource.service import ResourceService
+    from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+    from switch_core.db.models import Room
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.collaboration_bridge_store import (
         CollaborationBridgeStore,
@@ -48,21 +55,39 @@ logger = logging.getLogger(__name__)
 
 # ── Template parameters (v0) ─────────────────────────────────────────────
 
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# How long a kickoff waits for the room's members to join before posting.
+KICKOFF_JOIN_TIMEOUT = 30.0
+
+PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
+
+# Param types whose value names something the server already has. They
+# interpolate as plain strings; the difference is that the server checks the
+# name before provisioning and the Console offers a picker instead of a text
+# box. The value is the name a template would write: an agent's name, a
+# bridge's display name, a room's name, a platform username.
+ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
+
+ParamType = Literal[
+    "string", "number", "boolean", "enum", "agent", "bridge", "room", "user"
+]
 
 
 class ParamSpec(BaseModel):
     model_config = {"extra": "forbid"}
-    type: Literal["string", "number", "boolean", "enum"] = "string"
+    type: ParamType = "string"
     description: str | None = None
     default: str | int | float | bool | None = None
     enum: list[str] | None = None
+    # Rendering hint for string params that carry long text (a task brief,
+    # instructions): the form shows a textarea instead of a one-line input,
+    # which would strip the pasted text's newlines.
+    multiline: bool = False
 
 
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
-    if t == "string":
+    if t == "string" or t in ENTITY_PARAM_TYPES:
         return str(value)
     if t == "number":
         if isinstance(value, bool):
@@ -223,6 +248,26 @@ class RoomSpec(BaseModel):
     docs: list[DocSpec] = []
 
 
+class TemplateDocument(BaseModel):
+    """Top-level shape of a room template file (for JSON Schema generation)."""
+
+    room: RoomSpec
+    params: dict[str, ParamSpec] | None = None
+    kickoff: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedTemplate:
+    """What ``parse_template`` makes of one template plus one set of inputs."""
+
+    spec: RoomSpec
+    kickoff: str | None
+    #: The template's declared params, by name.
+    params: dict[str, ParamSpec]
+    #: The value each declared param resolved to (input or default), coerced.
+    values: dict[str, str | int | float | bool]
+
+
 class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
@@ -263,6 +308,7 @@ class RoomYamlService:
         external_user_store: ExternalUserStore,
         room_role_store: RoomRoleStore,
         session_factory: async_sessionmaker[AsyncSession],
+        client_lifecycle: ClientLifecycleService | None = None,
     ) -> None:
         self._rooms = room_service
         self._resources = resource_service
@@ -272,10 +318,39 @@ class RoomYamlService:
         self._external_users = external_user_store
         self._room_roles = room_role_store
         self._session_factory = session_factory
+        self._client_lifecycle = client_lifecycle
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
-    def parse(self, text: str, inputs: dict[str, Any] | None = None) -> RoomSpec:
+    def parse(
+        self,
+        text: str,
+        inputs: dict[str, Any] | None = None,
+        builtins: dict[str, str] | None = None,
+    ) -> tuple[RoomSpec, str | None]:
+        """Parse a YAML template into a ``RoomSpec`` and optional kickoff message.
+
+        The short form of ``parse_template`` for callers that only need the
+        room; the gateway uses the long form so it can also check the
+        entity-typed params before provisioning.
+        """
+        parsed = self.parse_template(text, inputs=inputs, builtins=builtins)
+        return parsed.spec, parsed.kickoff
+
+    def parse_template(
+        self,
+        text: str,
+        inputs: dict[str, Any] | None = None,
+        builtins: dict[str, str] | None = None,
+    ) -> ParsedTemplate:
+        """Parse a YAML template into its room spec, kickoff, and resolved params.
+
+        ``builtins`` are server-injected variables (e.g. ``{creator}``) that
+        are always available for interpolation alongside user-supplied
+        ``inputs``.  They are resolved first and never collide with declared
+        params; a param named ``creator`` would shadow the built-in, which is
+        intentional (the template author owns the namespace).
+        """
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as e:
@@ -283,7 +358,7 @@ class RoomYamlService:
         if not isinstance(data, dict) or "room" not in data:
             raise ValueError("YAML must have a single top-level 'room:' mapping")
 
-        allowed_keys = {"room", "params", "version"}
+        allowed_keys = {"room", "params", "version", "kickoff"}
         extra = set(data) - allowed_keys
         if extra:
             raise ValueError(f"Unknown top-level key(s): {', '.join(sorted(extra))}")
@@ -311,22 +386,186 @@ class RoomYamlService:
         if inputs and not declared:
             raise ValueError("Inputs supplied but the template declares no params")
 
+        # Build the interpolation values: builtins first, then params override
+        values: dict[str, str | int | float | bool] = dict(builtins or {})
+        resolved: dict[str, str | int | float | bool] = {}
         if declared:
-            values = resolve_params(declared, inputs)
+            resolved = resolve_params(declared, inputs)
+            values.update(resolved)
+
+        if values:
             room_data = interpolate(data["room"], values)
+            kickoff_raw = data.get("kickoff")
+            kickoff = (
+                interpolate(kickoff_raw, values)
+                if isinstance(kickoff_raw, str)
+                else None
+            )
         else:
             room_data = data["room"]
+            kickoff = (
+                data.get("kickoff") if isinstance(data.get("kickoff"), str) else None
+            )
 
         try:
-            return RoomSpec.model_validate(room_data)
+            spec = RoomSpec.model_validate(room_data)
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
+        return ParsedTemplate(
+            spec=spec, kickoff=kickoff, params=declared, values=resolved
+        )
+
+    # ── Entity params ─────────────────────────────────────────────────────
+
+    async def check_entity_params(self, parsed: ParsedTemplate) -> None:
+        """Every entity-typed param must name something this server has.
+
+        Raises ``ValueError`` in the ``param 'x': ...`` form the Console maps
+        back onto the field. Runs between ``parse_template`` and ``provision``
+        so a bad name fails at the input, not as a half-built room. A ``user``
+        param resolves on the bridge the room will land on, hence the parsed
+        spec rather than the raw inputs.
+        """
+        wanted: dict[str, list[tuple[str, str]]] = {}
+        for name, spec in parsed.params.items():
+            if spec.type in ENTITY_PARAM_TYPES:
+                wanted.setdefault(spec.type, []).append(
+                    (name, str(parsed.values[name]))
+                )
+        if not wanted:
+            return
+
+        async with self._session_factory() as session:
+            if "agent" in wanted:
+                names = [value for _, value in wanted["agent"]]
+                agents = await self._agent_store.get_by_names(session, names)
+                known = {a.name for a in agents}
+                for param, value in wanted["agent"]:
+                    if value not in known:
+                        raise ValueError(
+                            f"param {param!r}: no agent named {value!r} on this server"
+                        )
+            if "bridge" in wanted:
+                bridges = {
+                    b.display_name: b for b in await self._bridge_store.get_all(session)
+                }
+                for param, value in wanted["bridge"]:
+                    bridge = bridges.get(value)
+                    if bridge is None:
+                        raise ValueError(
+                            f"param {param!r}: no messaging app named {value!r} "
+                            "on this server"
+                        )
+                    if bridge.status != "active":
+                        raise ValueError(
+                            f"param {param!r}: messaging app {value!r} is not running"
+                        )
+            if "room" in wanted:
+                rooms = {r.name for r in await self._room_store.get_all(session)}
+                for param, value in wanted["room"]:
+                    if value not in rooms:
+                        raise ValueError(
+                            f"param {param!r}: no room named {value!r} on this server"
+                        )
+
+        if "user" in wanted:
+            bridge_id = await self._resolve_bridge_id(parsed.spec.bridge)
+            if bridge_id is None:
+                param = wanted["user"][0][0]
+                raise ValueError(
+                    f"param {param!r}: a user can only be looked up on a messaging "
+                    "app, and this template has none"
+                )
+            names = [value for _, value in wanted["user"]]
+            found = await self._rooms.resolve_bridge_users(bridge_id, names)
+            for param, value in wanted["user"]:
+                if value not in found:
+                    raise ValueError(
+                        f"param {param!r}: no user named {value!r} on the "
+                        "room's messaging app"
+                    )
+
+    async def builtins_for(
+        self, *, user_id: str, name: str, email: str, text: str
+    ) -> dict[str, str]:
+        """The server-injected ``{$...}`` variables for one create call.
+
+        ``$creator`` is the name the creator goes by on the template's bridge,
+        the identity they have linked there, which is what ``users:``
+        resolution and channel invites understand. A bridged template that
+        uses ``{$creator}`` is refused without such a link rather than guessed
+        from the gateway account name, which is rarely a platform account.
+        Without a bridge there is nobody to invite, so the gateway name stands
+        in.
+        """
+        creator = name
+        bridge_id = await self._peek_bridge_id(text)
+        if bridge_id is not None:
+            async with self._session_factory() as session:
+                claimed = await self._external_users.get_by_user(session, user_id)
+                bridge = await self._bridge_store.get(session, bridge_id)
+            claim = next((ext for ext in claimed if ext.bridge_id == bridge_id), None)
+            if claim is not None:
+                creator = claim.external_username
+            elif "{$creator}" in text:
+                app = (
+                    bridge.display_name if bridge is not None else "this messaging app"
+                )
+                raise ValueError(
+                    f"this template puts you in the room as {{$creator}}, but you "
+                    f"have no linked account on {app}. Link your account under "
+                    "Identities, then create the room again"
+                )
+        return {
+            "$creator": creator,
+            "$creator_email": email,
+            "$date": str(date.today()),
+            "$timestamp": str(int(time.time())),
+        }
+
+    async def _peek_bridge_id(self, text: str) -> str | None:
+        """The bridge the template will land on, read before interpolation.
+
+        Best-effort: an unparseable template, an interpolated bridge name, or
+        an unknown bridge all answer None; parse/provision fails loudly later
+        when it matters. A template naming no bridge lands on the default one,
+        same as provisioning."""
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        room = data.get("room")
+        if not isinstance(room, dict):
+            return None
+        bridge = room.get("bridge")
+        if bridge is not None and (
+            not isinstance(bridge, str) or PLACEHOLDER_RE.search(bridge)
+        ):
+            return None
+        try:
+            return await self._resolve_bridge_id(bridge)
+        except ValueError:
+            return None
 
     # ── Provision ───────────────────────────────────────────────────────────
 
     async def provision(
-        self, spec: RoomSpec, *, user_id: str, is_admin: bool
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        is_admin: bool,
+        kickoff: str | None = None,
+        creator_name: str | None = None,
     ) -> ProvisionResult:
+        """Create the room and everything the spec attaches to it.
+
+        ``kickoff`` is posted once the room exists, by the platform on the
+        creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
+        message names them.
+        """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
             raise ValueError(
@@ -366,6 +605,16 @@ class RoomYamlService:
             room_id, spec.docs, user_id=user_id, failures=failures
         )
 
+        if kickoff:
+            await self._send_kickoff(
+                result.room,
+                kickoff,
+                agent_names=spec.agents,
+                user_id=user_id,
+                user_name=creator_name,
+                failures=failures,
+            )
+
         return ProvisionResult(
             room_id=room_id,
             room_name=result.room.name,
@@ -378,7 +627,9 @@ class RoomYamlService:
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:
-            return None
+            async with self._session_factory() as session:
+                default = await self._bridge_store.get_default(session)
+            return default.id if default else None
         async with self._session_factory() as session:
             bridges = await self._bridge_store.get_all(session)
         matches = [b for b in bridges if b.display_name == bridge_name]
@@ -496,6 +747,106 @@ class RoomYamlService:
                     )
             await session.commit()
         return created
+
+    # ── Kickoff ───────────────────────────────────────────────────────────
+
+    async def _send_kickoff(
+        self,
+        room: Room,
+        text: str,
+        *,
+        agent_names: list[str],
+        user_id: str,
+        user_name: str | None,
+        failures: list[dict[str, Any]],
+    ) -> None:
+        """Post the kickoff into the room the template just created.
+
+        Switch posts it on the creator's behalf, so nobody is impersonated:
+        the message renders as the app, and each agent it mentions applies
+        its policy to the creator, for this one event. It goes out as a
+        one-line headline in the channel plus the text in that headline's
+        thread, so the channel keeps one line per kickoff.
+
+        Best-effort like references and docs: a kickoff that cannot be posted
+        is reported in ``failures``, not fatal. The agents are waited for
+        first, because a client drops events that land before its own join.
+        """
+
+        def fail(error: str) -> None:
+            failures.append({"kind": "kickoff", "id": "kickoff", "error": error})
+
+        if self._client_lifecycle is None:
+            fail("kickoff posting is not configured on this server")
+            return
+        admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
+        admin = next((c for c in admins if isinstance(c, AdminClient)), None)
+        if admin is None:
+            fail("the platform has no client to post with")
+            return
+
+        late = await self._wait_for_kickoff_audience(
+            room.matrix_room_id, admin, agent_names
+        )
+        if late:
+            fail("did not join the room in time to see the kickoff: " + ", ".join(late))
+        if "the platform" in late:
+            return
+
+        person = OnBehalfOf(user_id, user_name or user_id)
+        headline = f"Template kickoff on behalf of @{person.name}"
+        try:
+            root_id = await admin.send_platform_message(
+                room.matrix_room_id, headline, on_behalf_of=person
+            )
+            if root_id is None:
+                fail("the platform could not post the kickoff")
+                return
+            event_id = await admin.send_platform_message(
+                room.matrix_room_id,
+                text,
+                thread_root_id=root_id,
+                on_behalf_of=person,
+                reply_in_channel=True,
+            )
+        except Exception as e:
+            fail(str(e))
+            return
+        if event_id is None:
+            fail("the platform posted the kickoff headline but not its thread")
+
+    async def _wait_for_kickoff_audience(
+        self,
+        matrix_room_id: str,
+        admin: AdminClient,
+        agent_names: list[str],
+    ) -> list[str]:
+        """Wait for the sender and the template's agents to be in the room.
+
+        Returns the names of those that were not joined within the timeout:
+        "the platform" for the sender itself, else the agent's name. An agent
+        with no running client is not waited for; it is not in the room to
+        miss anything.
+        """
+        late: list[str] = []
+        if not await admin.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT):
+            late.append("the platform")
+        if not agent_names or self._client_lifecycle is None:
+            return late
+        async with self._session_factory() as session:
+            agents = await self._agent_store.get_by_names(session, agent_names)
+        for agent in agents:
+            client = self._client_lifecycle.get_by_agent_id(agent.id)
+            if client is None:
+                continue
+            try:
+                joined = await client.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT)
+            except RuntimeError:
+                # Not connected: it is not receiving anything either way.
+                continue
+            if not joined:
+                late.append(agent.name)
+        return late
 
     # ── Export ────────────────────────────────────────────────────────────
 

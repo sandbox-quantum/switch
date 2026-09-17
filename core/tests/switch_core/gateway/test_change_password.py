@@ -60,6 +60,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         jwt_secret_key=_SECRET,
         gateway_cookie_secure=False,
         gateway_password_login_enabled=True,
+        gateway_tenant_choice_enabled=False,
     )
     return app
 
@@ -94,7 +95,7 @@ async def _stored_hash(
 
 
 def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
-    token = create_jwt(user_id, email, "user", _SECRET)
+    token = create_jwt(user_id, email, "user", _SECRET, None)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

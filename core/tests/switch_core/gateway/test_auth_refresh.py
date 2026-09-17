@@ -27,6 +27,13 @@ def _config(*, cookie_secure: bool = False) -> SimpleNamespace:
     return SimpleNamespace(jwt_secret_key=_SECRET, gateway_cookie_secure=cookie_secure)
 
 
+def _request(*, tenant_id: str | None) -> SimpleNamespace:
+    # refresh() only reads request.state.tenant_id — the tenant
+    # get_current_user just resolved this request to, which it must carry
+    # forward into the re-minted cookie (CHOO-2723).
+    return SimpleNamespace(state=SimpleNamespace(tenant_id=tenant_id))
+
+
 def _extract_cookie(response: Response) -> str:
     raw = response.headers.get("set-cookie")
     assert raw is not None, "refresh did not set a cookie"
@@ -40,7 +47,7 @@ async def test_refresh_remints_cookie_for_current_user() -> None:
     user = User(id="u-1", name="Ada", email="ada@example.com", role="user")
     response = Response()
 
-    result = await refresh(response, user, _config())
+    result = await refresh(_request(tenant_id="tenant-0"), response, user, _config())
 
     token = _extract_cookie(response)
     payload = decode_jwt(token, _SECRET)
@@ -54,15 +61,32 @@ async def test_refresh_remints_cookie_for_current_user() -> None:
     assert result.email == "ada@example.com"
 
 
+async def test_refresh_carries_the_selected_tenant_forward() -> None:
+    """The trap the design calls out by name: re-minting from `user` alone
+    would silently drop whichever tenant this session had selected."""
+    user = User(id="u-3", name="Cy", email="cy@example.com", role="user")
+    response = Response()
+
+    await refresh(_request(tenant_id="tenant-b"), response, user, _config())
+
+    token = _extract_cookie(response)
+    payload = decode_jwt(token, _SECRET)
+    assert payload["tenant_id"] == "tenant-b"
+
+
 async def test_refresh_cookie_is_httponly_and_respects_secure_flag() -> None:
     user = User(id="u-2", name="Bo", email="bo@example.com", role="admin")
 
     insecure = Response()
-    await refresh(insecure, user, _config(cookie_secure=False))
+    await refresh(
+        _request(tenant_id="tenant-0"), insecure, user, _config(cookie_secure=False)
+    )
     header = insecure.headers.get("set-cookie") or ""
     assert "httponly" in header.lower()
     assert "secure" not in header.lower()
 
     secure = Response()
-    await refresh(secure, user, _config(cookie_secure=True))
+    await refresh(
+        _request(tenant_id="tenant-0"), secure, user, _config(cookie_secure=True)
+    )
     assert "secure" in (secure.headers.get("set-cookie") or "").lower()
