@@ -108,9 +108,12 @@ waiting for the next deploy.
 integration requests to private addresses unless the host is listed in System
 Console → Environment → Developer → *Allow untrusted internal connections to*
 (`ServiceSettings.AllowedUntrustedInternalConnections`, space-separated hosts).
-Add the host from `callback_base_url`. Switch's own compose stacks set it
-already; a server you bring yourself does not, and the symptom is a press that
-silently does nothing with an error only in the Mattermost server log.
+Add the host from `callback_base_url` when that address is a private one; a
+publicly routable address is not gated by this setting. Switch's own compose
+stacks set it already, and a server you bring yourself does not. The symptom is
+a press that fails: Mattermost 10.5 and later put "Action failed to execute"
+under the card, and the reason — `err=address forbidden` for this one — is in
+the Mattermost server log and nowhere else.
 
 **TLS** is a proxy's job, as it is for Teams: the listener speaks plain HTTP. If
 the hop between the two servers leaves a network you trust, terminate TLS in
