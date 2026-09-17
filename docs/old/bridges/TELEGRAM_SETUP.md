@@ -311,6 +311,23 @@ duration, the agent's name, one Switch Console link and, where a tool call
 failed or was declined, the tally saying so. There is no tool log and no
 line naming the tool of the moment; Telegram declines both.
 
+**Stopping an agent.** The status message carries a **Stop current work**
+button while there is something to stop. Pressing it asks the agent to end its
+current turn; the agent decides how quickly it can, and the same message says
+when it has. The control names the turn it was drawn for, so a press on a
+message that has not been redrawn since a new turn started is refused rather
+than stopping the newer one. It disappears when the turn ends. On a queued
+message the button stops the work in front of it, not the queued message, and
+the message says so. Whoever presses it must be allowed to stop that agent —
+the same check a typed `!interrupt` goes through — and the result, accepted or
+refused, comes back as an alert on that person's screen alone.
+
+Telegram gives a bot no destructive button style, so the label is the whole of
+the warning; and it allows 64 bytes in the hidden payload a press carries. A
+provider whose turn ids are longer than about 60 bytes gets no button and a
+warning in the log rather than a control whose press Telegram would refuse —
+`!interrupt` still stops the turn.
+
 Telegram has a native animated "Thinking…" placeholder — the one it uses for
 its own AI features — but it is **not reachable here**. It is written with
 `sendMessageDraft`, whose `chat_id` Telegram documents as a *private chat*, and

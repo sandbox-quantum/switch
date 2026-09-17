@@ -62,6 +62,9 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    INTERRUPT_LABEL,
+    INTERRUPT_QUEUED_NOTE,
     Control,
     Drawn,
     Markup,
@@ -102,6 +105,15 @@ _ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member", "callback_query
 # Every byte spent here is one the token cannot have.
 _CALLBACK_PREFIX = "sw"
 _MAX_CALLBACK_BYTES = 64
+
+# And what a press on a status message's stop button hands back: the turn to
+# end. A card's button can leave its option out of the payload because the
+# record it names holds the form; a turn id has no such record here, so it
+# travels whole and takes the rest of the budget. Two characters again, and
+# this time they are worth more than style — a provider chooses how long its
+# turn ids are, and the prefix is the only part of the payload this bridge can
+# make smaller.
+_INTERRUPT_PREFIX = "sx"
 
 # A button's label is one line on a phone, and Telegram truncates the middle of
 # an over-long one rather than wrapping it. Cut here instead, at the end, where
@@ -154,6 +166,45 @@ def _parse_callback(data: str) -> tuple[str, int] | None:
         return None
     position = int(digits)
     return (token, position) if position > 0 else None
+
+
+def _interrupt_data(turn_id: str) -> str:
+    return f"{_INTERRUPT_PREFIX}:{turn_id}"
+
+
+def _parse_interrupt(data: str) -> str | None:
+    """The turn a stop press names, or None if the press is not one.
+
+    Split once, so a turn id a provider chose to put a colon in comes back
+    whole — unlike a card's payload, which is read as three fixed fields
+    because every one of them is Switch's own. What comes back is a claim and
+    is treated as one: the session it stops is the one behind the message the
+    press arrived on, and this says only which of that session's turns the
+    button was drawn against.
+    """
+    prefix, separator, turn_id = data.partition(":")
+    if prefix != _INTERRUPT_PREFIX or not separator or not turn_id:
+        return None
+    return turn_id
+
+
+def _press_action(data: str) -> tuple[str, str] | None:
+    """The Switch action a press carries and what it names, or None if not ours.
+
+    Two keyboards arrive here and they name different things — a card's button
+    names the card, a stop names the turn — but they leave by the same door,
+    because what happens next is the same for both: hand the press to the
+    shared inbound path, then close the press on the presser's own client with
+    whatever came back.
+    """
+    turn_id = _parse_interrupt(data)
+    if turn_id is not None:
+        return INTERRUPT_ACTION, turn_id
+    press = _parse_callback(data)
+    if press is None:
+        return None
+    token, position = press
+    return position_action(position), token
 
 
 def _button_label(control: Control) -> str:
@@ -1190,7 +1241,12 @@ class TelegramAdapter(CollaborationAdapter):
         numbers.
         """
         return self._draw(
-            content, mention=None, responder=None, prefix="", controls=False
+            content,
+            mention=None,
+            responder=None,
+            prefix="",
+            controls=False,
+            stopping=False,
         ).text
 
     def _draw(
@@ -1201,6 +1257,7 @@ class TelegramAdapter(CollaborationAdapter):
         responder: str | None,
         prefix: str,
         controls: bool,
+        stopping: bool,
     ) -> Drawn:
         escape = self._rich_escape
         limit = max(1, self.rich_fallback_limit() - len(prefix))
@@ -1209,8 +1266,14 @@ class TelegramAdapter(CollaborationAdapter):
             # Charged to the same budget as the status it follows: a message
             # that just fits, plus a line saying it reached nobody, is a
             # message Telegram refuses — and an edit has no chunking to fall
-            # back on.
-            tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+            # back on. The note under a queued turn's stop control is charged
+            # the same way, and for the same reason.
+            lines = []
+            if stopping and content.turn.status == "queued":
+                lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.notify_unreachable:
+                lines.append(self.unnotified_notice())
+            tail = "".join(f"\n{line}" for line in lines)
             body = turn_status(
                 content.items,
                 content.turn,
@@ -1284,23 +1347,68 @@ class TelegramAdapter(CollaborationAdapter):
             return ""
         return f"\n{_FOLD_OPEN}{log}{_FOLD_CLOSE}"
 
+    def _interrupt_turn(self, content: RichContent) -> str | None:
+        """The turn a stop control on this drawing would end, or None for none.
+
+        Three things have to be true. There has to be something to stop, which
+        the publication decides and puts in the content — one value for the
+        whole session, so a queued turn's message offers to stop the running
+        turn in front of it. The turn this message is about has to be
+        unfinished, because a status kept as the record of a turn that ended is
+        not a place to offer stopping anything. And a press has to have
+        somewhere to land.
+
+        The last check is the length, and it is the reason this returns the id
+        rather than a flag: Telegram allows 64 bytes in a button's payload, a
+        provider chooses how long its turn ids are, and a button Telegram would
+        refuse to carry would cost the status message its post. A card in that
+        position raises, because a card without its buttons is still an
+        unanswered request somebody has to be shown; a status is the whole
+        account of a turn, and losing it to a control it could have gone
+        without would be the worse trade. So this logs and draws no button,
+        with `!interrupt` left saying what the reader can still do.
+        """
+        if not isinstance(content, TurnActivity) or self._on_interaction is None:
+            return None
+        turn_id = content.interrupt_turn_id
+        if turn_id is None or content.turn.status in TURN_ENDED:
+            return None
+        written = len(_interrupt_data(turn_id).encode())
+        if written > _MAX_CALLBACK_BYTES:
+            logger.warning(
+                "Not offering the stop control on Telegram for turn %s: its "
+                "press would carry %d bytes and Telegram allows %d. The typed "
+                "command still stops it.",
+                turn_id[:64],
+                written,
+                _MAX_CALLBACK_BYTES,
+            )
+            return None
+        return turn_id
+
     def _controls(
-        self, content: RichContent, drawn: Drawn
+        self, content: RichContent, drawn: Drawn, stopping: str | None
     ) -> InlineKeyboardMarkup | None:
-        """The card's options as buttons, or nothing where a press cannot land.
+        """What a publication offers to press, or nothing where a press cannot land.
 
-        One per row. An option's label is a phrase more often than a word, and
-        Telegram gives the buttons in a row equal width and truncates what does
-        not fit, so a second column would cost the labels rather than save the
-        space.
+        A status message has no options to offer and gets at most one button,
+        the one that stops the work — and only where there is work to stop,
+        which `stopping` has already decided. Telegram gives a bot no
+        destructive style, every inline button looking alike, so the label is
+        the whole of the warning and is used exactly as the other platforms
+        word it.
 
-        Nothing at all is the ordinary answer: a status has no options, a
-        settled card has none left, and a card that cannot be answered where it
-        is showing says so — a live control under that sentence is an
-        invitation to the refusal it just explained. Since `update_rich` draws
-        the keyboard on every redraw, the controls come off a card at the
-        moment it stops being pressable, without anything having to remember
-        that it once had them.
+        A card's options are the rest of this, one per row. An option's label
+        is a phrase more often than a word, and Telegram gives the buttons in a
+        row equal width and truncates what does not fit, so a second column
+        would cost the labels rather than save the space.
+
+        Nothing at all is the ordinary answer: a settled card has no options
+        left, and a card that cannot be answered where it is showing says so —
+        a live control under that sentence is an invitation to the refusal it
+        just explained. Since `update_rich` draws the keyboard on every redraw,
+        the controls come off a message at the moment it stops being pressable,
+        without anything having to remember that it once had them.
 
         Which of those it is comes from `drawn`, not from reading the request a
         second time. A long detail or a clipped option leaves a body the reader
@@ -1312,6 +1420,19 @@ class TelegramAdapter(CollaborationAdapter):
         option in full, so the reader has what they are agreeing to and the
         button is only the shortest way to say which one.
         """
+        if isinstance(content, TurnActivity):
+            if stopping is None:
+                return None
+            return InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text=INTERRUPT_LABEL,
+                            callback_data=_interrupt_data(stopping),
+                        )
+                    ]
+                ]
+            )
         if not isinstance(content, RequestCard) or not drawn.answerable:
             return None
         rows: list[list[InlineKeyboardButton]] = []
@@ -1329,14 +1450,21 @@ class TelegramAdapter(CollaborationAdapter):
             )
         return InlineKeyboardMarkup(rows) if rows else None
 
-    async def _render_rich(self, content: RichContent, agent_name: str) -> Drawn:
-        """Draw `content` as the agent, for one Telegram chat.
+    async def _render_rich(
+        self, content: RichContent, agent_name: str
+    ) -> tuple[Drawn, str | None]:
+        """Draw `content` as the agent, and say what a stop on it would end.
 
         The name is always in the body. Telegram gives a bot no per-message
         identity — no name or avatar override, no webhook equivalent — so one
         bot posts for every agent and the prefix `_attribute` writes is the
         whole of what tells them apart. It is charged to the same message
         budget as the drawing under it.
+
+        The turn comes back with the drawing rather than being looked up again
+        beside it, so the decision to offer a stop is made once: the note the
+        body prints under a queued turn and the button the keyboard carries are
+        then two halves of one answer and cannot contradict each other.
         """
         agent = await self.agent_rendering(agent_name)
         prefix = (
@@ -1348,13 +1476,16 @@ class TelegramAdapter(CollaborationAdapter):
             if isinstance(content, RequestCard)
             else None
         )
-        return self._draw(
+        stopping = self._interrupt_turn(content)
+        drawn = self._draw(
             content,
             mention=self._mention(content.notify_external_id),
             responder=responder,
             prefix=prefix,
             controls=True,
+            stopping=stopping is not None,
         )
+        return drawn, stopping
 
     def _mention(self, external_user_id: str | None) -> str | None:
         """A real Telegram mention for a user id, or nothing.
@@ -1421,11 +1552,11 @@ class TelegramAdapter(CollaborationAdapter):
         `rich_fallback_limit` for exactly that reason and `_clamp` is the
         backstop if something still overruns.
         """
-        drawn = await self._render_rich(content, agent_name)
+        drawn, stopping = await self._render_rich(content, agent_name)
         text = drawn.text
         self._refuse_while_throttled(text)
         self._pace_publication(channel_id, content, text)
-        controls = self._controls(content, drawn)
+        controls = self._controls(content, drawn, stopping)
         anchor = await self._publication_anchor(channel_id, thread_root_id, text)
         try:
             sent = await self._require_bot().send_message(
@@ -1487,7 +1618,7 @@ class TelegramAdapter(CollaborationAdapter):
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the chat that never reaches anybody it
         # has not already reached.
-        drawn = await self._render_rich(
+        drawn, stopping = await self._render_rich(
             replace(content, notify_external_id=None), agent_name
         )
         self._refuse_while_throttled(drawn.text)
@@ -1496,7 +1627,7 @@ class TelegramAdapter(CollaborationAdapter):
             channel_id,
             message_ref,
             drawn.text,
-            self._controls(content, drawn),
+            self._controls(content, drawn, stopping),
             content=content,
         )
 
@@ -2080,13 +2211,14 @@ class TelegramAdapter(CollaborationAdapter):
             await self._handle_message(message)
 
     async def _handle_callback_query(self, query: Any) -> None:
-        """Someone pressed a button on a card this bridge posted.
+        """Someone pressed a button on a card or a status this bridge posted.
 
         Who pressed comes from `from_user`, which Telegram fills in and the
         payload cannot: the data in the button says which request and which
-        option, never who. So a press replayed from someone else's client is
-        still attributed to whoever actually sent it, and the identity check
-        downstream is against a real account rather than a claim.
+        option, or which turn to stop, never who. So a press replayed from
+        someone else's client is still attributed to whoever actually sent it,
+        and the identity check downstream is against a real account rather than
+        a claim.
 
         The press is answered on every path out of here. Until it is, the
         presser's client keeps the button in a loading state and will
@@ -2101,30 +2233,30 @@ class TelegramAdapter(CollaborationAdapter):
         button.
 
         Nothing here dedupes. Telegram redelivers an update it was not
-        acknowledged for, and the same press twice is the same option, by the
-        same person, against the same revision — which the shared layer derives
-        one command id from, so the second is the first rather than a second
-        answer.
+        acknowledged for, and the same press twice is the same option — or the
+        same turn to stop — by the same person, against the same revision,
+        which the shared layer derives one command id from, so the second is
+        the first rather than a second answer.
         """
         query_id = str(getattr(query, "id", "") or "")
         message = getattr(query, "message", None)
         chat = getattr(message, "chat", None)
         user = getattr(query, "from_user", None)
-        press = _parse_callback(str(getattr(query, "data", "") or ""))
-        if press is None or chat is None or user is None:
+        dispatch = _press_action(str(getattr(query, "data", "") or ""))
+        if dispatch is None or chat is None or user is None:
             await self._answer_callback(query_id, None)
             return
         if self._on_interaction is None:
             logger.warning(
-                "A press on a Switch card in chat %s has nowhere to go: this "
-                "bridge handles no interactions, so the card should not have "
+                "A press on a Switch message in chat %s has nowhere to go: this "
+                "bridge handles no interactions, so the message should not have "
                 "been drawn with buttons.",
                 getattr(chat, "id", "?"),
             )
             await self._answer_callback(query_id, None)
             return
 
-        token, position = press
+        action_id, value = dispatch
         name = self._display_name(user)
         # A press is a sighting of that account in this chat, and the same
         # thing a message teaches: the name a mention needs, and the id a
@@ -2140,8 +2272,8 @@ class TelegramAdapter(CollaborationAdapter):
                     channel_id=str(chat.id),
                     sender_id=str(user.id),
                     sender_name=name,
-                    action_id=position_action(position),
-                    value=token,
+                    action_id=action_id,
+                    value=value,
                     message_ref=self._ref(message),
                 )
             )
