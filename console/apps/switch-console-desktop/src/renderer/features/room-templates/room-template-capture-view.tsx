@@ -6,9 +6,12 @@ import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { prefillForSave } from '@renderer/features/templates/agent-template-data';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
@@ -265,6 +268,23 @@ const CapturePanel = observer(function CapturePanel() {
     if (result) setSaved(true);
   }, [parameterizedYaml, roomName]);
 
+  // The same dialog the import page uses, so a captured room lands in the
+  // workspace listing like any other template.
+  const { showModal } = useModalContext();
+  const { navigate } = useNavigate();
+  const handleSaveToWorkspace = useCallback(async () => {
+    const prefill = await prefillForSave(parameterizedYaml, null);
+    showModal('saveTemplateModal', {
+      serverId,
+      serverName: switchServersStore.servers.find((sv) => sv.id === serverId)?.name ?? null,
+      content: parameterizedYaml,
+      ...prefill,
+      // A room name with a placeholder in it makes a poor listing name.
+      name: prefill.name === 'Room template' && roomName ? roomName : prefill.name,
+      onSuccess: ({ id }) => navigate('templateDetail', { serverId, templateId: id }),
+    });
+  }, [parameterizedYaml, serverId, roomName, showModal, navigate]);
+
   const handleCopy = useCallback(() => {
     void rpc.roomTemplates.copyToClipboard({ text: parameterizedYaml });
     setCopied(true);
@@ -333,8 +353,15 @@ const CapturePanel = observer(function CapturePanel() {
             <Button variant="outline" className="w-full" onClick={handleCopy}>
               {copied ? 'Copied!' : 'Copy YAML'}
             </Button>
-            <Button className="w-full" onClick={handleSave}>
+            <Button variant="outline" className="w-full" onClick={handleSave}>
               {saved ? 'Saved!' : 'Save file…'}
+            </Button>
+            <Button
+              className="w-full"
+              disabled={!parameterizeOk}
+              onClick={() => void handleSaveToWorkspace()}
+            >
+              Save to workspace
             </Button>
           </div>
         </div>
