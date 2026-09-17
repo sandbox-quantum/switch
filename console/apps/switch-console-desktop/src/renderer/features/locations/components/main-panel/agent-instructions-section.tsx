@@ -38,10 +38,11 @@ export function AgentInstructionsSection({
     enabled: !!agentId,
   });
 
-  // The template this agent was made from, if any. Its instructions move on
-  // (the Switch expert's live in the repository); the agent's copy does not,
-  // so the page offers the current ones. Filling the box is all it does: the
-  // person reads the change and saves it like any other edit.
+  // The template this agent was created from, if any. A template's
+  // instructions change over time (the Switch expert's are maintained in the
+  // repository) while the agent keeps the copy it was created with, so the
+  // page offers to load the current version into the editor. Nothing is
+  // saved until the person saves the edit.
   const { data: origin } = useQuery({
     queryKey: ['agent-template-origin', agentId],
     queryFn: () => (agentId ? rpc.agents.readTemplateOrigin({ agentId }) : Promise.resolve(null)),

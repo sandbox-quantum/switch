@@ -1,10 +1,10 @@
 # Switch expert, as an agent template.
 #
-# An agent template is the agent-shaped counterpart of a room template: open
-# it in Switch Console's Templates view, choose where it runs and on which
-# provider, click "Create agent", and you have a working agent. The document
-# declares everything the agent depends on as data, so a second expert on a
-# different subject is a different document, not different code.
+# An agent template describes an agent the way a room template describes a
+# room. Open it in Switch Console's Templates view, choose where the agent
+# runs and which provider runs it, click "Create agent", and the agent
+# exists. Everything the agent depends on is data in this document, so an
+# expert on another subject is another document with the same fields.
 #
 #   agent:        Who the agent is. `name` is offered as the default agent
 #                 name (people address it as @name), `description` is what
@@ -26,10 +26,10 @@
 #                 creating it. A template with no `room:` creates the agent
 #                 and stops there.
 #
-#   kickoff:      Optional, needs `room:`. Posted into the room as the
-#                 creating person once it exists. Agents only start working
-#                 when a message addresses them, so mention the agent here;
-#                 this is what turns "created" into "answering".
+#   kickoff:      Optional, needs `room:`. Posted into the room on behalf of
+#                 the person creating it, once the room exists. An agent
+#                 starts working when a message addresses it, so mention the
+#                 agent here or it will sit in the room without answering.
 #
 #   agents:       The plural form: a list of `agent` blocks, each created by
 #                 Switch Console, for a template that makes a team. The room
@@ -40,14 +40,14 @@
 #                 param, which the Console answers and never sends to the
 #                 server. See examples/agent-templates/triage-pair.template.yaml.
 #
-#   group:        Instead of `room:`, a room group in the server's own group
-#   rooms:        shape: `group:` (name, description, color), a `rooms:` list
-#   links:        of room blocks (each with its own `kickoff:`), and optional
-#                 `links:` between them by name.
+#   group:        Used instead of `room:` for several rooms. `group:` has the
+#   rooms:        group's name, description and color; `rooms:` is a list of
+#   links:        room blocks, each with its own `kickoff:`; `links:` connects
+#                 rooms by name and is optional.
 #
-# Switch Console bundles this template and fills `agent.instructions` from
-# AGENT.md next to this file, so the persona is written once. A template
-# uploaded to a server's registry carries its instructions inline instead.
+# Switch Console bundles this template and reads `agent.instructions` from
+# AGENT.md next to this file, so the instructions are written once. A
+# template saved to a workspace carries its instructions inline instead.
 version: 1
 agent:
   name: switch-expert

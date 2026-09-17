@@ -237,10 +237,10 @@ export function AgentIdentityFields({
   instructionsFrom = null,
 }: {
   form: ConfigureAgentFormState;
-  /** Where prefilled instructions came from (a template's name). When set,
-   * the instructions start folded to one line: they are the template's
-   * business, and a page of text nobody wrote is not something to review
-   * before clicking. Edit unfolds them. */
+  /** The name of the template the instructions were prefilled from. When
+   * set, the instructions start folded to a one-line summary with an Edit
+   * button: the person did not write them and does not need to read a page
+   * of text to confirm the agent. */
   instructionsFrom?: string | null;
 }) {
   const nameId = useId();

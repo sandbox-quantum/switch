@@ -9,23 +9,23 @@ import { composeTemplateDocument, coreDocumentFor } from './template-document';
  */
 export type AgentTemplateSource = { url: string; label: string | null };
 
-/** Who may address the agent, as a template declares it. Null means the
- * Console's default (only its owner). */
+/** Who may address the agent, as declared in the template. Null means the
+ * template does not say, and the Console's default applies (only its owner). */
 export type AgentTemplateAddressing = 'owner' | 'owner-agents' | 'anyone';
 
 export type ParsedAgentTemplate = {
-  /** Suggested agent name; the person can still change it. */
+  /** The agent name the template suggests. The person can change it before creating. */
   name: string | null;
   addressing: AgentTemplateAddressing | null;
   description: string;
   instructions: string;
-  /** Repository the agent works from, cloned next to it before it first runs. */
+  /** Repository the agent works from. Cloned into its working directory before it first runs. */
   repoUrl: string | null;
-  /** Pages the agent should read. Shown to the person; the agent's to fetch. */
+  /** Pages the agent should read. Shown to the person creating it; the agent fetches them itself. */
   sources: AgentTemplateSource[];
-  /** The room the agent is dispatched into once it exists, when the template has one. */
+  /** The room the agent is put in once it exists, when the template declares one. */
   room: { name: string | null; kickoff: string | null } | null;
-  /** A provider id or a `{param}` naming one; null leaves the choice to the person. */
+  /** A provider id (`claude`, `codex`, `opencode`) or a `{param}` whose value is one. Null means the template does not say. */
   provider: string | null;
   warnings: string[];
 };
@@ -68,9 +68,10 @@ export function extractSources(raw: unknown): AgentTemplateSource[] {
 }
 
 /**
- * A leading YAML front matter block, as a Claude Code agent file carries it.
- * The Console renders the agent's definition file itself, front matter
- * included, so one arriving inside the instructions would be written twice.
+ * Remove a leading YAML front matter block from instructions. Claude Code
+ * agent files start with one, and the Console writes its own when it
+ * renders the agent's definition file, so one inside the instructions
+ * would be written twice.
  */
 export function stripFrontMatter(instructions: string): string {
   const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(instructions);
@@ -78,9 +79,11 @@ export function stripFrontMatter(instructions: string): string {
 }
 
 /**
- * `fallbackInstructions` fills `agent.instructions` when the document leaves
- * it out: the bundled Switch expert keeps its persona in `AGENT.md` rather
- * than inline, so the Console hands it in from there.
+ * Parse a single-agent template.
+ *
+ * `fallbackInstructions` is used when the document has no `instructions:`.
+ * The bundled Switch expert keeps its instructions in `AGENT.md` next to
+ * the template, and the Console passes that file's content here.
  */
 export function parseAgentTemplate(
   yamlText: string,
@@ -142,17 +145,18 @@ export function composeAgentTemplateDocument(yamlText: string, instructions: str
   return composeTemplateDocument(yamlText, instructions);
 }
 
-/** The directory a clone of `repoUrl` lands in: the repository's name, inside `dir`. */
+/** The directory a clone of `repoUrl` goes in: a folder named after the repository, inside `dir`. */
 export function cloneTargetFor(dir: string, repoUrl: string): string {
   const name = basename(repoUrl.replace(/\/+$/, '')).replace(/\.git$/, '');
   return join(dir, name || 'repo');
 }
 
 /**
- * `base`, or `base-2`, `base-3`… when `base` already holds an agent (a
- * `.switch/` directory). A leftover from an earlier install carries that
- * agent's credentials, and the add-agent pre-flight refuses to overwrite
- * them; better to land next door than to fail after the click.
+ * `base`, or the first of `base-2`, `base-3`, … that does not already hold
+ * an agent (a `.switch/` directory). A directory left behind by a removed
+ * agent still holds that agent's credentials, and creating an agent refuses
+ * to overwrite them, so the suggestion moves to a free directory instead of
+ * failing at creation time.
  */
 export async function firstFreeDirectory(
   base: string,

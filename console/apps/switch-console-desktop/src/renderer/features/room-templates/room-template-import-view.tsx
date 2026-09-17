@@ -194,8 +194,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState<string | null>(initialName ?? null);
 
-  // The document says what it is; the Use page takes it from here. Parsing
-  // first means a typo is reported beside the editor, not on the next page.
+  // Parse before navigating so a syntax error is shown next to the editor,
+  // where it can be fixed, rather than on the Use page.
   const handleParseAndAdvance = useCallback(async () => {
     setParseError(null);
     try {
@@ -215,8 +215,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     }
   }, [yamlText, serverId, sourceName]);
 
-  // Either kind, straight from the first step: the dialog asks what to call
-  // it on the server, prefilled from the document.
+  // Save the document to the workspace without using it. The dialog asks for
+  // the name and description, prefilled from the document.
   const handleSaveToServer = useCallback(async () => {
     setSaving(true);
     setParseError(null);
@@ -236,8 +236,9 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     }
   }, [yamlText, sourceName, serverId, showModal]);
 
-  // Opened with a document already chosen (a dropped file, a recent, a card's
-  // Use): this page has nothing to add, so go straight on.
+  // When this page is opened with a document already chosen (a dropped file,
+  // a recent, a template id), there is nothing to edit here: go on to the
+  // Use page.
   const advancedOnce = useRef(false);
   useEffect(() => {
     if (advancedOnce.current) return;
@@ -246,7 +247,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       appState.navigation.navigate('templateUse', { serverId, templateId: initialTemplateId });
       return;
     }
-    // Back from the Use page to fix the document: stay here.
+    // `edit` is set when the person came back from the Use page to change
+    // the document, so it must not be sent on again.
     if (initialYaml && initialYaml.trim().length > 0 && !editing) {
       advancedOnce.current = true;
       void handleParseAndAdvance();
@@ -277,12 +279,12 @@ export const templateImportView = {
   }: {
     children: React.ReactNode;
     serverId: string;
-    /** A document to start from, when the person arrived with one. */
+    /** A document to open the editor with. */
     yamlText?: string;
     sourceName?: string;
-    /** A registry row to load and go straight to its inputs. */
+    /** A workspace template to load and pass on to the Use page. */
     templateId?: string;
-    /** Open the editor on `yamlText` rather than going straight on. */
+    /** Show `yamlText` in the editor instead of passing it on to the Use page. */
     edit?: boolean;
   }) => <>{children}</>,
   TitlebarSlot: TemplateImportTitlebar,

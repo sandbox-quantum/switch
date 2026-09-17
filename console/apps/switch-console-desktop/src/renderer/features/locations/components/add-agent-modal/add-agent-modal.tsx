@@ -132,10 +132,8 @@ export const AddAgentModal = observer(function AddAgentModal({
     }
   }, [targetServerId, pickedServerId, setServerId]);
 
-  // Names already taken on the server. A template prefills a fixed name, so
-  // the second person to use it would otherwise learn of the clash only after
-  // the directory and clone exist; while the prefill stands untouched it is
-  // moved to the first free variant instead, and a typed clash is refused.
+  // Names already taken on the server, so a clash is refused before anything
+  // is created rather than reported by the server afterwards.
   const remoteAgents = useRemoteAgents(pickState.serverId);
   const takenNames = useMemo(
     () => new Set((remoteAgents.data ?? []).map((a) => a.name)),

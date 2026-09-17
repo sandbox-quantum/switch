@@ -77,11 +77,11 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
 
-# A `provider` param names the coding agent that backs the agents a template
-# makes. The Console answers it and leaves it out of what it sends here, so
-# the server only ever meets it in a stored document; it is accepted so such
-# a document lints and stores, and treated as a plain string if it does reach
-# provisioning.
+# A `provider` param chooses the coding agent that runs the agents a template
+# creates. The Console answers it and removes it before provisioning, so the
+# server sees it only in stored documents. It is a known type so such a
+# document passes the lint and can be stored; if one does reach provisioning
+# it is treated as a string.
 ParamType = Literal[
     "string",
     "number",
@@ -191,8 +191,8 @@ def interpolate(
 
         return PLACEHOLDER_RE.sub(_replace, node)
     if isinstance(node, dict):
-        # Keys too: an alias map is written `"{bot}": helper`, and the key is
-        # the agent name the param fills in.
+        # Keys are interpolated as well as values. An alias map is written
+        # `"{bot}": helper`, where the key is the agent name a param provides.
         return {interpolate(k, values): interpolate(v, values) for k, v in node.items()}
     if isinstance(node, list):
         return [interpolate(item, values) for item in node]
@@ -271,11 +271,11 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
-    # Agent name → the alias it goes by in this room.
+    # Agent name to the alias it can be addressed by in this room.
     aliases: dict[str, str] | None = None
-    # Only meaningful inside a group's ``rooms:`` list, where each room
-    # carries its own kickoff. A single-room document keeps ``kickoff:`` at
-    # the top level, beside ``room:``.
+    # Used only for a room inside a group's ``rooms:`` list, where each room
+    # has its own kickoff. A single-room document puts ``kickoff:`` at the
+    # top level, next to ``room:``.
     kickoff: str | None = None
 
 
@@ -319,7 +319,7 @@ class GroupTemplateDocument(BaseModel):
     params: dict[str, ParamSpec] | None = None
 
 
-# Either shape, for JSON Schema generation (``GET /rooms/template-schema``).
+# Both document shapes, for the JSON Schema served by ``GET /rooms/template-schema``.
 TemplateDocument = RoomTemplateDocument | GroupTemplateDocument
 
 
@@ -333,7 +333,7 @@ class ParsedTemplate:
     """What ``parse_template`` makes of one template plus one set of inputs."""
 
     spec: RoomSpec | GroupSpec
-    #: The single-room kickoff; a group's kickoffs sit on its rooms.
+    #: The kickoff of a single-room document. A group's kickoffs are on its rooms.
     kickoff: str | None
     #: The template's declared params, by name.
     params: dict[str, ParamSpec]
@@ -549,7 +549,7 @@ class RoomYamlService:
                 links.append(GroupLinkSpec.model_validate(entry))
             except ValidationError as e:
                 raise ValueError(f"Invalid link spec at index {i}: {e}") from e
-        # Links resolve by room name, so names must be unique in the document.
+        # Links refer to rooms by name, so room names must be unique in the document.
         seen: set[str] = set()
         dupes: list[str] = []
         for r in rooms:
@@ -620,8 +620,8 @@ class RoomYamlService:
                         )
 
         if "user" in wanted:
-            # A group's users are looked up on its first room's app; a group
-            # spanning apps is not a shape the format supports yet.
+            # Users are looked up on the first room's messaging app. A group
+            # whose rooms are on different apps is not supported.
             first = (
                 parsed.spec.rooms[0]
                 if isinstance(parsed.spec, GroupSpec)
@@ -795,8 +795,8 @@ class RoomYamlService:
         )
 
         if kickoff:
-            # The room exists by now; whatever goes wrong with the kickoff is
-            # a gap in it, not a reason to report the room as never made.
+            # The room exists at this point. A kickoff failure is recorded on
+            # the result; raising here would report the room as not created.
             try:
                 await self._send_kickoff(
                     result.room,

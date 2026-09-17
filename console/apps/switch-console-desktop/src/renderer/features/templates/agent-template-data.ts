@@ -18,18 +18,18 @@ import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './b
 export type AgentTemplateData = {
   /** The template's own name, for a heading. */
   name: string;
-  /** Where the template came from, kept on the agent so its settings page
-   * can offer the template's current instructions later. Null for a pasted
-   * document, which has nowhere to be fetched from again. */
+  /** Where the template came from. Recorded on the agent so its settings
+   * page can load the template again and offer its current instructions.
+   * Null for a pasted document, which cannot be loaded again. */
   origin: AgentTemplateOrigin | null;
-  /** Suggested agent name; the person can still change it. */
+  /** The agent name the template suggests. The person can change it before creating. */
   agentName: string | null;
   description: string;
   instructions: string;
   repoUrl: string | null;
   sources: ParsedAgentTemplate['sources'];
   addressing: ParsedAgentTemplate['addressing'];
-  /** Room-template YAML for the companion room, or null when the template has none. */
+  /** The template's room as a room template document, or null when it declares no room. */
   roomYaml: string | null;
   roomName: string | null;
   warnings: string[];
@@ -101,30 +101,30 @@ export async function loadAgentTemplateData(
   });
 }
 
-/** A template as the detail page shows it: where it lives, what it is, its document. */
+/** A template loaded for its page: its source, what it creates, and its document. */
 export type LoadedTemplate = {
   name: string;
   description: string;
   kind: TemplateKind;
-  /** The Console-bundled template, when this is one. */
+  /** The bundled template, when this is one. Null for a workspace template. */
   bundled: BundledTemplate | null;
-  /** For a bundled one: the copy of it saved on the workspace, when there is one. */
+  /** For a bundled template: its copy saved on the workspace, or null when there is none. */
   savedCopy: StoredTemplateSummary | null;
-  /** For a workspace row: the built-in it is a copy of, when it shares the name. */
+  /** For a workspace template: the bundled template with the same name, or null when there is none. */
   copyOf: BundledTemplate | null;
-  /** The registry row, when the template is on the server. */
+  /** The workspace record, when the template is stored on the server. Null for a bundled template. */
   server: StoredTemplateSummary | null;
-  /** The agents the Console creates for it, in order; none for a room template. */
+  /** The agents the template creates, in document order. Empty for a room template. */
   agents: ParsedAgentEntry[];
   /** The room part, parsed: the rooms and the params. Null when the document has no rooms. */
   room: ParsedTemplate | null;
-  /** What it creates, counted and listed. */
+  /** The rooms and agents it creates, with counts for the listing card. */
   summary: TemplateSummary;
-  /** The full document, persona inlined, as it is or would be stored. */
+  /** The full document with agent instructions inlined, as stored or as it would be stored. */
   document: string;
 };
 
-/** Which page a document opens on, read from its top-level keys without a parse. */
+/** Classify a document from its top-level keys alone, without parsing the YAML. */
 export function documentKind(yamlText: string): TemplateKind {
   if (/^group:/m.test(yamlText) || /^rooms:/m.test(yamlText)) return 'group';
   if (/^agents:/m.test(yamlText)) return 'group';
@@ -225,8 +225,9 @@ export async function prefillForSave(
       literal(t?.groupName ?? null) ||
       literal(t?.roomName ?? null) ||
       (kind === 'group' ? 'Group template' : 'Room template'),
-    // A room's description often names its inputs ("Workroom for {task}");
-    // that reads oddly on a card, so the dialog asks for one instead.
+    // A room's description often contains a placeholder ("Workroom for
+    // {task}"), which reads badly on a listing card. Leave the description
+    // empty and let the person write one in the dialog.
     description: literal(t?.roomDescription ?? null) ?? '',
   };
 }

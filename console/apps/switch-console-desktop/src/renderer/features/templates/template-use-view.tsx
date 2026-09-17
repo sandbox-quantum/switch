@@ -70,12 +70,12 @@ import {
 
 type Params = {
   serverId: string;
-  /** A registry row or bundled id to load. */
+  /** A workspace template id or bundled template id to load. */
   templateId?: string;
-  /** A document in hand instead (pasted, dropped, a recent). */
+  /** A document to use instead of a stored template: pasted, dropped, or a recent. */
   yamlText?: string;
   sourceName?: string;
-  /** Put the agent it creates in this room instead of making the template's own. */
+  /** Add the created agent to this room instead of creating the template's room. */
   intoRoomId?: string;
 };
 
@@ -83,7 +83,7 @@ function useViewParams(): Params {
   return useParams('templateUse').params as Params;
 }
 
-/** The document, where it came from, and the persona a bundled one keeps beside it. */
+/** A template loaded for the Use page: its document, its origin, and everything parsed from it. */
 type Loaded = {
   name: string;
   yamlText: string;
@@ -93,7 +93,7 @@ type Loaded = {
   agents: ParsedAgentEntry[];
   /** True for the singular `agent:` form, whose room refers to the agent as `{agent}`. */
   singular: boolean;
-  /** The declared inputs, Console-only ones included. */
+  /** The declared params, including the Console-only `provider` type. */
   params: ParamSpec[];
   parsed: ParsedTemplate | null;
   coreYaml: string | null;
@@ -140,7 +140,7 @@ async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
   const parsed = forForm
     ? await rpc.roomTemplates.parse({ yamlText: forForm, schema: schema ?? undefined })
     : null;
-  // An agent-only document still declares inputs its names may use.
+  // A document without rooms can still declare params, used in agent names.
   const declaredParams = parsed?.params ?? (await rpc.roomTemplates.params({ yamlText }));
   return {
     name,
@@ -198,11 +198,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const [pickedProvider, setPickedProvider] = useState<AgentProviderId | null>(null);
   const [phase, setPhase] = useState<'form' | 'creating'>('form');
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
-  // An agent template's room is offered, not imposed: off, only the agent is made.
+  // For an agent template the room is optional. When off, only the agent is created.
   const [createRoom, setCreateRoom] = useState(true);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  // The params identify the document; only a different document resets the form.
+  // Reload only when a different document is requested. Reloading on every
+  // render would reset the form.
   const { templateId, yamlText: givenYaml, sourceName } = params;
   useEffect(() => {
     let cancelled = false;
@@ -216,8 +217,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           defaultsFor(result.params.filter((p) => !(result.singular && p.name === 'agent')))
         );
         setSlots(result.agents.map(newSlot));
-        // The editable list is the room's fixed members that are not slots the
-        // template creates; those are named by their cards.
+        // The editable member list holds the room's fixed agents that the template
+        // does not create. Agents it creates have their own cards.
         const slotNames = new Set(result.agents.map((a) => a.name ?? ''));
         setEditedAgents((result.parsed?.hardcodedAgents ?? []).filter((a) => !slotNames.has(a)));
         setEditedUsers(result.parsed?.hardcodedUsers ?? []);
@@ -259,8 +260,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const { identities, refresh: refreshIdentities } = useMyIdentities(serverId);
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
 
-  // The bridge the room lands on: a bridge-typed param's pick, else the one
-  // the template names, else the server's default.
+  // The messaging app the room is created on: the bridge param's value if
+  // there is one, else the bridge named in the template, else the server's default.
   const templateBridge = useMemo(() => {
     const bridgeParam = templateParams.find((p) => p.type === 'bridge');
     const picked = bridgeParam ? String(values[bridgeParam.name] ?? '') : '';
@@ -275,8 +276,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
     return identities[0]?.externalUsername ?? null;
   }, [identities, templateBridge]);
-  // Without a messaging app the server names the creator itself, so only a
-  // bridged room needs the account linked.
+  // A linked account is needed only when the room is on a messaging app. On
+  // a server without one, the server uses the person's gateway name.
   const creatorBlocked =
     parsed?.usesCreator === true &&
     templateBridge !== null &&
@@ -292,8 +293,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     : null;
   const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
 
-  // "Existing agent" on a slot means one that runs where the new ones will:
-  // this Console's records say which host each of its agents lives on.
+  // The existing-agent picker lists agents that run on the chosen location.
+  // This Console's own records say which host each of its agents runs on.
   const locationsQuery = useQuery({
     queryKey: ['locations'],
     queryFn: () => rpc.locations.getLocations(),
@@ -341,7 +342,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       setRunHost(LOCAL_RUN_LOCATION);
     }
   }, [allowedHosts, isRemoteRun, runHost]);
-  // Availability is per machine: a new machine gets a fresh pick.
+  // Provider availability differs per machine, so changing the run location
+  // clears the provider choice.
   useEffect(() => {
     setPickedProvider(null);
     setSlots((prev) => prev.map((s) => (s.dirPicked ? s : { ...s, dir: '' })));
@@ -378,8 +380,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     });
   }, [slots, values, nameOverride, takenNames]);
 
-  // A directory per new agent, named after it, under the Console's locations
-  // directory (or the host's home). It follows the name until picked by hand.
+  // Suggest a working directory for each new agent, named after it, under the
+  // Console's locations directory or the host's home. The suggestion follows
+  // the agent name until the person picks a directory.
   const suggestSeq = useRef(0);
   useEffect(() => {
     if (!hostReachable || phase !== 'form') return;
@@ -402,7 +405,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     });
   }, [slots, slotNames, sshHost, hostReachable, phase]);
 
-  // ── What still stands in the way ────────────────────────────────────────
+  // ── Why Create is disabled ──────────────────────────────────────────────
   const missing = missingParams(templateParams, values);
   const slotProblems: string[] = [];
   slots.forEach((slot, i) => {
@@ -452,8 +455,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         ? `${slotProblems.length} thing${slotProblems.length === 1 ? '' : 's'} to settle`
         : 'Every input filled in';
 
-  // Agents already on the server that the room will hold and that will not
-  // hear each other. New agents are created with the template's addressing.
+  // Existing agents in the room whose addressing policy blocks messages from
+  // another member. New agents get the template's addressing at creation.
   const handoffBlocked = useMemo(() => {
     if (!parsed) return [];
     const names = new Set<string>(editedAgents);
@@ -516,7 +519,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const finalNames = slotNames.map((n) => n.final);
     const created: { slotIndex: number; name: string; switchAgentId: string | null }[] = [];
 
-    // Agents first, one at a time, each card saying where it is.
+    // Create the agents first, one at a time, updating each card's status.
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       if (slot.mode !== 'new' || slot.status === 'created') continue;
@@ -525,7 +528,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       if (!providerId) continue;
       setSlot(i, { status: 'creating', error: null });
       try {
-        // An agent that exists from an earlier try only needs its policy set.
+        // An agent created on an earlier attempt is not created again; only its policy is set.
         let switchAgentId = slot.createdSwitchAgentId;
         if (!switchAgentId) {
           const prepared = await rpc.agentTemplates.prepareWorkspace({
@@ -563,11 +566,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             return;
           }
           switchAgentId = result.agent.switchAgentId ?? null;
-          // Checkpoint before the policy: a retry must not make a second agent.
+          // Record the created agent before setting its policy, so a retry after a
+          // policy failure does not create a second agent.
           setSlot(i, { createdName: result.agent.name, createdSwitchAgentId: switchAgentId });
         }
-        // A new agent answers only its owner by default; the template's
-        // `anyone` has to be written as the open policy, not left alone.
+        // A new agent answers only its owner by default. The template's `anyone`
+        // must be written as the open policy; leaving the default would keep it closed.
         if (switchAgentId && slot.entry.addressing) {
           await rpc.switchServers.updateAddressingPolicy({
             serverId,
@@ -596,7 +600,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
       .catch(() => {});
 
-    // Into a room that already exists: nothing else to make.
+    // With `intoRoomId`, the agents are added to that room and no room is created.
     if (intoRoomId) {
       const byName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
       const ids = slots
@@ -659,8 +663,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         names: unsetParams(templateParams, values),
       });
       if (!isGroupDoc) {
-        // The lists are rebuilt from the parse, so the slots renamed above
-        // have to be renamed here too or the rewrite would put them back.
+        // The member lists are rebuilt from the parsed template, so the renamed
+        // agents must be renamed here too, or the original names would come back.
         const slotNamesSet = new Set(slots.map((s) => s.entry.name ?? ''));
         const keep = (list: string[]) =>
           list
@@ -701,8 +705,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             variant: 'destructive',
           });
         }
-        // The room is the thing to watch: the kickoff lands there and the
-        // agents answer there. Their sessions show up in the sidebar.
+        // Open the room. The kickoff and the agents' answers appear there, and the
+        // agents' sessions appear in the sidebar.
         navigate('room', { roomId: result.roomId });
       } else {
         const gaps = [
@@ -777,8 +781,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? 'Create agent'
           : 'Create room';
   const intoRoomName = intoRoomId ? switchRoomsStore.roomNameById(intoRoomId) : null;
-  // Back to where the person came from: the room, the editor with their
-  // document still in it, the template's page, or the listing.
+  // Cancel returns to where the person came from: the room, the editor with
+  // the document still loaded, the template's page, or the listing.
   const cancel = () =>
     intoRoomId
       ? navigate('room', { roomId: intoRoomId })

@@ -3,8 +3,7 @@ import type { ParamType } from '@shared/core/switch-servers/room-template-params
 
 export type Values = Record<string, string | number | boolean>;
 
-/** Interpolate `{param}` and `{$builtin}` patterns with the values so far;
- * a placeholder with no value yet stays as written. */
+/** Fill `{param}` and `{$builtin}` placeholders from `values`. A placeholder with no value yet is left as written. */
 export function interpolate(template: string, values: Values): string {
   return template.replace(/\{(\$?\w+)\}/g, (match, key: string) => {
     const val = values[key];
@@ -16,7 +15,7 @@ export function hasPlaceholder(text: string): boolean {
   return /\{\$?\w+\}/.test(text);
 }
 
-/** The type as the page names it beside the input, in words rather than the schema's. */
+/** The type label shown beside an input: plain words instead of the schema's type names. */
 export function typeLabel(type: ParamType): string {
   switch (type) {
     case 'string':
@@ -30,13 +29,13 @@ export function typeLabel(type: ParamType): string {
   }
 }
 
-/** A param is required when the template gives it no default. A bridge is
- * the exception: left empty, the room lands on the server's default app. */
+/** A param is required when the template gives it no default. A bridge param
+ * is the exception: left empty, the room uses the server's default messaging app. */
 export function isRequired(param: ParamSpec): boolean {
   return param.default === null && param.type !== 'bridge';
 }
 
-/** The values a form starts with: each default, or empty. */
+/** The form's initial values: each param's default, or empty. */
 export function defaultsFor(params: ParamSpec[]): Values {
   const defaults: Values = {};
   for (const param of params) {
@@ -63,7 +62,7 @@ export function missingParams(params: ParamSpec[], values: Values): ParamSpec[] 
   return params.filter((p) => isRequired(p) && isEmpty(values[p.name]));
 }
 
-/** The inputs the server gets: every filled param it knows the type of, numbers as numbers. */
+/** The inputs sent to the server: every filled param of a type the server knows, with numbers converted. */
 export function serverInputs(params: ParamSpec[], values: Values): Values {
   const inputs: Values = {};
   for (const param of params) {

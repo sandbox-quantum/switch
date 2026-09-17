@@ -4,15 +4,15 @@ import switchExpertInstructions from '@root/../../../switch-expert/AGENT.md?raw'
 import switchExpertTemplate from '@root/../../../switch-expert/template.yaml?raw';
 
 /**
- * Templates that ship inside the Console. They render in the same listing as
- * server templates but never touch the network — local-first, usable before
- * the server has a registry (or a connection) at all.
+ * Templates that ship inside the Console. They are listed next to the
+ * workspace's templates but need no network: they work before the server
+ * has a template registry, or a connection at all.
  *
- * The Switch expert is read straight from `switch-expert/` at the repository
- * root: the template document from `template.yaml`, the persona from
- * `AGENT.md`. One source, so the expert the Console offers is the one the
- * repository documents. The triage pair is the repository's worked example
- * of a group: two agents and the room they share.
+ * The documents are read from the repository at build time. The Switch
+ * expert comes from `switch-expert/` at the repository root: the template
+ * from `template.yaml`, the instructions from `AGENT.md`. The others come
+ * from `examples/agent-templates/`. One source, so the Console offers the
+ * same documents the repository documents.
  */
 export type BundledTemplate = {
   id: string;
@@ -20,9 +20,9 @@ export type BundledTemplate = {
   description: string;
   kind: string;
   creator: string;
-  /** The agent template document (YAML). */
+  /** The template document, as YAML text. */
   content: string;
-  /** Fills `agent.instructions` when the document leaves it out. */
+  /** Instructions kept in a separate file, used when the document has no `instructions:`. */
   instructions: string | null;
 };
 

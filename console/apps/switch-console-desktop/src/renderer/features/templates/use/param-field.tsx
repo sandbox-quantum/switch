@@ -34,7 +34,7 @@ export function ParamField({
   onChange: (v: string | number | boolean) => void;
   error: string | null;
   lists: EntityLists;
-  /** Where a `provider` choice has to be installed: a host, or null for this computer. */
+  /** The machine a `provider` must be installed on: an SSH host, or null for this computer. */
   sshHost: string | null;
   onNavigateAway: () => void;
 }) {

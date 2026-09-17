@@ -11,14 +11,14 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 
-/** The `value` meaning "run on this machine" rather than on a host. */
+/** The select value for running on this computer rather than on an SSH host. */
 export const LOCAL_RUN_LOCATION = 'local';
 
 /**
- * The hosts an agent for `serverId` may run on. A managed server is only
- * reachable from certain places: a remote-managed one from this computer or
- * its own host, a local-managed one from this computer only. An external
- * server is unconstrained.
+ * The SSH hosts an agent for `serverId` may run on. A server the Console
+ * manages is reachable only from certain machines: one managed on a host is
+ * reachable from this computer and from that host, one managed locally from
+ * this computer only. A server the Console does not manage has no restriction.
  */
 export function useAllowedHosts(serverId: string | null) {
   const { data: remoteHosts } = useQuery({
@@ -45,7 +45,7 @@ export function runLocationLabel(
   return hosts.find((h) => h.sshHost === value)?.name ?? value;
 }
 
-/** This computer, or one of the onboarded hosts, as a select. */
+/** A select between this computer and the onboarded SSH hosts. */
 export function RunLocationSelect({
   value,
   onChange,

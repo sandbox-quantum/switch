@@ -16,8 +16,8 @@ export type ParamSpec = {
   multiline: boolean;
 };
 
-/** One room of a template, as the form and the summary show it. */
-export type ParsedRoom = {
+/** One room of a template, with the fields the Use page shows and edits. */
+export type TemplateRoom = {
   name: string | null;
   description: string | null;
   agents: string[];
@@ -28,8 +28,8 @@ export type ParsedRoom = {
 
 export type ParsedTemplate = {
   params: ParamSpec[];
-  /** Every room the document makes: one for `room:`, each of `rooms:` for a group. */
-  rooms: ParsedRoom[];
+  /** The rooms the document creates: one for `room:`, one per entry of `rooms:`. */
+  rooms: TemplateRoom[];
   /** The group's name when the document is a group, else null. */
   groupName: string | null;
   roomName: string | null;
@@ -108,12 +108,14 @@ function extractStringList(raw: unknown): string[] {
 const ajv = new Ajv({ allErrors: true, strict: false });
 
 /**
- * The server's schema is one of two shapes (`oneOf`: a room document, a
- * group document). Validating against the union reports both branches'
- * complaints at once; picking the branch the document is for keeps the
- * message about the one mistake that was made.
+ * Pick the part of the server's JSON schema that applies to this document.
+ *
+ * The schema can be a plain object schema or a `oneOf` with one branch per
+ * document shape (room, group). Validating a room document against the
+ * whole `oneOf` reports the group branch's errors too, which reads as
+ * noise. Validating against the matching branch reports only the mistake.
  */
-function schemaBranchFor(
+function schemaForDocument(
   schema: Record<string, unknown>,
   doc: Record<string, unknown>
 ): Record<string, unknown> {
@@ -130,7 +132,7 @@ function schemaBranchFor(
 
 // ── Recents ────────────────────────────────────────────────────────────────
 
-/** A template used from this Console, kept so it can be used again or saved. */
+/** A template document used from this Console, kept locally so it can be used again or saved to a workspace. */
 export type RecentTemplate = {
   name: string;
   yamlText: string;
@@ -141,8 +143,9 @@ type RecentsKV = Record<string, RecentTemplate[]>;
 
 const MAX_RECENTS = 10;
 
-// Lazy: importing the KV module pulls in Electron's `app`, which the tests
-// that exercise `parse` run without.
+// Imported inside the function rather than at the top of the module. The KV
+// module imports Electron's `app`, which does not exist in the unit tests
+// that call `parse`.
 let _recentsKV: KV<RecentsKV> | null = null;
 async function recentsKV(): Promise<KV<RecentsKV>> {
   if (!_recentsKV) {
@@ -166,7 +169,7 @@ export const roomTemplatesController = createRPCController({
   }): Promise<void> => {
     const kv = await recentsKV();
     const existing = (await kv.get(params.serverId)) ?? [];
-    // The same document used again moves to the top rather than repeating.
+    // Using the same document again moves its entry to the top instead of adding a duplicate.
     const rest = existing.filter((r) => r.yamlText !== params.yamlText);
     const entry: RecentTemplate = {
       name: params.name,
@@ -176,7 +179,7 @@ export const roomTemplatesController = createRPCController({
     await kv.set(params.serverId, [entry, ...rest].slice(0, MAX_RECENTS));
   },
 
-  /** The repository's canonical example, for a first run with nothing to pick from. */
+  /** The example room template from `examples/`, shown when there is nothing else to start from. */
   getExampleTemplate: (): string => exampleTemplateYaml,
 
   /** Only the `params:` of a document. For agent-only documents, which have no room to parse. */
@@ -189,7 +192,7 @@ export const roomTemplatesController = createRPCController({
 
     // Validate against server schema if provided
     if (params.schema) {
-      const validate = ajv.compile(schemaBranchFor(params.schema, doc));
+      const validate = ajv.compile(schemaForDocument(params.schema, doc));
       if (!validate(doc)) {
         const errors = (validate.errors ?? [])
           .map((err) => {
@@ -211,7 +214,7 @@ export const roomTemplatesController = createRPCController({
       : doc.room && typeof doc.room === 'object'
         ? [doc.room as Record<string, unknown>]
         : [];
-    const rooms: ParsedRoom[] = rawRooms.map((room) => ({
+    const rooms: TemplateRoom[] = rawRooms.map((room) => ({
       name: typeof room.name === 'string' ? room.name : null,
       description: typeof room.description === 'string' ? room.description.trim() : null,
       agents: extractStringList(room.agents),
@@ -261,7 +264,8 @@ export const roomTemplatesController = createRPCController({
   rewriteYaml: (params: { yamlText: string; agents: string[]; users: string[] }): string => {
     const doc = parseYaml(params.yamlText);
     const room = doc.room as Record<string, unknown> | undefined;
-    // A group's rooms each carry their own lists; the form does not edit those.
+    // The form does not edit the member lists of a group's rooms, so a group
+    // document is returned unchanged.
     if (!room || Array.isArray(doc.rooms)) return params.yamlText;
     room.agents = params.agents;
     if (params.users.length > 0) {

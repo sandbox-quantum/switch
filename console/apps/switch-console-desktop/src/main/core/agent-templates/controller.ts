@@ -32,17 +32,17 @@ import { summarizeTemplate, type TemplateSummary } from './template-summary';
 
 export type { AgentTemplateSource, ParsedAgentTemplate } from './agent-template-format';
 export type { ParsedAgentEntry, TemplateAgents, TemplateKind } from './template-document';
-export type { CreatedThing, TemplateSummary } from './template-summary';
+export type { TemplateEntity, TemplateSummary } from './template-summary';
 
 const execFileAsync = promisify(execFile);
 
-// Only URL forms git can clone without also reading them as options: a value
-// starting with `-` would otherwise be parsed as a flag.
+// Only URL forms git can clone. A value starting with `-` would be read by
+// git as a command-line option, not a URL.
 const CLONEABLE_URL = /^(https?:\/\/|git@|ssh:\/\/)[^\s-]/;
 
 export type PrepareWorkspaceResult = {
   dir: string;
-  /** What happened to the repository, when the template names one. */
+  /** The outcome of the clone, when the template names a repository. */
   repo: {
     target: string;
     outcome: 'cloned' | 'present' | 'failed';
@@ -63,8 +63,9 @@ async function remoteContext(sshHost: string): Promise<IExecutionContext> {
   return new SshExecutionContext(proxy);
 }
 
-// The same folder-per-agent layout as this machine, under the host's home:
-// the Console's default locations directory is `~/switchdash/repositories`.
+// On a host, agents get the same one-folder-per-agent layout as on this
+// machine, under the host's home. The Console's default on this machine is
+// `~/switchdash/repositories`.
 const REMOTE_LOCATIONS_DIR = 'switchdash/repositories';
 
 function failedRepo(dir: string, target: string, e: unknown): PrepareWorkspaceResult {
@@ -132,7 +133,7 @@ export const agentTemplatesController = createRPCController({
   /** Which page a document opens on: agent, room, or group. */
   kind: (params: { yamlText: string }): TemplateKind => templateKind(params.yamlText),
 
-  /** Every agent the Console would create for a document (none for a room template). */
+  /** The agents a document creates. Empty for a room template. */
   parseAgents: (params: { yamlText: string; instructions?: string | null }): TemplateAgents =>
     parseTemplateAgents(params.yamlText, params.instructions ?? null),
 
@@ -148,13 +149,13 @@ export const agentTemplatesController = createRPCController({
   substituteSlots: (params: { coreYaml: string; replacements: Record<string, string> }): string =>
     substituteAgentSlots(params.coreYaml, params.replacements),
 
-  /** The document with its persona inlined, ready to store on a server. */
+  /** The document with every agent's instructions inlined, ready to store on a server. */
   compose: (params: { yamlText: string; instructions: string }): string =>
     composeAgentTemplateDocument(params.yamlText, params.instructions),
 
-  /** Where an agent of this name would live by default: the same directory
-   * the rest of the Console's locations default to, one folder per agent. On
-   * a host, the same layout under the host's home. */
+  /** The default working directory for an agent of this name: a folder named
+   * after it under the Console's locations directory, or under the host's
+   * home when `sshHost` is given. */
   suggestDirectory: async (params: {
     agentName: string;
     sshHost?: string | null;
@@ -164,11 +165,11 @@ export const agentTemplatesController = createRPCController({
       try {
         const home = await resolveRemoteHome(ctx);
         const base = `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}/${params.agentName}`;
-        // `await` matters: a bare `return` would run the `finally` (and
-        // dispose the context) before the probes had finished.
+        // `return await`, not `return`: with a bare `return` the `finally`
+        // below would dispose the SSH context before the probes finished.
         return await firstFreeDirectory(base, async (dir) => {
-          // Both branches exit 0: a non-zero exit is a failed command to the
-          // runner, and "free" is not a failure.
+          // Both outcomes exit 0. The runner treats a non-zero exit as a
+          // failed command, and "free" is an answer, not a failure.
           const probe = await ctx.exec('sh', [
             '-c',
             'test -e "$1/.switch" && echo taken || echo free',
@@ -188,10 +189,10 @@ export const agentTemplatesController = createRPCController({
   },
 
   /**
-   * Make the working directory exist and, when the template names a
-   * repository, put a shallow clone of it inside. Cloning is best effort: the
-   * agent's instructions tell it to clone for itself if the clone is missing,
-   * so a failure here is reported, not thrown.
+   * Create the working directory and, when the template names a repository,
+   * put a shallow clone of it inside. A failed clone is reported in the
+   * result rather than thrown: the agent's instructions tell it to clone the
+   * repository itself when the clone is missing.
    */
   prepareWorkspace: async (params: {
     dir: string;

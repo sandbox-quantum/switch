@@ -1,14 +1,9 @@
-# jq expert: a second agent template, on a different subject.
+# jq expert: an agent template for a jq specialist.
 #
-# This exists to show that the Switch expert is one instance of a pattern,
-# not a special case. Same shape (see switch-expert/template.yaml for the
-# field-by-field description), different repository, different sources,
-# different brief. Upload it to a server's template registry with kind
-# `agent`, or paste it into the Console, and it appears next to the Switch
-# expert.
-#
-# Unlike the bundled Switch expert, the instructions are inline: a template
-# stored on a server has to carry everything it needs.
+# Same format as switch-expert/template.yaml, which describes every field.
+# The instructions are inline, as they must be in any template stored on a
+# server or pasted into the Console. Save it to a workspace with kind
+# `agent`, or paste it into the Console's import page.
 version: 1
 agent:
   name: jq-expert

@@ -1,11 +1,10 @@
-# Triage pair: two agents and a room. A worked example of a group template,
-# the shape the Console reads when a document lists several `agents:`.
+# Triage pair: two agents and the room they share.
 #
-# What the Console creates: every entry of `agents:` (each with its own
-# working directory, backed by the coding agent you pick). What the server
-# creates: the `room:`, with both agents in it. `params:` are asked for on
-# the Use page; `type: provider` is answered by the Console and never sent
-# to the server.
+# Switch Console creates each entry of `agents:`, in its own working
+# directory and backed by the coding agent chosen on the Use page. The
+# server creates the `room:` with both agents in it. `params:` are asked for
+# on the Use page. A `type: provider` param is answered by the Console and
+# is not sent to the server.
 version: 1
 
 params:
@@ -49,9 +48,9 @@ agents:
       Say what you are about to try before a slow step, so the room is not
       left wondering. Never guess a result you did not run.
 
-# The room lands on the messaging app the `bridge` input picks, or the
-# server's default one when it is left empty. You are in it as `{$creator}`,
-# so the agents' answers reach you where you already are.
+# The room is created on the messaging app chosen by the `bridge` input, or
+# on the server's default app when the input is left empty. `{$creator}`
+# puts the person creating the room in it, so the agents' answers reach them.
 room:
   name: "{team}-triage"
   description: Both agents and you, the triager routing to the reproducer

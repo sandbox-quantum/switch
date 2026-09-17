@@ -1,11 +1,9 @@
-# Support desk: two agents across two linked rooms. The worked example of a
-# group with more than one room.
+# Support desk: two agents across two linked rooms.
 #
-# `agents:` are created by Switch Console. `group:` + `rooms:` + `links:` is
-# the server's room-group document: each room carries its own `kickoff:`, and
-# a link points one room at another by name. The greeter sits in both rooms
-# and carries a case from intake to escalations; the engineer only ever sees
-# what was escalated.
+# Switch Console creates the `agents:`. The server creates the room group
+# from `group:`, `rooms:` and `links:`: each room has its own `kickoff:`, and
+# a link connects two rooms by name. The greeter is in both rooms and carries
+# a case from intake to escalations. The engineer is only in escalations.
 version: 1
 
 params:

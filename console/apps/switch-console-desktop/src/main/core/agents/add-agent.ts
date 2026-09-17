@@ -69,8 +69,8 @@ export type AddAgentParams = {
   providerConfig?: AgentProviderConfig | null;
   /** Which control the user opened the add-agent form from, for reporting. */
   entryPoint: UiEntryPoint;
-  /** The template the agent was created from, recorded so its settings page
-   * can offer the template's current instructions later. */
+  /** The template the agent is created from, if any. Recorded so the agent's
+   * settings page can offer the template's current instructions later. */
   templateOrigin?: AgentTemplateOrigin | null;
 };
 

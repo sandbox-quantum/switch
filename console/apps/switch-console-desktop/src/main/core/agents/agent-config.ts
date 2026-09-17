@@ -52,7 +52,7 @@ export async function writeAgentConfig(params: {
   });
 }
 
-/** The template the agent was created from, or null when it was made by hand. */
+/** The template the agent was created from, or null for an agent created without one. */
 export async function readAgentTemplateOrigin(
   agentId: string
 ): Promise<AgentTemplateOrigin | null> {

@@ -43,8 +43,9 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   const serverId = switchRoomsStore.roomServerId(roomId);
   const roomName = switchRoomsStore.roomNameById(roomId);
 
-  // The other way an agent joins a room: made on the spot from a template.
-  // Bundled ones are always on offer; the server's arrive when it answers.
+  // Templates can create an agent straight into this room. The bundled
+  // templates are listed at once; the workspace's are added when the request
+  // returns.
   const [serverTemplates, setServerTemplates] = useState<StoredTemplateSummary[]>([]);
   useEffect(() => {
     if (!serverId) return;
@@ -61,8 +62,8 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       cancelled = true;
     };
   }, [serverId]);
-  // One entry per template: a built-in one that is also saved on the
-  // workspace shows once, as the workspace copy.
+  // A built-in template that is also saved on the workspace is listed once,
+  // as the workspace copy.
   const onWorkspace = serverTemplates.filter((t) => t.kind === 'agent');
   const templates: StoredTemplateSummary[] = [
     ...bundledTemplates
@@ -77,8 +78,8 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       })),
     ...onWorkspace,
   ];
-  // The Use page does the creating; it puts the agent in this room rather
-  // than making the template's own.
+  // The Use page creates the agent. With `intoRoomId` it adds the agent to
+  // this room instead of creating the template's own room.
   const createFromTemplate = (template: StoredTemplateSummary) => {
     if (!serverId) return;
     onClose();

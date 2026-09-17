@@ -51,8 +51,9 @@ const TemplateDetailTitlebar = observer(function TemplateDetailTitlebar() {
   );
 });
 
-// The name is loaded by the panel; the titlebar reads it back from a tiny
-// shared cell rather than fetching twice.
+// The panel loads the template; the titlebar shows its name. They share the
+// name through this module-level value so the titlebar does not load the
+// template a second time.
 let currentName: string | null = null;
 const nameListeners = new Set<(name: string | null) => void>();
 function setCurrentName(name: string | null) {
@@ -70,7 +71,7 @@ function useTemplateName(): string | null {
   return name;
 }
 
-/** One line of a definition list: a fixed label, then the fact. */
+/** One row of the facts list: a fixed-width label and its value. */
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 text-sm">
@@ -92,7 +93,7 @@ function Link({ url, label }: { url: string; label?: string | null }) {
   );
 }
 
-/** A read-only block of text that starts folded and unfolds in place. */
+/** A read-only block of text, collapsed to a fixed height with an Expand button when it is long. */
 function TextBlock({
   text,
   collapsedHeight = 'max-h-56',
@@ -355,9 +356,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 size="sm"
                 disabled={busy !== null}
                 onClick={() => {
-                  // Second click removes; the first only asks. A page action
-                  // has no dialog to hide behind, and the row is gone for
-                  // everyone on the workspace once it goes.
+                  // The first click asks for confirmation, the second removes.
+                  // Removal is visible to everyone on the workspace and cannot
+                  // be undone, and this page has no confirmation dialog.
                   if (confirmRemove) void remove();
                   else setConfirmRemove(true);
                 }}

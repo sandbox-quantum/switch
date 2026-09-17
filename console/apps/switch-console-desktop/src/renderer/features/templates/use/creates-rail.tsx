@@ -1,7 +1,7 @@
 import { Check, ChevronRight, DoorOpen, Loader2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/controller';
-import type { ParsedRoom } from '@main/core/room-templates/controller';
+import type { TemplateRoom } from '@main/core/room-templates/controller';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -13,10 +13,14 @@ import { hasPlaceholder, interpolate, type Values } from './use-template-model';
 
 export type SlotStatus = 'idle' | 'creating' | 'created' | 'failed';
 
-/** One agent the template creates, and what the person decided about it. */
+/**
+ * One agent entry of the template and the choices made for it on the Use
+ * page: create it or use an existing agent, its working directory, whether
+ * to clone its repository, and its creation status.
+ */
 export type AgentSlot = {
   entry: ParsedAgentEntry;
-  /** Make it, or point the room at one the server already has. */
+  /** Create a new agent, or use an agent the server already has. */
   mode: 'new' | 'existing';
   /** The existing agent's name, when `mode` is `existing`. */
   existingName: string;
@@ -47,7 +51,7 @@ export function newSlot(entry: ParsedAgentEntry): AgentSlot {
   };
 }
 
-/** The name a slot will go by once created: the template's, filled in. */
+/** The name the template asks for, with the inputs filled in, or the override typed in the name field. */
 export function slotWantedName(slot: AgentSlot, values: Values, override: string | null): string {
   if (override !== null) return override;
   return interpolate(slot.entry.name ?? '', values);
@@ -92,14 +96,14 @@ export function RoomCard({
   status,
   toggle,
 }: {
-  room: ParsedRoom;
+  room: TemplateRoom;
   values: Values;
   /** Agent name as written in the template → the name the agent will have. */
   renames: Record<string, string>;
   bridgeName: string | null;
   creatorIdentity: string | null;
   status: SlotStatus;
-  /** When the room is optional: whether to make it. Null when it is not a choice. */
+  /** For an agent template, whether to create the room. Null when the room is not optional. */
   toggle: { checked: boolean; onChange: (checked: boolean) => void } | null;
 }) {
   const fill = (s: string) =>
@@ -159,14 +163,14 @@ export function AgentSlotCard({
   busy,
 }: {
   slot: AgentSlot;
-  /** The name the template asks for, filled in. */
+  /** The name the template asks for, with the inputs filled in. */
   wantedName: string;
-  /** The name it will get: `wantedName`, or the first free variant. */
+  /** The name the agent will be created under: `wantedName`, or `wantedName-2`, `-3`, … when it is taken. */
   finalName: string;
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;
   sshHost: string | null;
-  /** Where the agents run, for the existing-agent picker's hint. */
+  /** The run location's display name, shown under the existing-agent picker. */
   locationLabel: string;
   busy: boolean;
 }) {
@@ -271,7 +275,7 @@ export function AgentSlotCard({
   );
 }
 
-/** The document with the inputs filled in, line by line, the filled lines marked. */
+/** The template document with the inputs filled in, one line per row, with the changed lines highlighted. */
 export function ResolvedDocument({
   yamlText,
   values,

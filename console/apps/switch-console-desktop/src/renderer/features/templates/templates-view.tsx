@@ -63,21 +63,16 @@ const KIND_ICON: Record<Kind, typeof Bot> = {
   group: Boxes,
 };
 
-/**
- * One card in the listing. A template can be in two places at once: built
- * into the Console, and saved to the workspace. Those are one template to the
- * person, so they get one card, and the workspace copy is the one it opens,
- * since that is the copy an admin can maintain.
- */
+/** One card in the listing: a bundled template, or a template saved on the workspace. */
 type Listed = {
-  /** The id the page opens: the workspace row when there is one. */
+  /** The id the card opens: a bundled id, or a workspace template id. */
   id: string;
   kind: Kind;
   name: string;
   description: string;
   bundled: boolean;
   server: StoredTemplateSummary | null;
-  /** The document, when it is at hand without a fetch (a bundled template). */
+  /** The document text, when it is available without a request (a bundled template). */
   content: string | null;
 };
 
@@ -112,9 +107,9 @@ function summaryLine(s: TemplateSummary): string {
   return `${creates} · ${inputs}`;
 }
 
-// The listing endpoint does not carry documents, and the summary line needs
-// one. Each card fetches its own once and keeps it for the session; a
-// listing rarely has more than a handful of rows.
+// The listing endpoint returns no document text, and the summary line
+// needs the document. Each card fetches its own once and keeps it for the
+// session. A listing has few rows, so this costs little.
 const summaryCache = new Map<string, Promise<TemplateSummary>>();
 
 function fetchSummary(serverId: string, item: Listed): Promise<TemplateSummary> {
@@ -147,7 +142,7 @@ function useTemplateSummary(serverId: string, item: Listed): TemplateSummary | n
         if (!cancelled) setSummary(s);
       })
       .catch(() => {
-        // The card still stands without its count line.
+        // The card renders without the summary line when the document cannot be fetched.
       });
     return () => {
       cancelled = true;
@@ -263,8 +258,8 @@ function formatTimeAgo(ms: number): string {
 }
 
 /**
- * Documents used from this Console before, kept locally per workspace: use
- * one again, or put it on the workspace so everyone there finds it.
+ * Documents used from this Console, kept locally per workspace. Each can be
+ * used again or saved to the workspace, where everyone can find it.
  */
 function RecentsSection({
   serverId,
@@ -276,9 +271,9 @@ function RecentsSection({
 }: {
   serverId: string;
   serverName: string | null;
-  /** Names already saved on the workspace: those need no Save button. */
+  /** Names of templates saved on the workspace. A recent with one of these names gets no Save button. */
   onWorkspace: ReadonlySet<string>;
-  /** The page's filters apply here too; a recent is yours by definition. */
+  /** The listing's kind filter and search text. They apply to the recents too. Only mine does not: every recent is the person's own. */
   kind: KindFilter;
   query: string;
   onSaved: () => void;
@@ -291,8 +286,8 @@ function RecentsSection({
   useEffect(() => {
     rpc.roomTemplates
       .getRecents(serverId)
-      // One row per name: a document used before and after an edit is one
-      // template to the person, and the newest use is the one to offer.
+      // One row per name. The same template used before and after an edit is two
+      // documents with one name, and only the newest use is offered.
       .then((list) =>
         setRecents(list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i))
       )
@@ -402,9 +397,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
-  // Templates create agents that run on this computer, so a computer with no
-  // usable provider cannot use any of them. Say so above the listing rather
-  // than three clicks later, greyed out inside the dialog.
+  // Agent templates create agents that run on this computer, which needs a
+  // usable provider. Without one, say so at the top of the listing rather than
+  // at the end of the Use page.
   const { data: availability } = useAgentTypeAvailability();
   const noProvider = availability !== undefined && !availability.some((a) => a.available);
 
@@ -418,8 +413,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         if (!cancelled) setTemplates(result);
       })
       .catch((e: unknown) => {
-        // The bundled templates still render; the workspace's are an addition,
-        // and their absence is said, not passed off as an empty workspace.
+        // The bundled templates render either way. A failed request is shown as a
+        // failure, not as an empty workspace.
         if (!cancelled) {
           setTemplates([]);
           setListError(failureText(e, 'Could not read this workspace’s templates.'));
@@ -434,9 +429,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   }, [serverId, reloadKey]);
 
   const { builtIn, onWorkspace } = useMemo(() => {
-    // A built-in card is always the Console's copy. Saving it puts a row on
-    // the workspace, which lists there as yours; the built-in card only says
-    // that a copy exists.
+    // A bundled card is always the bundled document. Saving it creates a
+    // workspace template, listed below as the person's own; the bundled card
+    // only marks that a copy exists.
     const byName = new Map(templates.map((t) => [t.name, t]));
     const builtIn: Listed[] = bundledTemplates.map((b) => ({
       id: b.id,
@@ -470,8 +465,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     };
   }, [templates, query, kind, onlyMine, meId]);
 
-  // Every kind goes to the same page: inputs on the left, what it creates
-  // on the right, one button.
+  // Every kind of template opens the same Use page.
   const handleUse = (item: Listed) => navigate('templateUse', { serverId, templateId: item.id });
 
   const importFile = async (file: File) => {

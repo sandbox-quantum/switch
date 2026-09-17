@@ -23,9 +23,9 @@ export const ServerSectionTitlebar = observer(function ServerSectionTitlebar({
   serverId: string;
   icon: LucideIcon;
   label: string;
-  /** A page inside the section (one template, say): a third crumb. */
+  /** A third breadcrumb for a page inside the section, such as one template's page. */
   item?: { label: string; icon?: React.ReactNode };
-  /** With an item shown, the section crumb is the way back to its list. */
+  /** Navigates back to the section's list. Used when `item` is shown, so the section crumb is clickable. */
   onSectionClick?: () => void;
 }) {
   const server = switchServersStore.servers.find((s) => s.id === serverId);

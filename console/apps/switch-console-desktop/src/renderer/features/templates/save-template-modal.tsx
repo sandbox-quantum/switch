@@ -21,7 +21,7 @@ export type SaveTemplateArgs = {
   serverName?: string | null;
   kind: 'agent' | 'room' | 'group';
   content: string;
-  /** Prefilled from the document; the person can change both. */
+  /** Name and description, prefilled from the document. The person can change both. */
   name: string;
   description: string;
 };
@@ -29,9 +29,9 @@ export type SaveTemplateArgs = {
 type Props = BaseModalProps<{ id: string }> & SaveTemplateArgs;
 
 /**
- * The one step between "this document" and "a template everyone on the
- * workspace sees": what it is called there, and the line under the name. A file
- * name is a poor name for a listing, so this is asked rather than guessed.
+ * Asks for the name and description before a document is saved to the
+ * workspace. They are asked rather than derived because a file name makes a
+ * poor listing name and a room's description often carries a placeholder.
  */
 export function SaveTemplateModal({
   serverId,

@@ -48,9 +48,11 @@ export type AgentConfigFile = {
    */
   rendered?: Record<string, string>;
   /**
-   * The template this agent was created from, when it was. Enough to find
-   * the template again and offer its current instructions when they move on:
-   * a bundled one by id in this Console, a server one on that server.
+   * The template this agent was created from. Absent for an agent created
+   * without one. Holds what is needed to load the template again later, so
+   * the agent's settings page can offer the template's current instructions:
+   * a bundled template is found by id in this Console, a server one on its
+   * server.
    */
   template?: AgentTemplateOrigin;
 };

@@ -1055,7 +1055,7 @@ export type GroupProvisionResult = {
   groupId: string;
   groupName: string;
   rooms: TemplateProvisionResult[];
-  /** Rooms or links that could not be made; the rest still were. */
+  /** Rooms or links that could not be created. The others were. */
   errors: Array<Record<string, unknown> & { error: string }>;
 };
 
@@ -1125,7 +1125,7 @@ export type StoredTemplateSummary = {
   description: string;
   kind: string;
   creator: string;
-  /** The registry row's owner, to tell the signed-in person's own templates apart. */
+  /** The owner's user id, so the Console can mark the signed-in person's own templates. */
   ownerId: string | null;
 };
 

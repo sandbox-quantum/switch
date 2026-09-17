@@ -1,26 +1,24 @@
 import { load } from 'js-yaml';
 
 /**
- * What a template document creates, for a listing card ("Creates 1 room and
- * 1 agent · 4 inputs") and a page's "What it creates" list. Three shapes:
- * an agent template (`agent:` with an optional `room:`), a room template
- * (`room:` with `params:`), and a group (`agents:` and/or `group:` +
- * `rooms:`), which makes several things at once.
+ * What a template document creates: the counts a listing card shows
+ * ("Creates 1 room and 1 agent · 4 inputs") and the rooms and agents a
+ * template page lists under "What it creates".
  */
 export type TemplateSummary = {
   kind: 'agent' | 'room' | 'group';
   rooms: number;
   agents: number;
   inputs: number;
-  /** Each thing it creates, in the order the page lists them: rooms, then agents. */
-  creates: CreatedThing[];
+  /** Each room and agent it creates, rooms first. */
+  creates: TemplateEntity[];
 };
 
-export type CreatedThing = {
+export type TemplateEntity = {
   kind: 'room' | 'agent';
   /** The name as written in the template, with any `{param}` still unfilled. */
   label: string;
-  /** Its description, or a line about it when the template gives none. */
+  /** Its description from the template, or a generated line when it has none. */
   note: string;
 };
 
@@ -44,7 +42,7 @@ function agentsOf(room: Record<string, unknown> | null): string[] {
   });
 }
 
-function roomThing(room: Record<string, unknown>): CreatedThing {
+function roomThing(room: Record<string, unknown>): TemplateEntity {
   const members = agentsOf(room);
   const note =
     str(room.description) ||
@@ -74,7 +72,7 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
       : [];
   const isGroup = root.group !== undefined || Array.isArray(root.rooms) || agentEntries.length > 1;
 
-  const creates: CreatedThing[] = [
+  const creates: TemplateEntity[] = [
     ...roomEntries.map(roomThing),
     ...agentEntries.map((a) => ({
       kind: 'agent' as const,
@@ -84,8 +82,8 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
   ];
 
   if (agentEntries.length > 0) {
-    // The agents a room lists are the ones the template makes; other names
-    // are agents the server must already have, not created.
+    // Only the entries under `agents:` are created. Other names in a room's
+    // list refer to agents the server must already have.
     return {
       kind: isGroup ? 'group' : 'agent',
       rooms: roomEntries.length,
@@ -94,7 +92,8 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
       creates,
     };
   }
-  // A room document names agents the server already has; it creates none.
+  // A room or group document without `agents:` creates no agents. The names
+  // in its rooms refer to agents the server already has.
   if (isGroup) {
     return { kind: 'group', rooms: roomEntries.length, agents: 0, inputs, creates };
   }

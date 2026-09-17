@@ -272,9 +272,9 @@ def lint_template(text: str) -> LintResult:
         if "params" in document
         else set()
     )
-    # An agent template's room half names the agent it was written around as
-    # `{agent}`, and the Console fills that in with the name the agent was
-    # given. It is the template's to use, not to declare.
+    # An agent template's room refers to the agent as `{agent}`. The Console
+    # fills that in with the agent's name, so the template uses it without
+    # declaring it.
     if "agent" in document:
         declared = declared | {"agent"}
 

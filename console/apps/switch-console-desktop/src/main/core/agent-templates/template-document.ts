@@ -8,18 +8,17 @@ import {
 } from './agent-template-format';
 
 /**
- * A template document has two parts, created by two different things.
+ * Helpers for a template document.
  *
- * - `agent:` or `agents:` describe agents. The Console creates those, because
- *   an agent runs on a machine the Console can reach and the server cannot.
- * - `room:`, or `group:` with `rooms:`, describe rooms. The server creates
- *   those through `POST /rooms/from-yaml`.
+ * The Console creates the agents listed under `agent:` or `agents:`, because
+ * an agent runs on a machine the Console can reach and the server cannot.
+ * The server creates the rooms under `room:`, or `group:` with `rooms:`,
+ * through `POST /rooms/from-yaml`.
  *
- * The two parts refer to each other by agent name. A room's `agents:` list
- * names the agents from the first part with the same text the template uses
- * for them, `{team}-triager` for example, before any `{param}` is filled in.
- * That is why the helpers here work on the raw names: to match a room's
- * entry with the agent it means, they compare the unfilled text.
+ * A room's `agents:` list refers to those agents by the text written in the
+ * template, `{team}-triager` for example, before any `{param}` is filled in.
+ * The helpers here compare that unfilled text to match a room entry with
+ * the agent it refers to.
  *
  * `switch-expert/template.yaml` at the repository root documents every field.
  */
