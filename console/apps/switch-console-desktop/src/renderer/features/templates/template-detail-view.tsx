@@ -7,6 +7,7 @@ import {
   Download,
   FileText,
   Loader2,
+  Pencil,
   Trash2,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -213,7 +214,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   }
 
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
-  const canDelete = loaded.server !== null && (mine || me?.role === 'admin');
+  const canManage = loaded.server !== null && (mine || me?.role === 'admin');
   const singleAgent = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
   // In a single-agent document the room refers to the agent as `{agent}`. The
   // Console fills that in with the agent's name, so it is not an input to list.
@@ -303,6 +304,12 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 <span>{ownerLine}</span>
                 <span>·</span>
                 <span>{visibilityLine}</span>
+                {loaded.server && loaded.server.version > 1 && (
+                  <>
+                    <span>·</span>
+                    <span>Version {loaded.server.version}</span>
+                  </>
+                )}
                 {loaded.copyOf && (
                   <>
                     <span>·</span>
@@ -347,7 +354,30 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 {busy === 'save' ? 'Saving…' : 'Save to workspace'}
               </Button>
             )}
-            {canDelete && (
+            {canManage && loaded.server && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() =>
+                  navigate('templateImport', {
+                    serverId,
+                    yamlText: loaded.document,
+                    edit: true,
+                    editingTemplate: {
+                      id: loaded.server!.id,
+                      name: loaded.name,
+                      description: loaded.description,
+                    },
+                  })
+                }
+              >
+                <Pencil className="size-3.5" />
+                Edit
+              </Button>
+            )}
+            {canManage && (
               <Button
                 type="button"
                 variant="outline"
