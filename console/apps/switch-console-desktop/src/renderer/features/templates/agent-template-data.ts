@@ -61,6 +61,12 @@ export async function agentTemplateFromContent(
   };
 }
 
+/** Whether the template recorded on an agent's config can still be loaded.
+ * A bundled template can be dropped from a later Console. */
+export function templateOriginExists(origin: AgentTemplateOrigin): boolean {
+  return origin.source !== 'bundled' || findBundledTemplate(origin.id) !== undefined;
+}
+
 /** Load the template recorded on an agent's config. */
 export async function loadAgentTemplateByOrigin(
   origin: AgentTemplateOrigin

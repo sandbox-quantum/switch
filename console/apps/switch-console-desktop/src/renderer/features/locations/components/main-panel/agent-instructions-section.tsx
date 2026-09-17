@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { loadAgentTemplateByOrigin } from '@renderer/features/templates/agent-template-data';
+import {
+  loadAgentTemplateByOrigin,
+  templateOriginExists,
+} from '@renderer/features/templates/agent-template-data';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -145,7 +148,7 @@ export function AgentInstructionsSection({
           Agent instructions <span className="text-foreground-muted">(optional)</span>
         </FieldLabel>
         <span className="flex items-center gap-3">
-          {origin && (
+          {origin && templateOriginExists(origin) && (
             <Button
               type="button"
               variant="ghost"
