@@ -112,7 +112,10 @@ MESSAGES_SENT = _spec(
     "switch.messages.sent",
     "sum",
     "{message}",
-    "Messages written to the message store.",
+    "Messages accepted into the room. Counted after the write commits, so "
+    "a database outage stops this rather than drawing an unbroken rate. "
+    "`kind:ephemeral` is the exception — presence-like state is delivered "
+    "live and never stored.",
     "kind",
 )
 MESSAGES_DELIVERED = _spec(
@@ -154,7 +157,9 @@ BRIDGE_EVENTS_OUT = _spec(
     "switch.bridge.events_out",
     "sum",
     "{event}",
-    "Messages and media relayed out to a collaboration platform.",
+    "Relays attempted out to a collaboration platform. Counted before the "
+    "attempt, so it is the denominator `switch.bridge.errors` is a fraction "
+    "of.",
     "platform",
     "kind",
 )

@@ -176,17 +176,18 @@ class SwitchConfig(BaseSettings):
     # until it does, no measurement leaves the process.
     otlp_endpoint: str | None = None
 
-    # Per-signal, because the three do not cost the same and are not equally
-    # available. Metrics are the point of the exercise and are on as soon as a
-    # collector is named. Logs are off because they already go to the
-    # container's output where a cluster's own collector can read them, and
-    # sending a second copy over the network is a volume decision that belongs
-    # to whoever pays for it. Traces are off because the relay Switch reports
-    # to does not serve `/v1/traces` yet — turning them on before it does means
-    # every export fails, loudly and forever (CHOO-2807).
+    # Per-signal, because the two do not cost the same. Metrics are the point
+    # of the exercise and are on as soon as a collector is named. Logs are off
+    # because they already go to the container's output where a cluster's own
+    # collector can read them, and sending a second copy over the network is a
+    # volume decision that belongs to whoever pays for it.
+    #
+    # There is deliberately no traces setting. Nothing produces spans yet, so a
+    # flag here would be one a deployment could turn on and see no difference
+    # from — a configuration surface that lies about what it controls. It comes
+    # back when there is something for it to switch off (CHOO-2807).
     otlp_metrics_enabled: bool = True
     otlp_logs_enabled: bool = False
-    otlp_traces_enabled: bool = False
 
     # `key=value` pairs, comma-separated, sent on every OTLP request. The relay
     # Switch reports to is unauthenticated and needs none; a deployment
@@ -362,6 +363,18 @@ class SwitchConfig(BaseSettings):
             # half-configured reporting — it has not configured it.
             return self
 
+        if self.otlp_endpoint != self.otlp_endpoint.strip():
+            # `urlsplit` puts a trailing space inside the host rather than the
+            # path, so this passes every check below and then percent-encodes
+            # into a hostname that resolves nowhere. The export failure that
+            # follows is loud but names a connection problem, not the stray
+            # character that caused it — and a value pasted out of a wrapped
+            # YAML line is exactly where this comes from.
+            raise ValueError(
+                "OTLP_ENDPOINT has leading or trailing whitespace: "
+                f"{self.otlp_endpoint!r}."
+            )
+
         parts = urlsplit(self.otlp_endpoint)
         if parts.scheme not in ("http", "https"):
             raise ValueError(
@@ -380,6 +393,17 @@ class SwitchConfig(BaseSettings):
                 "OTLP_ENDPOINT is the collector's base URL and the signal path "
                 "is appended to it, so it must have no path of its own. Got "
                 f"{self.otlp_endpoint!r} — drop the {parts.path!r}."
+            )
+        if parts.query or parts.fragment:
+            # Resolving the signal path against the base discards both, so a
+            # credential or routing parameter put here would never be sent and
+            # nothing would say so. Some OTLP-compatible endpoints are written
+            # down with an api-key query parameter, which is how this arrives.
+            raise ValueError(
+                "OTLP_ENDPOINT must not carry a query string or fragment — the "
+                "signal path is resolved against it and both are discarded, so "
+                f"they would silently never be sent. Got {self.otlp_endpoint!r}. "
+                "Put a credential in OTLP_HEADERS instead."
             )
 
         if not self.deployment_id:

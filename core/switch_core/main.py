@@ -587,6 +587,10 @@ async def run(config: SwitchConfig) -> None:
                 connection_sweep_task.cancel()
                 await message_listener.stop()
                 await observability.aclose()
+                # Cleared so a probe landing during teardown gets the honest
+                # "no health check has completed" 503 rather than the last
+                # cached answer, which may still say ready.
+                observability = None
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 

@@ -23,10 +23,12 @@ alerts are checked in under [`deploy/observability/`](../../deploy/observability
 
 ## The three things it emits
 
-**Logs** have always been written to the container's output as JSON, keyed for
-Datadog, with `tenant_id`, `request_id`, `agent_id` and `user_id` stamped on
-every line by a filter on the handler — so records from libraries carry them
-too. With `OTLP_LOGS_ENABLED` the same records are *also* posted to the
+**Logs** go to the container's output, with `tenant_id`, `request_id`,
+`agent_id` and `user_id` stamped on every line by a filter on the handler — so
+records from libraries carry them too. Set `LOG_FORMAT=json` to get them as
+fields rather than inside the message text; the default is `text`, which is for
+reading in a terminal, so anywhere the logs are actually collected wants the
+JSON form. With `OTLP_LOGS_ENABLED` the same records are *also* posted to the
 collector. The stderr copy is never replaced: `kubectl logs` keeps working, and
 a collector outage costs a copy rather than the record.
 
@@ -88,9 +90,10 @@ blocked event loop shows up.
 ## What the process reports about itself
 
 There is no Datadog agent in the cluster, so `switch-core` reports its own
-memory, CPU, descriptors and garbage collections, read from `/proc/self` with
-no extra dependency. Off Linux those readings are absent rather than
-fabricated, and a warning at startup says which.
+memory, CPU, descriptors and garbage collections, with no extra dependency.
+CPU and collection counts come from the standard library and work anywhere;
+memory and open descriptors are read from `/proc/self`, so off Linux those two
+are absent rather than fabricated, and a warning at startup names them.
 
 **Event-loop lag is the one no external agent could produce.** The server is
 single-threaded and cooperative: one blocking call stalls every room, every
@@ -99,21 +102,61 @@ unrelated timeout somewhere else. The connection sweep already measured its own
 oversleep to avoid expiring connections it had simply failed to hear from; that
 number is now reported instead of discarded.
 
-## What you still do not get without an agent
+## What a Datadog agent would add
 
-Pod and node facts the process cannot see: container restarts, OOM kills,
-evictions, node pressure, and Datadog's Kubernetes views. Application health
-does not depend on any of it, but capacity planning eventually does. That is
-infrastructure work, separate from this.
+There is no Datadog agent in this cluster, and nothing above needs one — an
+application reporting over OTLP covers application health on its own. What an
+agent adds is everything the application is not in a position to know, and the
+list is worth writing down because the gaps are not obvious from a dashboard
+that looks full.
+
+**It can report the process's death.** This is the structural one. Everything
+here is reported *by* switch-core, so a process that is OOM-killed or
+segfaults takes its queued logs and its last metric interval with it. What
+survives is an alert saying reporting stopped — which says something happened
+and nothing about what. An agent watches from outside and reports the restart,
+the exit code and the kill reason.
+
+**Limits, not just usage.** The process reads its own resident memory from
+`/proc/self`, which is the numerator. The cgroup limit it is measured against,
+and CPU throttling when it exceeds its quota, are container facts it cannot
+see. A server being throttled looks from the inside like a server that is
+mysteriously slow — and the event-loop lag metric would show the symptom while
+naming nothing.
+
+**Kubernetes state.** Pod phase, restart counts, evictions, pending pods that
+never scheduled, node pressure, PersistentVolume usage. The last matters more
+than it sounds: Postgres and Mattermost hold this deployment's data on
+volumes, and nothing currently reports how full they are.
+
+**The database from the database's side.** Switch reports its own connection
+pool, which answers "are we holding too many connections" and not "is the
+database struggling". The agent's Postgres integration gives query
+performance, locks, replication lag and server-side connection counts. Given
+that the database is the one dependency that gates readiness, seeing only the
+client's half of it is a real gap.
+
+**Log collection without an in-process shipper.** An agent tailing container
+output would make `OTLP_LOGS_ENABLED` unnecessary and would capture the lines
+a dying process cannot flush.
+
+**Trace intake.** An agent accepts OTLP traces directly, which is one of the
+two ways the gap below gets closed.
+
+None of this blocks the work here, and none of it should be added to the
+application — it is infrastructure, tracked separately.
 
 ## What is missing
 
-**Tracing.** The export path is signal-agnostic and `OTLP_TRACES_ENABLED`
-exists, but nothing produces spans yet, and the relay Switch reports to does
-not serve `/v1/traces` — a POST there returns 404. Enabling the flag today
-would mean every export failing, which is why it defaults off. Two things have
-to happen: the collector must accept the signal, and the server must produce
-spans.
+**Tracing.** The export path is signal-agnostic, but nothing produces spans,
+and the relay Switch reports to does not serve `/v1/traces` — a POST there
+returns 404. Two things have to happen: the collector must accept the signal,
+and the server must produce spans.
+
+There is deliberately **no** `OTLP_TRACES_ENABLED` setting in the meantime. A
+flag a deployment can turn on and see no difference from is a configuration
+surface that lies about what it controls; it arrives when there is something
+for it to switch off.
 
 When it does, the log records already carry `traceId` and `spanId` fields
 wherever they are set, so log-to-trace correlation needs no further change to

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pytest
@@ -226,3 +227,66 @@ def test_the_self_exclusion_is_anchored_on_a_name_boundary():
 
     batch, _ = handler.take(10)
     assert [entry.body for entry in batch] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_the_whole_queue_not_one_batch():
+    """A single batch is 500 of a queue that holds 10,000.
+
+    Flushing once on shutdown silently discarded the rest — no counter, no
+    line, which is the exact shape of loss this module exists to avoid.
+    """
+    handler = OtlpLogHandler(capacity=2000)
+    for index in range(1200):
+        handler.emit(_record(message="line %d", args=(index,)))
+    client = _Client()
+
+    exporter = LogExporter(handler, client, RESOURCE, 1.0, 500)
+    await exporter._flush_on_shutdown()
+
+    assert handler.pending() == 0
+    shipped = sum(
+        len(p["resourceLogs"][0]["scopeLogs"][0]["logRecords"])
+        for _, p in client.posted
+    )
+    assert shipped == 1200
+
+
+@pytest.mark.asyncio
+async def test_a_dead_collector_at_shutdown_still_drains_and_says_so(caplog):
+    """The records are lost either way; what matters is that they are counted."""
+    handler = OtlpLogHandler(capacity=2000)
+    for index in range(1200):
+        handler.emit(_record(message="line %d", args=(index,)))
+    exporter = LogExporter(handler, _Client(fail=True), RESOURCE, 1.0, 500)
+
+    with caplog.at_level(logging.WARNING):
+        await exporter._flush_on_shutdown()
+
+    assert handler.pending() == 0
+    assert "Log export failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_gives_up_on_a_hanging_collector_and_reports_the_rest(
+    caplog, monkeypatch
+):
+    """Shutdown is not the moment to block on a collector that stopped answering."""
+    monkeypatch.setattr("switch_core.observability.logs.SHUTDOWN_FLUSH_SECONDS", 0.05)
+
+    class _Slow(_Client):
+        async def post(self, signal: str, payload: dict) -> None:
+            await asyncio.sleep(0.04)
+            await super().post(signal, payload)
+
+    handler = OtlpLogHandler(capacity=5000)
+    for index in range(3000):
+        handler.emit(_record(message="line %d", args=(index,)))
+    exporter = LogExporter(handler, _Slow(), RESOURCE, 1.0, 100)
+
+    with caplog.at_level(logging.ERROR):
+        await exporter._flush_on_shutdown()
+
+    assert handler.pending() > 0
+    # What could not be sent leaves a number behind rather than vanishing.
+    assert "never exported" in caplog.text

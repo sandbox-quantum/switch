@@ -3,117 +3,185 @@
     "name": "[Switch] switch-core has stopped reporting",
     "type": "metric alert",
     "query": "max(last_15m):avg:switch.runtime.event_loop_lag{service:switch-core} < 0",
-    "message": "No metrics have arrived from switch-core for 15 minutes.\n\nThis is a no-data alert, and it cannot tell you which of three things happened: the server is down, it cannot reach the collector, or someone turned reporting off. Check the pod first — if it is serving, the other two are the ones left.\n\nNote that every other monitor in this set goes quiet at the same time, so treat this one as the reason the rest went silent rather than as an outage on its own.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "message": "No metrics have arrived from switch-core for 15 minutes.\n\nThis is a no-data alert, and it cannot tell you which of three things happened: the server is down, it cannot reach the collector, or someone turned reporting off. Check the pod first \u2014 if it is serving, the other two are the ones left.\n\nNote that every other monitor in this set goes quiet at the same time, so treat this one as the reason the rest went silent rather than as an outage on its own.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": true,
-      "no_data_timeframe": 15,
+      "no_data_timeframe": 30,
       "renotify_interval": 60,
-      "thresholds": { "critical": 0 },
+      "thresholds": {
+        "critical": 0
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] the database is unreachable",
     "type": "metric alert",
-    "query": "min(last_5m):min:switch.health.check{service:switch-core,check:database} by {env} < 1",
-    "message": "switch-core's readiness check cannot reach the database.\n\nThis is the one dependency that takes the server out of service, so Kubernetes has already emptied the Service — and because switch-core runs as a single replica there is nothing else serving. Every request is failing.\n\nCheck the database before the pod: the pod is reporting the fault, not causing it.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "min(last_5m):min:switch.health.check{service:switch-core,check:database} < 1",
+    "message": "switch-core's readiness check cannot reach the database.\n\nThis is the one dependency that takes the server out of service, so Kubernetes has already emptied the Service \u2014 and because switch-core runs as a single replica there is nothing else serving. Every request is failing.\n\nCheck the database before the pod: the pod is reporting the fault, not causing it.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 30,
-      "thresholds": { "critical": 1 },
+      "thresholds": {
+        "critical": 1
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] no room messages are being delivered",
     "type": "metric alert",
-    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:message_listener} by {env} < 1",
-    "message": "The Postgres LISTEN connection that wakes every room's delivery is down.\n\nThe API still answers and rooms still accept writes, so from outside Switch looks healthy — and no message reaches anybody. That combination is why this is alerted separately from the database check.\n\nIt reconnects itself with backoff, which is why it does not fail readiness: restarting the pod would drop every live session without fixing it any faster. Ten minutes of this means the backoff is not winning.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:message_listener} < 1",
+    "message": "The Postgres LISTEN connection that wakes every room's delivery is down.\n\nThe API still answers and rooms still accept writes, so from outside Switch looks healthy \u2014 and no message reaches anybody. That combination is why this is alerted separately from the database check.\n\nIt reconnects itself with backoff, which is why it does not fail readiness: restarting the pod would drop every live session without fixing it any faster. Ten minutes of this means the backoff is not winning.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 60,
-      "thresholds": { "critical": 1 },
+      "thresholds": {
+        "critical": 1
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] a collaboration bridge has crashed",
     "type": "metric alert",
-    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:bridges} by {env} < 1",
-    "message": "A configured collaboration bridge is no longer running.\n\nThe platform it serves is cut off — messages from that Slack, Mattermost, Discord, Teams or Telegram channel reach nobody, and nothing Switch sends reaches it. The rest of Switch is unaffected, deliberately: a dead adapter must not take the whole server off the air.\n\nA bridge that crashes removes itself and does not retry, so this needs a restart of that bridge rather than waiting.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:bridges} < 1",
+    "message": "A configured collaboration bridge is no longer running.\n\nThe platform it serves is cut off \u2014 messages from that Slack, Mattermost, Discord, Teams or Telegram channel reach nobody, and nothing Switch sends reaches it. The rest of Switch is unaffected, deliberately: a dead adapter must not take the whole server off the air.\n\nA bridge that crashes removes itself and does not retry, so this needs a restart of that bridge rather than waiting.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 120,
-      "thresholds": { "critical": 1 },
+      "thresholds": {
+        "critical": 1
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] messages are being dropped on delivery",
     "type": "metric alert",
-    "query": "sum(last_10m):sum:switch.messages.delivery_failures{service:switch-core}.as_count() by {env} > 5",
-    "message": "The delivery loop has failed to deliver {{value}} time(s) in ten minutes.\n\nEach one is a message written to a room that a client never received. The loop swallows these on purpose so one bad room cannot stop the others, so nothing else will surface them — the counter is the only evidence.\n\nThe logs carry the room and the client for each: search for \"Delivery failed for client\".\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "sum(last_10m):sum:switch.messages.delivery_failures{service:switch-core}.as_count() > 5",
+    "message": "The delivery loop has failed to deliver {{value}} time(s) in ten minutes.\n\nEach one is a message written to a room that a client never received. The loop swallows these on purpose so one bad room cannot stop the others, so nothing else will surface them \u2014 the counter is the only evidence.\n\nThe logs carry the room and the client for each: search for \"Delivery failed for client\".\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 60,
-      "thresholds": { "critical": 5, "warning": 1 },
+      "thresholds": {
+        "critical": 5,
+        "warning": 1
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] the event loop is stalling",
     "type": "metric alert",
-    "query": "avg(last_10m):max:switch.runtime.event_loop_lag{service:switch-core} by {env} > 1000",
-    "message": "A fixed-interval task is waking more than a second late.\n\nswitch-core is single-threaded and cooperative, so this is not one slow thing — it is everything at once. Room delivery, bridge dispatch and agent heartbeats are all waiting on the same loop, and heartbeats arriving late make live agent connections look lapsed through no fault of their own.\n\nA synchronous call on the event loop is the usual cause. The stall itself is the bug; whatever timed out because of it is a symptom.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "avg(last_10m):max:switch.runtime.event_loop_lag{service:switch-core} > 1000",
+    "message": "A fixed-interval task is waking more than a second late.\n\nswitch-core is single-threaded and cooperative, so this is not one slow thing \u2014 it is everything at once. Room delivery, bridge dispatch and agent heartbeats are all waiting on the same loop, and heartbeats arriving late make live agent connections look lapsed through no fault of their own.\n\nA synchronous call on the event loop is the usual cause. The stall itself is the bug; whatever timed out because of it is a symptom.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 60,
-      "thresholds": { "critical": 1000, "warning": 250 },
+      "thresholds": {
+        "critical": 1000,
+        "warning": 250
+      },
+      "include_tags": true
+    }
+  },
+  {
+    "name": "[Switch] health checks have stopped running",
+    "type": "metric alert",
+    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:health_monitor} < 1",
+    "message": "The loop that refreshes switch-core's dependency checks has stopped, or the event loop is blocked for long enough that it cannot run.\n\nThis matters more than it sounds. While it is true, every other health check on this list is reporting its last known answer \u2014 so the database, listener and bridge monitors can all sit at a comfortable 1 while nothing has actually been checked for minutes. Treat a firing here as invalidating the others, not as one more fault beside them.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "thresholds": {
+        "critical": 1
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] the database pool is nearly exhausted",
     "type": "metric alert",
-    "query": "avg(last_10m):avg:switch.db.pool.in_use{service:switch-core} by {env} / avg:switch.db.pool.size{service:switch-core} by {env} > 0.9",
-    "message": "More than 90% of the connection pool has been checked out for ten minutes.\n\nWhat happens next is that requests start waiting for a connection rather than failing, so the symptom is latency everywhere and then a readiness check that times out — which reads as \"the database is down\" when the database is fine and this server is holding all of it.\n\nLook for a query holding a connection longer than it should before raising the pool size.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "avg(last_10m):avg:switch.db.pool.in_use{service:switch-core} / avg:switch.db.pool.size{service:switch-core} > 0.9",
+    "message": "The connection pool has been at more than 90% of its nominal size for ten minutes.\n\nNominal, not total: the pool may open a few connections beyond its size before anything blocks, so this is an early warning rather than the moment things break. What happens if it keeps climbing is that requests start waiting for a connection rather than failing, so the symptom is latency everywhere and then a readiness check that times out \u2014 which reads as \"the database is down\" when the database is fine and this server is holding all of it.\n\nLook for a query holding a connection longer than it should before raising the pool size.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 60,
-      "thresholds": { "critical": 0.9, "warning": 0.75 },
+      "thresholds": {
+        "critical": 0.9,
+        "warning": 0.75
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] server errors are elevated",
     "type": "metric alert",
-    "query": "sum(last_10m):sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count() by {env} / sum:switch.http.requests{service:switch-core}.as_count() by {env} > 0.05",
+    "query": "sum(last_10m):sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count() / sum:switch.http.requests{service:switch-core}.as_count() > 0.05",
     "message": "More than 5% of requests answered 5xx over ten minutes.\n\nA ratio rather than a count, so a quiet period does not page and a busy one is not held to the same absolute number. Break it down by route on the dashboard: one failing endpoint and everything failing want different responses.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 60,
-      "thresholds": { "critical": 0.05, "warning": 0.01 },
+      "thresholds": {
+        "critical": 0.05,
+        "warning": 0.01
+      },
       "include_tags": true
     }
   },
   {
     "name": "[Switch] a bridge is failing to relay",
     "type": "metric alert",
-    "query": "sum(last_15m):sum:switch.bridge.errors{service:switch-core}.as_count() by {env,platform,direction} > 10",
-    "message": "{{platform.name}} has failed {{value}} time(s) {{direction.name}} in fifteen minutes.\n\nInbound failures are messages a person sent that nobody received; from the platform's side that is indistinguishable from being ignored. Outbound failures are Switch's replies not arriving.\n\nThe bridge is still running — a crashed one is a different alert. This is usually the platform rate-limiting, an expired token, or a channel the app was removed from.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": ["service:switch-core", "team:switch", "source:CHOO-2807"],
+    "query": "sum(last_15m):sum:switch.bridge.errors{service:switch-core} by {platform,direction}.as_count() > 10",
+    "message": "{{platform.name}} has failed {{value}} time(s) {{direction.name}} in fifteen minutes.\n\nInbound failures are messages a person sent that nobody received; from the platform's side that is indistinguishable from being ignored. Outbound failures are Switch's replies not arriving.\n\nThe bridge is still running \u2014 a crashed one is a different alert. This is usually the platform rate-limiting, an expired token, or a channel the app was removed from.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
     "options": {
       "notify_no_data": false,
       "renotify_interval": 120,
-      "thresholds": { "critical": 10, "warning": 3 },
+      "thresholds": {
+        "critical": 10,
+        "warning": 3
+      },
       "include_tags": true
     }
   }

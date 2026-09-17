@@ -21,7 +21,6 @@ OBSERVABILITY_KEYS = (
     "OTLP_ENDPOINT",
     "OTLP_METRICS_ENABLED",
     "OTLP_LOGS_ENABLED",
-    "OTLP_TRACES_ENABLED",
     "OTLP_HEADERS",
     "OTLP_TIMEOUT_SECONDS",
     "OTLP_EXPORT_INTERVAL_SECONDS",
@@ -43,7 +42,7 @@ def test_reporting_is_off_until_a_collector_is_named(monkeypatch):
     assert config.otlp_endpoint is None
 
 
-def test_an_endpoint_turns_metrics_on_but_not_logs_or_traces(monkeypatch):
+def test_an_endpoint_turns_metrics_on_but_not_logs(monkeypatch):
     config = _config(
         monkeypatch,
         OTLP_ENDPOINT="https://collector.example",
@@ -54,9 +53,10 @@ def test_an_endpoint_turns_metrics_on_but_not_logs_or_traces(monkeypatch):
     # Logs already reach the container's output; a second copy over the network
     # costs money somebody has to choose to spend.
     assert config.otlp_logs_enabled is False
-    # The relay Switch reports to does not serve /v1/traces, so defaulting this
-    # on would mean every export failing forever.
-    assert config.otlp_traces_enabled is False
+    # There is deliberately no traces setting: nothing produces spans, so a
+    # flag here would be one a deployment could turn on and see no difference
+    # from — a configuration surface that lies about what it controls.
+    assert "otlp_traces_enabled" not in type(config).model_fields
 
 
 def test_an_endpoint_without_a_deployment_id_refuses_to_start(monkeypatch):
@@ -154,3 +154,27 @@ def test_malformed_headers_fail_at_startup_not_every_interval(monkeypatch):
 def test_no_headers_is_an_empty_map(monkeypatch):
     config = _config(monkeypatch)
     assert config.otlp_header_map == {}
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["https://collector.example?api-key=abc", "https://collector.example#frag"],
+)
+def test_a_query_or_fragment_is_refused(monkeypatch, endpoint):
+    """Resolving the signal path against the base discards both.
+
+    A credential written into the query — which is how several OTLP-compatible
+    endpoints are published — would silently never be sent.
+    """
+    with pytest.raises(ValueError, match="query string or fragment"):
+        _config(monkeypatch, OTLP_ENDPOINT=endpoint, DEPLOYMENT_ID=DEPLOYMENT_ID)
+
+
+def test_surrounding_whitespace_is_refused(monkeypatch):
+    """It ends up inside the host, not the path, and resolves nowhere."""
+    with pytest.raises(ValueError, match="whitespace"):
+        _config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example ",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+        )

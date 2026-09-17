@@ -186,3 +186,58 @@ def test_install_and_uninstall_swap_the_sink():
         uninstall()
 
     assert isinstance(metrics(), NullMetricsRegistry)
+
+
+def test_histogram_boundaries_are_upper_bound_inclusive(registry: MetricsRegistry):
+    """OpenTelemetry's bucket i is `(bounds[i-1], bounds[i]]`.
+
+    The exact bound is the case worth pinning: `bisect_left` puts it in the
+    lower bucket and `bisect_right` would put it in the higher one, and every
+    value that is not a boundary looks identical either way.
+    """
+    for value in (5.0, 10.0, 10.0001):
+        registry.observe(HTTP_REQUEST_DURATION, {"route": "/x", "method": "GET"}, value)
+
+    point = _by_name(registry.collect())[HTTP_REQUEST_DURATION.name].histograms[0]
+    # Bounds start (5, 10, 25, …): 5.0 belongs to the first bucket, 10.0 to the
+    # second, and anything above 10 to the third.
+    assert point.bucket_counts[0] == 1
+    assert point.bucket_counts[1] == 1
+    assert point.bucket_counts[2] == 1
+
+
+def test_two_observers_claiming_one_series_is_reported(
+    registry: MetricsRegistry, caplog
+):
+    """Duplicate points with identical attributes are rejected by a receiver.
+
+    Sums and histograms already complain when a series goes wrong; before this
+    the one metric kind with no guard was the one collected from several
+    independent sources.
+    """
+    registry.register_observer(lambda: [GaugeReading(AGENTS, 1.0, {})])
+    registry.register_observer(lambda: [GaugeReading(AGENTS, 2.0, {})])
+
+    with caplog.at_level(logging.ERROR):
+        points = _by_name(registry.collect())[AGENTS.name].numbers
+
+    assert len(points) == 1
+    assert points[0].value == 1.0
+    assert "Two gauge observers" in caplog.text
+
+
+def test_the_same_metric_from_two_observers_is_fine_when_attributes_differ(
+    registry: MetricsRegistry,
+):
+    health = MetricSpec(
+        name="switch.health.check",
+        kind="gauge",
+        unit="{status}",
+        description="",
+        attributes=frozenset({"check"}),
+    )
+    registry.register_observer(lambda: [GaugeReading(health, 1.0, {"check": "a"})])
+    registry.register_observer(lambda: [GaugeReading(health, 0.0, {"check": "b"})])
+
+    points = _by_name(registry.collect())[health.name].numbers
+    assert {p.attributes["check"]: p.value for p in points} == {"a": 1.0, "b": 0.0}

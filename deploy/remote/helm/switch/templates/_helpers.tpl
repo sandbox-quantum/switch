@@ -474,6 +474,12 @@ rather than from a CrashLoopBackOff.
 {{- if and .logs (not .otlpEndpoint) -}}
 {{- fail "switchCore.observability.logs is on but no otlpEndpoint is set." -}}
 {{- end -}}
+{{- if and .deploymentId (not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .deploymentId)) -}}
+{{- fail (printf "switchCore.observability.deploymentId must be a UUID, got %q. switch-core validates the same thing and refuses to start, so without this check the render succeeds and the pod CrashLoopBackOffs instead. Generate one with `uuidgen`." .deploymentId) -}}
+{{- end -}}
+{{- if and .otlpEndpoint (not (regexMatch "^https?://[^/?#]+/?$" .otlpEndpoint)) -}}
+{{- fail (printf "switchCore.observability.otlpEndpoint must be an http(s) base URL with no path, query or fragment, got %q. The signal path is appended to it, so `.../v1/logs` would be posted to `.../v1/logs/v1/metrics`, and a query string is discarded entirely when the signal path is resolved against it. Put a credential in `headers`." .otlpEndpoint) -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -623,10 +629,10 @@ Include with `nindent 12`.
   value: {{ .metrics | quote }}
 - name: OTLP_LOGS_ENABLED
   value: {{ .logs | quote }}
-- name: OTLP_TRACES_ENABLED
-  value: {{ .traces | quote }}
 - name: OTLP_EXPORT_INTERVAL_SECONDS
   value: {{ .exportIntervalSeconds | quote }}
+- name: OTLP_TIMEOUT_SECONDS
+  value: {{ .timeoutSeconds | quote }}
 {{- with .headers }}
 - name: OTLP_HEADERS
   value: {{ . | quote }}

@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections import deque
 
 from switch_core.logging_context import CONTEXT_FIELDS
@@ -70,6 +71,11 @@ DEFAULT_QUEUE_CAPACITY = 10_000
 # Records per request. Large enough that a busy interval is one or two posts,
 # small enough that a single payload stays a reasonable size.
 DEFAULT_BATCH_SIZE = 500
+
+# How long a shutdown will keep draining the queue before giving up and
+# saying what is left. Shutdown is not the moment to block on a collector
+# that has stopped answering.
+SHUTDOWN_FLUSH_SECONDS = 5.0
 
 
 def severity_of(level: int) -> tuple[int, str]:
@@ -232,7 +238,29 @@ class LogExporter:
                 logger.exception("Log export loop raised; continuing.")
 
     async def _flush_on_shutdown(self) -> None:
+        """Drain what is queued, not one batch of it.
+
+        A single `flush_once` takes at most `batch_size` records off a queue
+        that holds twenty times that, so on a busy server — or after a
+        collector outage has been filling it — a shutdown would discard the
+        rest with no counter and no line saying so. That is the shape of
+        silent loss this module is written to avoid.
+
+        Bounded by a deadline rather than by the queue emptying, because
+        shutdown is not the moment to block on a collector that has stopped
+        answering: whatever is left is reported as lost and the process goes.
+        """
+        deadline = time.monotonic() + SHUTDOWN_FLUSH_SECONDS
         try:
-            await self.flush_once()
+            while self._handler.pending() and time.monotonic() < deadline:
+                await self.flush_once()
         except Exception:
             logger.warning("Final log flush failed.", exc_info=True)
+
+        remaining = self._handler.pending()
+        if remaining:
+            logger.error(
+                "Shut down with %d log record(s) never exported. They are in "
+                "this container's output and nowhere else.",
+                remaining,
+            )

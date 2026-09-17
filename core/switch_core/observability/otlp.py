@@ -57,6 +57,7 @@ def _exporting_window() -> Iterator[None]:
     finally:
         _exporting.reset(token)
 
+
 # OTLP's own enum, sent as an integer. Delta rather than cumulative: Datadog
 # reads delta sums and histograms directly, whereas a cumulative series has to
 # be differenced at query time and reads as a permanently climbing line until

@@ -117,7 +117,7 @@ switchCore:
     environment: ""
     serviceName: switch-core
 
-  # Where this deployment reports metrics and logs (CHOO-2807).
+  # Where this deployment reports metrics and logs.
   #
   # Empty endpoint means it reports nowhere, which is the default: nothing
   # leaves the deployment until an operator names a collector. Readiness
@@ -138,10 +138,10 @@ switchCore:
     # cluster log agent can read them. Turning this on sends a second copy
     # over the network, which costs money somebody has to choose to spend.
     logs: false
-    # Off because the relay Switch reports to does not serve /v1/traces yet.
-    # Turning it on before it does means every export fails.
-    traces: false
     exportIntervalSeconds: 60
+    # How long an export may take before it is abandoned. Raise it for a
+    # collector that is slow or far away.
+    timeoutSeconds: 10
     # `key=value` pairs, comma-separated, sent on every request. The relay
     # needs none; a private collector usually wants an API key.
     headers: ""

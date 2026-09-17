@@ -282,6 +282,7 @@ class MetricsRegistry:
 
 def _collect_gauges(observers: Sequence[GaugeObserver]) -> list[MetricPayload]:
     grouped: dict[str, list[NumberPoint]] = {}
+    seen: set[tuple[str, SeriesKey]] = set()
     for observer in observers:
         try:
             readings = list(observer())
@@ -293,6 +294,21 @@ def _collect_gauges(observers: Sequence[GaugeObserver]) -> list[MetricPayload]:
             continue
         for reading in readings:
             _validate(reading.spec, reading.attributes)
+            key = (reading.spec.name, _series_key(reading.attributes))
+            if key in seen:
+                # Two observers claiming the same series puts two data points
+                # with identical attributes in one payload, which a receiver
+                # either rejects or silently picks one of. Sums and histograms
+                # already complain when a series goes wrong; this is the same
+                # guard for the one kind that had none.
+                logger.error(
+                    "Two gauge observers both reported %s with the same "
+                    "attributes; keeping the first. One of them should not be "
+                    "registered.",
+                    reading.spec.name,
+                )
+                continue
+            seen.add(key)
             grouped.setdefault(reading.spec.name, []).append(
                 NumberPoint(attributes=dict(reading.attributes), value=reading.value)
             )

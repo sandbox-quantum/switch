@@ -545,10 +545,10 @@ class PostgresTransport:
         row as part of it, so no subscriber can be woken for a row that a later
         rollback removes.
         """
-        metrics().increment(MESSAGES_SENT, {"kind": _sent_kind(event_type, content)})
         result = SendResult(
             event_id=new_event_id(), event_type=event_type, content=content
         )
+        kind = _sent_kind(event_type, content)
         if event_type in EPHEMERAL:
             # Presence-like state, replaced by its own next value. Storing it
             # would put a row in the room's order for something no reader is
@@ -566,6 +566,7 @@ class PostgresTransport:
                     event_type=event_type,
                 ),
             )
+            metrics().increment(MESSAGES_SENT, {"kind": kind})
             return result
 
         room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
@@ -585,6 +586,11 @@ class PostgresTransport:
             )
             await self._message_store.create(session, message, attachments_in(content))
             await session.commit()
+        # Counted after the commit, because the commit is what sending means
+        # here. Counted before it, a database outage would draw an unbroken
+        # send rate on the dashboard while nothing was being written at all —
+        # and there is no paired failure counter to contradict it.
+        metrics().increment(MESSAGES_SENT, {"kind": kind})
         return result
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:

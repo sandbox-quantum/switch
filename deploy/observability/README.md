@@ -1,19 +1,25 @@
 # Dashboards and alerts
 
-Datadog definitions for what `switch-core` reports (CHOO-2807). They are kept
-here rather than clicked together in the UI so that a change to a metric and a
-change to the panel reading it land in the same review.
+Datadog definitions for what `switch-core` reports. They are kept here rather
+than clicked together in the UI so that a change to a metric and a change to
+the panel reading it land in the same review.
 
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
 fill it in when importing, not here.
 
+**Do not skip that.** Datadog does not validate notification handles: a monitor
+carrying the placeholder imports cleanly, shows as healthy in the UI, triggers
+normally — and notifies nobody. There is no error to notice. Replace every one
+of them before you import, and test one deliberately.
+
 ## What the server has to be doing first
 
 Reporting is off until a collector is named. See `OTLP_ENDPOINT` and
 `DEPLOYMENT_ID` in `.env.example`, or `switchCore.observability` in the Helm
-chart. With neither set these panels are empty and the monitors below will
-report no data — which is a correct reading, not a broken dashboard.
+chart. With neither set these panels are empty, and only the first monitor —
+the no-data canary — has anything to say. That is a correct reading, not a
+broken dashboard.
 
 Every metric this server can emit is declared in
 `core/switch_core/observability/catalogue.py`, with the attributes each may
@@ -36,21 +42,33 @@ jq -c '.[]' monitors.json | while read -r monitor; do
 done
 ```
 
-## Two things to check on first import
+## Check these before you trust the dashboard
 
-**Histogram panels depend on how the collector maps them.** Request latency and
-delivery lag are OTLP histograms. A collector exporting to Datadog in
-`distributions` mode makes them distributions, which is what the `p95:` and
-`p99:` queries here assume. In the default `histograms` mode they arrive as
-separate `.count`, `.sum`, `.min` and `.max` series instead, and those panels
-will be empty until either the collector's mode or the queries are changed.
-Empty is the honest outcome; a panel is not silently switched to a different
+**Histogram panels need two things, not one.** Request latency and delivery
+lag are OTLP histograms, and the `p95:`/`p99:` queries here assume the
+collector exports them to Datadog as *distributions*. Check the collector's
+histogram mode — in the older `histograms` mode they arrive as separate
+`.count`, `.sum`, `.min` and `.max` series and these panels stay empty.
+
+Then check the second thing, which is easy to miss because it is on Datadog's
+side rather than the collector's: **percentile aggregations are off by default
+on a distribution metric and are billed separately.** Enable them per metric in
+Metrics Summary, and add `route` to that metric's configured tag set, or
+`p95: … by {route}` returns nothing on a fresh account. Empty is the honest
+outcome either way; a panel is never silently switched to a different
 statistic.
 
-**The environment tag depends on `ENVIRONMENT` being set.** It is emitted as
-OTLP's `deployment.environment`, which Datadog reads as `env`. A deployment
-that has not set it appears with no environment, and the template variable on
-the dashboard will have nothing to filter by.
+**`env` is a filter, not a grouping.** The dashboard's `$env` variable defaults
+to `*` and works whether or not anything sets it. The monitors deliberately do
+*not* group by `env`: the tag only exists when `ENVIRONMENT` is configured
+(it becomes OTLP's `deployment.environment`, which Datadog reads as `env`), and
+a monitor grouped by a tag no data carries returns no series and sits silently
+healthy for ever. If several deployments report into one Datadog org, set
+`ENVIRONMENT` on each and add `env:<name>` to the monitor scopes by hand.
+
+**`service` is the one tag everything depends on.** Every monitor filters on
+`service:switch-core`. If a deployment changes `SERVICE_NAME`, all ten go
+silent at once.
 
 ## The odd-looking first monitor
 
@@ -74,3 +92,14 @@ weekend is one nobody reads by the time something real happens.
 **Readiness itself, from inside.** If the pod is not ready, Kubernetes already
 knows and the deployment is already out of service. What is alerted on is the
 dependency that caused it, which is the part that says what to go and fix.
+
+**File descriptors.** `switch.runtime.open_fds` is on the dashboard and has no
+monitor, which is a judgement rather than an oversight: a leak is a slope, not
+a level, and the process cannot see the limit it is climbing towards. An
+absolute threshold picked from here would be a guess. Watch the panel; an agent
+reporting the container's limit would make this alertable properly.
+
+**Garbage collection.** `switch.runtime.gc_collections` is emitted and
+deliberately unpanelled — it is a curiosity for a service like this one, not a
+signal. It is there for the day someone is chasing a memory question and wants
+it.

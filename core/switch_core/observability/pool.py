@@ -33,7 +33,25 @@ def pool_stats(engine: AsyncEngine) -> PoolStats | None:
         return PoolStats(
             in_use=pool.checkedout(),  # type: ignore[attr-defined]
             size=pool.size(),  # type: ignore[attr-defined]
-            overflow=pool.overflow(),  # type: ignore[attr-defined]
+            overflow=_overflow_beyond_nominal(pool.overflow()),  # type: ignore[attr-defined]
         )
     except AttributeError:
         return None
+
+
+def _overflow_beyond_nominal(raw: int) -> int:
+    """SQLAlchemy's overflow counter, as the number it is usually read as.
+
+    ``QueuePool.overflow()`` counts from ``-pool_size`` rather than from zero:
+    it is the pool's internal "how many connections have I created, relative to
+    my nominal size" and reaches 0 only once the pool is full. An idle pool of
+    thirty reports **-30**.
+
+    Reported raw, the panel labelled "connections open beyond the pool's
+    nominal size" draws a deep negative line on a perfectly healthy server —
+    the most alarming thing on the dashboard being its normal state. Clamped,
+    it means what its name says: zero until the pool is exhausted, then the
+    count of overflow connections. Saturation is not lost, because `in_use`
+    against `size` already shows the pool filling.
+    """
+    return max(0, raw)
