@@ -1158,6 +1158,8 @@ export type StoredTemplateSummary = {
   creator: string;
   /** The owner's user id, so the Console can mark the signed-in user's own templates. */
   ownerId: string | null;
+  /** Starts at 1 and goes up by one each time the document is changed. */
+  version: number;
 };
 
 export type StoredTemplateDetail = StoredTemplateSummary & {
@@ -1171,6 +1173,7 @@ type RegistryTemplateSummary = {
   name: string;
   description: string;
   kind: string;
+  version?: number;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -1181,6 +1184,7 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     kind: t.kind,
     creator: t.owner_name ?? t.owner_id,
     ownerId: t.owner_id,
+    version: t.version ?? 1,
   };
 }
 
@@ -1211,6 +1215,23 @@ export async function createTemplate(
 }
 
 /** Remove a template from the server's registry (`DELETE /templates/{id}`). */
+/** Change a stored template (`PATCH /templates/{id}`). Only the owner or an
+ * admin may; the server answers 403 for anyone else and 409 when the owner
+ * already has a template by the new name. */
+export async function updateTemplate(
+  server: SwitchServer,
+  templateId: string,
+  changes: { name?: string; description?: string; content?: string }
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: changes,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
 export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
   await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
     authenticated: true,
