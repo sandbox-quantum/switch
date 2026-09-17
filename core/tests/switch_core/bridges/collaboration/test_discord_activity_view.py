@@ -98,6 +98,16 @@ class _Reader:
         self.name = "kim"
 
 
+def _unknown_member() -> discord.NotFound:
+    """Discord's answer for a person who is not there — carrying the error code
+    that says so. The status alone does not: the same 404 answers "Unknown
+    Guild" and "Unknown Channel", and those are about the bot rather than the
+    reader."""
+    return discord.NotFound(  # type: ignore[arg-type]
+        _HTTPResponse(), {"code": 10007, "message": "Unknown Member"}
+    )
+
+
 class _PeopledGuild(_Guild):
     """A guild that can be asked who somebody is, which is the whole of what
     the permission check needs from it."""
@@ -119,7 +129,7 @@ class _PeopledGuild(_Guild):
             raise self.fetch_error
         if user_id in self.members:
             return _Member(user_id)
-        raise discord.NotFound(_HTTPResponse(), "no such member")  # type: ignore[arg-type]
+        raise _unknown_member()
 
 
 class _HTTPResponse:
@@ -189,13 +199,18 @@ class _PrivateThread(_ReadableThread):
     ) -> None:
         super().__init__(parent, thread_id, permissions=permissions)
         self.thread_members = members if members is not None else set()
+        # What Discord says instead of answering. "Unknown Member" is an answer
+        # and is the default below; this is everything else.
+        self.fetch_error: Exception | None = None
 
     def is_private(self) -> bool:
         return True
 
     async def fetch_member(self, user_id: int) -> object:
+        if self.fetch_error is not None:
+            raise self.fetch_error
         if user_id not in self.thread_members:
-            raise discord.NotFound(_HTTPResponse(), "not in this thread")  # type: ignore[arg-type]
+            raise _unknown_member()
         return object()
 
 
@@ -504,6 +519,51 @@ async def test_a_reference_that_is_not_an_address_is_told_there_is_nothing() -> 
     assert _shown(press) == ACTIVITY_GONE
 
 
+async def test_a_conversation_discord_will_not_resolve_is_not_a_turn_that_is_gone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ "Gone" is the one answer a reader cannot come back from: it retires the
+    turn in their mind and they stop pressing. A channel lookup that fell over
+    has established nothing about the turn, which is still exactly where it
+    was, so the reader is told to try again instead."""
+    adapter, channel = _guild_with({READER_ID})
+    client: Any = adapter._client
+    client._channels.pop(CHANNEL_ID)
+    response = _HTTPResponse()
+    response.status = 500  # type: ignore[misc]
+    client.fetch_errors[CHANNEL_ID] = discord.HTTPException(  # type: ignore[arg-type]
+        response, {"code": 0, "message": "Internal Server Error"}
+    )
+    asked = _resolving(adapter, _snapshot())
+    press = _status_press(channel)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert asked == []
+    assert _shown(press) == ACTIVITY_FAILED
+    assert any("would not say what channel" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_conversation_discord_says_is_not_there_is_gone() -> None:
+    """The other half of that split, kept so it cannot quietly collapse into
+    one answer again. A 404 is Discord saying the channel does not exist, and
+    that really is a turn nothing can be read from."""
+    adapter, channel = _guild_with({READER_ID})
+    client: Any = adapter._client
+    client._channels.pop(CHANNEL_ID)
+    client.fetch_errors[CHANNEL_ID] = discord.NotFound(  # type: ignore[arg-type]
+        _HTTPResponse(), {"code": 10003, "message": "Unknown Channel"}
+    )
+    asked = _resolving(adapter, _snapshot())
+    press = _status_press(channel)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert asked == []
+    assert _shown(press) == ACTIVITY_GONE
+
+
 # ── Who may read it ──────────────────────────────────────────────────────────
 
 
@@ -563,6 +623,54 @@ async def test_a_guild_lookup_that_failed_does_not_say_the_reader_is_outside_it(
     assert asked == []
     assert _shown(press) == ACTIVITY_AUDIENCE_UNKNOWN
     assert any("would not say whether" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_guild_discord_cannot_find_is_not_a_reader_who_left_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The third case, and the one the status hides. "Unknown Guild" arrives as
+    the same 404 as "Unknown Member", so reading the status alone tells a reader
+    they are not in a conversation when what Discord actually said is that the
+    bot is looking at a guild that is not there."""
+    adapter, channel = _guild_with(set())
+    guild: Any = channel.guild
+    guild.fetch_error = discord.NotFound(  # type: ignore[arg-type]
+        _HTTPResponse(), {"code": 10004, "message": "Unknown Guild"}
+    )
+    asked = _resolving(adapter, _snapshot())
+    press = _status_press(channel)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert asked == []
+    assert _shown(press) == ACTIVITY_AUDIENCE_UNKNOWN
+    assert any("not an answer about the user" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_thread_discord_cannot_find_is_not_a_reader_outside_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same split on the thread route, which asks a different endpoint and
+    so needs its own evidence."""
+    guild = _PeopledGuild({READER_ID})
+    parent = _ReadableChannel(CHANNEL_ID, guild)
+    thread = _PrivateThread(parent, members=set())
+    thread.fetch_error = discord.NotFound(  # type: ignore[arg-type]
+        _HTTPResponse(), {"code": 10003, "message": "Unknown Channel"}
+    )
+    adapter = _adapter({CHANNEL_ID: parent, PRIVATE_THREAD_ID: thread})
+    asked = _resolving(adapter, _snapshot())
+    press = _Press(
+        _ACTIVITY_VIEW_ID, channel=thread, message=_PressedMessage(STATUS_MESSAGE_ID)
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert asked == []
+    assert _shown(press) == ACTIVITY_AUDIENCE_UNKNOWN
+    assert any("not an answer about the user" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_private_thread_asks_for_membership_not_visibility() -> None:
@@ -833,17 +941,23 @@ async def test_a_turn_with_no_console_link_offers_only_refresh() -> None:
     ]
 
 
-async def test_an_unpublished_bridge_answers_a_stale_button_rather_than_hanging() -> (
-    None
-):
+async def test_an_unpublished_bridge_answers_a_stale_button_rather_than_hanging(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Old buttons outlive the process that drew them, and a restart that no
-    longer publishes sessions must not leave them pressing into silence."""
+    longer publishes sessions must not leave them pressing into silence.
+
+    Answered as this end's problem, which is what it is. The turn is untouched
+    and Switch Console can still open it; telling the reader it is gone would
+    retire a session that is running."""
     adapter, channel = _guild_with({READER_ID})
     press = _status_press(channel)
 
-    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+    with caplog.at_level(logging.WARNING):
+        await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == ACTIVITY_GONE
+    assert _shown(press) == ACTIVITY_FAILED
+    assert any("nothing to read the log with" in r.getMessage() for r in caplog.records)
 
 
 def test_the_activity_ids_fit_what_discord_carries() -> None:

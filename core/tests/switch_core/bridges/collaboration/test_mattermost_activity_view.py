@@ -536,13 +536,22 @@ async def test_a_post_showing_no_turn_says_so_rather_than_nothing() -> None:
     assert _shown(await adapter._handle_callback(_press())) == ACTIVITY_GONE
 
 
-async def test_a_bridge_with_no_publisher_says_the_same() -> None:
-    """Reachable only for a post whose button was drawn when there was one."""
+async def test_a_bridge_with_no_publisher_says_so_without_calling_it_gone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Reachable only for a post whose button was drawn when there was one, so
+    it is a card outliving the bridge that drew it. The turn is untouched and
+    Switch Console can still open it — this end is what cannot reach it, and
+    saying "gone" would retire a session that is running."""
     adapter = _adapter()
     _record(adapter)
     _channels(adapter).members[CHANNEL] = {USER}
 
-    assert _shown(await adapter._handle_callback(_press())) == ACTIVITY_GONE
+    with caplog.at_level(logging.WARNING):
+        shown = _shown(await adapter._handle_callback(_press()))
+
+    assert shown == ACTIVITY_FAILED
+    assert any("nothing to read the log with" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_read_that_fails_tells_the_reader_instead_of_hanging(

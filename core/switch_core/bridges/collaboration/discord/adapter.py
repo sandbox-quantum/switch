@@ -95,6 +95,13 @@ _MAX_GUILD_ROLES_CODE = 30005
 # still on the screen.
 _UNKNOWN_MESSAGE_CODE = 10008
 
+# "Unknown Member". The 404 that is about the person asked after, as against
+# 10004 "Unknown Guild" and 10003 "Unknown Channel" on the same routes and with
+# the same status. Only this one says a reader is not in a conversation; the
+# other two say the conversation could not be found, which is the bot's problem
+# and not the reader's.
+_UNKNOWN_MEMBER_CODE = 10007
+
 # Applied to the bot posts that inline an agent's name into the body — the DM
 # path, which has no webhook identity to carry it. Escaping the text is not
 # enough on its own: Discord decides who a message pings from the raw content
@@ -2704,22 +2711,40 @@ class DiscordAdapter(CollaborationAdapter):
         Everything that can go wrong is said rather than left silent. A button
         that answers with nothing reads as Discord having dropped the press,
         and the reader would go on pressing it.
+
+        Said as what it is, too. Only a reference that names no conversation,
+        and a conversation Discord answers 404 for, are gone; a bridge that
+        cannot reach the log, or cannot resolve a channel it was given, has a
+        problem of its own and the turn is still there. Retiring it in the
+        reader's mind is the one answer they cannot come back from.
         """
         resolve = self._resolve_activity
         location_id = _conversation_in(ref)
-        if resolve is None or location_id is None:
+        if location_id is None:
             await self._privately(interaction, ACTIVITY_GONE, ref)
+            return
+        if resolve is None:
+            logger.warning(
+                "A Discord activity view was pressed on message %s, but this "
+                "bridge has nothing to read the log with, so it is refused.",
+                ref,
+            )
+            await self._privately(interaction, ACTIVITY_FAILED, ref)
             return
         try:
             location = await self._get_channel(location_id)
-        except (discord.HTTPException, RuntimeError):
+        except discord.NotFound:
+            await self._privately(interaction, ACTIVITY_GONE, ref)
+            return
+        except (discord.HTTPException, RuntimeError) as error:
             logger.warning(
-                "Discord would not say what channel %s is, so the activity "
+                "Discord would not say what channel %s is (%s), so the activity "
                 "behind message %s is not shown.",
                 location_id,
+                error,
                 ref,
             )
-            await self._privately(interaction, ACTIVITY_GONE, ref)
+            await self._privately(interaction, ACTIVITY_FAILED, ref)
             return
         refusal = await self._still_reads(location, interaction.user)
         if refusal is not None:
@@ -2821,12 +2846,14 @@ class DiscordAdapter(CollaborationAdapter):
         reader is told that rather than shown the log on the strength of not
         having been able to check.
 
-        Which refusal is returned is the fact that was actually established.
-        Discord distinguishes "not found" from every other error, so a reader
-        the guild or the thread does not have is a reader who is not in it,
-        while a request that failed some other way establishes nothing about
-        them at all — and telling somebody they cannot read a conversation, on
-        the strength of a call that never came back, is a claim nothing checked.
+        Which refusal is returned is the fact that was actually established. A
+        request that failed establishes nothing about the reader at all, and
+        telling somebody they cannot read a conversation on the strength of a
+        call that never came back is a claim nothing checked. Nor is the status
+        enough on its own: a 404 on these routes is about the member, the guild
+        or the channel, and only the first is about the reader. It is read for
+        which, because "you are not in it" and "the bot cannot find it" are the
+        reader's problem and ours respectively.
         """
         guild = getattr(channel, "guild", None)
         if guild is None:
@@ -2843,8 +2870,19 @@ class DiscordAdapter(CollaborationAdapter):
         if member is None:
             try:
                 member = await guild.fetch_member(user.id)
-            except discord.NotFound:
-                return ACTIVITY_NOT_A_MEMBER
+            except discord.NotFound as error:
+                if error.code == _UNKNOWN_MEMBER_CODE:
+                    return ACTIVITY_NOT_A_MEMBER
+                logger.warning(
+                    "Discord answered 404 %s for user %s in guild %s, which is "
+                    "not an answer about the user, so an activity view of "
+                    "channel %s is refused.",
+                    error.code,
+                    user.id,
+                    getattr(guild, "id", "?"),
+                    getattr(channel, "id", "?"),
+                )
+                return ACTIVITY_AUDIENCE_UNKNOWN
             except discord.HTTPException as error:
                 logger.warning(
                     "Discord would not say whether user %s is in guild %s (%s), "
@@ -2865,8 +2903,17 @@ class DiscordAdapter(CollaborationAdapter):
             return None
         try:
             await channel.fetch_member(user.id)
-        except discord.NotFound:
-            return ACTIVITY_NOT_A_MEMBER
+        except discord.NotFound as error:
+            if error.code == _UNKNOWN_MEMBER_CODE:
+                return ACTIVITY_NOT_A_MEMBER
+            logger.warning(
+                "Discord answered 404 %s for user %s in thread %s, which is not "
+                "an answer about the user, so an activity view of it is refused.",
+                error.code,
+                user.id,
+                getattr(channel, "id", "?"),
+            )
+            return ACTIVITY_AUDIENCE_UNKNOWN
         except discord.HTTPException as error:
             logger.warning(
                 "Discord would not say whether user %s is in thread %s (%s), so "

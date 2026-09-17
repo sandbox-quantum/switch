@@ -553,13 +553,20 @@ class MattermostAdapter(CollaborationAdapter):
         on every press — a press establishes that the server accepted it, which
         is not a statement about what the presser may read now.
 
-        Every way it can fail says something. A button that answers with
-        nothing reads as the press having been dropped, and the reader would go
-        on pressing it.
+        Every way it can fail says something, and says which thing. A button
+        that answers with nothing reads as the press having been dropped, and
+        the reader would go on pressing it; a button that answers "gone" when
+        this end simply cannot reach the log retires a turn that is still
+        running, which the reader cannot come back from.
         """
         resolve = self._resolve_activity
         if resolve is None:
-            return _ephemeral(ACTIVITY_GONE)
+            logger.warning(
+                "A Mattermost activity view was pressed on post %s, but this "
+                "bridge has nothing to read the log with, so it is refused.",
+                press.post_id,
+            )
+            return _ephemeral(ACTIVITY_FAILED)
         refusal = await self._reads_channel(press.channel_id, press.user_id)
         if refusal is not None:
             return _ephemeral(refusal)
