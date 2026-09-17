@@ -411,11 +411,6 @@ class DiscordAdapter(CollaborationAdapter):
 
     publishes_sdk_sessions: ClassVar[bool] = True
 
-    # One status per turn, holding its own tool counts. A second message would
-    # be a second notification for everyone in the thread, and the thread is
-    # already where the detail is allowed to live.
-    separate_activity_log: ClassVar[bool] = False
-
     # A problem somebody has to act on gets its own reply, because the status
     # it would otherwise be an edit to is a message they have already read.
     separate_attention_slot: ClassVar[bool] = True

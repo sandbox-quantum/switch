@@ -264,12 +264,6 @@ def _ephemeral(text: str) -> dict[str, Any]:
 class MattermostAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
 
-    #: One message, not two. The compact status carries its own tool counts, so
-    #: there is nothing left for a separate log to hold that is worth a second
-    #: message in the thread — and an expandable tool history is a later piece
-    #: of work, not something to approximate with an extra post now.
-    separate_activity_log: ClassVar[bool] = False
-
     #: A problem somebody has to act on still gets its own reply, so it
     #: notifies rather than arriving as a silent edit to a status the reader
     #: has already scrolled past. One per turn, cleared when it clears.

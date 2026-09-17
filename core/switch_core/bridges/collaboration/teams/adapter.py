@@ -566,12 +566,6 @@ class TeamsAdapter(CollaborationAdapter):
 
     publishes_sdk_sessions: ClassVar[bool] = True
 
-    # One compact status per turn rather than a status and a tool log. A posts
-    # channel shows a thread as a stack of replies with no collapsing, so a
-    # second message per turn is a second thing to scroll past for every turn
-    # in the post.
-    separate_activity_log: ClassVar[bool] = False
-
     # A problem gets its own message. An edit to the status is not something
     # Teams notifies anyone about, so a failure folded into it reaches whoever
     # happens to be looking.

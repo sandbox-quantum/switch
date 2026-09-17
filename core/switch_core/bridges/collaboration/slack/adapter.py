@@ -211,12 +211,6 @@ class _ActivityStream:
 
 class SlackAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
-    #: One message per turn: the plan, with the turn's state and clock as its
-    #: header. The status used to be a second message purely so the clock could
-    #: advance without rebuilding the log and collapsing a plan the reader had
-    #: open — a `plan_update` chunk moves the header without touching the cards,
-    #: so the split has nothing left to buy.
-    separate_activity_log: ClassVar[bool] = False
     separate_attention_slot: ClassVar[bool] = True
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
@@ -685,7 +679,7 @@ class SlackAdapter(CollaborationAdapter):
         """
         if not isinstance(content, TurnActivity):
             return False
-        if content.status_only or content.error_summary or content.tool_log:
+        if content.status_only or content.error_summary:
             return False
         missing = (
             "no thread to open it in"
@@ -943,21 +937,14 @@ class SlackAdapter(CollaborationAdapter):
                     elapsed_seconds=content.elapsed_seconds,
                     session_url=content.session_url,
                 )
-                if not (content.status_only or content.tool_log)
+                if not content.status_only
                 else render_activity(
                     content.items,
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
-                    tool_log=content.tool_log,
                     status_only=content.status_only,
                 )
             )
-            if content.tool_log and not content.error_summary:
-                # Notifications/text-only clients get the compact plan header;
-                # the expandable blocks retain the complete displayed tool log.
-                message = SlackMessage(
-                    text=message.text.split("\n", 1)[0], blocks=message.blocks
-                )
             message = with_session_context(
                 message,
                 session_url=content.session_url

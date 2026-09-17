@@ -376,7 +376,6 @@ def test_discord_names_the_asker_because_nothing_else_reaches_them() -> None:
 
     assert adapter.notifies_only_by_mention is True
     assert adapter.separate_attention_slot is True
-    assert adapter.separate_activity_log is False
     assert adapter.supports_activity_reactions is True
     assert adapter.activity_reactions_per_agent is False
 

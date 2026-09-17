@@ -402,15 +402,6 @@ class TelegramAdapter(CollaborationAdapter):
 
     publishes_sdk_sessions: ClassVar[bool] = True
 
-    #: One message for the whole of a turn's progress.
-    #:
-    #: Telegram prices edits per chat rather than per message, so a log posted
-    #: separately would double the edit rate of every turn and spend the chat's
-    #: budget on the half nobody is waiting for. It costs the reader nothing:
-    #: the calls travel in the status message itself once the turn has ended,
-    #: collapsed into a block their own client draws.
-    separate_activity_log: ClassVar[bool] = False
-
     #: A problem somebody has to act on gets its own message.
     #:
     #: An edit does not notify on Telegram. Folded into the status, a failure

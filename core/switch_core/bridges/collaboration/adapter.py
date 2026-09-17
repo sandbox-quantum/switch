@@ -90,7 +90,6 @@ class TurnActivity:
     items: list[Item]
     turn: TurnUpsert
     elapsed_seconds: float | None = None
-    tool_log: bool = False
     status_only: bool = False
     # Stable recovery marker for a reserved platform post, not an answer token.
     publication_token: str | None = None
@@ -249,18 +248,14 @@ ActivityMark = Literal["working", "queued"]
 class CollaborationAdapter(ABC):
     # Platforms opt in only when their SDK request and activity rendering is ready.
     publishes_sdk_sessions: ClassVar[bool] = False
-    # Keep the ticking status and expandable tool log in separate messages.
-    separate_activity_log: ClassVar[bool] = False
 
     #: Whether a problem somebody has to act on gets a message of its own.
     #:
     #: One durable reply per turn, reused as the problem changes and cleared
-    #: when it goes away — never a second one. Separate from
-    #: `separate_activity_log` because the two answer different questions: a
-    #: platform can want one compact status carrying its own tool counts (so
-    #: no separate log) and still want a failure to arrive as something a
-    #: reader is notified about rather than as an edit to a message they have
-    #: already scrolled past.
+    #: when it goes away — never a second one. A turn's own activity stays in
+    #: the one message it is drawn in; this is the exception, because a failure
+    #: has to arrive as something a reader is notified about rather than as an
+    #: edit to a message they have already scrolled past.
     separate_attention_slot: ClassVar[bool] = False
 
     #: Whether a mention is the only way an attention post reaches anyone.

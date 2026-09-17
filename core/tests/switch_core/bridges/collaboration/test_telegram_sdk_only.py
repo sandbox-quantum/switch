@@ -148,7 +148,6 @@ def test_telegram_notifies_a_chat_without_anybody_being_named() -> None:
 
     assert adapter.notifies_only_by_mention is False
     assert adapter.separate_attention_slot is True
-    assert adapter.separate_activity_log is False
     assert adapter.redraws_for_elapsed_time is False
     assert adapter.supports_activity_reactions is True
     assert adapter.activity_reactions_per_agent is False

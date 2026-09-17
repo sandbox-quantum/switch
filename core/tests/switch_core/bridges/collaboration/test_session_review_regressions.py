@@ -9,7 +9,7 @@ from slack_sdk.web.slack_response import SlackResponse
 
 from switch_core.bridges.collaboration.adapter import RichContentThrottled, TurnActivity
 from switch_core.bridges.collaboration.session.renderers.slack import (
-    render_activity,
+    render_activity_plan,
     render_request,
 )
 from switch_core.bridges.collaboration.slack import adapter as slack_module
@@ -30,14 +30,23 @@ from .test_session_questions_cards import FORM, _requests
 
 
 @pytest.mark.parametrize("status", ["running", "completed"])
-def test_tool_log_header_always_discloses_omitted_steps(status):
-    items = [_item(itemId=f"step-{i}", title="x" * 500) for i in range(60)]
-    message = render_activity(items, _turn(status), tool_log=True, elapsed_seconds=90)
-    plan = message.blocks[0]
+def test_a_plan_header_always_discloses_the_steps_it_left_out(status):
+    """A list cut to what Slack takes says so, whatever the turn is doing."""
+    items = [_item(itemId=f"step-{i}", title=f"Step {i}") for i in range(60)]
+
+    plan = render_activity_plan(items, _turn(status), elapsed_seconds=90).blocks[0]
+
     assert len(plan["tasks"]) == 50
-    assert "60 tool calls" in plan["title"]
-    assert "10 earlier not shown" in plan["title"]
+    assert "10 earlier lines not shown" in plan["title"]
     assert plan["tasks"][0]["task_id"] == "step-10"
+
+
+def test_a_finished_plan_counts_the_steps_it_ran_not_the_ones_it_shows():
+    items = [_item(itemId=f"step-{i}", title=f"Step {i}") for i in range(60)]
+
+    plan = render_activity_plan(items, _turn("completed"), elapsed_seconds=90).blocks[0]
+
+    assert "60 tool calls" in plan["title"]
 
 
 def text_size(value):
