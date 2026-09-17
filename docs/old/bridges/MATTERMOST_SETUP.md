@@ -154,9 +154,13 @@ reads the post back and merges rather than overwriting what the Mattermost
 server itself put there. It is one extra API call, made only for request cards
 on bridges that take callbacks.
 
-**Kubernetes.** The Helm chart does not publish the callback port yet, so a
-chart deployment needs the Service port and route added by hand for now; the
-`switchCore.teamsBridge` block in `values.yaml` is the shape it will take.
+**Kubernetes.** The chart publishes the callback port when
+`switchCore.collaborationCallback.enabled` is set, which it is not by default:
+the Service gains the port, switch-core declares it, and the Mattermost this
+chart deploys is given the address to allow. `helm install` then prints the
+`callback_base_url` to put on the bridge — the cluster-internal Service name,
+not an address a browser follows. No Ingress is rendered for it, so a Mattermost
+outside the cluster needs a route you provide yourself.
 
 ## Local development
 
