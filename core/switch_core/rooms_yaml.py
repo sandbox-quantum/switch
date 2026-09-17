@@ -76,6 +76,9 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # box. The value is the name a template would write: an agent's name, a
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
+# A `user` param has no "first": which account is meant depends on who asks,
+# and `{$creator}` already covers the deployer.
+PREFILL_PARAM_TYPES = ("agent", "bridge", "room")
 
 # A `provider` param chooses the coding agent that runs the agents a template
 # creates. The Console answers it and removes it before provisioning, so the
@@ -105,6 +108,20 @@ class ParamSpec(BaseModel):
     # instructions): the form shows a textarea instead of a one-line input,
     # which would strip the pasted text's newlines.
     multiline: bool = False
+    # ``first`` fills a param left without an input or a default with the
+    # first thing of its type the server has: the default messaging app, or
+    # the first agent or room by name. A form shows it as a selection the
+    # deployer can change; ``create_room_from_yaml`` applies it for a caller
+    # that sends no value.
+    prefill: Literal["first"] | None = None
+
+    @model_validator(mode="after")
+    def _prefill_needs_a_list(self) -> ParamSpec:
+        if self.prefill is not None and self.type not in PREFILL_PARAM_TYPES:
+            raise ValueError(
+                "'prefill' applies to params of type " + ", ".join(PREFILL_PARAM_TYPES)
+            )
+        return self
 
 
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
@@ -644,6 +661,62 @@ class RoomYamlService:
                         f"param {param!r}: no user named {value!r} on the "
                         "room's messaging app"
                     )
+
+    async def prefill_inputs(
+        self, text: str, inputs: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Fill ``prefill: first`` params the caller sent no value for.
+
+        Runs before ``builtins_for``, because a prefilled bridge decides which
+        messaging app ``{$creator}`` is looked up on. A document that does not
+        parse is returned untouched; ``parse_template`` reports the error.
+        """
+        try:
+            data = yaml.safe_load(text)
+            declared = {
+                name: ParamSpec.model_validate(spec)
+                for name, spec in ((data or {}).get("params") or {}).items()
+            }
+        except (yaml.YAMLError, ValidationError, AttributeError, TypeError):
+            return inputs
+        given = inputs if isinstance(inputs, dict) else {}
+        open_params = {
+            name: spec
+            for name, spec in declared.items()
+            if spec.prefill == "first" and spec.default is None and name not in given
+        }
+        if not open_params:
+            return inputs
+
+        filled = dict(given)
+        async with self._session_factory() as session:
+            firsts: dict[str, str | None] = {}
+            for name, spec in open_params.items():
+                if spec.type not in firsts:
+                    firsts[spec.type] = await self._first_of(session, spec.type)
+                value = firsts[spec.type]
+                if value is not None:
+                    filled[name] = value
+        return filled if len(filled) > len(given) else inputs
+
+    async def _first_of(self, session: AsyncSession, param_type: str) -> str | None:
+        if param_type == "bridge":
+            active = [
+                b
+                for b in await self._bridge_store.get_all(session)
+                if b.status == "active"
+            ]
+            default = next((b for b in active if b.is_default), None)
+            if default is not None:
+                return default.display_name
+            return min((b.display_name for b in active), default=None)
+        if param_type == "agent":
+            return min(
+                (a.name for a in await self._agent_store.get_all(session)), default=None
+            )
+        return min(
+            (r.name for r in await self._room_store.get_all(session)), default=None
+        )
 
     async def builtins_for(
         self,

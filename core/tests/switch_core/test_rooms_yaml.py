@@ -1561,6 +1561,51 @@ async def test_builtins_creator_resolves_a_bridge_param_from_inputs(env):
     assert unset["$creator"] == "alice"
 
 
+PREFILL_TEXT = (
+    "params:\n  bridge:\n    type: bridge\n    prefill: first\n"
+    "  helper:\n    type: agent\n    prefill: first\n"
+    'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    '  agents: ["{helper}"]\n'
+)
+
+
+async def test_prefill_first_fills_params_sent_without_a_value(env):
+    """The default messaging app and the first agent by name stand in for
+    inputs the caller left out; an input the caller did send is kept."""
+    for name, is_default in (("Mattermost", False), ("Slack", True)):
+        await _seed_bridge_with_claim(
+            env["session_factory"],
+            display_name=name,
+            is_default=is_default,
+            claimed_by=env["user_id"],
+            external_username=f"abel.{name.lower()}",
+        )
+    svc = _svc(env)
+
+    filled = await svc.prefill_inputs(PREFILL_TEXT, None)
+    assert filled == {"bridge": "Slack", "helper": "claude-code.alice"}
+
+    kept = await svc.prefill_inputs(PREFILL_TEXT, {"bridge": "Mattermost"})
+    assert kept == {"bridge": "Mattermost", "helper": "claude-code.alice"}
+
+
+async def test_prefill_leaves_a_param_empty_when_the_server_has_nothing(env):
+    text = (
+        "params:\n  bridge:\n    type: bridge\n    prefill: first\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    )
+    assert await _svc(env).prefill_inputs(text, None) is None
+
+
+def test_prefill_is_refused_on_a_param_with_no_list(env):
+    text = (
+        "params:\n  topic:\n    type: string\n    prefill: first\n"
+        "room:\n  name: n\n  description: d\n"
+    )
+    with pytest.raises(ValueError, match="'prefill' applies to params of type"):
+        _svc(env).parse_template(text, inputs={"topic": "x"})
+
+
 def test_parse_multiline_param_option(env):
     """`multiline: true` is a valid param option and rides into the schema."""
     spec, _ = _svc(env).parse(

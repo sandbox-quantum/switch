@@ -1612,6 +1612,7 @@ async def create_room_from_yaml(
         room_group_store=protocol.room_group_store,
         client_lifecycle=protocol.client_lifecycle,
     )
+    inputs = await rooms_yaml.prefill_inputs(yaml, inputs)
     builtins = await rooms_yaml.builtins_for(
         user_id=owner_id, name=owner_name, email=owner_email, text=yaml, inputs=inputs
     )
