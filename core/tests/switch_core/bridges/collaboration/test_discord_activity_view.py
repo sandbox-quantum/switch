@@ -914,8 +914,8 @@ async def test_the_view_carries_what_the_agent_said_as_well_as_what_it_did() -> 
 
     lines = _shown(press).splitlines()
     assert lines[1:3] == [
-        "\u2713 Ran the tests",
-        "\u00bb Both write to the same fixture user.",
+        "\u2317 \u2713 Ran the tests",
+        "\u275d Both write to the same fixture user.",
     ]
 
 

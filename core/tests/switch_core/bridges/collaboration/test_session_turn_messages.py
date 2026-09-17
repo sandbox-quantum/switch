@@ -511,7 +511,7 @@ async def test_what_the_agent_said_is_behind_the_plan_and_not_in_the_notificatio
     await _publish(activity, [narration, tool], _turn("completed"), elapsed_seconds=25)
     for call in [*client.posted, *client.updated]:
         assert "Answered in the room" not in call.get("text", "")
-    assert "» Answered in the room." in _blocks(client.posted[0])
+    assert "❝ Answered in the room." in _blocks(client.posted[0])
     assert "Read file" in _blocks(client.posted[0])
     assert "Worked for 25s" in _blocks(client.updated[0])
 

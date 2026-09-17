@@ -82,7 +82,7 @@ def test_an_ended_turn_carries_its_tool_calls_folded_under_the_status() -> None:
 
     _run(adapter.post_rich(CHANNEL, AGENT, _ended("Read a file", "Ran a test"), ROOT))
 
-    assert _log_lines(_posted(connector)) == ["✓ Read a file", "✓ Ran a test"]
+    assert _log_lines(_posted(connector)) == ["⌗ ✓ Read a file", "⌗ ✓ Ran a test"]
 
 
 def test_a_running_turn_is_offered_no_fold_because_the_next_call_would_shut_it() -> (
@@ -128,7 +128,7 @@ def test_the_fold_arrives_on_the_redraw_that_ends_the_turn() -> None:
     _run(adapter.update_rich(CHANNEL, AGENT, ref, _ended("Ran a test"), ROOT))
 
     edited = connector.updates[0]["activity"]["attachments"][0]["content"]
-    assert _log_lines(edited) == ["✓ Ran a test"]
+    assert _log_lines(edited) == ["⌗ ✓ Ran a test"]
 
 
 def test_what_the_agent_said_is_in_the_fold_and_not_on_the_card() -> None:
@@ -147,7 +147,7 @@ def test_what_the_agent_said_is_in_the_fold_and_not_on_the_card() -> None:
     )
 
     card = _posted(connector)
-    assert _log_lines(card) == ["\u2713 Ran the tests", "\u00bb All green."]
+    assert _log_lines(card) == ["\u2317 \u2713 Ran the tests", "\u275d All green."]
     assert "All green." not in card["fallbackText"]
 
 
@@ -163,7 +163,7 @@ def test_a_turn_that_only_talked_is_still_worth_a_fold() -> None:
         )
     )
 
-    assert _log_lines(_posted(connector)) == ["\u00bb Fixed yesterday."]
+    assert _log_lines(_posted(connector)) == ["\u275d Fixed yesterday."]
 
 
 # ── What opening it does ─────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ def test_the_log_does_not_repeat_the_state_line_it_is_folded_under() -> None:
 
     card = _posted(connector)
     assert "console.example.test" in _card_text(connector.sends[0]["activity"])
-    assert _log_lines(card) == ["✓ Ran a test"]
+    assert _log_lines(card) == ["⌗ ✓ Ran a test"]
 
 
 def test_host_text_in_the_log_goes_through_the_platforms_own_escape() -> None:
@@ -328,4 +328,4 @@ def test_a_log_too_long_for_the_card_is_cut_and_says_how_much_it_cut() -> None:
     assert lines[0].startswith("…")
     assert "not shown" in lines[0]
     assert len("\n".join(lines)) <= 2000
-    assert lines[-1] == "✓ Call 399"
+    assert lines[-1] == "⌗ ✓ Call 399"

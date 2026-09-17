@@ -850,7 +850,7 @@ async def test_what_the_agent_said_is_a_card_in_the_plan_marked_as_speech() -> N
     )
 
     titles = [task["title"] for task in _turn_cards(drawn.blocks[0])]
-    assert titles == ["Ran the tests", "» All green."]
+    assert titles == ["Ran the tests", "❝ All green."]
 
 
 async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> None:
@@ -862,7 +862,7 @@ async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> No
     )
 
     card = _turn_cards(drawn.blocks[0])[0]
-    assert card["title"] == "» Handing it over."
+    assert card["title"] == "❝ Handing it over."
     assert "Unfinished" not in card["title"]
 
 
@@ -872,7 +872,7 @@ async def test_a_turn_that_only_talked_has_a_plan_rather_than_a_bare_line() -> N
     drawn = render_activity_plan([_said("Fixed that yesterday.")], _turn("completed"))
 
     assert drawn.blocks[0]["type"] == "plan"
-    assert _turn_cards(drawn.blocks[0])[0]["title"] == "» Fixed that yesterday."
+    assert _turn_cards(drawn.blocks[0])[0]["title"] == "❝ Fixed that yesterday."
 
 
 async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> None:
@@ -883,7 +883,7 @@ async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> No
     )
 
     assert (
-        _turn_cards(drawn.blocks[0])[0]["title"] == "» First thought. Second thought."
+        _turn_cards(drawn.blocks[0])[0]["title"] == "❝ First thought. Second thought."
     )
 
 
@@ -916,7 +916,7 @@ async def test_a_hidden_title_still_says_what_the_card_is() -> None:
     the title, and an empty one would leave the remark showing as nothing."""
     drawn = render_activity_plan([_said("All green.")], _turn("completed"))
 
-    assert _turn_cards(drawn.blocks[0])[0]["title"] == "» All green."
+    assert _turn_cards(drawn.blocks[0])[0]["title"] == "❝ All green."
 
 
 async def test_prose_and_calls_are_told_apart_by_the_glyph_not_by_the_status() -> None:

@@ -65,7 +65,7 @@ async def test_a_finished_turn_carries_its_tool_calls_folded_under_the_status() 
         CHANNEL, "my-agent", _ended("Read a file", "Ran a test"), None
     )
 
-    assert _fold(_sent(adapter)) == ["✓ Read a file", "✓ Ran a test"]
+    assert _fold(_sent(adapter)) == ["⌗ ✓ Read a file", "⌗ ✓ Ran a test"]
 
 
 async def test_a_running_turn_is_offered_no_fold_because_the_next_edit_shuts_it() -> (
@@ -89,7 +89,7 @@ async def test_the_fold_arrives_on_the_edit_that_ends_the_turn() -> None:
 
     await adapter.update_rich(CHANNEL, "my-agent", ref, _ended("Ran a test"), None)
 
-    assert _fold(_last_edit(adapter)) == ["✓ Ran a test"]
+    assert _fold(_last_edit(adapter)) == ["⌗ ✓ Ran a test"]
 
 
 async def test_a_turn_with_nothing_behind_it_is_offered_nothing_to_open() -> None:
@@ -154,7 +154,7 @@ async def test_the_log_does_not_repeat_the_status_it_is_folded_under() -> None:
 
     text = _sent(adapter)
     assert SESSION_URL in text
-    assert _fold(text) == ["✓ Ran a test"]
+    assert _fold(text) == ["⌗ ✓ Ran a test"]
 
 
 async def test_the_calls_read_oldest_first_so_the_newest_is_where_it_ended() -> None:
@@ -164,7 +164,7 @@ async def test_the_calls_read_oldest_first_so_the_newest_is_where_it_ended() -> 
         CHANNEL, "my-agent", _ended("First", "Second", "Third"), None
     )
 
-    assert _fold(_sent(adapter)) == ["✓ First", "✓ Second", "✓ Third"]
+    assert _fold(_sent(adapter)) == ["⌗ ✓ First", "⌗ ✓ Second", "⌗ ✓ Third"]
 
 
 async def test_host_text_in_the_log_cannot_close_the_block_it_is_inside() -> None:
@@ -195,7 +195,7 @@ async def test_a_log_too_long_for_the_message_is_cut_and_says_how_much() -> None
     lines = _fold(_sent(adapter))
     assert lines[0].startswith("…")
     assert "not shown" in lines[0]
-    assert lines[-1] == "✓ Call 399"
+    assert lines[-1] == "⌗ ✓ Call 399"
 
 
 async def test_the_notice_that_nobody_was_reached_stays_out_of_the_fold() -> None:
@@ -209,7 +209,7 @@ async def test_the_notice_that_nobody_was_reached_stays_out_of_the_fold() -> Non
 
     text = _sent(adapter)
     assert adapter.unnotified_notice() in text
-    assert _fold(text) == ["✓ Ran a test"]
+    assert _fold(text) == ["⌗ ✓ Ran a test"]
 
 
 async def test_what_the_agent_said_is_in_the_fold_and_not_in_the_chat() -> None:
@@ -230,7 +230,7 @@ async def test_what_the_agent_said_is_in_the_fold_and_not_in_the_chat() -> None:
     )
 
     text = _sent(adapter)
-    assert _fold(text) == ["✓ Ran the tests", "» All green."]
+    assert _fold(text) == ["⌗ ✓ Ran the tests", "❝ All green."]
     assert "All green." not in text.split("\n<blockquote")[0]
 
 
@@ -249,7 +249,7 @@ async def test_a_turn_that_only_talked_is_still_worth_a_fold() -> None:
         None,
     )
 
-    assert _fold(_sent(adapter)) == ["» Fixed yesterday."]
+    assert _fold(_sent(adapter)) == ["❝ Fixed yesterday."]
 
 
 # ── What it costs the message ────────────────────────────────────────────────
@@ -310,4 +310,4 @@ async def test_a_turn_republished_after_a_refusal_still_carries_its_calls() -> N
 
     fallback = adapter.rich_fallback_text(_ended("Ran a test"))
 
-    assert _fold(fallback) == ["✓ Ran a test"]
+    assert _fold(fallback) == ["⌗ ✓ Ran a test"]

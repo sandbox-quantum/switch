@@ -75,13 +75,13 @@ def test_every_call_is_there_oldest_first_under_the_state_line() -> None:
 
     lines = _log(items)
 
-    assert lines[1:] == ["✓ First", "✓ Second", "✓ Third"]
+    assert lines[1:] == ["⌗ ✓ First", "⌗ ✓ Second", "⌗ ✓ Third"]
 
 
 def test_a_call_that_said_something_says_it_beside_the_name() -> None:
     lines = _log([_call(title="Ran the tests", text="42 passed")])
 
-    assert lines[1] == "✓ Ran the tests — 42 passed"
+    assert lines[1] == "⌗ ✓ Ran the tests — 42 passed"
 
 
 def test_how_a_call_went_is_on_the_line_rather_than_left_to_the_tally() -> None:
@@ -90,7 +90,7 @@ def test_how_a_call_went_is_on_the_line_rather_than_left_to_the_tally() -> None:
 
     lines = _log(items)
 
-    assert lines[1:] == ["✓ Read it", "✗ Wrote it"]
+    assert lines[1:] == ["⌗ ✓ Read it", "⌗ ✗ Wrote it"]
 
 
 def test_a_call_with_no_name_is_shown_rather_than_dropped() -> None:
@@ -98,7 +98,7 @@ def test_a_call_with_no_name_is_shown_rather_than_dropped() -> None:
     that silently omitted it would undercount the turn."""
     lines = _log([_call(title="")])
 
-    assert lines[1] == "✓ (untitled)"
+    assert lines[1] == "⌗ ✓ (untitled)"
 
 
 # ── What the agent said, beside what it did ──────────────────────────────────
@@ -116,9 +116,9 @@ def test_what_the_agent_said_sits_where_it_was_said() -> None:
     lines = _log(items)
 
     assert lines[1:] == [
-        "✓ Read the adapter",
-        "» That test shares a fixture user with the session test.",
-        "✓ Ran the tests",
+        "⌗ ✓ Read the adapter",
+        "❝ That test shares a fixture user with the session test.",
+        "⌗ ✓ Ran the tests",
     ]
 
 
@@ -127,7 +127,7 @@ def test_a_sentence_is_not_marked_as_a_call_that_succeeded() -> None:
     something the agent did and got right."""
     lines = _log([_said("Looking now."), _call(title="Searched")])
 
-    assert lines[1].startswith("»")
+    assert lines[1].startswith("❝")
     assert "✓" not in lines[1]
 
 
@@ -136,7 +136,7 @@ def test_a_paragraph_is_folded_onto_the_one_line_it_is_given() -> None:
     indistinguishable from four things having happened."""
     lines = _log([_said("First thought.\n\nSecond thought.\nThird.")])
 
-    assert lines[1:] == ["» First thought. Second thought. Third."]
+    assert lines[1:] == ["❝ First thought. Second thought. Third."]
 
 
 def test_an_item_the_host_has_opened_and_not_filled_is_not_a_line() -> None:
@@ -144,7 +144,7 @@ def test_an_item_the_host_has_opened_and_not_filled_is_not_a_line() -> None:
     nothing after it says the agent said something and withholds it."""
     lines = _log([_said(""), _call(title="Searched")])
 
-    assert lines[1:] == ["✓ Searched"]
+    assert lines[1:] == ["⌗ ✓ Searched"]
 
 
 def test_a_turn_that_only_talked_has_a_log_rather_than_nothing() -> None:
@@ -152,7 +152,7 @@ def test_a_turn_that_only_talked_has_a_log_rather_than_nothing() -> None:
     to leave a reader who asked what happened with "No activity."."""
     lines = _log([_said("Yes — it was fixed in the merge yesterday.")])
 
-    assert lines[1:] == ["» Yes — it was fixed in the merge yesterday."]
+    assert lines[1:] == ["❝ Yes — it was fixed in the merge yesterday."]
 
 
 def test_a_long_remark_is_cut_like_a_call_is_rather_than_spending_the_log() -> None:
@@ -162,7 +162,7 @@ def test_a_long_remark_is_cut_like_a_call_is_rather_than_spending_the_log() -> N
 
     assert lines[1].endswith("…")
     assert len(lines[1]) <= 2 + 200 + 120
-    assert lines[2] == "✓ Searched"
+    assert lines[2] == "⌗ ✓ Searched"
 
 
 def test_a_remark_is_escaped_the_way_a_call_name_is() -> None:
@@ -179,7 +179,7 @@ def test_a_remark_is_escaped_the_way_a_call_name_is() -> None:
         heading=False,
     ).splitlines()
 
-    assert lines == ["» &lt;b>not bold&lt;/b>"]
+    assert lines == ["❝ &lt;b>not bold&lt;/b>"]
 
 
 def test_the_cut_counts_what_was_said_as_well_as_what_was_done() -> None:
@@ -191,7 +191,7 @@ def test_the_cut_counts_what_was_said_as_well_as_what_was_done() -> None:
 
     assert lines[1].startswith("…")
     assert "not shown" in lines[1]
-    assert lines[-1] == "» Thought 19."
+    assert lines[-1] == "❝ Thought 19."
 
 
 def test_a_turn_that_has_ended_with_no_calls_says_it_made_none() -> None:
@@ -213,14 +213,14 @@ def test_a_log_too_long_for_the_budget_is_cut_at_the_oldest_end() -> None:
 
     lines = _log(items, limit=120)
 
-    assert lines[-1] == "✓ Call 19"
+    assert lines[-1] == "⌗ ✓ Call 19"
 
 
 def test_a_cut_log_says_how_many_calls_it_is_not_showing() -> None:
     items = [_call(title=f"Call {index}") for index in range(20)]
 
     lines = _log(items, limit=120)
-    shown = [line for line in lines[1:] if line.startswith("✓")]
+    shown = [line for line in lines[1:] if line.startswith("⌗")]
 
     assert lines[1] == f"…{20 - len(shown)} earlier in this turn, not shown."
 
@@ -262,7 +262,7 @@ def test_a_log_that_declines_the_heading_starts_at_the_first_call() -> None:
     first line is the card showing one sentence twice."""
     items = [_call(title="First"), _call(title="Second")]
 
-    assert _log(items, heading=False) == ["✓ First", "✓ Second"]
+    assert _log(items, heading=False) == ["⌗ ✓ First", "⌗ ✓ Second"]
 
 
 def test_declining_the_heading_gives_its_room_back_to_the_calls() -> None:
@@ -270,9 +270,9 @@ def test_declining_the_heading_gives_its_room_back_to_the_calls() -> None:
     line to pay for fits more of the turn into the same space."""
     items = [_call(title=f"Call {index}") for index in range(20)]
 
-    with_head = [line for line in _log(items, limit=120)[1:] if line.startswith("✓")]
+    with_head = [line for line in _log(items, limit=120)[1:] if line.startswith("⌗")]
     without = [
-        line for line in _log(items, limit=120, heading=False) if line.startswith("✓")
+        line for line in _log(items, limit=120, heading=False) if line.startswith("⌗")
     ]
 
     assert len(without) > len(with_head)

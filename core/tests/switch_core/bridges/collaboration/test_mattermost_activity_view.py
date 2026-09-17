@@ -351,7 +351,7 @@ async def test_the_log_is_the_calls_oldest_first_under_the_state_line() -> None:
 
     lines = _shown(await adapter._handle_callback(_press())).splitlines()
 
-    assert lines[1:3] == ["✓ Read config.toml", "✓ Ran the tests — 42 passed"]
+    assert lines[1:3] == ["⌗ ✓ Read config.toml", "⌗ ✓ Ran the tests — 42 passed"]
 
 
 async def test_the_log_carries_what_the_agent_said_as_well_as_what_it_did() -> None:
@@ -377,8 +377,8 @@ async def test_the_log_carries_what_the_agent_said_as_well_as_what_it_did() -> N
     lines = _shown(await adapter._handle_callback(_press())).splitlines()
 
     assert lines[1:3] == [
-        "\u2713 Ran the tests",
-        "\u00bb Both write to the same fixture user.",
+        "\u2317 \u2713 Ran the tests",
+        "\u275d Both write to the same fixture user.",
     ]
 
 
@@ -435,7 +435,7 @@ async def test_a_log_too_long_for_a_post_is_cut_rather_than_refused() -> None:
 
     assert len(shown) <= adapter.rich_fallback_limit()
     assert "not shown." in shown
-    assert shown.splitlines()[-2] == "✓ Call 399"
+    assert shown.splitlines()[-2] == "⌗ ✓ Call 399"
 
 
 async def test_what_a_host_called_a_tool_cannot_address_the_channel() -> None:

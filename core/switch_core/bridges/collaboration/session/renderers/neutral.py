@@ -112,11 +112,19 @@ _LOG_EMPTY = "No activity."
 _LOG_EMPTY_YET = "No activity yet."
 _LOG_CUT = "…{left} earlier in this turn, not shown."
 
+# What kind of line this is, in the column before the outcome. Slack draws the
+# distinction with a card icon; a platform whose log is body text has only the
+# line, so the kind gets a glyph of its own rather than being left for a reader
+# to infer from the outcome. Two columns each answering one question are read
+# faster than one column answering whichever question suits the line.
+_TOOL_MARKER = "⌗"
+
 # What the agent said, and how much of it. The marker is not one of the outcome
 # glyphs because a sentence has no outcome, and a tick beside one would read as
-# a call that succeeded. The ceiling is a call's two ceilings added, so neither
-# kind of line is the systematically longer one.
-SAID_MARKER = "»"
+# a call that succeeded — which is also why a remark occupies the kind column
+# alone and leaves the outcome column empty. The ceiling is a call's two
+# ceilings added, so neither kind of line is the systematically longer one.
+SAID_MARKER = "❝"
 _LOG_SAID_TEXT = _LOG_TITLE + _LOG_DETAIL
 
 # What a reader is told, privately and in place of the log, when the press
@@ -406,7 +414,7 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-    line = f"{_OUTCOME[item.status]} {title}"
+    line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
     return line
