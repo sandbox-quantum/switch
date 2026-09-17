@@ -11,7 +11,10 @@ vi.mock('@main/core/ssh/lifecycle/remote-shell-profile', () => ({
 describe('SSH installer', () => {
   it('streams stdout and stderr through a plain exec channel and reports failure', async () => {
     const channel = Object.assign(new EventEmitter(), {
-      stderr: new EventEmitter(), end: vi.fn(), close: vi.fn(), signal: vi.fn(),
+      stderr: new EventEmitter(),
+      end: vi.fn(),
+      close: vi.fn(),
+      signal: vi.fn(),
     });
     const exec = vi.fn((_command, callback) => {
       callback(null, channel);
@@ -23,10 +26,16 @@ describe('SSH installer', () => {
     });
     const proxy = { getRemoteShellProfile: async () => ({}), exec } as unknown as SshClientProxy;
     const output = vi.fn();
-    const result = await createSshInstallCommandRunner(proxy, output)({ command: 'tool', args: ['a; b'] });
+    const result = await createSshInstallCommandRunner(
+      proxy,
+      output
+    )({ command: 'tool', args: ['a; b'] });
     expect(exec.mock.calls[0][0]).toBe("'tool' 'a; b'");
     expect(output).toHaveBeenCalledWith('permission denied');
     expect(channel.end).toHaveBeenCalled();
-    expect(result).toMatchObject({ success: false, error: { type: 'permission-denied', exitCode: 13 } });
+    expect(result).toMatchObject({
+      success: false,
+      error: { type: 'permission-denied', exitCode: 13 },
+    });
   });
 });

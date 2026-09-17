@@ -4,7 +4,9 @@ export function makeHookSessionId(provider: AgentProviderId, sessionId: string):
   return `${provider}-session-${sessionId}`;
 }
 
-export function parseHookSessionId(id: string): { providerId: AgentProviderId; sessionId: string } | null {
+export function parseHookSessionId(
+  id: string
+): { providerId: AgentProviderId; sessionId: string } | null {
   for (const providerId of AGENT_PROVIDER_IDS) {
     const prefix = `${providerId}-session-`;
     if (id.startsWith(prefix)) return { providerId, sessionId: id.slice(prefix.length) };

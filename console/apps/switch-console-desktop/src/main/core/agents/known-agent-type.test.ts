@@ -28,7 +28,6 @@ describe('knownAgentTypeForProvider', () => {
     expect(knownAgentTypeForProvider('opencode')).toBe('opencode');
     expect(log.warn).not.toHaveBeenCalled();
   });
-
 });
 
 it('registers Antigravity under its own gateway type', () => {
