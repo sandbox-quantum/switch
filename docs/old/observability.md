@@ -49,7 +49,7 @@ AGENT_REGISTRATION_TOKEN=check JWT_SECRET_KEY=check-jwt-secret-key-long-enough \
 GATEWAY_ADMIN_EMAIL=admin@switch.local GATEWAY_ADMIN_PASSWORD=check \
 SERVER_PORT=8099 LOG_FORMAT=json ENVIRONMENT=local \
 OTLP_ENDPOINT=http://localhost:4318 \
-DEPLOYMENT_ID=$(uuidgen) \
+DEPLOYMENT_ID=$(uuidgen | tr 'A-Z' 'a-z') \
 OTLP_EXPORT_INTERVAL_SECONDS=5 \
 OTLP_LOGS_ENABLED=true \
 uv run --project core python -m switch_core.main
@@ -74,8 +74,10 @@ check it against `.env.example` first: an older one predates the
 runtime/owner database roles and `just up` will refuse it. Add
 `SERVER_PORT=8099` if your usual server is already on 8000.
 
+### Reading what comes out
+
 Within a few seconds the sink prints each interval. Make some requests
-(`curl localhost:8000/health`) and the next one carries them:
+(`curl localhost:8099/health`) and the next one carries them:
 
 ```
 [15:37:39] POST /v1/metrics
@@ -106,16 +108,28 @@ the notification listener has finished connecting, and it reports what is true
 at the time rather than assuming the best. It goes to 1 on its own, and
 readiness never gated on it.
 
+A steady `switch.runtime.event_loop_lag` of one or two milliseconds is the
+floor, not a stall: it is how far past its deadline a timer normally wakes.
+The alert on it fires at a thousand times that.
+
+**What this does not exercise.** A bare server has no rooms, no agents and no
+bridges, so seven of the twenty-one metrics never appear — everything under
+`switch.messages.*` and `switch.bridge.*`. Their absence here is correct and
+says nothing about whether they work; what covers them is
+`TestWhatIsMeasured` in `core/tests/switch_core/transport/test_postgres_transport.py`
+and `test_bridge_metrics.py`, which record against a real database and a real
+dispatch path. To see them live you need an agent in a room actually talking.
+
 ### Checking readiness for real
 
 Stop the database out from under a running server:
 
 ```bash
-docker stop <your postgres container>
-curl -s localhost:8000/health/ready   # 503, naming the database
-curl -so /dev/null -w '%{http_code}' localhost:8000/health   # still 200
-docker start <your postgres container>
-curl -s localhost:8000/health/ready   # back to 200 within ~15s
+docker stop switch-obs-check
+curl -s localhost:8099/health/ready   # 503, naming the database
+curl -so /dev/null -w '%{http_code}' localhost:8099/health   # still 200
+docker start switch-obs-check
+curl -s localhost:8099/health/ready   # back to 200 within ~15s
 ```
 
 Both halves matter. Readiness failing is what takes the pod out of service;
