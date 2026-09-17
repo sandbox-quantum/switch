@@ -43,9 +43,11 @@ class _NoMarkerRequest:
 
 
 async def test_survives_being_finalised_from_another_context(
-    postgres_url: str,
+    postgres_schema: str,
 ) -> None:
-    agen: AsyncGenerator[Any, None] = _session_factory(postgres_url, _NoMarkerRequest())
+    agen: AsyncGenerator[Any, None] = _session_factory(
+        postgres_schema, _NoMarkerRequest()
+    )
     loop = asyncio.get_running_loop()
     # Advance to the fixture's `yield` inside its own, isolated context -- the
     # same isolation a pytest-asyncio task gives it going in.

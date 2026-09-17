@@ -5,6 +5,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -13,6 +14,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.skill_store import SkillStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 
@@ -24,6 +26,7 @@ __all__ = [
     "CollaborationBridgeStore",
     "DocumentStore",
     "ExternalUserStore",
+    "InvitationStore",
     "MessageStore",
     "ReferenceStore",
     "ReferenceTypeStore",
@@ -32,6 +35,7 @@ __all__ = [
     "RoomStore",
     "SkillStore",
     "TaskStore",
+    "TemplateStore",
     "TenantStore",
     "UserStore",
 ]

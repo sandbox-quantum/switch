@@ -168,7 +168,7 @@ sequenceDiagram
 
 | Event | Payload fields |
 |---|---|
-| `message` | `addressed` (bool), `sender`, `sender_name`, `message_id`, `body`, `timestamp` (ms), `thread_id` (nullable), `attachments` (list) |
+| `message` | `addressed` (bool), `sender`, `sender_name`, `sender_kind` (`platform` when the Switch app posted it, else absent), `on_behalf_of` (the person a platform message speaks for, else absent), `message_id`, `body`, `timestamp` (ms), `thread_id` (nullable), `attachments` (list) |
 | `command` | `command`, `args` (empty by default), `user_id`, `user_name`, `thread_id` (nullable) |
 | `room_join` | `member`, `member_name`, `timestamp`, `listening` (bool) |
 

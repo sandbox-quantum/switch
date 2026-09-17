@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.agent_client import AUTO_REPLY_FLAG, AgentClient
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
@@ -82,7 +83,7 @@ class TestResolveSenderPrincipal:
         result = await AddressingResolver.resolve_sender(
             client, object(), "@a:switch.local"
         )
-        assert result == ("agent", "agent-7", [], "user-1")
+        assert result == ("agent", "agent-7", [], "user-1", None)
 
     async def test_human_sender_claimed(self) -> None:
         client = self._client(
@@ -94,7 +95,7 @@ class TestResolveSenderPrincipal:
         result = await AddressingResolver.resolve_sender(
             client, object(), "@u:switch.local"
         )
-        assert result == ("user", "ext-3", ["user-1"], None)
+        assert result == ("user", "ext-3", ["user-1"], None, None)
 
     async def test_human_sender_claimed_by_several(self) -> None:
         # Claiming is not exclusive, so the principal carries every claimant
@@ -108,7 +109,7 @@ class TestResolveSenderPrincipal:
         result = await AddressingResolver.resolve_sender(
             client, object(), "@u:switch.local"
         )
-        assert result == ("user", "ext-3", ["user-1", "user-2"], None)
+        assert result == ("user", "ext-3", ["user-1", "user-2"], None, None)
 
     async def test_human_sender_unclaimed(self) -> None:
         # Nobody has linked this platform identity to a Switch user.
@@ -120,7 +121,7 @@ class TestResolveSenderPrincipal:
         result = await AddressingResolver.resolve_sender(
             client, object(), "@u:switch.local"
         )
-        assert result == ("user", "ext-3", [], None)
+        assert result == ("user", "ext-3", [], None, None)
 
     async def test_unknown_client_is_none(self) -> None:
         client = self._client(client=None, agent=None, external_user=None)
@@ -130,15 +131,59 @@ class TestResolveSenderPrincipal:
         assert result is None
 
     async def test_client_with_no_agent_or_external_user_is_none(self) -> None:
-        # A Client that is neither an agent nor a bridged human (e.g. a system
-        # client) does not resolve to an addressing principal.
+        # A Client that is neither an agent nor a bridged human and is not the
+        # admin (e.g. a bridge client) does not resolve to an addressing principal.
         client = self._client(
-            client=SimpleNamespace(id="c1"), agent=None, external_user=None
+            client=SimpleNamespace(id="c1", type="bridge"),
+            agent=None,
+            external_user=None,
         )
         result = await AddressingResolver.resolve_sender(
             client, object(), "@system:switch.local"
         )
         assert result is None
+
+    async def test_admin_client_resolves_to_platform(self) -> None:
+        # The admin client resolves to sender_kind="platform".
+        client = self._client(
+            client=SimpleNamespace(id="c1", type="admin"),
+            agent=None,
+            external_user=None,
+        )
+        result = await AddressingResolver.resolve_sender(
+            client, object(), "@switch-admin:switch.local"
+        )
+        assert result == ("platform", "c1", [], None, None)
+
+    async def test_admin_client_carries_the_person_it_speaks_for(self) -> None:
+        client = self._client(
+            client=SimpleNamespace(id="c1", type="admin"),
+            agent=None,
+            external_user=None,
+        )
+        content = {
+            _PLATFORM_MARKER: {"on_behalf_of": {"user_id": "user-9", "name": "Abel"}}
+        }
+        result = await AddressingResolver.resolve_sender(
+            client, object(), "@switch-admin:switch.local", content
+        )
+        assert result == ("platform", "c1", [], None, "user-9")
+
+    async def test_marker_on_a_human_sender_is_ignored(self) -> None:
+        # Only the admin client's marker is read: a human or agent event that
+        # carries a copy of it borrows no authority.
+        client = self._client(
+            client=SimpleNamespace(id="c1", type="external_user"),
+            agent=None,
+            external_user=SimpleNamespace(id="ext-3"),
+        )
+        content = {
+            _PLATFORM_MARKER: {"on_behalf_of": {"user_id": "user-9", "name": "Abel"}}
+        }
+        result = await AddressingResolver.resolve_sender(
+            client, object(), "@u:switch.local", content
+        )
+        assert result == ("user", "ext-3", [], None, None)
 
 
 def _allowed_client(
@@ -148,6 +193,8 @@ def _allowed_client(
     sender_owner_id: str | None = None,
     group_id: str | None = None,
     owner_id: str | None = None,
+    on_behalf_of: str | None = None,
+    claimed_external_ids: tuple[str, ...] = (),
 ) -> SimpleNamespace:
     """Fake resolver for `permitted`: the agent carries `policy` and is owned
     by `owner_id`, the sender resolves to `principal` (kind, id, claimants)
@@ -155,28 +202,44 @@ def _allowed_client(
 
     agent = SimpleNamespace(name="fixer", addressing_policy=policy, owner_id=owner_id)
 
-    async def _resolve(_session, _mxid):  # type: ignore[no-untyped-def]
+    async def _resolve(_session, _mxid, _content=None):  # type: ignore[no-untyped-def]
         if principal is None:
             return None
         kind, sender_id, claimants = principal
-        return _SenderPrincipal(kind, sender_id, claimants, sender_owner_id)  # type: ignore[arg-type]
+        return _SenderPrincipal(  # type: ignore[arg-type]
+            kind, sender_id, claimants, sender_owner_id, on_behalf_of=on_behalf_of
+        )
 
     async def _get_room(_session, _room_id):  # type: ignore[no-untyped-def]
         return SimpleNamespace(group_id=group_id)
+
+    async def _claimed(_session, _user_id):  # type: ignore[no-untyped-def]
+        return [SimpleNamespace(id=ext_id) for ext_id in claimed_external_ids]
 
     return SimpleNamespace(
         agent=agent,
         resolve_sender=_resolve,
         _room_store=SimpleNamespace(get=_get_room),
+        _external_user_store=SimpleNamespace(get_by_user=_claimed),
     )
 
 
-async def _decide(client: SimpleNamespace, room_id: str = "room-1"):  # type: ignore[no-untyped-def]
+async def _decide(  # type: ignore[no-untyped-def]
+    client: SimpleNamespace, room_id: str = "room-1", content: dict | None = None
+):
     # No session is opened here: the resolver reads through the one it is
     # handed, so `permitted` never takes a pool slot of its own.
     return await AddressingResolver.permitted(
-        client, object(), agent=client.agent, room_id=room_id, sender="@u:switch.local"
+        client,
+        object(),
+        agent=client.agent,
+        room_id=room_id,
+        sender="@u:switch.local",
+        content=content,
     )
+
+
+PLATFORM_CONTENT = {_PLATFORM_MARKER: {}}
 
 
 class TestAddressingAllowed:
@@ -215,6 +278,80 @@ class TestAddressingAllowed:
         )
         assert (await _decide(allowed)).allowed is True
         assert (await _decide(denied)).allowed is False
+
+
+class TestPlatformAddressing:
+    """The platform's own messages are denied unless a rule opts the agent
+    in, even by an open policy. A message it sends on a person's behalf is
+    judged as that person, for that one event."""
+
+    async def test_open_policy_denies_bare_platform(self) -> None:
+        client = _allowed_client(policy=None, principal=("platform", "c1", []))
+        decision = await _decide(client, content=PLATFORM_CONTENT)
+        assert decision.allowed is False
+        assert decision.refusal == _ADDRESSING_DENIED_MESSAGE
+
+    async def test_platform_rule_admits_bare_platform(self) -> None:
+        policy = {"rules": [{"users": [], "agents": [], "platform": True}]}
+        client = _allowed_client(policy=policy, principal=("platform", "c1", []))
+        assert (await _decide(client, content=PLATFORM_CONTENT)).allowed is True
+
+    async def test_open_policy_admits_platform_on_behalf_of_anyone(self) -> None:
+        client = _allowed_client(
+            policy=None, principal=("platform", "c1", []), on_behalf_of="user-9"
+        )
+        assert (await _decide(client, content=PLATFORM_CONTENT)).allowed is True
+
+    async def test_owner_rule_admits_platform_on_behalf_of_the_owner(self) -> None:
+        policy = {"rules": [{"users": [], "agents": [], "owner": True}]}
+        as_owner = _allowed_client(
+            policy=policy,
+            principal=("platform", "c1", []),
+            owner_id="user-9",
+            on_behalf_of="user-9",
+        )
+        as_stranger = _allowed_client(
+            policy=policy,
+            principal=("platform", "c1", []),
+            owner_id="user-9",
+            on_behalf_of="user-2",
+        )
+        assert (await _decide(as_owner, content=PLATFORM_CONTENT)).allowed is True
+        assert (await _decide(as_stranger, content=PLATFORM_CONTENT)).allowed is False
+
+    async def test_users_list_admits_platform_via_a_claimed_account(self) -> None:
+        policy = {"rules": [{"users": ["ext-3"], "agents": []}]}
+        claimed = _allowed_client(
+            policy=policy,
+            principal=("platform", "c1", []),
+            on_behalf_of="user-9",
+            claimed_external_ids=("ext-1", "ext-3"),
+        )
+        unclaimed = _allowed_client(
+            policy=policy,
+            principal=("platform", "c1", []),
+            on_behalf_of="user-9",
+        )
+        assert (await _decide(claimed, content=PLATFORM_CONTENT)).allowed is True
+        assert (await _decide(unclaimed, content=PLATFORM_CONTENT)).allowed is False
+
+    async def test_on_behalf_of_never_reaches_a_platform_rule(self) -> None:
+        # A platform opt-in admits the platform's own voice, not everyone it
+        # might speak for: the person is judged as a user, and this rule
+        # admits no users.
+        policy = {"rules": [{"users": [], "agents": [], "platform": True}]}
+        client = _allowed_client(
+            policy=policy, principal=("platform", "c1", []), on_behalf_of="user-9"
+        )
+        assert (await _decide(client, content=PLATFORM_CONTENT)).allowed is False
+
+    async def test_marked_event_from_a_human_keeps_the_open_fast_path(self) -> None:
+        # The marker on a non-platform sender is noise: an open policy still
+        # admits them, and a restricted one judges them as themselves.
+        open_client = _allowed_client(policy=None, principal=("user", "ext-3", []))
+        assert (await _decide(open_client, content=PLATFORM_CONTENT)).allowed is True
+        unresolved = _allowed_client(policy=None, principal=None)
+        assert (await _decide(unresolved, content=PLATFORM_CONTENT)).allowed is True
 
 
 class TestOwnerAddressing:
@@ -375,7 +512,9 @@ def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  
     """Fake client for _gate_addressed and the auto-reply it hands back."""
     sent: list[dict] = []
 
-    async def _addressing_allowed(_session, _agent, _matrix_sender, _room_id):  # type: ignore[no-untyped-def]
+    async def _addressing_allowed(
+        _session, _agent, _matrix_sender, _room_id, _content=None
+    ):  # type: ignore[no-untyped-def]
         return _AddressingDecision(allowed=allowed, refusal="" if allowed else refusal)
 
     async def _send_message(room_id, body, **kwargs):  # type: ignore[no-untyped-def]
@@ -473,7 +612,9 @@ def _command_client(*, allowed: bool, targets_me: bool):  # type: ignore[no-unty
     """Fake client for _gate_command: records any command reply posted."""
     replies: list[dict] = []
 
-    async def _addressing_allowed(_session, _agent, _matrix_sender, _room_id):  # type: ignore[no-untyped-def]
+    async def _addressing_allowed(
+        _session, _agent, _matrix_sender, _room_id, _content=None
+    ):  # type: ignore[no-untyped-def]
         return _AddressingDecision(
             allowed=allowed, refusal="" if allowed else _ADDRESSING_DENIED_MESSAGE
         )

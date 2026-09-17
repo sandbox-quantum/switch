@@ -1,0 +1,46 @@
+name: dispatch-issue-to-switch
+
+# Hands every newly opened issue to the Switch issue manager, which creates a
+# dedicated room (lead + coder + reviewer) to work it.
+#
+# Only the issue number, title and URL are sent. The issue body is deliberately
+# not included: the manager fetches it itself, so untrusted text from the issue
+# never arrives as part of the instruction that triggers the run.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hand the issue to the issue manager
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_HUB_WEBHOOK }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          ROLE_ID: ${{ vars.SWITCH_MANAGER_ROLE_ID }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_HUB_WEBHOOK is not set; nothing to notify." >&2
+            exit 1
+          fi
+          if [ -z "$ROLE_ID" ]; then
+            echo "SWITCH_MANAGER_ROLE_ID is not set; the mention would not address anyone." >&2
+            exit 1
+          fi
+          payload=$(jq -n \
+            --arg n "$NUMBER" \
+            --arg t "$TITLE" \
+            --arg u "$URL" \
+            --arg r "$ROLE_ID" \
+            '{
+               content: ("<@&" + $r + "> Please handle issue #" + $n + ": " + $t + "\n" + $u),
+               allowed_mentions: { parse: ["roles"] }
+             }')
+          curl -sS -f -X POST -H "Content-Type: application/json" -d "$payload" "$WEBHOOK"

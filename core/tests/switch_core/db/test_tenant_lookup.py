@@ -35,6 +35,7 @@ Five things are pinned:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -50,6 +51,7 @@ from switch_core.db.models import (
     ApiKey,
     Client,
     CollaborationBridge,
+    Invitation,
     Room,
     ServerConnector,
     Tenant,
@@ -59,12 +61,14 @@ from switch_core.db.models import (
 from switch_core.db.tenant_lookup import (
     SECURE_SEARCH_PATH,
     TENANT_LOOKUPS,
+    TENANT_LOOKUPS_BY_NAME,
     TenantLookupError,
     all_tenant_ids,
     create_lookup_ddl,
     tenant_of_agent_oauth_client,
     tenant_of_api_key,
     tenant_of_collaboration_bridge,
+    tenant_of_invitation,
     tenant_of_room,
     tenant_of_server_connector,
     tenants_of_user,
@@ -84,6 +88,15 @@ _LOOKUP_REVISION = "9c41a7b0e5d8"
 # and naming the revision here is what keeps 'we removed it from the module'
 # from passing as 'we removed it from the database'.
 _DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
+
+# The same bookkeeping in the other direction: a lookup the live module names
+# that `9c41a7b0e5d8` never created, and the revision that did create it. The
+# frozen-copy comparison below has to know about both to stay exact — without
+# this entry the only way to keep it green would be to loosen it to a subset
+# check, and a subset check passes for a lookup that exists in the module and
+# in no migration at all, which is a deployment whose invitation acceptance
+# cannot resolve a tenant with the whole suite green.
+_ADDED_SINCE = {"tenant_of_invitation": "5daaea6b674d"}
 
 
 def _revision_module(revision: str) -> ModuleType:
@@ -118,6 +131,8 @@ class _Fixture:
         self.oauth_client_a: str = ""
         self.user_a: str = ""
         self.user_in_both: str = ""
+        self.invitation_token_hash_a: str = ""
+        self.invitation_token_hash_b: str = ""
 
 
 async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
@@ -201,6 +216,16 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 connection_config={},
             )
             session.add_all([bridge, connector])
+            invitation = Invitation(
+                tenant_id=tenant_id,
+                role="member",
+                email=None,
+                token_hash=f"invitation-hash-{tag}-{suffix}",
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+                uses_remaining=1,
+                created_by=user_both.id,
+            )
+            session.add(invitation)
             session.add(
                 Agent(
                     tenant_id=tenant_id,
@@ -224,6 +249,9 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 fixture.room_a = room.id
                 fixture.bridge_a = bridge.id
                 fixture.connector_a = connector.id
+                fixture.invitation_token_hash_a = invitation.token_hash
+            else:
+                fixture.invitation_token_hash_b = invitation.token_hash
         await session.commit()
     return fixture
 
@@ -398,6 +426,33 @@ class TestWhatTheyAnswer:
             == fixture.tenant_a
         )
 
+    async def test_an_invitation_token_hash_resolves_to_its_tenant(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _two_populated_tenants(rls_harness)
+        assert (
+            await tenant_of_invitation(
+                rls_harness.restricted, fixture.invitation_token_hash_a
+            )
+            == fixture.tenant_a
+        )
+        assert (
+            await tenant_of_invitation(
+                rls_harness.restricted, fixture.invitation_token_hash_b
+            )
+            == fixture.tenant_b
+        )
+
+    async def test_an_unknown_invitation_token_resolves_to_nothing(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """An invitation link nobody minted is a 404, not a 500 — same shape
+        as an unrecognised bearer token."""
+        await _two_populated_tenants(rls_harness)
+        assert (
+            await tenant_of_invitation(rls_harness.restricted, "no-such-hash") is None
+        )
+
     async def test_an_ambiguous_answer_is_refused_rather_than_picked(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -564,15 +619,44 @@ class TestTheMigrationInstallsTheSameThing:
                 lookup.query,
             )
             for lookup in TENANT_LOOKUPS
+            if lookup.name not in _ADDED_SINCE
         }
         assert frozen == live, (
             "the frozen LOOKUPS in migration 9c41a7b0e5d8 no longer match "
             "db/tenant_lookup.py. A deployment built by Alembic would get the "
             "migration's functions and every test above would still pass "
             "against create_all's. If the divergence is deliberate, express "
-            "it as a new migration rather than by editing this one — and, if "
-            "the new migration drops a lookup, name it in _DROPPED_SINCE "
-            "above so this comparison stays exact rather than being loosened."
+            "it as a new migration rather than by editing this one — and name "
+            "the lookup in _DROPPED_SINCE or _ADDED_SINCE above, whichever "
+            "the new migration does, so this comparison stays exact rather "
+            "than being loosened."
+        )
+
+    def test_the_added_lookup_is_installed_by_a_revision_and_not_only_here(
+        self,
+    ) -> None:
+        """The mirror of the dropped-lookup test, and the more dangerous half.
+
+        A lookup added to `db/tenant_lookup.py` is built by `create_all`, so
+        every test in this file exercises it and passes. A deployment's schema
+        is built by Alembic, which knows nothing about it: the function is
+        absent, and the first call — an invitation acceptance trying to
+        resolve a tenant — fails at runtime in production and nowhere else.
+
+        Comparing the rendered statement rather than the pieces, for the same
+        reason the test below does: a revision that created the function
+        `SECURITY INVOKER`, or without the `search_path`, would install
+        something that cannot read across tenants at all.
+        """
+        revision = _ADDED_SINCE["tenant_of_invitation"]
+        lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_invitation"]
+        module = _revision_module(revision)
+        assert module.CREATE_TENANT_OF_INVITATION == create_lookup_ddl(lookup), (
+            f"revision {revision} would install tenant_of_invitation with "
+            "different DDL from the one db/tenant_lookup.py builds."
+        )
+        assert module.DROP_TENANT_OF_INVITATION == (
+            f"DROP FUNCTION IF EXISTS {lookup.signature}"
         )
 
     def test_the_dropped_lookup_is_dropped_by_a_revision_and_not_only_here(
@@ -627,6 +711,8 @@ class TestTheMigrationInstallsTheSameThing:
         """
         module = _migration_module()
         for lookup in TENANT_LOOKUPS:
+            if lookup.name in _ADDED_SINCE:
+                continue
             parameters = "" if lookup.parameter is None else f"{lookup.parameter} text"
             assert module.create_lookup_ddl(
                 lookup.name, parameters, lookup.query

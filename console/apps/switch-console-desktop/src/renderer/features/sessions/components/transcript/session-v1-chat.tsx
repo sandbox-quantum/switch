@@ -452,12 +452,6 @@ export function SessionV1Chat({
             )}
           </details>
         )}
-      {session && !session.capabilities.questions && (
-        <div className="px-5 py-2 text-xs text-foreground-muted">
-          This provider does not support interactive questions. Supply additional instructions in
-          chat.
-        </div>
-      )}
       {!busy && (view.error || !view.connected) && (
         <div
           role="status"
@@ -484,9 +478,11 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
-                  <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-                    {item.origin?.surface}
-                  </span>
+                  {item.origin?.surface && item.origin.surface !== 'console' && (
+                    <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
+                      {item.origin.surface}
+                    </span>
+                  )}
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}
                   </div>
@@ -540,7 +536,7 @@ export function SessionV1Chat({
             </div>
           ))}
           {view.snapshot?.commandStatuses
-            .filter((command) => command.status !== 'applied')
+            .filter((command) => command.status === 'rejected' || command.status === 'unknown')
             .map((command) => (
               <p key={command.commandId} className="text-xs text-foreground-muted">
                 {command.status === 'unknown' ? (
@@ -656,45 +652,44 @@ export function SessionV1Chat({
             placeholder="Message the agent…"
             className="min-h-16 border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
-          <div className="flex flex-wrap items-center gap-1 px-1 pt-2">
-            {session && (
-              <SessionV1Controls
-                key={`${session.epoch}:${JSON.stringify(session.model)}`}
-                session={session}
-                disabled={
-                  !available ||
-                  sending ||
-                  client.hasPendingCommand() ||
-                  session.status !== 'ready' ||
-                  Boolean(
-                    view.snapshot?.turns.some(
-                      (turn) => turn.status === 'queued' || turn.status === 'running'
-                    )
-                  ) ||
-                  session.pendingRequestIds.length > 0
-                }
-                execute={control}
-              />
-            )}
+          <div className="flex items-end gap-2 px-1 pt-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {session && (
+                <SessionV1Controls
+                  key={`${session.epoch}:${JSON.stringify(session.model)}`}
+                  session={session}
+                  disabled={
+                    !available ||
+                    sending ||
+                    client.hasPendingCommand() ||
+                    session.status !== 'ready' ||
+                    Boolean(
+                      view.snapshot?.turns.some(
+                        (turn) => turn.status === 'queued' || turn.status === 'running'
+                      )
+                    ) ||
+                    session.pendingRequestIds.length > 0
+                  }
+                  execute={control}
+                />
+              )}
 
-            {Boolean(session?.capabilities.attachmentMimeTypes.length) && (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={sending || pendingId !== null}
-                aria-label="Attach files"
-                title="Attach files"
-                onClick={() => picker.current?.click()}
-              >
-                <Paperclip className="size-3.5" />
-              </Button>
-            )}
-            <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-              Enter to send · Shift + Enter for a new line
-            </span>
+              {Boolean(session?.capabilities.attachmentMimeTypes.length) && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={sending || pendingId !== null}
+                  aria-label="Attach files"
+                  title="Attach files"
+                  onClick={() => picker.current?.click()}
+                >
+                  <Paperclip className="size-3.5" />
+                </Button>
+              )}
+            </div>
             <Button
               size="sm"
-              className="ml-auto xl:ml-1"
+              className="ml-auto shrink-0"
               disabled={
                 !available ||
                 sending ||
@@ -707,6 +702,9 @@ export function SessionV1Chat({
             </Button>
           </div>
         </div>
+        <p className="mt-1.5 px-1 text-right text-tiny text-foreground-passive">
+          Enter to send · Shift + Enter for a new line
+        </p>
       </div>
     </div>
   );

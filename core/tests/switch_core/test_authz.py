@@ -6,8 +6,10 @@ import pytest
 
 from switch_core.authz import (
     Principal,
+    administers_tenant,
     can,
     can_manage,
+    owns_tenant,
     require,
     require_manage,
     validate_visibility_pair,
@@ -104,6 +106,49 @@ class TestCanManage:
         with pytest.raises(PermissionError):
             require_manage(ALICE, "u-bob")
         require_manage(ALICE, "u-alice")  # owner — no raise
+
+
+class TestAdministersTenant:
+    """`administers_tenant` is the one function allowed to turn a role into
+    the admin bit (`authz.py` module docstring) — the operator bypass and the
+    per-tenant `owner`/`admin` membership role, combined."""
+
+    def test_operator_administers_regardless_of_tenant_role(self) -> None:
+        assert administers_tenant(is_operator=True, tenant_role=None)
+        assert administers_tenant(is_operator=True, tenant_role="member")
+
+    def test_owner_or_admin_membership_administers(self) -> None:
+        assert administers_tenant(is_operator=False, tenant_role="owner")
+        assert administers_tenant(is_operator=False, tenant_role="admin")
+
+    def test_plain_member_does_not_administer(self) -> None:
+        assert not administers_tenant(is_operator=False, tenant_role="member")
+
+    def test_no_membership_does_not_administer(self) -> None:
+        assert not administers_tenant(is_operator=False, tenant_role=None)
+
+
+class TestOwnsTenant:
+    """`owns_tenant` is the narrower bit: who may move the ownership set,
+    which is not everyone who may administer the workspace."""
+
+    def test_operator_owns_regardless_of_tenant_role(self) -> None:
+        assert owns_tenant(is_operator=True, tenant_role=None)
+        assert owns_tenant(is_operator=True, tenant_role="member")
+
+    def test_owner_membership_owns(self) -> None:
+        assert owns_tenant(is_operator=False, tenant_role="owner")
+
+    def test_admin_membership_administers_but_does_not_own(self) -> None:
+        """The whole point of there being two functions: an admin who also
+        owned could take the workspace from its owner one safe-looking
+        request at a time."""
+        assert administers_tenant(is_operator=False, tenant_role="admin")
+        assert not owns_tenant(is_operator=False, tenant_role="admin")
+
+    def test_plain_member_and_no_membership_do_not_own(self) -> None:
+        assert not owns_tenant(is_operator=False, tenant_role="member")
+        assert not owns_tenant(is_operator=False, tenant_role=None)
 
 
 class TestValidateVisibilityPair:

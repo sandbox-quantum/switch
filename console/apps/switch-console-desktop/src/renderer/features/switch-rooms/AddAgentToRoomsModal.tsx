@@ -1,21 +1,12 @@
-import { Hash, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
+import { ChosenRoomTile, RoomPickerRow } from '@renderer/lib/components/room-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
-import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from '@renderer/lib/ui/combobox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
@@ -33,20 +24,6 @@ type Props = BaseModalProps<void> & {
 
 /** A room the agent can be put in: one on its own server it is not already in. */
 type Candidate = { id: string; name: string; bridgeType: string | null };
-
-/** Where a room's conversation actually happens, for the right of its row. */
-function whereLabel(bridgeType: string | null): string {
-  return bridgeType ? bridgePlatformLabel(bridgeType) : 'Switch only';
-}
-
-/** The mark of the app a room is bridged to, or a plain channel mark when it
- * lives on Switch alone. */
-function RoomMark({ bridgeType, size }: { bridgeType: string | null; size: number }) {
-  if (!hasBridgeIcon(bridgeType)) {
-    return <Hash className="size-4 shrink-0 text-foreground-muted" />;
-  }
-  return <BridgeIcon bridgeType={bridgeType} size={size} />;
-}
 
 /**
  * Puts one agent into rooms — the agent's side of `AddAgentsToRoomModal`, which
@@ -139,43 +116,18 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
               </div>
             )}
 
-            <Combobox
+            <PickerCombobox
               items={candidates}
-              value={null}
-              onValueChange={(next: Candidate | null) => {
-                if (next) setSelected((current) => [...current, next]);
+              onPick={(next) => {
+                setSelected((current) => [...current, next]);
                 setError(null);
               }}
-              isItemEqualToValue={(a: Candidate, b: Candidate) => a.id === b.id}
-              filter={(item: Candidate, query) =>
-                item.name.toLowerCase().includes(query.toLowerCase())
-              }
-              autoHighlight
-            >
-              {/* The search box is the control rather than something a button
-                  has to open: putting an agent in several rooms at once is the
-                  reason this dialog exists. */}
-              <ComboboxInput
-                showTrigger={false}
-                disabled={nothingToAdd}
-                placeholder="Search rooms to add..."
-                leftAddon={<Search className="size-3.5 text-foreground-muted" />}
-              />
-              <ComboboxContent className="min-w-(--anchor-width)">
-                <ComboboxList>
-                  {(item: Candidate) => (
-                    <ComboboxItem key={item.id} value={item} showCheck={false}>
-                      <RoomMark bridgeType={item.bridgeType} size={16} />
-                      <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                      <span className="shrink-0 text-xs text-foreground-muted">
-                        {whereLabel(item.bridgeType)}
-                      </span>
-                    </ComboboxItem>
-                  )}
-                </ComboboxList>
-                <ComboboxEmpty>No rooms found</ComboboxEmpty>
-              </ComboboxContent>
-            </Combobox>
+              searchText={(item) => item.name}
+              renderItem={(item) => <RoomPickerRow room={item} />}
+              disabled={nothingToAdd}
+              placeholder="Search rooms to add..."
+              emptyText="No rooms found"
+            />
             {membershipUnknown && (
               <p className="mt-1 text-xs text-foreground-warning">
                 Which rooms {agentName} is already in could not be read, so every room on the server
@@ -206,29 +158,3 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
     </>
   );
 });
-
-/** A room already chosen, with the way to take it back out. */
-function ChosenRoomTile({ room, onRemove }: { room: Candidate; onRemove: () => void }) {
-  return (
-    // `--fill` rather than `--surface-2`: in dark mode that surface is the
-    // dialog's own background, so a tile drawn in it was a tile nobody could
-    // see.
-    <div className="group relative flex flex-col gap-2 rounded-[10px] bg-[var(--fill)] p-3">
-      <RoomMark bridgeType={room.bridgeType} size={22} />
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">{room.name}</span>
-        <span className="truncate text-xs text-foreground-muted">
-          {whereLabel(room.bridgeType)}
-        </span>
-      </div>
-      <button
-        type="button"
-        aria-label={`Remove ${room.name}`}
-        onClick={onRemove}
-        className="absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100"
-      >
-        <X className="size-3.5" />
-      </button>
-    </div>
-  );
-}

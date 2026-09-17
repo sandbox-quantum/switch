@@ -20,7 +20,8 @@ site presents them.
 
 Design and operator material written for this repository: the architecture
 overview, the agent protocol, per-bridge setup guides, gateway OIDC sign-in
-setup, and running Switch locally for development. None of it is published,
+setup, the multi-tenancy design and its phased plan, and running Switch
+locally for development. None of it is published,
 and none of it is covered by the pages under `official/` — where the two
 describe the same thing, this is the deeper account and the published page is
 the one users act on.

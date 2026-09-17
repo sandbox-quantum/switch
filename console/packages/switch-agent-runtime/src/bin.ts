@@ -389,6 +389,8 @@ type MessagePayload = {
   addressed: boolean;
   sender: string;
   sender_name: string;
+  sender_kind?: string | null;
+  on_behalf_of?: string | null;
   message_id: string;
   body: string;
   timestamp: number;

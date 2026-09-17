@@ -13,12 +13,15 @@ room binding", and operations only ever compare them for equality.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
 from switch_core.logging_context import (
     LogContext,
     bind_log_context,
+    restore_unless_finalising,
     unbind_log_context,
 )
 
@@ -62,3 +65,19 @@ def reset_call_context(token: _CallContextToken) -> None:
 
 def current_call_context() -> CallContext | None:
     return _current.get()
+
+
+@contextmanager
+def call_context(context: CallContext) -> Iterator[None]:
+    """Bind `context` for the block and restore both tokens on the way out.
+
+    The one caller-facing way to use `set_call_context`/`reset_call_context`:
+    a front door binds the caller for an operation call that it does not
+    control the internals of, so the call may suspend and never resume — the
+    caller's coroutine dropped and finalised by the garbage collector rather
+    than completed. `restore_unless_finalising` skips the reset pair in that
+    case instead of raising trying to reset a token from the wrong context.
+    """
+    token = set_call_context(context)
+    with restore_unless_finalising(lambda: reset_call_context(token)):
+        yield

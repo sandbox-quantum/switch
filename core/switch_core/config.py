@@ -86,11 +86,16 @@ class SwitchConfig(BaseSettings):
     # Gateway OIDC login (optional — bring-your-own identity provider for the
     # gateway browser login, e.g. Okta). Distinct from the agent oauth_*
     # settings above, which gate the MCP/agent bridge and may point at a
-    # different IdP. Active only when issuer + client id + secret are all
-    # set; the provider's endpoints are read from OIDC discovery.
+    # different IdP. Active only when issuer + client id + secret + scopes
+    # are all set; the provider's endpoints are read from OIDC discovery.
     gateway_oidc_issuer_url: str | None = None
     gateway_oidc_client_id: str | None = None
     gateway_oidc_client_secret: str | None = None
+    # Must include "openid": authlib omits the scope parameter entirely when
+    # this is unset, so the provider applies its own default scope, which may
+    # not include "openid" — the provider then issues no id_token, and the
+    # callback falls back to the provider's userinfo endpoint, which may not
+    # answer.
     gateway_oidc_scopes: str | None = None
     gateway_oidc_provider_label: str | None = None
     # Absolute callback URL registered with the IdP. Must exactly match the
@@ -125,6 +130,15 @@ class SwitchConfig(BaseSettings):
     # dev over plain HTTP keeps working; deployments serving over HTTPS must set
     # this true so the JWT session cookie is never sent over an insecure channel.
     gateway_cookie_secure: bool = False
+
+    # Off by default: a person who belongs to more than one tenant and has not
+    # selected one on their session gets the same 403 a single-tenant
+    # deployment already returns today, rather than a 409 listing the tenants
+    # to choose from. The 409 is a breaking change for a client that has never
+    # had to handle it — set true only once the client that will authenticate
+    # against this deployment knows what to do with it. See
+    # docs/old/multi-tenancy-phase2-tenants.md, §4.
+    gateway_tenant_choice_enabled: bool = False
 
     # ── Logging ──────────────────────────────────────────────────────────────
     # "text" for a terminal, "json" for a log pipeline that parses fields.
@@ -190,6 +204,11 @@ class SwitchConfig(BaseSettings):
     # fixtures, and it says in the log that there is no session behind the card.
     session_demo_enabled: bool = False
 
+    # Upper bound on a template document uploaded to the registry. The column
+    # itself is unbounded, so raising this is a deploy-time change and never a
+    # migration. Oversize uploads are refused rather than truncated.
+    template_max_bytes: int = 1024 * 1024
+
     # Every authenticated agent request resolves its bearer token against the
     # database before the handler runs, and each live agent connection beats
     # every 2s, so the pool is sized against connection count rather than
@@ -230,6 +249,20 @@ class SwitchConfig(BaseSettings):
     # Alembic builds its own engine from `db_connect_args`, so a migration is
     # never killed mid-transaction.
     db_idle_in_transaction_session_timeout: str | None = None
+
+    # How long a migration waits for a lock before giving up (a Postgres
+    # interval such as "10s"; "0" waits forever). Migrations are DDL, so nearly
+    # every statement wants ACCESS EXCLUSIVE, and a request for one queues
+    # behind whatever transaction currently holds the table — and every reader
+    # arriving after it queues behind the request. A migration that waits out a
+    # long-running transaction therefore does not merely take longer; it stops
+    # the deployment still serving traffic beside it for as long as it waits.
+    # Failing instead turns that into an upgrade that did not happen, on a
+    # deployment that is still up on the old schema, which is the better of the
+    # two outcomes and the one worth retrying. Applies to the migration
+    # connection only: the application engine's statements take ordinary row
+    # and table locks that no amount of waiting escalates into this.
+    db_migration_lock_timeout: str = "10s"
 
     # A Postgres server that goes away without closing its sockets — a managed
     # instance failing over to its standby — leaves every connection open and
@@ -292,6 +325,10 @@ class SwitchConfig(BaseSettings):
                 )
         if not self.tenant_id.strip():
             raise ValueError("TENANT_ID must not be empty.")
+        if self.template_max_bytes < 1:
+            raise ValueError(
+                f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."
+            )
         return self
 
     @model_validator(mode="after")
@@ -320,6 +357,16 @@ class SwitchConfig(BaseSettings):
                 "DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT must be a Postgres "
                 "interval such as '15s', '500ms' or a bare count of "
                 f"milliseconds, got {value!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_migration_lock_timeout(self) -> "SwitchConfig":
+        if not _PG_INTERVAL_RE.match(self.db_migration_lock_timeout):
+            raise ValueError(
+                "DB_MIGRATION_LOCK_TIMEOUT must be a Postgres interval such "
+                "as '10s', '500ms' or a bare count of milliseconds ('0' waits "
+                f"forever), got {self.db_migration_lock_timeout!r}."
             )
         return self
 
@@ -374,13 +421,24 @@ class SwitchConfig(BaseSettings):
             self.gateway_oidc_issuer_url,
             self.gateway_oidc_client_id,
             self.gateway_oidc_client_secret,
+            self.gateway_oidc_scopes,
         )
         set_count = sum(1 for value in required if value)
         if 0 < set_count < len(required):
             raise ValueError(
                 "Partial gateway OIDC config: set all of "
                 "GATEWAY_OIDC_ISSUER_URL / GATEWAY_OIDC_CLIENT_ID / "
-                "GATEWAY_OIDC_CLIENT_SECRET, or none of them."
+                "GATEWAY_OIDC_CLIENT_SECRET / GATEWAY_OIDC_SCOPES, or none "
+                "of them."
+            )
+        if self.gateway_oidc_scopes and "openid" not in (
+            self.gateway_oidc_scopes.split()
+        ):
+            raise ValueError(
+                "GATEWAY_OIDC_SCOPES must include 'openid': without it the "
+                "provider issues no id_token, and the callback falls back "
+                "to the provider's userinfo endpoint, which may not answer. "
+                f"Got {self.gateway_oidc_scopes!r}."
             )
         return self
 

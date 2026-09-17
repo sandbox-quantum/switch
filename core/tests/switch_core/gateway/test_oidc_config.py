@@ -27,6 +27,7 @@ def _kwargs(**overrides: object) -> dict[str, object]:
         gateway_oidc_issuer_url=None,
         gateway_oidc_client_id=None,
         gateway_oidc_client_secret=None,
+        gateway_oidc_scopes=None,
     )
     base.update(overrides)
     return base
@@ -41,12 +42,13 @@ class TestGatewayOidcConfig:
         # Opting out of the verified-email check must be deliberate.
         assert config.gateway_oidc_require_email_verified is True
 
-    def test_enabled_when_all_three_set(self) -> None:
+    def test_enabled_when_all_required_set(self) -> None:
         config = SwitchConfig(
             **_kwargs(
                 gateway_oidc_issuer_url="https://idp.example/realms/x",
                 gateway_oidc_client_id="cid",
                 gateway_oidc_client_secret="secret",
+                gateway_oidc_scopes="openid email profile",
             )  # type: ignore[arg-type]
         )
         assert config.gateway_oidc_enabled is True
@@ -55,11 +57,36 @@ class TestGatewayOidcConfig:
         )
 
     def test_partial_config_fails_loud(self) -> None:
-        # Issuer set but client id/secret missing must raise at construction,
-        # not silently disable OIDC.
+        # Issuer set but client id/secret/scopes missing must raise at
+        # construction, not silently disable OIDC.
         with pytest.raises(ValidationError):
             SwitchConfig(
                 **_kwargs(gateway_oidc_issuer_url="https://idp.example")  # type: ignore[arg-type]
+            )
+
+    def test_scopes_required_alongside_the_others(self) -> None:
+        # A deployment that set issuer/client id/secret but not scopes used to
+        # come up with OIDC "on" and authlib silently omitting the scope
+        # parameter, so the provider applied its own default (which may not
+        # include openid, or omit an id_token). Now it must fail to start.
+        with pytest.raises(ValidationError):
+            SwitchConfig(
+                **_kwargs(
+                    gateway_oidc_issuer_url="https://idp.example",
+                    gateway_oidc_client_id="cid",
+                    gateway_oidc_client_secret="secret",
+                )  # type: ignore[arg-type]
+            )
+
+    def test_scopes_must_include_openid(self) -> None:
+        with pytest.raises(ValidationError):
+            SwitchConfig(
+                **_kwargs(
+                    gateway_oidc_issuer_url="https://idp.example",
+                    gateway_oidc_client_id="cid",
+                    gateway_oidc_client_secret="secret",
+                    gateway_oidc_scopes="email profile",
+                )  # type: ignore[arg-type]
             )
 
 

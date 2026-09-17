@@ -20,9 +20,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
@@ -46,6 +48,8 @@ def init_dependencies(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
+    invitation_store: InvitationStore,
+    template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     config: SwitchConfig,
@@ -64,6 +68,8 @@ def init_dependencies(
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
     _state["api_key_store"] = api_key_store
+    _state["invitation_store"] = invitation_store
+    _state["template_store"] = template_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
     _state["config"] = config
@@ -99,17 +105,20 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def get_system_session() -> AsyncIterator[AsyncSession]:
-    """The session for a request that has no authenticated caller yet.
+    """The session for a request with no tenant bound yet.
 
-    Password login and the OIDC callback are the whole list: both run before
-    anyone is signed in, so neither can bind a tenant from a principal the way
-    `get_current_user` does. Named separately from `get_session` so that
-    reads as a deliberate, reviewable exception rather than an
-    accidentally-unscoped session, and so the guard test above can hold for
-    `get_session` without exemptions. Nothing about opening it differs from
-    `get_session` today — it is the same session and the same hook, simply
-    with nothing bound around it — so the two must stay interchangeable in
-    behaviour only, never in name.
+    Password login and the OIDC callback are the original two: both run
+    before anyone is signed in, so neither can bind a tenant from a principal
+    the way `get_current_user` does. `POST /tenants/{id}/switch`
+    (`gateway/tenants.py`) is a third, for a different reason — the caller is
+    authenticated (`get_authenticated_user_id`) but has, by construction, not
+    yet selected the tenant this session opens for. Named separately from
+    `get_session` so that reads as a deliberate, reviewable exception rather
+    than an accidentally-unscoped session, and so the guard test above can
+    hold for `get_session` without exemptions. Nothing about opening it
+    differs from `get_session` today — it is the same session and the same
+    hook, simply with nothing bound around it — so the two must stay
+    interchangeable in behaviour only, never in name.
 
     "No tenant bound" is not the same as "writes land nowhere in particular":
     the OIDC callback provisions a user and picks its tenant explicitly (see
@@ -134,6 +143,7 @@ def get_room_yaml_service() -> RoomYamlService:
         external_user_store=_state["external_user_store"],
         room_role_store=protocol.room_role_store,
         session_factory=_state["session_factory"],
+        client_lifecycle=_state["client_lifecycle"],
     )
 
 
@@ -181,12 +191,20 @@ def get_api_key_store() -> ApiKeyStore:
     return _state["api_key_store"]  # type: ignore[no-any-return]
 
 
+def get_invitation_store() -> InvitationStore:
+    return _state["invitation_store"]  # type: ignore[no-any-return]
+
+
 def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:
     return _state["connector_lifecycle"]  # type: ignore[no-any-return]
 
 
 def get_connector_store() -> ServerConnectorStore:
     return _state["connector_store"]  # type: ignore[no-any-return]
+
+
+def get_template_store() -> TemplateStore:
+    return _state["template_store"]  # type: ignore[no-any-return]
 
 
 def get_config() -> SwitchConfig:

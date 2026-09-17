@@ -23,10 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import Session
 
 from switch_core.db import tenant_session
-from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import Client, Tenant, User
 from switch_core.tenant_context import tenant_scope
+from tests.conftest import empty_the_database
 
 TENANT_A = "tenant-hook-a"
 TENANT_B = "tenant-hook-b"
@@ -34,19 +34,16 @@ TENANT_B = "tenant-hook-b"
 
 @pytest_asyncio.fixture
 async def single_connection_session_factory(
-    postgres_url: str,
+    postgres_schema: str,
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(postgres_url, pool_size=1, max_overflow=0)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = create_async_engine(postgres_schema, pool_size=1, max_overflow=0)
+    await empty_the_database(engine)
     try:
         # Goes through the production factory constructor, same as the shared
         # fixture. The hook itself is registered on import, not by this call —
         # `TestTheHookIsRegisteredByImportAlone` is what pins that.
         yield create_session_factory(engine)
     finally:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
         await engine.dispose()
 
 

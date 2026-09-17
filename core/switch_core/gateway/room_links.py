@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import User
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.gateway.auth import get_current_user, require_room_access
+from switch_core.gateway.auth import (
+    get_current_user,
+    get_tenant_is_admin,
+    require_room_access,
+)
 from switch_core.gateway.dependencies import (
     get_resource_service,
     get_room_store,
@@ -41,8 +45,9 @@ async def list_linked_rooms(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[LinkedRoomDetail]:
-    await require_room_access(session, room_store, room_id, user, "read")
+    await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_linked_rooms_for_room(session, room_id)
     return [LinkedRoomDetail(**row) for row in rows]
 
@@ -54,8 +59,9 @@ async def list_inbound_linked_rooms(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[InboundLinkedRoomDetail]:
-    await require_room_access(session, room_store, room_id, user, "read")
+    await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_inbound_linked_rooms(session, room_id)
     return [InboundLinkedRoomDetail(**row) for row in rows]
 
@@ -68,8 +74,9 @@ async def create_linked_room(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> LinkedRoomDetail:
-    await require_room_access(session, room_store, room_id, user, "write")
+    await require_room_access(session, room_store, room_id, user, "write", is_admin)
     try:
         row = await resource_service.attach_linked_room(
             session,
@@ -93,8 +100,9 @@ async def delete_linked_room(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> Response:
-    await require_room_access(session, room_store, room_id, user, "write")
+    await require_room_access(session, room_store, room_id, user, "write", is_admin)
     removed = await resource_service.detach_linked_room(
         session, source_room_id=room_id, target_room_id=target_room_id
     )
