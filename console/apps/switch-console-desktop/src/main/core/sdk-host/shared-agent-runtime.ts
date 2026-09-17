@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  buildSharedHostConfig as buildResolvedSharedHostConfig,
   sharedConfigSchema,
   sharedSessionRoot,
   type SharedHostConfig,
@@ -390,53 +391,28 @@ export async function buildSharedHostConfig(
       : undefined;
   const optionKey = provider === 'opencode' ? 'variant' : 'effort';
   const optionValue = specialization[optionKey];
-  const config: SharedHostConfig = {
+  return buildResolvedSharedHostConfig({
     session: {
       sessionId: session.id,
       agentId: agent.switchAgentId,
-      hostId: randomUUID(),
-      epoch: randomUUID(),
       provider,
-      status: 'starting',
-      connectivity: 'online',
-      pendingRequestIds: [],
-      capabilities: {
-        input: 'queue',
-        approvals: capabilities.approvals,
-        questions: capabilities.userInput,
-        interrupt: true,
-        reset: true,
-        compact: false,
-        modelChange: false,
-        attachmentMimeTypes: [],
-      },
+      nativeSessionId: session.providerSessionId,
     },
-    start: {
-      provider,
-      input: {
-        sessionId: session.id,
-        cwd: params.sessionPath,
-        runtimeMode: agent.autoApprove ? 'full-access' : 'approval-required',
-        env: params.sessionEnvVars,
-        mcpServers: {},
-        ...(session.providerSessionId
-          ? { resume: { nativeSessionId: session.providerSessionId } }
-          : {}),
-        ...(specialization.model
-          ? {
-              model: {
-                id: specialization.model,
-                ...(optionValue ? { options: { [optionKey]: optionValue } } : {}),
-              },
-            }
-          : {}),
-      },
+    launch: {
+      cwd: params.sessionPath,
+      runtimeMode: agent.autoApprove ? 'full-access' : 'approval-required',
+      env: params.sessionEnvVars,
+      ...(specialization.model
+        ? {
+            model: {
+              id: specialization.model,
+              ...(optionValue ? { options: { [optionKey]: optionValue } } : {}),
+            },
+          }
+        : {}),
     },
-    roomConnection: {
-      connectionId: randomUUID(),
-      rooms: intended.rooms,
-      startCursor: intended.startCursor,
-    },
+    capabilities,
+    roomConnection: intended,
     execution: {
       credentialsPath: (transport.kind === 'ssh' ? posix.join : join)(
         params.sessionPath,
@@ -479,6 +455,10 @@ export async function buildSharedHostConfig(
         .filter(Boolean)
         .join('\n\n'),
     },
-  };
-  return config;
+    ids: {
+      hostId: randomUUID(),
+      epoch: randomUUID(),
+      connectionId: randomUUID(),
+    },
+  });
 }

@@ -19,6 +19,7 @@ vi.mock('@switch-console/agent-providers', () => ({
   ensureSharedProcess: mocks.ensure,
   runSharedWatcher: mocks.runWatcher,
   superviseSharedHost: mocks.supervise,
+  fenceDeadOwner: vi.fn(),
 }));
 vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: mocks.bundle,
