@@ -28,11 +28,18 @@ two of the three fail *silently* — the pods are healthy and the dashboard work
 | Gateway dashboard | 3000 | Your operators | You cannot administer Switch |
 | Agent API + MCP | 8000 | Agents, wherever they run | Remote agents cannot connect; local ones are fine |
 | Teams bridge listener | 3978 | **Microsoft, from the public internet** | The Teams bridge half-works, silently |
+| Collaboration callbacks | 8081 | Your Mattermost server | Mattermost cards carry no buttons; requests are answered by typing |
 
 **Only the Teams listener requires public internet exposure**, and only if you
-run a Microsoft Teams bridge. Every other collaboration bridge — Slack,
-Mattermost, Discord, Telegram — connects *outbound* over a WebSocket and needs
-no ingress at all.
+run a Microsoft Teams bridge. Slack, Discord and Telegram connect *outbound*
+over a WebSocket and need no ingress at all.
+
+Mattermost is outbound for everything it receives, but not for what it sends
+back: a button press is delivered by the Mattermost server over HTTP, to an
+address Switch hands it when it draws the card. So it needs port 8081 reachable
+from Mattermost — usually a cluster-internal Service port and nothing public.
+Set `switchCore.collaborationCallback.enabled` and `helm install` prints the
+address to configure on the bridge.
 
 If your agents all run inside the cluster or on operator machines that can reach
 it privately, nothing here needs to be on the public internet.

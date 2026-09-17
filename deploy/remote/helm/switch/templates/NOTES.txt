@@ -89,6 +89,22 @@ Expect 200 with `ping` echoed back. A timeout means it is not public; a 404
 means the path is missing or aimed at the API port. `helm test` checks the
 in-cluster half. See docs/bridges/TEAMS_SETUP.md.
 {{- end }}
+{{- if .Values.switchCore.collaborationCallback.enabled }}
+
+── Mattermost button presses ───────────────────────────────────────────────────
+Service {{ include "switch.switchCoreHost" . }} now publishes port {{ .Values.switchCore.collaborationCallback.port }}.
+Give the Mattermost bridge exactly this callback_base_url:
+
+  http://{{ include "switch.switchCoreHost" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.switchCore.collaborationCallback.port }}
+
+That is the address the Mattermost *server* calls, not one a browser follows, so
+it stays the cluster-internal name even where Mattermost itself is reached
+publicly. A Mattermost outside this cluster needs a route you own — the chart
+renders none.
+
+Leave callback_base_url unset and the bridge still works: its cards arrive with
+no buttons and are answered by typing.
+{{- end }}
 
 ⚠  BACK UP YOUR DATA — this chart ships no backup jobs.
 Postgres holds everything: every room, every message, every account, and the
