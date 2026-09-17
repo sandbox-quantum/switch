@@ -620,3 +620,60 @@ class TestNormaliseActorKind:
         """A later kind added without touching this file must not be able to
         fail a room creation at the point of emission."""
         assert normalise_actor_kind("imported") == "system"
+
+
+class TestATurnNeedsTwoParticipants:
+    """A turn is a reply, so the two sides must be different participants.
+
+    Agents normally answer in several messages. Pairing on the sender's *kind*
+    alone scored each of those as an agent-to-agent turn, so the figure meant
+    to show "two agents talking among themselves" was dominated by one agent
+    talking to a person.
+    """
+
+    async def test_one_agent_posting_twice_is_not_an_agent_to_agent_turn(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            agent = await _client(session, "agent")
+            await _say(session, room, human, seq=1)
+            # One agent answering across three messages, as agents do.
+            await _say(session, room, agent, seq=2)
+            await _say(session, room, agent, seq=3)
+            await _say(session, room, agent, seq=4)
+
+            counts = await _counts(session)
+
+        assert counts.turn_human_to_agent_1d == 1
+        assert counts.turn_agent_to_agent_1d == 0
+
+    async def test_two_different_agents_still_count(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            one = await _client(session, "agent")
+            two = await _client(session, "agent")
+            await _say(session, room, one, seq=1)
+            await _say(session, room, two, seq=2)
+
+            counts = await _counts(session)
+
+        assert counts.turn_agent_to_agent_1d == 1
+
+    async def test_a_person_repeating_themselves_is_not_a_turn_either(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            agent = await _client(session, "agent")
+            await _say(session, room, agent, seq=1)
+            await _say(session, room, human, seq=2)
+            await _say(session, room, human, seq=3)
+
+            counts = await _counts(session)
+
+        assert counts.turn_agent_to_human_1d == 1

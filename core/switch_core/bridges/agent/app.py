@@ -12,7 +12,7 @@ from switch_core.bridges.agent.api.version_routes import router as version_route
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
-from switch_core.bridges.agent.dependencies import init_dependencies
+from switch_core.bridges.agent.dependencies import get_protocol, init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -88,27 +88,15 @@ def create_agent_bridge_app(
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
-    )
-
-    protocol = ProtocolService(
-        agent_store=agent_store,
-        agent_session_store=agent_session_store,
-        room_store=room_store,
-        room_service=room_service,
-        client_lifecycle=client_lifecycle,
-        collab_lifecycle=collab_lifecycle,
-        event_buffer=event_buffer,
-        connections=connections,
-        task_store=task_store,
-        resource_service=resource_service,
-        api_key_store=api_key_store,
-        api_key_cache=api_key_cache,
-        external_user_store=external_user_store,
-        bridge_store=bridge_store,
-        session_factory=session_factory,  # type: ignore[arg-type]
-        config=config,
         telemetry=telemetry,
     )
+
+    # The one `init_dependencies` just built, not a second of its own. Every
+    # HTTP handler resolves that instance through `Depends(get_protocol)`, so
+    # a second one here is an object whose wiring no request ever sees — which
+    # is how the agent bridge came to emit every session event into a
+    # telemetry service that was None.
+    protocol = get_protocol()
 
     app = FastAPI(title="Switch Agent Bridge API")
 

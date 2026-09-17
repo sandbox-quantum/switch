@@ -556,7 +556,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         interval_hours=config.telemetry_snapshot_interval_hours,
         installed_at=installed_at,
-        live_session_count=lambda: len(connections.live_agent_ids()),
+        live_session_count=connections.live_connection_count,
     )
 
     @asynccontextmanager

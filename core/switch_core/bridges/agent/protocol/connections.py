@@ -560,6 +560,18 @@ class ConnectionRegistry:
             for conn in self.for_agent(agent_id)
         )
 
+    def live_connection_count(self) -> int:
+        """How many connections are open right now.
+
+        Distinct from `live_agent_ids`, which answers how many *agents* hold
+        one: an agent may hold several (the cap is
+        `MAX_CONNECTIONS_PER_AGENT`), so ten people running two windows each
+        against one agent is twenty connections and one agent. Telemetry
+        reports sessions, and a session is a connection.
+        """
+        now = time.monotonic()
+        return sum(1 for conn in self._by_id.values() if conn.is_alive(now))
+
     def live_agent_ids(self) -> set[str]:
         """Every agent with at least one live connection.
 

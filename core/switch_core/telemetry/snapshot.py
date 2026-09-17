@@ -430,9 +430,13 @@ async def _collect_turns(
     paired = (
         select(
             kind.label("sender"),
+            Message.sender_client_id.label("sender_id"),
             func.lag(kind)
             .over(partition_by=Message.room_id, order_by=Message.seq)
             .label("previous"),
+            func.lag(Message.sender_client_id)
+            .over(partition_by=Message.room_id, order_by=Message.seq)
+            .label("previous_id"),
             Message.sent_at.label("sent_at"),
         )
         .select_from(Message)
@@ -446,7 +450,17 @@ async def _collect_turns(
     )
     rows = await session.execute(
         select(paired.c.sender, paired.c.previous, func.count())
-        .where(paired.c.sent_at >= since, paired.c.previous.is_not(None))
+        .where(
+            paired.c.sent_at >= since,
+            paired.c.previous.is_not(None),
+            # A turn is a reply, so the two sides must be different
+            # participants. Without this an agent posting three messages in a
+            # row — which is how agents normally answer — scores as two
+            # agent-to-agent turns, and the figure that is supposed to mean
+            # "two agents talking among themselves" is dominated by one agent
+            # talking to a person.
+            paired.c.sender_id != paired.c.previous_id,
+        )
         .group_by(paired.c.sender, paired.c.previous)
     )
     for sender, previous, count in rows.all():

@@ -99,8 +99,14 @@ BRIDGE_PLATFORM = one_of("slack", "mattermost", "discord", "teams", "telegram", 
 
 CHANNEL_TYPE = one_of("channel_public", "channel_private", "direct", "none")
 
-# How an agent behaves in a room, as `agents.agent_type` records it.
-AGENT_TYPE = one_of("always_on", "session_addressable", "session_passive")
+# How an agent behaves in a room, as `agents.agent_type` records it — the
+# connection models in `bridges/agent/protocol/types.py`, all four of them.
+# `auto_session` is the one Switch Console sets whenever a user ticks
+# auto-session, so leaving it out dropped the registration event for exactly
+# the population the Console exists to serve.
+AGENT_TYPE = one_of(
+    "always_on", "session_addressable", "session_passive", "auto_session"
+)
 
 # The runtime behind an agent, from `known_agent_type` in its metadata.
 # `other` covers a runtime Switch has no special knowledge of; `none` covers an
@@ -147,11 +153,13 @@ _SNAPSHOT_COUNTS = (
     "agent_codex_count",
     "agent_opencode_count",
     "agent_other_count",
-    # Live sessions only. "Sessions started today" is deliberately absent:
-    # nothing durable records a session opening, so the snapshot could only
-    # report an in-process tally that a restart silently resets — a number that
-    # looks like a count and is not one. `agent_session_started` is emitted per
-    # occurrence instead, and counting those is the analytics tool's job.
+    # Connections open right now, not distinct agents holding one: an agent
+    # may hold several, and counting agents would report 1 for ten people
+    # running two windows each. "Sessions started today" is deliberately
+    # absent — nothing durable records a session opening, so the snapshot
+    # could only report an in-process tally that a restart silently resets.
+    # `agent_session_started` is emitted per occurrence instead, and counting
+    # those is the analytics tool's job.
     "session_live_count",
     "connector_slack_count",
     "connector_mattermost_count",
