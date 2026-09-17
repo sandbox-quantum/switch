@@ -236,14 +236,19 @@ switchCore:
   # Off by default for the same reason the Teams block is: bridges are created
   # at runtime in the gateway, not in Helm values, so the chart cannot tell
   # whether you have a Mattermost bridge. Leaving it off is a reduced service
-  # rather than a broken one — the bridge says so at startup, and its cards
-  # arrive with no buttons and stay answerable by typing.
+  # rather than a broken one, PROVIDED the bridge's callback_base_url is also
+  # unset: that is what the adapter checks before drawing a button, and it says
+  # so at startup. A bridge configured with an address whose port is not
+  # published here is the bad case — the cards carry buttons, and every press
+  # is lost. Enable this, or clear the address; do not leave the two disagreeing.
   #
   # The in-cluster Mattermost this chart deploys needs only the Service port
-  # below; `helm install` prints the callback_base_url to give that bridge. A
-  # Mattermost OUTSIDE the cluster needs a route you own: this is a port
-  # switch-core binds, not necessarily a published host port, and the chart
-  # renders no Ingress for it.
+  # below, and is told to accept that address when this is enabled — Mattermost
+  # refuses to call a private host it has not been given. `helm install` prints
+  # the callback_base_url to configure on the bridge. A Mattermost OUTSIDE the
+  # cluster needs a route you own and an allowlist entry of its own: this is a
+  # port switch-core binds, not necessarily a published host port, and the
+  # chart renders no Ingress for it.
   collaborationCallback:
     enabled: false
     # Bind port inside the container. The chart sets no environment variable

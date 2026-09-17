@@ -93,17 +93,33 @@ in-cluster half. See docs/bridges/TEAMS_SETUP.md.
 
 ── Mattermost button presses ───────────────────────────────────────────────────
 Service {{ include "switch.switchCoreHost" . }} now publishes port {{ .Values.switchCore.collaborationCallback.port }}.
-Give the Mattermost bridge exactly this callback_base_url:
+
+{{ if .Values.mattermost.enabled -}}
+For a bridge pointed at the Mattermost this chart deploys — and only that one,
+since the address below resolves inside this cluster and nowhere else — set its
+callback_base_url to exactly:
 
   http://{{ include "switch.switchCoreHost" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.switchCore.collaborationCallback.port }}
 
 That is the address the Mattermost *server* calls, not one a browser follows, so
 it stays the cluster-internal name even where Mattermost itself is reached
-publicly. A Mattermost outside this cluster needs a route you own — the chart
-renders none.
+publicly. This release has already told that server it may call it.
+
+For a Mattermost anywhere else, route the port to it yourself, and add the name
+you route it from to that server's ServiceSettings.AllowedUntrustedInternalConnections
+— a space-separated list of hosts. Mattermost refuses to call a private address
+it has not been given, and says so only in its own log.
+{{- else -}}
+This release deploys no Mattermost, so the bridge points at one you run. Route
+this port to it yourself, on a name that server can resolve, and add that name
+to its ServiceSettings.AllowedUntrustedInternalConnections — a space-separated
+list of hosts. Mattermost refuses to call a private address it has not been
+given, and says so only in its own log.
+{{- end }}
 
 Leave callback_base_url unset and the bridge still works: its cards arrive with
-no buttons and are answered by typing.
+no buttons and are answered by typing. Setting an address nothing can reach is
+the one combination to avoid — the buttons are drawn and the presses vanish.
 {{- end }}
 
 ⚠  BACK UP YOUR DATA — this chart ships no backup jobs.

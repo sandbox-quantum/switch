@@ -28,7 +28,7 @@ two of the three fail *silently* — the pods are healthy and the dashboard work
 | Gateway dashboard | 3000 | Your operators | You cannot administer Switch |
 | Agent API + MCP | 8000 | Agents, wherever they run | Remote agents cannot connect; local ones are fine |
 | Teams bridge listener | 3978 | **Microsoft, from the public internet** | The Teams bridge half-works, silently |
-| Collaboration callbacks | 8081 | Your Mattermost server | Mattermost cards carry no buttons; requests are answered by typing |
+| Collaboration callbacks | 8081 | Your Mattermost server | Cards still show buttons and every press is silently lost |
 
 **Only the Teams listener requires public internet exposure**, and only if you
 run a Microsoft Teams bridge. Slack, Discord and Telegram connect *outbound*
@@ -39,7 +39,15 @@ back: a button press is delivered by the Mattermost server over HTTP, to an
 address Switch hands it when it draws the card. So it needs port 8081 reachable
 from Mattermost — usually a cluster-internal Service port and nothing public.
 Set `switchCore.collaborationCallback.enabled` and `helm install` prints the
-address to configure on the bridge.
+address to configure on the bridge; the bundled Mattermost is told to accept
+that address at the same time, which it will otherwise refuse as a private
+host. A Mattermost you run yourself needs the same entry adding by hand
+(`ServiceSettings.AllowedUntrustedInternalConnections`).
+
+A bridge with no `callback_base_url` draws no buttons and its requests are
+answered by typing, which is a reduced service and says so in the logs. A
+bridge with an address that nothing can reach is the failure this port exists
+to prevent: the buttons are drawn and the presses go nowhere.
 
 If your agents all run inside the cluster or on operator machines that can reach
 it privately, nothing here needs to be on the public internet.
