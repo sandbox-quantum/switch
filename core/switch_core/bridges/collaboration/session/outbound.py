@@ -986,10 +986,16 @@ class SessionTurnActivity:
         burst the giving-up existed to stop. Matched on the reference rather
         than on the turn: a card can be replaced under this same record, and
         the new one deserves to be drawn.
+
+        Drawn is then whether the notice beside it is settled, not whether the
+        card changed — the card never will. A notice still owed holds the turn
+        undrawn so there is another cycle to send it on, which for a turn that
+        has ended is the only thing standing between a refused notice and a
+        card left lying about a turn for good.
         """
         record = self._record.get()
         if record is not None and record.data.get("wedged") == anchor.message_ref:
-            return True
+            return await self._say_wedged(anchor, session_id, turn)
         state = self._status_state(
             turn, items, elapsed_seconds, anchor.session_url, interrupt_turn_id
         )
@@ -1016,8 +1022,16 @@ class SessionTurnActivity:
         except RichContentThrottled:
             raise
         except RichContentWedged as wedged:
-            await self._say_wedged(anchor, session_id, turn, wedged)
-            return True
+            logger.error("%s", wedged)
+            if record is not None:
+                # Written before the notice is attempted, and kept whatever
+                # becomes of it. That the card is beyond repair is settled the
+                # moment the platform says so; whether anyone has been told is
+                # a separate question with a separate answer, and conflating
+                # the two buys back the probing this was added to stop.
+                record.data["wedged"] = anchor.message_ref
+                await record.save()
+            return await self._say_wedged(anchor, session_id, turn)
         except RichContentFailed as error:
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
@@ -1037,48 +1051,56 @@ class SessionTurnActivity:
         return True
 
     async def _say_wedged(
-        self,
-        anchor: _Anchor,
-        session_id: str,
-        turn: TurnUpsert,
-        wedged: RichContentWedged,
-    ) -> None:
+        self, anchor: _Anchor, session_id: str, turn: TurnUpsert
+    ) -> bool:
         """Tell the channel that the card above it has stopped for good.
 
         The card cannot say this itself — that it cannot be written to is the
         whole of what has gone wrong with it — so the only place left to say it
-        is beside it. Counted as drawn by the caller either way: there is no
-        state of the turn that a further attempt would reach, and treating it
-        as owed holds the turn open forever over a message that will never
-        move.
+        is beside it.
 
-        Sent once. The reference of the card it was said about is kept on the
-        turn's journal record, so a second discovery of the same wedge — after
-        a restart, say — does not put a second copy under the same card, and
-        `_edit` reads it to stop asking the platform about that card at all.
-        The reference rather than a bare flag because a card can be replaced
-        under this record, and a fresh one is owed both a drawing and, if it
-        wedges in its turn, a notice of its own. Without a journal there is
-        nowhere to keep any of this, and a notice repeated every few seconds is
-        worse than the frozen card it describes, so nothing is sent.
+        Answers whether the notice is settled, which is what the turn waits on.
+        A card beyond repair and a reader who has been told about it are two
+        facts, and only the first is decided by the platform refusing an edit.
+        Kept apart in the journal for that reason: the wedge is recorded at
+        discovery and never revisited, while this is recorded only once there
+        is an outcome to record. Holding them in one flag means either the card
+        is probed again after every restart or the notice is never retried,
+        depending which way the flag is written, and both were tried.
 
-        Old cards are left alone. A notice earns its place by reaching someone
-        who is looking at the card it describes; under a card from yesterday it
-        reaches nobody and pushes the channel along to say so.
+        Settled means delivered, or deliberately not sent. Old cards are
+        deliberately not sent to: a notice earns its place by reaching someone
+        looking at the card it describes, and under a card from yesterday it
+        reaches nobody and pushes the channel along to say so. That is a
+        decision rather than a failure, so it settles, and the age is measured
+        from the card so it cannot be restarted into a different answer.
 
-        Only a notice the platform accepted is written down. `send_message`
-        answers a refusal with `None` rather than by raising, so a send that
-        never happened looks exactly like one that did unless the reference is
-        read — and writing the flag for it would suppress every later attempt,
-        leaving the card permanently unexplained.
+        Unsettled is a refusal — `send_message` answers one by returning `None`
+        rather than by raising, so both shapes are read — and it keeps the turn
+        undrawn. That is the only thing that produces another attempt: the
+        adapter goes quiet about a wedge once it has reported it, so nothing
+        reaches here again on its own, and an ended turn that draws is finished
+        with and never publishes again. Bounded by the same age gate, which
+        eventually settles the notice whether or not it ever lands.
+
+        Without a journal none of this can be remembered, so nothing is sent
+        and the turn is not held: a notice repeated every few seconds is worse
+        than the frozen card it describes.
         """
-        logger.error("%s", wedged)
         record = self._record.get()
-        if record is None or record.data.get("wedged") == anchor.message_ref:
-            return
+        if record is None:
+            return True
+        if record.data.get("wedge_notice") == anchor.message_ref:
+            return True
         posted_at = (record.data.get("status") or {}).get("created_at")
         if posted_at is None:
-            return
+            logger.warning(
+                "Not saying that the activity message %s is frozen: nothing "
+                "records when it was posted, so whether a reply under it would "
+                "reach anybody cannot be judged.",
+                anchor.message_ref,
+            )
+            return await self._settle_wedge_notice(record, anchor)
         age = datetime.now(UTC) - datetime.fromisoformat(posted_at)
         if age > _WEDGE_NOTICE_MAX_AGE:
             logger.warning(
@@ -1088,9 +1110,7 @@ class SessionTurnActivity:
                 anchor.message_ref,
                 age.total_seconds() / 60,
             )
-            record.data["wedged"] = anchor.message_ref
-            await record.save()
-            return
+            return await self._settle_wedge_notice(record, anchor)
         try:
             posted = await self._adapter.send_message(
                 anchor.channel_id,
@@ -1102,25 +1122,32 @@ class SessionTurnActivity:
             logger.exception(
                 "Could not say that the activity message %s for turn %s of "
                 "session %s is frozen. The card stays as it is, unexplained, "
-                "and this is tried again on the next change to the turn.",
+                "and the turn stays undrawn so this is tried again.",
                 anchor.message_ref,
                 turn.turn_id,
                 session_id,
             )
-            return
+            return False
         if posted is None:
             logger.error(
                 "The platform would not take the message saying that the "
                 "activity message %s for turn %s of session %s is frozen. The "
-                "card stays as it is, unexplained, and this is tried again on "
-                "the next change to the turn.",
+                "card stays as it is, unexplained, and the turn stays undrawn "
+                "so this is tried again.",
                 anchor.message_ref,
                 turn.turn_id,
                 session_id,
             )
-            return
-        record.data["wedged"] = anchor.message_ref
+            return False
+        return await self._settle_wedge_notice(record, anchor)
+
+    async def _settle_wedge_notice(
+        self, record: ActivityRecord, anchor: _Anchor
+    ) -> bool:
+        """Record that this card's notice has an outcome, and free the turn."""
+        record.data["wedge_notice"] = anchor.message_ref
         await record.save()
+        return True
 
     def _wanted_mark(self, turn: TurnUpsert) -> ActivityMark:
         """Which mark this turn's current state earns.

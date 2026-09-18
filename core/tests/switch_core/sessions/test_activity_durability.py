@@ -2401,11 +2401,53 @@ async def test_a_notice_the_platform_refused_is_not_written_down_as_sent(
     await setup(session_factory)
     platform = WedgedPlatform()
     platform.refuse_notices = True
-    assert await publish(activity(session_factory, platform))
+    assert not await publish(activity(session_factory, platform)), (
+        "a notice still owed leaves the turn undrawn"
+    )
 
     assert platform.notices == []
+    assert "wedge_notice" not in await _activity_record(session_factory)
 
     platform.refuse_notices = False
     assert await publish(activity(session_factory, platform), "completed")
 
     assert len(platform.notices) == 1
+
+
+async def test_a_turn_that_ends_on_the_wedge_is_not_completed_over_a_refused_notice(
+    session_factory,
+):
+    """The case with no second chance unless one is kept open.
+
+    A turn already ended when its card is found frozen draws once and is done:
+    the completion receipt suppresses every later publication, and the adapter
+    goes quiet about a wedge as soon as it has reported it. So a notice refused
+    on that one pass is not retried anywhere — the card is left asserting that
+    a finished turn is still running, permanently, with a log line claiming it
+    would be tried again.
+
+    Staying undrawn is what buys the next pass. The completion receipt has to
+    wait for the notice, not for the card, which will never move either way.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    platform.wedged = False
+    assert await publish(activity(session_factory, platform))
+
+    platform.wedged = True
+    platform.refuse_notices = True
+    assert not await publish(activity(session_factory, platform), "completed"), (
+        "an ended turn with its notice owed must not be signed off"
+    )
+
+    record = await _activity_record(session_factory)
+    assert "completed" not in record, "the receipt would suppress the retry"
+    assert record["wedged"] == "channel-demo:1", "the wedge itself is settled"
+
+    probed = platform.probes
+    platform.refuse_notices = False
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert len(platform.notices) == 1, "the notice lands on the pass it was kept for"
+    assert platform.probes == probed, "and the dead card was never asked again"
+    assert (await _activity_record(session_factory)).get("completed")
