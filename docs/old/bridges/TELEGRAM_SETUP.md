@@ -322,11 +322,15 @@ the message says so. Whoever presses it must be allowed to stop that agent —
 the same check a typed `!interrupt` goes through — and the result, accepted or
 refused, comes back as an alert on that person's screen alone.
 
-Telegram gives a bot no destructive button style, so the label is the whole of
-the warning; and it allows 64 bytes in the hidden payload a press carries. A
-provider whose turn ids are longer than about 60 bytes gets no button and a
-warning in the log rather than a control whose press Telegram would refuse —
-`!interrupt` still stops the turn.
+The button is drawn in Telegram's `danger` style, which is red. That style
+arrived in Bot API 9.4 and only clients released after February 2026 draw it;
+an older one shows an ordinary button and no error, so the label still carries
+the whole of the warning for anyone on one.
+
+Telegram allows 64 bytes in the hidden payload a press carries. A provider
+whose turn ids are longer than about 60 bytes gets no button and a warning in
+the log rather than a control whose press Telegram would refuse — `!interrupt`
+still stops the turn.
 
 Telegram has a native animated "Thinking…" placeholder — the one it uses for
 its own AI features — but it is **not reachable here**. It is written with

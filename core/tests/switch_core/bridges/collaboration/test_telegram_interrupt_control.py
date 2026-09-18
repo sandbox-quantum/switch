@@ -138,6 +138,30 @@ async def test_a_running_turn_is_offered_a_stop_control() -> None:
     ]
 
 
+async def test_the_stop_control_is_red_on_the_wire_and_not_only_on_the_object() -> None:
+    """Bot API 9.4's `danger` style, which is the red one.
+
+    The field is newer than the pinned client library, so it travels in
+    `api_kwargs` — worth nothing unless the library serialises it into the
+    button. The assertion is therefore on the dict the request is built from
+    rather than on the object, because that is the part that would quietly stop
+    being true on a library change.
+    """
+    adapter = _stopper()
+
+    await _post(adapter, _activity())
+
+    assert _posted(adapter)["reply_markup"].to_dict()["inline_keyboard"] == [
+        [
+            {
+                "text": INTERRUPT_LABEL,
+                "callback_data": _interrupt_data(RUNNING_TURN),
+                "style": "danger",
+            }
+        ]
+    ]
+
+
 async def test_the_control_carries_the_turn_it_was_drawn_against() -> None:
     """Not the turn the message is about. A queued turn's status offers to stop
     the running turn in front of it, which is the only thing there is to stop,

@@ -115,6 +115,15 @@ _MAX_CALLBACK_BYTES = 64
 # make smaller.
 _INTERRUPT_PREFIX = "sx"
 
+# Bot API 9.4 gave an inline button a colour, and `danger` is the red one it
+# reserves for a destructive action. python-telegram-bot did not take the field
+# as a parameter until 22.7 and this project is pinned below that, so it is sent
+# through `api_kwargs` — which the library serialises into the button exactly as
+# a named argument would be, and which is what that escape hatch is for. A
+# client older than the field ignores it and draws an ordinary button, so the
+# label still has to carry the warning on its own.
+_DANGER_STYLE = "danger"
+
 # A button's label is one line on a phone, and Telegram truncates the middle of
 # an over-long one rather than wrapping it. Cut here instead, at the end, where
 # the reader can tell something was cut. The renderer is given the same number,
@@ -1429,6 +1438,7 @@ class TelegramAdapter(CollaborationAdapter):
                         InlineKeyboardButton(
                             text=INTERRUPT_LABEL,
                             callback_data=_interrupt_data(stopping),
+                            api_kwargs={"style": _DANGER_STYLE},
                         )
                     ]
                 ]
