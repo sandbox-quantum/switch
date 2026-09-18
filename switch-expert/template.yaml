@@ -8,7 +8,8 @@
 # document with the same fields.
 #
 #   agent:        Who the agent is. `name` is offered as the default agent
-#                 name (people address it as @name), `description` is what
+#                 name (people address it as @name), `display_name` is how
+#                 the agent is shown to people, `description` is what
 #                 others read to know what it is for, `instructions` is its
 #                 brief. `repo` is the repository it works from: Switch
 #                 Console offers to clone it (shallow) into a subdirectory of
@@ -65,6 +66,7 @@ params:
     prefill: first
 agent:
   name: switch-expert
+  display_name: Switch expert
   description: >-
     Answers questions about Switch and helps you design and build things with
     it. Grounded in a local clone of the Switch repository, which it re-reads

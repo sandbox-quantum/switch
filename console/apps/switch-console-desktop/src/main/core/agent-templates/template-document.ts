@@ -27,6 +27,8 @@ export type TemplateKind = 'agent' | 'room' | 'group';
 export type ParsedAgentEntry = {
   /** The name as written in the template, with any `{param}` still unfilled. */
   name: string | null;
+  /** How the agent is shown to people, when the template gives one. */
+  displayName: string | null;
   description: string;
   instructions: string;
   repoUrl: string | null;
@@ -143,6 +145,7 @@ export function parseTemplateAgents(
     }
     return {
       name: optionalString(agent.name),
+      displayName: optionalString(agent.display_name),
       description: typeof agent.description === 'string' ? agent.description.trim() : '',
       instructions,
       repoUrl: optionalString(agent.repo),

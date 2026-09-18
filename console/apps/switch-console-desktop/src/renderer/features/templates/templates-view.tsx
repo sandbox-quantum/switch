@@ -97,13 +97,14 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
-/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs". */
+/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs".
+ * An agent template's room is optional, so its card names the agent alone. */
 function summaryLine(s: TemplateSummary): string {
   const parts: string[] = [];
-  if (s.rooms > 0) parts.push(plural(s.rooms, 'room'));
-  if (s.agents > 0) parts.push(plural(s.agents, 'agent'));
+  if (s.rooms > 0 && s.kind !== 'agent') parts.push(plural(s.rooms, 'room'));
+  if (s.agents > 0) parts.push(s.kind === 'agent' ? 'an agent' : plural(s.agents, 'agent'));
   const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
-  const inputs = s.inputs === 0 ? 'no inputs' : plural(s.inputs, 'input');
+  const inputs = s.inputs === 0 ? 'nothing to fill in' : plural(s.inputs, 'input');
   return `${creates} · ${inputs}`;
 }
 

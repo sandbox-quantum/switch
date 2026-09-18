@@ -35,7 +35,7 @@ import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { cn } from '@renderer/utils/utils';
-import { AGENT_NAME_PATTERN } from '@shared/core/agents/agent-slug';
+import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import {
   AGENT_PROVIDER_IDS,
   type AgentProviderId,
@@ -57,6 +57,7 @@ import {
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
 import { ParamField } from './use/param-field';
+import { RoomPickField } from './use/room-pick-field';
 import {
   LOCAL_RUN_LOCATION,
   RunLocationSelect,
@@ -225,8 +226,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     ReturnType<typeof rpc.switchServers.createRoomFromTemplate>
   > | null>(null);
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
-  // For an agent template the room is optional. When off, only the agent is created.
-  const [createRoom, setCreateRoom] = useState(true);
+  // An agent template is used in two steps: the agent, then the room it is
+  // talked to in. The room is one the user picks, a new one from the
+  // template, or none when nothing is picked.
+  const [step, setStep] = useState<1 | 2>(1);
+  const [roomChoice, setRoomChoice] = useState<'pick' | 'new'>('pick');
+  const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
+  // How the agent is shown to people. The identifier it is addressed by is
+  // derived from it until the deployer edits the identifier directly.
+  const [displayName, setDisplayName] = useState('');
+  const [displayNameTouched, setDisplayNameTouched] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   // An input the page filled in is shown as one line until the deployer opens it.
   const [prefilled, setPrefilled] = useState<ReadonlySet<string>>(new Set());
@@ -256,12 +265,20 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         prefillDecided.current = new Set();
         createdRoom.current = null;
         setOpened(new Set());
+        setStep(1);
+        setRoomChoice('pick');
+        setPickedRoomId(null);
+        setNameOverride(null);
+        setDisplayName(
+          result.agents[0]?.displayName ?? (result.kind === 'agent' ? result.name : '')
+        );
+        setDisplayNameTouched(false);
         const firstName = result.agents[0]?.name ?? '';
         setPrefilled(
           new Set([
             ...formParams.filter((p) => p.default !== null).map((p) => `param:${p.name}`),
             ...(firstName !== '' && !hasPlaceholder(firstName) ? ['name'] : []),
-            ...(result.agents.length > 0 ? ['location'] : []),
+            ...(result.agents.length > 0 ? ['location', 'advanced'] : []),
           ])
         );
         setSlots(result.agents.map(newSlot));
@@ -287,6 +304,15 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     [loaded]
   );
   const createsAgents = (loaded?.agents.length ?? 0) > 0;
+  const isAgentTemplate = loaded?.kind === 'agent' && !intoRoomId;
+  // The room the created agent is added to, when it joins one that exists.
+  const targetRoomId =
+    intoRoomId ?? (isAgentTemplate && roomChoice === 'pick' ? pickedRoomId : null);
+  // Whether this run creates the template's room.
+  const makesRoom =
+    targetRoomId === null &&
+    !(isAgentTemplate && roomChoice !== 'new') &&
+    loaded?.coreYaml !== null;
   const isGroupDoc = (parsed?.rooms.length ?? 0) > 1 || parsed?.groupName !== null;
   const isRemoteRun = runHost !== LOCAL_RUN_LOCATION;
   const sshHost = isRemoteRun ? runHost : null;
@@ -464,7 +490,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const slotNames = useMemo(() => {
     const used = new Set<string>();
     return slots.map((slot, i) => {
-      const wanted = slotWantedName(slot, values, i === 0 ? nameOverride : null);
+      const wanted =
+        i === 0 && isAgentTemplate
+          ? (nameOverride ??
+            (displayNameTouched
+              ? slugifyAgentNamePart(displayName)
+              : (slot.entry.name ?? slugifyAgentNamePart(displayName))))
+          : slotWantedName(slot, values, i === 0 ? nameOverride : null);
       if (slot.mode === 'existing') return { wanted, final: slot.existingName };
       if (wanted === '' || hasPlaceholder(wanted)) return { wanted, final: wanted };
       let candidate = wanted;
@@ -474,7 +506,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       used.add(candidate);
       return { wanted, final: candidate };
     });
-  }, [slots, values, nameOverride, takenNames]);
+  }, [slots, values, nameOverride, takenNames, isAgentTemplate, displayName, displayNameTouched]);
 
   // Suggest a working directory for each new agent, named after it, under the
   // Console's locations directory or the host's home. The suggestion follows
@@ -503,13 +535,20 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   }, [slots, slotNames, sshHost, hostReachable, phase, markPrefilled]);
 
   // ── Why Create is disabled ──────────────────────────────────────────────
-  const missing = missingParams(templateParams, values);
+  // For an agent template the params belong to the room, which only a new
+  // room needs; the agent's own problems are the identifier and its setup.
+  const missing =
+    isAgentTemplate && roomChoice !== 'new' ? [] : missingParams(templateParams, values);
   const slotProblems: string[] = [];
   slots.forEach((slot, i) => {
     const { wanted, final } = slotNames[i] ?? { wanted: '', final: '' };
     if (slot.mode === 'existing') {
       if (final === '')
         slotProblems.push(`Pick the existing agent for ${wanted || `agent ${i + 1}`}.`);
+      return;
+    }
+    if (i === 0 && isAgentTemplate && final === '') {
+      slotProblems.push('Give the agent a name.');
       return;
     }
     if (final === '' || hasPlaceholder(final)) return; // an input still fills it in
@@ -538,7 +577,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? hostReadiness.checking
                   ? `Checking what ${runLocationLabel(runHost, allowedHosts)} has installed…`
                   : `${runLocationLabel(runHost, allowedHosts)} is missing setup the agents need.`
-                : intoRoomId
+                : !makesRoom
                   ? null // no room is made, so nothing below applies
                   : creatorBlocked
                     ? 'Link your messaging account first.'
@@ -650,7 +689,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             providerId,
             serverId,
             description: slot.entry.description,
-            displayName: null,
+            displayName:
+              i === 0 && isAgentTemplate && displayName.trim() && displayName.trim() !== name
+                ? displayName.trim()
+                : null,
             iconUrl: null,
             autoSession: true,
             // Nobody sits at a host's terminal to approve tool calls.
@@ -706,7 +748,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
       .catch(() => {});
 
-    if (intoRoomId) {
+    if (targetRoomId) {
       const byName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
       const ids = slots
         .map((s) =>
@@ -719,7 +761,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         if (ids.length > 0) {
           await rpc.switchServers.addRoomAgents({
             serverId,
-            roomId: intoRoomId,
+            roomId: targetRoomId,
             agentIds: [...new Set(ids)],
             direction: 'agents_to_room',
           });
@@ -730,8 +772,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           title: 'In the room',
           description: 'Mention an agent there to start it. A message from you is what wakes it.',
         });
-        finish(`Opening ${intoRoomName ?? 'the room'}…`, () =>
-          navigate('room', { roomId: intoRoomId })
+        finish(`Opening ${targetRoomName ?? 'the room'}…`, () =>
+          navigate('room', { roomId: targetRoomId })
         );
       } catch (e) {
         setRoomStatus('failed');
@@ -743,7 +785,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       return;
     }
 
-    if (!loaded.coreYaml || !parsed || (loaded.kind === 'agent' && !createRoom)) {
+    if (!loaded.coreYaml || !parsed || (isAgentTemplate && roomChoice !== 'new')) {
       // No room to make. Every path out of here navigates, so a run that
       // created nothing new does not stay on the creating screen.
       const firstName = created[0]?.name ?? slots.find((s) => s.createdName)?.createdName;
@@ -900,15 +942,24 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // ── Render ──────────────────────────────────────────────────────────────
   const partlyDone =
     slots.some((s) => s.status === 'created' || s.status === 'failed') || roomStatus === 'failed';
+  const targetRoomName = targetRoomId ? switchRoomsStore.roomNameById(targetRoomId) : null;
   const primaryLabel = partlyDone
     ? 'Retry remaining steps'
     : intoRoomId
       ? 'Create and add to room'
-      : loaded?.kind === 'group'
-        ? 'Create all'
-        : loaded?.kind === 'agent'
-          ? 'Create agent'
-          : 'Create room';
+      : isAgentTemplate
+        ? step === 1
+          ? 'Next'
+          : roomChoice === 'new'
+            ? 'Create agent and room'
+            : pickedRoomId
+              ? 'Create agent'
+              : 'Create without a room'
+        : loaded?.kind === 'group'
+          ? 'Create all'
+          : loaded?.kind === 'agent'
+            ? 'Create agent'
+            : 'Create room';
   const intoRoomName = intoRoomId ? switchRoomsStore.roomNameById(intoRoomId) : null;
 
   const cancel = () =>
@@ -945,13 +996,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         })
       : []
   );
-  if (intoRoomId) {
+  if (targetRoomId) {
     createSteps.push({
       key: 'room',
-      label: `Add to ${intoRoomName ?? 'the room'}`,
+      label: `Add to ${targetRoomName ?? 'the room'}`,
       status: createStepStatus(roomStatus),
     });
-  } else if (loaded?.coreYaml && parsed && !(loaded.kind === 'agent' && !createRoom)) {
+  } else if (loaded?.coreYaml && parsed && !(isAgentTemplate && roomChoice !== 'new')) {
     const count = parsed.rooms.length;
     const hasKickoff = parsed.kickoff !== null || parsed.rooms.some((r) => r.kickoff);
     createSteps.push({
@@ -991,6 +1042,45 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           onChange={(e) => setNameOverride(e.target.value)}
           disabled={phase === 'creating'}
         />
+      </div>
+    </CollapsibleInput>
+  );
+
+  // For an agent template the name is how people see the agent; the
+  // identifier it is addressed by follows from it and is shown underneath.
+  const identifier = slotNames[0]?.final ?? '';
+  const agentNameField = isAgentTemplate && (
+    <CollapsibleInput
+      label="Name"
+      summary={`${displayName.trim() || identifier}${identifier ? `  ·  @${identifier}` : ''}`}
+      collapsed={isCollapsed('name') && displayName.trim() !== '' && identifier !== ''}
+      onOpen={() => open('name')}
+      wrap
+    >
+      <div className="flex flex-col gap-2">
+        <span className="text-[12.5px] font-medium">Name</span>
+        <Input
+          value={displayName}
+          onChange={(e) => {
+            setDisplayName(e.target.value);
+            setDisplayNameTouched(true);
+          }}
+          disabled={phase === 'creating'}
+        />
+        <div className="flex items-center gap-2 text-xs text-foreground-muted">
+          <span>Addressed as</span>
+          <Input
+            className="h-7 max-w-[260px] font-mono text-xs"
+            value={nameOverride ?? slotNames[0]?.wanted ?? ''}
+            onChange={(e) => setNameOverride(e.target.value)}
+            disabled={phase === 'creating'}
+          />
+          {identifier && identifier !== (nameOverride ?? slotNames[0]?.wanted) && (
+            <span>
+              taken, so <span className="font-mono">@{identifier}</span>
+            </span>
+          )}
+        </div>
       </div>
     </CollapsibleInput>
   );
@@ -1143,12 +1233,136 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     );
   });
 
+  // For an agent template the setup the page filled in sits behind one row.
+  // It opens by itself when something in it is unsettled.
+  const advancedSettled =
+    pickedProvider !== null &&
+    hostReachable &&
+    hostReady &&
+    slots[0] !== undefined &&
+    slots[0].dir !== '' &&
+    !slots[0].dirPicked;
+  const advancedGroup = isAgentTemplate && slots[0] && (
+    <CollapsibleInput
+      label="Advanced"
+      summary={[
+        pickedProvider ? (providerDisplayName(pickedProvider) ?? pickedProvider) : 'no provider',
+        runLocationLabel(runHost, allowedHosts),
+        slots[0].dir.replace(/^\/(?:Users|home)\/[^/]+/, '~'),
+      ].join('  ·  ')}
+      collapsed={isCollapsed('advanced') && advancedSettled}
+      onOpen={() => open('advanced')}
+      wrap
+    >
+      <div className="flex flex-col gap-5 rounded-[10px] border border-border px-4 py-4">
+        {!providerParam && (
+          <div className="flex flex-col gap-2">
+            <span className="text-[12.5px] font-medium">Provider</span>
+            {hostReachable ? (
+              <AgentTypePicker
+                value={pickedProvider}
+                onChange={setPickedProvider}
+                sshHost={sshHost ?? undefined}
+                onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+              />
+            ) : (
+              <p className="text-xs text-foreground-passive">Waiting for the host…</p>
+            )}
+          </div>
+        )}
+        {allowedHosts.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <span className="text-[12.5px] font-medium">Runs on</span>
+            <RunLocationSelect
+              value={runHost}
+              onChange={setRunHost}
+              hosts={allowedHosts}
+              disabled={phase === 'creating'}
+            />
+            {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
+            {isRemoteRun && hostReachable && !hostReadiness.checking && (
+              <HostReadinessNotice
+                sshHost={runHost}
+                readiness={hostReadiness}
+                onNavigateAway={() => navigate('remoteHosts')}
+              />
+            )}
+          </div>
+        )}
+        <div className="flex flex-col gap-2">
+          <span className="text-[12.5px] font-medium">Directory</span>
+          <SlotDirectoryField
+            slot={slots[0]}
+            onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === 0 ? next : x)))}
+            sshHost={sshHost}
+            busy={phase === 'creating'}
+          />
+        </div>
+      </div>
+    </CollapsibleInput>
+  );
+
+  // Step 2 of an agent template: the room it is talked to in.
+  const templateRoom = parsed?.rooms[0] ?? null;
+  const roomStep = isAgentTemplate && (
+    <div className="flex flex-col gap-4">
+      {roomChoice === 'pick' ? (
+        <>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-foreground-muted">
+              The agent joins the room you pick. Mention it there to start it. Leave it empty to
+              create the agent on its own.
+            </p>
+            <RoomPickField
+              rooms={lists.rooms}
+              loading={lists.roomsLoading}
+              value={pickedRoomId}
+              onChange={setPickedRoomId}
+            />
+          </div>
+          {templateRoom && (
+            <button
+              type="button"
+              onClick={() => setRoomChoice('new')}
+              className="w-max cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+            >
+              Or create a new room for it
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex flex-col gap-2">
+            <span className="text-[12.5px] font-medium">New room</span>
+            <p className="text-xs text-foreground-muted">
+              The template's room is created with the agent in it, and its first message is posted
+              for you.
+            </p>
+          </div>
+          {paramFields}
+          {memberLists}
+          <button
+            type="button"
+            onClick={() => setRoomChoice('pick')}
+            className="w-max cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+          >
+            Or pick a room that exists
+          </button>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <div className="flex shrink-0 items-start gap-4 border-b border-border px-8 pt-8 pb-5 [-webkit-app-region:drag]">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-xs text-foreground-passive">
-            {intoRoomId ? `Add an agent to ${intoRoomName ?? 'the room'}` : 'Use template'}
+            {intoRoomId
+              ? `Add an agent to ${intoRoomName ?? 'the room'}`
+              : isAgentTemplate
+                ? `Step ${step} of 2`
+                : 'Use template'}
           </span>
           <h2 className="truncate text-xl font-semibold tracking-tight">
             {loaded?.name ?? params.sourceName ?? 'Template'}
@@ -1167,12 +1381,23 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           )}
         >
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={cancel} disabled={phase !== 'form'}>
-              {params.yamlText && !intoRoomId ? 'Back to the document' : 'Cancel'}
-            </Button>
+            {isAgentTemplate && step === 2 && !partlyDone ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setStep(1)}
+                disabled={phase !== 'form'}
+              >
+                Back
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={cancel} disabled={phase !== 'form'}>
+                {params.yamlText && !intoRoomId ? 'Back to the document' : 'Cancel'}
+              </Button>
+            )}
             <Button
               size="sm"
-              onClick={() => void createAll()}
+              onClick={() => (isAgentTemplate && step === 1 ? setStep(2) : void createAll())}
               disabled={blockedReason !== null || phase !== 'form'}
               title={blockedReason ?? undefined}
             >
@@ -1270,17 +1495,28 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               )}
 
               <SectionTitle
-                title="Setup"
+                title={isAgentTemplate ? (step === 1 ? 'The agent' : 'Room') : 'Setup'}
                 hint={
-                  blockedReason === null && prefilled.size > 0
-                    ? 'Filled in for you. Change anything, or create it as it is.'
-                    : 'Values are substituted into the template. Nothing is created until you confirm.'
+                  isAgentTemplate
+                    ? undefined
+                    : blockedReason === null && prefilled.size > 0
+                      ? 'Filled in for you. Change anything, or create it as it is.'
+                      : 'Values are substituted into the template. Nothing is created until you confirm.'
                 }
               />
-              {templateParams.length === 0 && !showNameField && (
+              {!isAgentTemplate && templateParams.length === 0 && !showNameField && (
                 <p className="text-sm text-foreground-muted">This template asks for nothing.</p>
               )}
-              {singleNewAgent ? (
+              {isAgentTemplate ? (
+                step === 1 ? (
+                  <>
+                    {agentNameField}
+                    {advancedGroup}
+                  </>
+                ) : (
+                  roomStep
+                )
+              ) : singleNewAgent ? (
                 <>
                   {nameField}
                   {providerField}
@@ -1334,7 +1570,32 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                     <p className="text-xs text-foreground-muted">
                       The new agent joins the room you came from; no room is made.
                     </p>
+                  ) : isAgentTemplate && step === 2 ? (
+                    roomChoice === 'new' && templateRoom ? (
+                      <RoomCard
+                        room={templateRoom}
+                        values={railValues}
+                        renames={railRenames}
+                        bridgeName={templateBridge?.displayName ?? parsed?.bridge ?? null}
+                        creatorIdentity={creatorIdentity}
+                        status={roomStatus}
+                        toggle={null}
+                      />
+                    ) : pickedRoomId ? (
+                      <p className="text-xs text-foreground-muted">
+                        {identifier || 'The agent'} joins{' '}
+                        <span className="font-medium text-foreground">
+                          {switchRoomsStore.roomNameById(pickedRoomId) ?? 'the room'}
+                        </span>
+                        . Mention it there to start it.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-foreground-muted">
+                        No room. The agent is created and can be added to one later.
+                      </p>
+                    )
                   ) : (
+                    !isAgentTemplate &&
                     parsed?.rooms.map((room, i) => (
                       <RoomCard
                         key={i}
@@ -1344,27 +1605,25 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                         bridgeName={templateBridge?.displayName ?? parsed.bridge}
                         creatorIdentity={creatorIdentity}
                         status={roomStatus}
-                        toggle={
-                          loaded?.kind === 'agent' && phase === 'form'
-                            ? { checked: createRoom, onChange: setCreateRoom }
-                            : null
-                        }
+                        toggle={null}
                       />
                     ))
                   )}
-                  {slots.map((slot, i) => (
-                    <AgentSlotCard
-                      key={i}
-                      slot={slot}
-                      wantedName={slotNames[i]?.wanted ?? ''}
-                      finalName={slotNames[i]?.final ?? ''}
-                      onChange={(next) =>
-                        setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
-                      }
-                      lists={{ ...lists, agents: agentsAtLocation }}
-                      locationLabel={runLocationLabel(runHost, allowedHosts)}
-                    />
-                  ))}
+                  {(!isAgentTemplate || step === 1) &&
+                    slots.map((slot, i) => (
+                      <AgentSlotCard
+                        key={i}
+                        slot={slot}
+                        wantedName={slotNames[i]?.wanted ?? ''}
+                        finalName={slotNames[i]?.final ?? ''}
+                        onChange={(next) =>
+                          setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
+                        }
+                        lists={{ ...lists, agents: agentsAtLocation }}
+                        locationLabel={runLocationLabel(runHost, allowedHosts)}
+                        choice={!isAgentTemplate}
+                      />
+                    ))}
                 </div>
                 <ResolvedDocument
                   yamlText={loaded.yamlText}

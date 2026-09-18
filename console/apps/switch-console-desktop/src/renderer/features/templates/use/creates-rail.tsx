@@ -215,6 +215,7 @@ export function AgentSlotCard({
   onChange,
   lists,
   locationLabel,
+  choice = true,
 }: {
   slot: AgentSlot;
   /** The name the deployer asked for; see `slotWantedName`. */
@@ -225,6 +226,9 @@ export function AgentSlotCard({
   lists: EntityLists;
   /** The run location's display name, shown under the existing-agent picker. */
   locationLabel: string;
+  /** Whether the deployer may point the slot at an existing agent. An agent
+   * template always makes a new one, so its card offers no choice. */
+  choice?: boolean;
 }) {
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
   const shownName =
@@ -253,43 +257,45 @@ export function AgentSlotCard({
 
       {/* An agent that exists can no longer change how it is made, even when a
           later step for it failed. */}
-      {(slot.status === 'idle' || slot.status === 'failed') && slot.createdName === null && (
-        <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
-          <SegmentedControl
-            value={slot.mode}
-            onChange={(mode) => onChange({ ...slot, mode })}
-            options={[
-              { value: 'new', label: 'New agent' },
-              { value: 'existing', label: 'Existing agent' },
-            ]}
-            ariaLabel={`How to fill ${wantedName || 'this agent'}`}
-            className="w-max"
-          />
-          {slot.mode === 'existing' ? (
-            <div className="flex flex-col gap-1.5">
-              <AgentField
-                value={slot.existingName}
-                onChange={(name) => onChange({ ...slot, existingName: name })}
-                lists={lists}
-              />
-              <p className="text-[11px] text-foreground-passive">
-                {lists.agents.length === 0
-                  ? `No agent of yours runs on ${locationLabel} yet.`
-                  : `Agents of yours that run on ${locationLabel}.`}
-              </p>
-            </div>
-          ) : (
-            <>
-              {finalName !== wantedName && finalName !== '' && (
-                <p className="text-[11.5px] text-foreground-muted">
-                  An agent called {wantedName} already exists on this server, so this one will be{' '}
-                  <span className="font-mono">{finalName}</span>.
+      {(slot.status === 'idle' || slot.status === 'failed') &&
+        slot.createdName === null &&
+        choice && (
+          <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
+            <SegmentedControl
+              value={slot.mode}
+              onChange={(mode) => onChange({ ...slot, mode })}
+              options={[
+                { value: 'new', label: 'New agent' },
+                { value: 'existing', label: 'Existing agent' },
+              ]}
+              ariaLabel={`How to fill ${wantedName || 'this agent'}`}
+              className="w-max"
+            />
+            {slot.mode === 'existing' ? (
+              <div className="flex flex-col gap-1.5">
+                <AgentField
+                  value={slot.existingName}
+                  onChange={(name) => onChange({ ...slot, existingName: name })}
+                  lists={lists}
+                />
+                <p className="text-[11px] text-foreground-passive">
+                  {lists.agents.length === 0
+                    ? `No agent of yours runs on ${locationLabel} yet.`
+                    : `Agents of yours that run on ${locationLabel}.`}
                 </p>
-              )}
-            </>
-          )}
-        </div>
-      )}
+              </div>
+            ) : (
+              <>
+                {finalName !== wantedName && finalName !== '' && (
+                  <p className="text-[11.5px] text-foreground-muted">
+                    An agent called {wantedName} already exists on this server, so this one will be{' '}
+                    <span className="font-mono">{finalName}</span>.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
       {slot.status !== 'idle' && (
         <div className="mt-2 flex flex-col gap-1">
           <StatusLine slot={slot} />

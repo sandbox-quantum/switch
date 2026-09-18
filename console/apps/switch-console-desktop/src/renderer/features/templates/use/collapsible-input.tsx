@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { cn } from '@renderer/utils/utils';
 
 /**
  * An input the page already filled in shows as one line, its label and its
@@ -11,6 +12,7 @@ export function CollapsibleInput({
   collapsed,
   onOpen,
   disabled,
+  wrap = false,
   children,
 }: {
   label: string;
@@ -18,6 +20,8 @@ export function CollapsibleInput({
   collapsed: boolean;
   onOpen: () => void;
   disabled?: boolean;
+  /** Let a long summary wrap instead of being cut. */
+  wrap?: boolean;
   children: ReactNode;
 }) {
   if (!collapsed) return <>{children}</>;
@@ -25,7 +29,10 @@ export function CollapsibleInput({
     <div className="flex items-center gap-3 rounded-[10px] border border-border px-3 py-2.5">
       <span className="w-[104px] shrink-0 truncate text-[12.5px] font-medium">{label}</span>
       <span
-        className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-foreground-muted"
+        className={cn(
+          'min-w-0 flex-1 font-mono text-[12.5px] text-foreground-muted',
+          wrap ? 'break-words' : 'truncate'
+        )}
         title={summary}
       >
         {summary}

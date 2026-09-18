@@ -13,9 +13,10 @@ room:
   agents: ["{agent}", helper]
 `);
     expect(counts(s)).toEqual({ kind: 'agent', rooms: 1, agents: 1, inputs: 0 });
+    // The room is optional on the Use page, so the card names the agent alone.
     expect(describeSummary(s)).toEqual({
-      creates: 'Creates 1 room and 1 agent',
-      inputs: 'no inputs',
+      creates: 'Creates an agent',
+      inputs: 'nothing to fill in',
     });
   });
 
