@@ -16,7 +16,15 @@ class FakeWebClient:
         self.api_calls: list[tuple[str, dict[str, Any]]] = []
         self.posted: list[dict[str, Any]] = []
         self.updated: list[dict[str, Any]] = []
+        # Every chat.update the adapter tried, refused ones included. `updated`
+        # holds only those Slack took, so a test that an edit was never sent in
+        # a particular shape has to read the attempts.
+        self.update_attempts: list[dict[str, Any]] = []
         self.update_error: str | None = None
+        # Errors for successive chat.update calls, oldest first; a None is a
+        # call that succeeds. Emptied as it is used, then `update_error` applies
+        # again — which is the sticky form most tests want.
+        self.update_errors: list[str | None] = []
         self.deleted: list[dict[str, Any]] = []
         self.reactions: list[tuple[str, str, str]] = []
         self.reaction_error: str | None = None
@@ -34,6 +42,7 @@ class FakeWebClient:
         self.stopped: list[dict[str, Any]] = []
         self.start_error: str | None = None
         self.append_error: str | None = None
+        self.stop_error: str | None = None
         self._ts = 0
 
     async def api_call(self, method: str, **kwargs: Any) -> FakeResponse:
@@ -70,8 +79,10 @@ class FakeWebClient:
         return FakeResponse({"ok": True})
 
     async def chat_update(self, **kwargs: Any) -> FakeResponse:
-        if self.update_error:
-            raise SlackApiError("failed", FakeResponse({"error": self.update_error}))
+        self.update_attempts.append(kwargs)
+        error = self.update_errors.pop(0) if self.update_errors else self.update_error
+        if error:
+            raise SlackApiError("failed", FakeResponse({"error": error}))
         self.updated.append(kwargs)
         return FakeResponse({"ok": True})
 
@@ -89,6 +100,8 @@ class FakeWebClient:
         return FakeResponse({"ok": True})
 
     async def chat_stopStream(self, **kwargs: Any) -> FakeResponse:
+        if self.stop_error:
+            raise SlackApiError("no", FakeResponse({"error": self.stop_error}))
         self.stopped.append(kwargs)
         return FakeResponse({"ok": True})
 

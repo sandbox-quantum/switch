@@ -196,6 +196,15 @@ _STREAM_CLOSED_ERRORS = frozenset(
     }
 )
 
+# Slack is still holding this message open as a stream and refuses an ordinary
+# edit until something closes it. The open-stream registry lives on the adapter
+# and nowhere else, so a restart strands every stream that was open at the
+# time: Slack keeps the streaming state, this process no longer knows the
+# message was ever a stream, and the turn it belonged to has already ended, so
+# no append is coming to notice. Without closing it here the message is refused
+# every edit for the rest of its life.
+_STREAMING_CONFLICT = "streaming_state_conflict"
+
 
 @dataclass
 class _ActivityStream:
@@ -557,22 +566,9 @@ class SlackAdapter(CollaborationAdapter):
         card left showing buttons for a request that has already settled invites
         a press that cannot land — so it has to be able to say so instead.
         """
-        if not self._web_client:
-            raise RuntimeError("Cannot update blocks: Slack client not connected.")
-        _, ts = self._parse_message_ref(message_ref)
-        if not ts:
-            raise ValueError(
-                f"Cannot update blocks: invalid message ref {message_ref}."
-            )
-        arguments: dict[str, Any] = dict(
-            channel=channel_id,
-            ts=ts,
-            text=text,
-            blocks=blocks,
-            **_publication_metadata(blocks),
-        )
+        metadata = _publication_metadata(blocks)
         try:
-            await self._web_client.chat_update(**arguments)
+            await self._write_blocks(channel_id, message_ref, text, blocks, metadata)
         except SlackApiError as exc:
             if exc.response.get("error") not in _BLOCK_FORMAT_ERRORS:
                 raise
@@ -582,8 +578,43 @@ class SlackAdapter(CollaborationAdapter):
                 exc.response.get("error"),
             )
             # Clear stale interactive controls without creating a second post.
-            arguments["blocks"] = []
-            await self._web_client.chat_update(**arguments)
+            await self._write_blocks(channel_id, message_ref, text, [], metadata)
+
+    async def _write_blocks(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> None:
+        """One `chat.update`, with no fallback of its own.
+
+        Separate from `update_blocks` because the text fallback there is only
+        right for a message whose blocks Slack has judged malformed. A caller
+        recovering a message drawn in two sections must not reach it: that edit
+        is refused for the shape of the message rather than the shape of the
+        update, and answering it with an empty `blocks` would take a finished
+        turn off the screen to fix a spinner.
+
+        `metadata` is passed rather than read off `blocks` because the message
+        keeps the token that identifies it whatever its blocks end up being —
+        the fallback above clears the blocks and must not clear that with them.
+        """
+        if not self._web_client:
+            raise RuntimeError("Cannot update blocks: Slack client not connected.")
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot update blocks: invalid message ref {message_ref}."
+            )
+        await self._web_client.chat_update(
+            channel=channel_id,
+            ts=ts,
+            text=text,
+            blocks=blocks,
+            **metadata,
+        )
 
     async def post_rich(
         self,
@@ -677,10 +708,78 @@ class SlackAdapter(CollaborationAdapter):
                 raise RichContentThrottled(
                     retry_after=delay, text=message.text
                 ) from error
+            if error.response.get("error") == _STREAMING_CONFLICT:
+                await self._redraw_stranded_stream(channel_id, message_ref, message)
+                return
             raise RichContentFailed(
                 f"Slack could not update the message in channel {channel_id}: {error}",
                 text=message.text,
             ) from error
+
+    async def _redraw_stranded_stream(
+        self, channel_id: str, message_ref: str, message: SlackMessage
+    ) -> None:
+        """Close a stream this process has forgotten, then draw the turn again.
+
+        Reached when Slack refuses an edit because the message is still open as
+        a stream that nothing here remembers opening — see `_STREAMING_CONFLICT`.
+        Closing it is what makes this terminate: the message can only be
+        stranded once, so a publication that arrives after this one is an
+        ordinary edit whatever happens below.
+
+        The redraw is deliberately `_write_blocks` rather than `update_blocks`.
+        A message a stream drew in two sections cannot be edited at all, and the
+        turn is already whole on the screen — only the status heading is stale.
+        Answering that refusal with the empty-blocks fallback would replace a
+        finished turn with nothing, so it is recorded as unredrawable instead
+        and left exactly as the stream wrote it.
+        """
+        client = self._web_client
+        if client is None:
+            raise RuntimeError("Cannot close an activity stream: Slack disconnected.")
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot close an activity stream: invalid message ref {message_ref}."
+            )
+        self._streams.pop(message_ref, None)
+        try:
+            await client.chat_stopStream(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            raise RichContentFailed(
+                f"Slack refused an edit to {message_ref} because it is still "
+                f"streaming, and would not close the stream either: "
+                f"{error.response.get('error')}",
+                text=message.text,
+            ) from error
+        logger.warning(
+            "Closed the activity stream %s, which Slack still held open after "
+            "this process lost its record of it; the turn it belonged to has "
+            "already ended.",
+            message_ref,
+        )
+        try:
+            await self._write_blocks(
+                channel_id,
+                message_ref,
+                message.text,
+                message.blocks,
+                _publication_metadata(message.blocks),
+            )
+        except SlackApiError as error:
+            if error.response.get("error") not in _BLOCK_FORMAT_ERRORS:
+                raise RichContentFailed(
+                    f"Slack could not update the message in channel {channel_id} "
+                    f"after closing its stream: {error}",
+                    text=message.text,
+                ) from error
+            self._remember_unredrawable(message_ref, warned=True)
+            logger.warning(
+                "The activity message %s was drawn in sections an edit cannot "
+                "replace, so it keeps the status its stream last wrote. The turn "
+                "itself is complete and stands as it is.",
+                message_ref,
+            )
 
     @staticmethod
     def _retry_after(error: SlackApiError) -> float:
@@ -846,7 +945,16 @@ class SlackAdapter(CollaborationAdapter):
         sections = sum(block.get("type") == "plan" for block in stream.blocks.values())
         if sections < 2:
             return
-        self._unredrawable[message_ref] = False
+        self._remember_unredrawable(message_ref, warned=False)
+
+    def _remember_unredrawable(self, message_ref: str, warned: bool) -> None:
+        """Note that no edit can replace this message, and whether that is said.
+
+        `warned` is False where the reason has yet to be given, so the first
+        publication to be declined says it; True where the caller has already
+        said it in terms of its own, which are more use than the general form.
+        """
+        self._unredrawable[message_ref] = warned
         self._unredrawable.move_to_end(message_ref)
         while len(self._unredrawable) > _MAX_OPEN_STREAMS:
             self._unredrawable.popitem(last=False)

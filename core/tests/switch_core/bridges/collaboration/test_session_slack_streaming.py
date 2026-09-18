@@ -1040,6 +1040,154 @@ async def test_a_throttled_append_asks_the_caller_to_wait_and_keeps_the_stream(
     ]
 
 
+# ── When a restart strands a stream ──────────────────────────────────────────
+#
+# The open-stream registry is held on the adapter and written nowhere else, so
+# a restart loses it while Slack keeps its side. The message is then in a state
+# no code here knows about: Slack refuses every edit to it as a
+# `streaming_state_conflict`, and the turn it belonged to has already ended, so
+# no append is coming that would notice. Observed in a live workspace, where a
+# rebuild left twenty-two turns showing a spinner days after they finished,
+# each one re-attempted every thirty seconds and refused every time.
+#
+# Closing the stream is what makes the retry terminate: a message can only be
+# stranded once.
+
+
+def _strand(adapter: SlackAdapter, ref: str) -> None:
+    """Lose the record of an open stream, as a restart does."""
+    adapter._streams.pop(ref)
+
+
+async def test_an_edit_refused_by_a_stranded_stream_closes_it_and_draws_the_turn(
+    caplog: Any,
+) -> None:
+    """The fix for the loop: close what Slack is still holding, then edit."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict", None]
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert [(call["channel"], call["ts"]) for call in client.stopped] == [
+        (CHANNEL, "1.0")
+    ]
+    assert [call["ts"] for call in client.updated] == ["1.0"]
+    assert "still held open" in caplog.text
+
+
+async def test_a_stranded_stream_is_closed_once_and_then_edited_like_any_message() -> (
+    None
+):
+    """Termination, which is the point. The second publication is an ordinary
+    edit: nothing is left to conflict with, so nothing is closed again."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict", None]
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 14.0), THREAD
+    )
+
+    assert len(client.stopped) == 1
+    assert [call["ts"] for call in client.updated] == ["1.0", "1.0"]
+
+
+async def test_a_stranded_two_section_turn_is_kept_rather_than_blanked(
+    caplog: Any,
+) -> None:
+    """The trap in the obvious version of this fix.
+
+    `update_blocks` answers a refusal of the blocks with an empty `blocks`
+    array, which clears stale controls off a card Slack judged malformed. A
+    message a stream drew in two sections is refused for its own shape rather
+    than the edit's, and it is already showing the whole finished turn — so
+    reaching that fallback here would take the turn off the screen to fix a
+    spinner. It is recorded as unredrawable and left alone instead.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict", "invalid_blocks"]
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
+        )
+
+    assert client.stopped != []
+    assert client.updated == []
+    assert [call["blocks"] for call in client.update_attempts].count([]) == 0
+    assert adapter._unredrawable[ref] is True
+    assert "keeps the status its stream last wrote" in caplog.text
+
+
+async def test_a_stranded_message_left_unredrawable_is_not_edited_again() -> None:
+    """Having said so once, later publications are declined without a call."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict", "invalid_blocks"]
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
+    )
+    attempts = len(client.update_attempts)
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 14.0), THREAD
+    )
+
+    assert len(client.update_attempts) == attempts
+
+
+async def test_a_stream_slack_will_not_close_is_reported_rather_than_looped_on() -> (
+    None
+):
+    """If the stream cannot be closed the conflict stands, and the caller is
+    told which of the two calls failed — the edit or the close."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    client.stop_error = "message_not_found"
+    with pytest.raises(RichContentFailed) as refused:
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert "would not close the stream" in str(refused.value)
+    assert "message_not_found" in str(refused.value)
+
+
 # ── End to end, through the publisher ────────────────────────────────────────
 
 
