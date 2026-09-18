@@ -1092,6 +1092,8 @@ class TemplateSummary(BaseModel):
     name: str
     description: str
     kind: str
+    read_visibility: str
+    write_visibility: str
     version: int
     size_bytes: int
     created_at: str
@@ -1120,6 +1122,9 @@ class TemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
+    # Shared with the workspace and changed only by the owner, unless said otherwise.
+    read_visibility: str = "public"
+    write_visibility: str = "private"
     content: str = Field(min_length=1)
 
 
@@ -1130,6 +1135,8 @@ class TemplateUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str | None = Field(default=None, min_length=1)
+    read_visibility: str | None = None
+    write_visibility: str | None = None
 
 
 class TemplateDeleteResponse(BaseModel):
