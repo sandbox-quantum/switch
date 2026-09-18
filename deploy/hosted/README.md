@@ -97,6 +97,12 @@ scale the Deployment or bypass its reconciliation lock. Startup/readiness/livene
 probes check a local progress timestamp, not cloud or provider readiness; handled
 AWS failures remain visible in assignment status without causing restart loops.
 
+Before a standalone controller upgrade, stop the old reconciler and back up its
+SQLite database. The Helm chart uses Recreate so the old pod stops before the new
+one starts. The observation-schema upgrade preserves assignment and cloud resource
+identities, but old observations must be refreshed before they can authorize deletion.
+Do not run an older controller binary against the upgraded database.
+
 The controller is trusted to provision all configured assignments. Its IAM role
 can pass the configured worker roles; IAM is not a substitute for the controller's
 agent-to-role binding checks. Audit secret resource policies and KMS key policies
@@ -124,7 +130,11 @@ switch-hosted-controller --config /etc/switch-hosted/controller.json reconcile-o
 switch-hosted-controller --config /etc/switch-hosted/controller.json serve
 ```
 
-A queued command is not confirmation that AWS has completed it. `Running` describes
+A queued command is not confirmation that AWS has completed it. Desired-state
+changes invalidate prior observations; stopped evidence must belong to the current
+operation before deletion is accepted. A delayed response from an older operation
+cannot certify a newer one. After deletion is accepted, a late-started instance is
+stopped and terminated before disk cleanup proceeds. `Running` describes
 the infrastructure, not provider authentication/readiness. Inspect worker service
 status and Switch session state before calling the coding agent ready. Stop/start
 retains disk contents and native state; it does not promise to resume an interrupted

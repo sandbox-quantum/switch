@@ -47,6 +47,8 @@ class AgentStore:
                 volume_id TEXT,
                 volume_az TEXT,
                 observed_state TEXT NOT NULL,
+                observed_revision INTEGER NOT NULL DEFAULT 0,
+                observed_operation_id TEXT,
                 last_error TEXT,
                 delete_volume INTEGER NOT NULL DEFAULT 0,
                 volume_create_intent INTEGER NOT NULL DEFAULT 0,
@@ -64,10 +66,27 @@ class AgentStore:
             );
             """
         )
+        self._migrate_schema()
         self._bind_fingerprint(controller_fingerprint)
 
     def close(self) -> None:
         self._connection.close()
+
+    def _migrate_schema(self) -> None:
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(agents)")}
+            if "observed_revision" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE agents ADD COLUMN observed_revision INTEGER NOT NULL DEFAULT 0"
+                )
+            if "observed_operation_id" not in columns:
+                self._connection.execute("ALTER TABLE agents ADD COLUMN observed_operation_id TEXT")
+            self._connection.execute("COMMIT")
+        except Exception:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
 
     def _bind_fingerprint(self, fingerprint: str) -> None:
         self._connection.execute("BEGIN IMMEDIATE")
@@ -138,8 +157,8 @@ class AgentStore:
                 INSERT INTO agents (
                     agent_id, generation, desired_state, desired_revision, operation_id,
                     instance_type, image_id, assignment_secret_arn, instance_profile_arn,
-                    observed_state
-                ) VALUES (?, 1, ?, 1, ?, ?, ?, ?, ?, ?)
+                    observed_state, observed_revision, observed_operation_id
+                ) VALUES (?, 1, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     agent_id,
@@ -150,6 +169,7 @@ class AgentStore:
                     assignment_secret_arn,
                     instance_profile_arn,
                     ObservedState.PENDING.value,
+                    operation_id,
                 ),
             )
             self._connection.execute("COMMIT")
@@ -173,22 +193,36 @@ class AgentStore:
             if desired is DesiredState.DELETED and (
                 current.desired_state is not DesiredState.STOPPED
                 or current.observed_state is not ObservedState.STOPPED
+                or current.observed_revision != current.desired_revision
+                or current.observed_operation_id != current.operation_id
             ):
-                raise StoreError("agent must be desired and observed stopped before deletion")
+                raise StoreError(
+                    "agent must be desired and freshly observed stopped before deletion"
+                )
             if desired is current.desired_state and (
                 desired is not DesiredState.DELETED or delete_volume == current.delete_volume
             ):
                 self._connection.execute("COMMIT")
                 return current
+            operation_id = str(uuid.uuid4())
             self._connection.execute(
                 """
                 UPDATE agents
                 SET desired_state = ?, desired_revision = desired_revision + 1,
-                    operation_id = ?, delete_volume = ?, last_error = NULL,
+                    operation_id = ?, delete_volume = ?, observed_state = ?,
+                    observed_revision = desired_revision + 1,
+                    observed_operation_id = ?, last_error = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE agent_id = ?
                 """,
-                (desired.value, str(uuid.uuid4()), int(delete_volume), agent_id),
+                (
+                    desired.value,
+                    operation_id,
+                    int(delete_volume),
+                    ObservedState.PENDING.value,
+                    operation_id,
+                    agent_id,
+                ),
             )
             self._connection.execute("COMMIT")
             return self.get(agent_id)
@@ -197,45 +231,30 @@ class AgentStore:
                 self._connection.execute("ROLLBACK")
             raise
 
-    def mark_volume_create_intent(self, agent_id: str) -> Agent:
-        self._mark_intent(agent_id, "volume_create_intent")
-        return self.get(agent_id)
+    def mark_volume_create_intent(self, claim: Agent) -> Agent:
+        return self._mark_intent(claim, "volume_create_intent")
 
-    def mark_instance_launch_intent(self, agent_id: str) -> Agent:
-        self._mark_intent(agent_id, "instance_launch_intent")
-        return self.get(agent_id)
+    def mark_instance_launch_intent(self, claim: Agent) -> Agent:
+        return self._mark_intent(claim, "instance_launch_intent")
 
-    def mark_volume_create_issued(self, agent_id: str) -> Agent:
-        self._mark_intent(agent_id, "volume_create_issued")
-        return self.get(agent_id)
+    def mark_volume_create_issued(self, claim: Agent) -> Agent:
+        return self._mark_intent(claim, "volume_create_issued")
 
-    def mark_instance_launch_issued(self, agent_id: str) -> Agent:
-        self._mark_intent(agent_id, "instance_launch_issued")
-        return self.get(agent_id)
+    def mark_instance_launch_issued(self, claim: Agent) -> Agent:
+        return self._mark_intent(claim, "instance_launch_issued")
 
-    def cancel_queued_volume_create(self, agent_id: str) -> Agent:
-        current = self.get(agent_id)
-        if current.volume_create_issued:
+    def cancel_queued_volume_create(self, claim: Agent) -> Agent:
+        if claim.volume_create_issued:
             raise StoreError("cannot cancel an issued volume create")
-        self._connection.execute(
-            "UPDATE agents SET volume_create_intent = 0, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?",
-            (agent_id,),
-        )
-        return self.get(agent_id)
+        return self._cas_update(claim, "volume_create_intent = 0")
 
-    def cancel_queued_instance_launch(self, agent_id: str) -> Agent:
-        current = self.get(agent_id)
-        if current.instance_launch_issued:
+    def cancel_queued_instance_launch(self, claim: Agent) -> Agent:
+        if claim.instance_launch_issued:
             raise StoreError("cannot cancel an issued instance launch")
-        self._connection.execute(
-            "UPDATE agents SET instance_launch_intent = 0, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?",
-            (agent_id,),
-        )
-        return self.get(agent_id)
+        return self._cas_update(claim, "instance_launch_intent = 0")
 
-    def mark_volume_delete_issued(self, agent_id: str) -> Agent:
-        self._mark_intent(agent_id, "volume_delete_issued")
-        return self.get(agent_id)
+    def mark_volume_delete_issued(self, claim: Agent) -> Agent:
+        return self._mark_intent(claim, "volume_delete_issued")
 
     def record_volume(self, agent_id: str, volume_id: str, availability_zone: str) -> Agent:
         self._set_once(agent_id, "volume_id", volume_id, extra=("volume_az", availability_zone))
@@ -245,28 +264,40 @@ class AgentStore:
         self._set_once(agent_id, "instance_id", instance_id)
         return self.get(agent_id)
 
-    def mark_instance_terminal_observed(self, agent_id: str) -> Agent:
-        cursor = self._connection.execute(
-            "UPDATE agents SET instance_terminal_observed = 1, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?",
-            (agent_id,),
-        )
-        if cursor.rowcount != 1:
-            raise AgentNotFoundError(agent_id)
-        return self.get(agent_id)
-
-    def set_observed(
-        self, agent_id: str, observed: ObservedState, last_error: str | None = None
-    ) -> Agent:
+    def mark_instance_terminal_observed(self, agent_id: str, instance_id: str) -> Agent:
         cursor = self._connection.execute(
             """
-            UPDATE agents SET observed_state = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ?
+            UPDATE agents SET instance_terminal_observed = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ? AND instance_id = ?
             """,
-            (observed.value, last_error, agent_id),
+            (agent_id, instance_id),
         )
-        if cursor.rowcount != 1:
-            raise AgentNotFoundError(agent_id)
-        return self.get(agent_id)
+        current = self.get(agent_id)
+        if cursor.rowcount != 1 and current.instance_id != instance_id:
+            raise StoreError("terminal observation does not match recorded instance")
+        return current
+
+    def set_observed(
+        self, claim: Agent, observed: ObservedState, last_error: str | None = None
+    ) -> Agent:
+        self._connection.execute(
+            """
+            UPDATE agents
+            SET observed_state = ?, observed_revision = ?, observed_operation_id = ?,
+                last_error = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            """,
+            (
+                observed.value,
+                claim.desired_revision,
+                claim.operation_id,
+                last_error,
+                claim.agent_id,
+                claim.desired_revision,
+                claim.operation_id,
+            ),
+        )
+        return self.get(claim.agent_id)
 
     def get(self, agent_id: str) -> Agent:
         return self._get_row(agent_id)
@@ -285,7 +316,7 @@ class AgentStore:
             raise AgentNotFoundError(f"unknown agent {agent_id!r}")
         return _agent(row)
 
-    def _mark_intent(self, agent_id: str, column: str) -> None:
+    def _mark_intent(self, claim: Agent, column: str) -> Agent:
         if column not in {
             "volume_create_intent",
             "volume_create_issued",
@@ -294,34 +325,46 @@ class AgentStore:
             "volume_delete_issued",
         }:
             raise ValueError("invalid intent column")
-        cursor = self._connection.execute(
-            f"UPDATE agents SET {column} = 1, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?",
-            (agent_id,),
+        return self._cas_update(claim, f"{column} = 1")
+
+    def _cas_update(self, claim: Agent, assignment: str) -> Agent:
+        self._connection.execute(
+            f"""
+            UPDATE agents SET {assignment}, updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            """,
+            (claim.agent_id, claim.desired_revision, claim.operation_id),
         )
-        if cursor.rowcount != 1:
-            raise AgentNotFoundError(agent_id)
+        return self.get(claim.agent_id)
 
     def _set_once(
         self, agent_id: str, column: str, value: str, extra: tuple[str, str] | None = None
     ) -> None:
         if column not in {"instance_id", "volume_id"}:
             raise ValueError("invalid set-once column")
-        current = self._get_row(agent_id)
-        existing = getattr(current, column)
-        if existing is not None and existing != value:
-            raise StoreError(f"refusing to replace recorded {column}")
-        assignments = [f"{column} = ?", "updated_at = CURRENT_TIMESTAMP"]
-        values: list[str] = [value]
-        if extra is not None:
-            extra_column, extra_value = extra
-            if extra_column != "volume_az":
-                raise ValueError("invalid extra column")
-            assignments.insert(1, f"{extra_column} = ?")
-            values.append(extra_value)
-        values.append(agent_id)
-        self._connection.execute(
-            f"UPDATE agents SET {', '.join(assignments)} WHERE agent_id = ?", values
-        )
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = self._get_row(agent_id)
+            existing = getattr(current, column)
+            if existing is not None and existing != value:
+                raise StoreError(f"refusing to replace recorded {column}")
+            assignments = [f"{column} = ?", "updated_at = CURRENT_TIMESTAMP"]
+            values: list[str] = [value]
+            if extra is not None:
+                extra_column, extra_value = extra
+                if extra_column != "volume_az":
+                    raise ValueError("invalid extra column")
+                assignments.insert(1, f"{extra_column} = ?")
+                values.append(extra_value)
+            values.append(agent_id)
+            self._connection.execute(
+                f"UPDATE agents SET {', '.join(assignments)} WHERE agent_id = ?", values
+            )
+            self._connection.execute("COMMIT")
+        except Exception:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
 
 
 def _agent(row: sqlite3.Row) -> Agent:
@@ -339,6 +382,8 @@ def _agent(row: sqlite3.Row) -> Agent:
         volume_id=row["volume_id"],
         volume_az=row["volume_az"],
         observed_state=ObservedState(row["observed_state"]),
+        observed_revision=row["observed_revision"],
+        observed_operation_id=row["observed_operation_id"],
         last_error=row["last_error"],
         delete_volume=bool(row["delete_volume"]),
         volume_create_intent=bool(row["volume_create_intent"]),

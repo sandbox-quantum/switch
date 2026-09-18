@@ -36,6 +36,8 @@ class Agent:
     volume_id: str | None
     volume_az: str | None
     observed_state: ObservedState
+    observed_revision: int
+    observed_operation_id: str | None
     last_error: str | None
     delete_volume: bool
     volume_create_intent: bool
