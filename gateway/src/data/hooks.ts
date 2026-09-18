@@ -56,6 +56,7 @@ import {
   fetchRoomReferences,
   fetchRooms,
   fetchTemplates,
+  type TemplateFilter,
   fetchUsers,
 } from "./api";
 
@@ -323,7 +324,13 @@ export function usePackageDocuments(
   return useQuery(fetcher);
 }
 
-export function useTemplates(search?: string): UseQueryResult<TemplateSummary[]> {
-  const fetcher = useCallback(() => fetchTemplates(search), [search]);
+export function useTemplates(
+  filter: TemplateFilter = {},
+): UseQueryResult<TemplateSummary[]> {
+  const { q, kind, owner_id } = filter;
+  const fetcher = useCallback(
+    () => fetchTemplates({ q, kind, owner_id }),
+    [q, kind, owner_id],
+  );
   return useQuery(fetcher);
 }

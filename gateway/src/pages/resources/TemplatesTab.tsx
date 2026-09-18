@@ -24,37 +24,41 @@ export default function TemplatesTab({ refreshKey }: Props) {
     const timer = window.setTimeout(() => setSearchSent(search.trim()), 250);
     return () => window.clearTimeout(timer);
   }, [search]);
-  const { data: templates, loading, error, refetch } = useTemplates(searchSent);
   const [ownerId, setOwnerId] = useState<string>("");
   const [kind, setKind] = useState<string>("");
+  // Every filter is the server's. The whole catalogue is fetched once more,
+  // unfiltered, so the owner and kind options do not shrink to what the
+  // current search happens to match and hide the value that is selected.
+  const { data: catalogue, refetch: refetchCatalogue } = useTemplates();
+  const {
+    data: templates,
+    loading,
+    error,
+    refetch,
+  } = useTemplates({ q: searchSent, kind, owner_id: ownerId });
 
   useEffect(() => {
     refetch();
+    refetchCatalogue();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   const owners = useMemo(() => {
     const m = new Map<string, string>();
-    for (const t of templates ?? []) {
+    for (const t of catalogue ?? []) {
       m.set(t.owner_id, t.owner_name ?? t.owner_id);
     }
     return [...m.entries()].map(([id, name]) => ({ id, name }));
-  }, [templates]);
+  }, [catalogue]);
 
   // Kinds are free text on the server, so the filter offers whatever is
   // actually in the registry rather than a list this page would have to grow.
   const kinds = useMemo(() => {
-    const seen = new Set((templates ?? []).map((t) => t.kind));
+    const seen = new Set((catalogue ?? []).map((t) => t.kind));
     return [...seen].sort().map((k) => ({ value: k, label: k }));
-  }, [templates]);
+  }, [catalogue]);
 
-  const filtered = useMemo(
-    () =>
-      (templates ?? []).filter(
-        (t) => (!ownerId || t.owner_id === ownerId) && (!kind || t.kind === kind),
-      ),
-    [templates, ownerId, kind],
-  );
+  const filtered = templates ?? [];
 
   const columns = useMemo<GridColDef<TemplateSummary>[]>(
     () => [

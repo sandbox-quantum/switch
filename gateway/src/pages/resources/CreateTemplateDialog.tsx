@@ -106,6 +106,7 @@ export default function CreateTemplateDialog({
     kind.trim().length > 0 &&
     content.length > 0 &&
     !submitting &&
+    !checking &&
     // Only a document the server would refuse outright. Every other finding
     // is advice, and a form that gated on advice would be the checker
     // deciding what may be stored.

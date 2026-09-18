@@ -49,12 +49,20 @@ export default function TemplateDetailPage() {
     if (!id) return;
     let cancelled = false;
     setLoading(true);
-    fetchTemplate(id).then((t) => {
-      if (cancelled) return;
-      if (t) setTemplate(t);
-      else setFetchError("Template not found");
-      setLoading(false);
-    });
+    setFetchError(null);
+    fetchTemplate(id)
+      .then((t) => {
+        if (cancelled) return;
+        setTemplate(t);
+        setLoading(false);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        // The reason, not a guess: a private template the caller may not see
+        // and a server that is down both used to read as "not found".
+        setFetchError(e instanceof Error ? e.message : "Could not load this template");
+        setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -351,7 +359,7 @@ function DocumentSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving || !!validation?.blocked}
+          disabled={!canMutate || !dirty || saving || checking || !!validation?.blocked}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save
