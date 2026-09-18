@@ -776,4 +776,60 @@ describe('resolveSshConnectConfig', () => {
     expect(readFiles).toEqual([expect.stringContaining('/.ssh/corp_ed25519')]);
     expect(result.config.privateKey).toBe('ALIAS KEY');
   });
+
+  it('always attaches a host-key check, because ssh2 trusts any key without one', async () => {
+    const result = await resolveSshConnectConfig(
+      { kind: 'transient', config: { ...baseConfig(), password: 'secret' } },
+      deps()
+    );
+
+    expect(typeof result.config.hostVerifier).toBe('function');
+  });
+
+  it('refuses a host key that does not match the alias-resolved known_hosts', async () => {
+    const readKnownHosts: string[] = [];
+    const result = await resolveSshConnectConfig(
+      {
+        kind: 'transient',
+        config: { ...baseConfig({ sshConfigAlias: 'corp-dev' }), password: 'secret' },
+      },
+      deps({
+        resolveSshConfig: async () => ({
+          hostname: 'dev.internal',
+          user: 'deploy',
+          port: 2222,
+          identityFile: [],
+          identityAgentDisabled: false,
+          identitiesOnly: false,
+          forwardAgent: false,
+          userKnownHostsFile: '/home/alice/.ssh/known_hosts',
+          globalKnownHostsFile: 'none',
+          strictHostKeyChecking: 'ask',
+          hashKnownHosts: false,
+        }),
+        knownHosts: {
+          readFile: async (path) => {
+            readKnownHosts.push(path);
+            // A key pinned for this host, but not the one the server offers.
+            return `[dev.internal]:2222 ssh-ed25519 ${Buffer.from('pinned').toString('base64')}\n`;
+          },
+          appendFile: async () => {
+            throw new Error('a mismatched key must never be recorded');
+          },
+          home: '/home/alice',
+        },
+      })
+    );
+
+    const verifier = result.config.hostVerifier as (
+      key: Buffer,
+      verify: (ok: boolean) => void
+    ) => void;
+    const accepted = await new Promise<boolean>((resolve) => {
+      verifier(Buffer.from('a different key'), resolve);
+    });
+
+    expect(accepted).toBe(false);
+    expect(readKnownHosts).toEqual(['/home/alice/.ssh/known_hosts']);
+  });
 });
