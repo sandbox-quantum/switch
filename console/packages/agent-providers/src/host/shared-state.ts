@@ -4,7 +4,14 @@ import { join, resolve } from 'node:path';
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { Journal } from './journal';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import {
+  assertCurrentOwnershipMachine,
+  ownerMachineIdentitySchema,
+  ownershipRecord,
+  releaseOwner,
+  replaceOwner,
+  withOwnershipLock,
+} from './ownership-lock';
 import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import type { SharedHostOptions } from './shared-host';
 
@@ -44,7 +51,11 @@ export class SharedState {
   static async open(options: SharedHostOptions): Promise<SharedState> {
     await mkdir(options.root, { recursive: true, mode: 0o700 });
     const lock = join(options.root, 'shared-owner.lock');
-    const owner = { pid: process.pid, group: await ownProcessGroup(), token: randomUUID() };
+    const owner = ownershipRecord({
+      pid: process.pid,
+      group: await ownProcessGroup(),
+      token: randomUUID(),
+    });
     await withOwnershipLock(options.root, async () => {
       try {
         const owner = z
@@ -52,8 +63,10 @@ export class SharedState {
             token: z.string().optional(),
             pid: z.number().int().positive(),
             group: z.number().int().positive().nullable(),
+            machine: ownerMachineIdentitySchema(),
           })
           .parse(JSON.parse(await readFile(lock, 'utf8')));
+        assertCurrentOwnershipMachine(owner.machine);
         await fenceDeadOwner(owner.pid, owner.group);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
