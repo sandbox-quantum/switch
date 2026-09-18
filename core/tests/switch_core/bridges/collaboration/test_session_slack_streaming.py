@@ -279,7 +279,7 @@ async def test_the_clock_moves_the_live_section_and_nothing_above_it() -> None:
     )
 
     assert [c["blocks"][0]["block_id"] for c in _chunks(client)[1]] == [
-        "switch-steps-1"
+        "switch-interrupt"
     ]
     assert _chunks(client)[1][0]["blocks"][0]["title"] == "Working… 10s · Last: Tool 49"
 
@@ -1284,10 +1284,71 @@ async def test_a_stranded_stream_resends_every_section_it_cannot_account_for() -
     )
 
     assert _appended_ids(client)[-1] == [
-        "switch-steps-0",
-        "switch-steps-1",
-        "switch-steps-2",
+        "switch-steps-top",
+        "switch-interrupt",
+        "switch-steps-middle",
     ]
+
+
+@pytest.mark.parametrize("status", ["running", "completed"])
+@pytest.mark.parametrize(
+    ("steps", "held"),
+    [
+        (1, ["switch-steps-top", "switch-interrupt"]),
+        (50, ["switch-steps-top", "switch-interrupt", "switch-steps-middle"]),
+        (
+            99,
+            [
+                "switch-steps-top",
+                "switch-interrupt",
+                "switch-steps-middle",
+                "switch-steps-bottom",
+            ],
+        ),
+    ],
+)
+async def test_a_stream_opened_before_the_handoff_is_repaired_and_not_doubled(
+    steps: int, held: list[str], status: str
+) -> None:
+    """The upgrade case: a stream still open across the deploy that changed this.
+
+    `held` is what the release before the hand-down had physically created on
+    the message by the time it had that many section blocks — the sections and
+    the control, in the order it made them. The redraw writes to exactly those
+    ids and no others, so every block it sends replaces one Slack is already
+    holding, in the position it already occupies.
+
+    That is the whole of the compatibility argument. Slack addresses blocks by
+    id and removes none, so an id this draw invented would leave the old
+    sections on screen and add a second copy of the turn underneath them, with
+    the old stop button live between the two. Instead the old control's slot is
+    taken by a section and the control moves to the end, which is the same
+    hand-down an unbroken stream does — the restart makes no difference to it.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(steps)]
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    await adapter.update_rich(
+        CHANNEL,
+        "Agent",
+        ref,
+        TurnActivity(many, _turn(status), 9.0, interrupt_turn_id=TURN),
+        THREAD,
+    )
+
+    assert _appended_ids(client)[-1] == held
+    live = [
+        chunk["blocks"][0]
+        for chunk in client.appended[-1]["chunks"]
+        if chunk["blocks"][0]["type"] == "actions"
+    ]
+    assert bool(live) is (status == "running")
 
 
 async def test_a_stranded_two_section_turn_is_repaired_rather_than_left_alone() -> None:
@@ -1355,7 +1416,7 @@ async def test_a_stranded_stream_whose_turn_has_ended_loses_its_stop_control() -
         for chunk in client.appended[-1]["chunks"]
         if chunk["blocks"][0]["type"] == "divider"
     ]
-    assert spent == [{"type": "divider", "block_id": "switch-steps-1"}]
+    assert spent == [{"type": "divider", "block_id": "switch-interrupt"}]
 
 
 async def test_a_stranded_turn_still_running_keeps_its_stop_control() -> None:
@@ -1386,7 +1447,7 @@ async def test_a_stranded_turn_still_running_keeps_its_stop_control() -> None:
     control = [
         chunk["blocks"][0]
         for chunk in client.appended[-1]["chunks"]
-        if chunk["blocks"][0]["block_id"] == "switch-steps-1"
+        if chunk["blocks"][0]["block_id"] == "switch-interrupt"
     ]
     assert control and control[0]["type"] == "actions"
 

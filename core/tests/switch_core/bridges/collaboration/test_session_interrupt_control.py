@@ -43,6 +43,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
     _MAX_POST_BYTES,
+    STREAM_SLOTS,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -282,6 +283,29 @@ async def test_the_control_survives_a_message_trimmed_to_fit() -> None:
 
 
 # ── Where it sits as the turn grows ──────────────────────────────────────────
+
+
+def test_the_slots_are_the_ids_slack_is_already_holding() -> None:
+    """Not names — a wire format, and messages on Slack are written in it.
+
+    These are the ids the release before the hand-down created, in the order it
+    created them: one section made `switch-steps-top` and put the control under
+    it in `switch-interrupt`, and only a second section made
+    `switch-steps-middle`, below that control. That order is the fault the
+    hand-down fixes, and reusing it is what repairs the messages the fault was
+    drawn onto — every block such a message holds is a slot the new draw writes
+    to, in the place it already sits.
+
+    So this is not free to renumber. An id nothing on the message answers to is
+    a new block, no call removes the old one, and the reader is left with the
+    turn drawn twice around a stop button that will never come off.
+    """
+    assert STREAM_SLOTS == (
+        "switch-steps-top",
+        "switch-interrupt",
+        "switch-steps-middle",
+        "switch-steps-bottom",
+    )
 
 
 async def test_the_control_moves_down_as_the_turn_grows_a_section() -> None:

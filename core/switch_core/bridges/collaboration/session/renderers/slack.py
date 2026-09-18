@@ -220,11 +220,23 @@ _TRUNCATED = " […truncated]"
 # what is no longer shown, which has to be above every section and so has to be
 # created before any of them: it starts as the first page of steps and becomes
 # that line when there is finally something to disclose.
+#
+# The names are history and describe nothing. They are the ids a stream drew
+# before the control was handed down, in the order that code physically created
+# them: one section made `switch-steps-top` and put the control under it in
+# `switch-interrupt`, and only a second section made `switch-steps-middle` —
+# below the control, which is the fault this ordering exists to fix. Keeping
+# them in that order is what lets a message opened by the old code be repaired
+# instead of doubled. Every block such a message holds is a slot this draw
+# writes to, in the position it already occupies, so an adopted stream upgrades
+# in place. Fresh names would address nothing Slack is holding, and since no
+# call removes a block, the old sections would stay on screen under a second
+# copy of themselves with a live-looking stop button stranded between them.
 STREAM_SLOTS = (
-    "switch-steps-0",
-    "switch-steps-1",
-    "switch-steps-2",
-    "switch-steps-3",
+    "switch-steps-top",
+    "switch-interrupt",
+    "switch-steps-middle",
+    "switch-steps-bottom",
 )
 
 # The first card of every section, carrying the Console link. The same id in
@@ -1503,10 +1515,10 @@ def _step_blocks(
     disclose — a substitution in place, which keeps its position. There is no
     call that removes a block, and this needs none.
     """
-    top, middle, bottom = STREAM_SLOTS[:3]
+    first, second, third = STREAM_SLOTS[:3]
     last = max(len(steps) - 1, 0) // _MAX_SECTION_ITEMS
     if last < 2:
-        pages = (top, middle)
+        pages = (first, second)
         return [
             _step_page(
                 steps, page, pages[page], running, header, session_url, live, last
@@ -1517,13 +1529,13 @@ def _step_blocks(
     return [
         {
             "type": "context",
-            "block_id": top,
+            "block_id": first,
             "elements": [
                 {"type": "mrkdwn", "text": f"_Activity 1–{gone} no longer shown_"}
             ],
         },
-        _step_page(steps, last - 1, middle, running, header, session_url, live, last),
-        _step_page(steps, last, bottom, running, header, session_url, live, last),
+        _step_page(steps, last - 1, second, running, header, session_url, live, last),
+        _step_page(steps, last, third, running, header, session_url, live, last),
     ]
 
 
