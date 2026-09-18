@@ -1,5 +1,9 @@
 import { dump, load } from 'js-yaml';
 import {
+  CONSOLE_PARAM_TYPES,
+  type ConsoleParamType,
+} from '@shared/core/switch-servers/room-template-params';
+import {
   type AgentTemplateAddressing,
   type AgentTemplateSource,
   extractSources,
@@ -40,6 +44,12 @@ export type ParsedAgentEntry = {
    * has no `provider` field; the Use page asks for one.
    */
   provider: string | null;
+  /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */
+  location: string | null;
+  /** Its working directory, or a `{param}`. Null when the template has no `directory` field. */
+  directory: string | null;
+  /** Rooms the agent is added to once it exists, by name or `{param}`. */
+  join: string[];
 };
 
 export type TemplateAgents = {
@@ -154,27 +164,51 @@ export function parseTemplateAgents(
         ? (addressing as AgentTemplateAddressing)
         : null,
       provider: optionalString(agent.provider),
+      location: optionalString(agent.location),
+      directory: optionalString(agent.directory),
+      join: Array.isArray(agent.join)
+        ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        : [],
     };
   });
   return { agents, singular: !Array.isArray(doc.agents) && agents.length === 1, warnings };
 }
 
-function isProviderParam(spec: unknown): boolean {
+function isConsoleParam(spec: unknown): boolean {
   const record = asRecord(spec);
-  return record !== null && record.type === 'provider';
+  return record !== null && CONSOLE_PARAM_TYPES.includes(record.type as ConsoleParamType);
+}
+
+/** Every `{name}` placeholder written anywhere inside `node`. */
+function placeholdersIn(node: unknown, into: Set<string> = new Set()): Set<string> {
+  if (typeof node === 'string') {
+    for (const match of node.matchAll(/\{(\$?\w+)\}/g)) into.add(match[1]);
+  } else if (Array.isArray(node)) {
+    for (const item of node) placeholdersIn(item, into);
+  } else if (node !== null && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node)) {
+      placeholdersIn(key, into);
+      placeholdersIn(value, into);
+    }
+  }
+  return into;
 }
 
 /**
  * Build the document the server receives: the room part only, in the shape
  * `POST /rooms/from-yaml` validates.
  *
- * Kept: `room:` (or `group:`, `rooms:`, `links:`), `params:`, `kickoff:`,
- * `version:`. Dropped: the agent entries, which the server does not
- * understand, and any `type: provider` param, which only the Console can
- * answer. A param's `prefill` key is dropped too: the form has already
- * applied it, and a server that predates the key refuses the document.
- * For the singular `agent:` form, an `agent` param is added so the room's
- * `{agent}` reference resolves on the server.
+ * Kept: `room:` (or `group:`, `rooms:`, `links:`), `kickoff:`, `version:`,
+ * and the params the room part refers to. Dropped: the agent entries, which
+ * the server does not understand; the params of a Console type (`provider`,
+ * `location`, `directory`), which only the Console can answer; and any
+ * param used only by an agent entry, such as the agent's name or a room it
+ * joins, which the Console has already resolved. For the singular `agent:`
+ * form, an `agent` param is added so the room's `{agent}` reference resolves
+ * on the server.
+ *
+ * With `keepConsoleParams`, every declared param is kept: the Use page
+ * parses this document to build its form and must see them all.
  *
  * Returns null when the document has no room part.
  */
@@ -187,17 +221,18 @@ export function serverDocument(
   const isGroup = doc.group !== undefined || Array.isArray(doc.rooms);
   if (!room && !isGroup) return null;
 
-  // The Use page also parses this document to build its form, and the form
-  // must show provider params. Only the copy sent to the server drops them.
+  const usedByRooms = placeholdersIn({
+    room: doc.room,
+    group: doc.group,
+    rooms: doc.rooms,
+    links: doc.links,
+    kickoff: doc.kickoff,
+  });
   const declared = Object.fromEntries(
-    Object.entries(asRecord(doc.params) ?? {})
-      .filter(([, spec]) => options.keepConsoleParams || !isProviderParam(spec))
-      .map(([name, spec]) => {
-        const record = asRecord(spec);
-        if (record === null || record.prefill === undefined) return [name, spec];
-        const { prefill: _prefill, ...rest } = record;
-        return [name, rest];
-      })
+    Object.entries(asRecord(doc.params) ?? {}).filter(
+      ([name, spec]) =>
+        options.keepConsoleParams || (!isConsoleParam(spec) && usedByRooms.has(name))
+    )
   );
   const params: Record<string, unknown> =
     asRecord(doc.agent) !== null && !Array.isArray(doc.agents)
@@ -259,33 +294,6 @@ export function substituteAgentSlots(
     if (room.kickoff !== undefined) room.kickoff = inText(room.kickoff);
   }
   if (doc.kickoff !== undefined) doc.kickoff = inText(doc.kickoff);
-  return dump(doc, { lineWidth: -1 });
-}
-
-/**
- * Remove params the deployer left empty from the server document, both the
- * declaration under `params:` and every room field set to `{name}`.
- *
- * This exists for `bridge` params. The server treats a missing `bridge:` as
- * "use the default messaging app", so leaving the input empty should produce
- * a room with no `bridge:` field rather than a validation error.
- */
-export function dropUnsetParams(coreYaml: string, names: string[]): string {
-  if (names.length === 0) return coreYaml;
-  const doc = parseYaml(coreYaml);
-  const params = asRecord(doc.params);
-  if (params) {
-    for (const name of names) delete params[name];
-    if (Object.keys(params).length === 0) delete doc.params;
-  }
-  const placeholders = new Set(names.map((n) => `{${n}}`));
-  const rooms = [asRecord(doc.room), ...(Array.isArray(doc.rooms) ? doc.rooms.map(asRecord) : [])];
-  for (const room of rooms) {
-    if (!room) continue;
-    for (const [key, value] of Object.entries(room)) {
-      if (typeof value === 'string' && placeholders.has(value)) delete room[key];
-    }
-  }
   return dump(doc, { lineWidth: -1 });
 }
 

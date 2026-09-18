@@ -256,22 +256,75 @@ describe('roomTemplatesController.parse: multiline params', () => {
   });
 });
 
-describe('roomTemplatesController.params: prefill', () => {
-  it('reads prefill on a param whose type has a list, and nowhere else', () => {
+describe('roomTemplatesController.params: policy fields', () => {
+  it('reads a chain default on a chain type, and a plain default elsewhere', () => {
     const params = roomTemplatesController.params({
       yamlText: [
         'params:',
         '  bridge:',
         '    type: bridge',
-        '    prefill: first',
+        '    default: [Slack, $first]',
         '  topic:',
         '    type: string',
-        '    prefill: first',
+        '    default: [a, b]',
         '  reviewer:',
         '    type: agent',
+        '    default: alice',
       ].join('\n'),
     });
-    const byName = Object.fromEntries(params.map((p) => [p.name, p.prefill]));
-    expect(byName).toEqual({ bridge: 'first', topic: null, reviewer: null });
+    const byName = Object.fromEntries(params.map((p) => [p.name, p.default]));
+    expect(byName).toEqual({ bridge: ['Slack', '$first'], topic: null, reviewer: 'alice' });
+  });
+
+  it('derives required from the default and lets the template override it', () => {
+    const params = roomTemplatesController.params({
+      yamlText: [
+        'params:',
+        '  a:',
+        '    type: string',
+        '  b:',
+        '    type: string',
+        '    default: x',
+        '  c:',
+        '    type: string',
+        '    default: x',
+        '    required: true',
+        '  d:',
+        '    type: bridge',
+        '    default: [$first]',
+        '  e:',
+        '    type: bridge',
+        '    default: [$first]',
+        '    required: false',
+      ].join('\n'),
+    });
+    const byName = Object.fromEntries(params.map((p) => [p.name, p.required]));
+    expect(byName).toEqual({ a: true, b: false, c: true, d: true, e: false });
+  });
+
+  it('reads input, label, pattern and bounds where they apply', () => {
+    const params = roomTemplatesController.params({
+      yamlText: [
+        'params:',
+        '  name:',
+        '    type: string',
+        '    label: Agent name',
+        '    input: advanced',
+        '    pattern: "[a-z]+"',
+        '    min: 3',
+        '  size:',
+        '    type: number',
+        '    min: 1',
+        '    max: 5',
+        '    input: nonsense',
+      ].join('\n'),
+    });
+    expect(params[0]).toMatchObject({
+      label: 'Agent name',
+      input: 'advanced',
+      pattern: '[a-z]+',
+      min: null,
+    });
+    expect(params[1]).toMatchObject({ input: 'ask', min: 1, max: 5, pattern: null });
   });
 });

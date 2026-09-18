@@ -33,7 +33,6 @@ import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import {
@@ -42,6 +41,7 @@ import {
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import { NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { findBundledTemplate } from './bundled-templates';
 import { CollapsibleInput } from './use/collapsible-input';
@@ -53,31 +53,27 @@ import {
   RoomCard,
   SlotDirectoryField,
   type SlotStatus,
-  slotWantedName,
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
 import { ParamField } from './use/param-field';
-import { RoomPickField } from './use/room-pick-field';
-import {
-  LOCAL_RUN_LOCATION,
-  RunLocationSelect,
-  runLocationLabel,
-  useAllowedHosts,
-} from './use/run-location-select';
+import { LOCAL_RUN_LOCATION, runLocationLabel, useAllowedHosts } from './use/run-location-select';
 import {
   agentCreateSteps,
   bridgeCandidates,
   type CreateStep,
   createStepStatus,
   defaultsFor,
-  isEmpty,
   hasPlaceholder,
   interpolate,
+  isChain,
+  isEmpty,
   missingParams,
-  prefillChoice,
+  paramLabel,
+  resolveChain,
+  sectionOf,
   serverInputs,
-  unsetBridgeParams,
   type Values,
+  valueProblem,
 } from './use/use-template-model';
 
 type Params = {
@@ -105,8 +101,10 @@ type UsePageTemplate = {
   agents: ParsedAgentEntry[];
   /** True for the singular `agent:` form, whose room refers to the agent as `{agent}`. */
   singular: boolean;
-  /** The declared params, including the Console-only `provider` type. */
+  /** Every declared param, the Console types included. */
   params: ParamSpec[];
+  /** The names of the params the server document keeps. */
+  serverParamNames: Set<string>;
   parsed: ParsedTemplate | null;
   coreYaml: string | null;
   warnings: string[];
@@ -144,8 +142,8 @@ async function loadUsePageTemplate(serverId: string, params: Params): Promise<Us
     yamlText,
     instructions,
   });
-  // Two versions of the room document: one that keeps the provider params, for
-  // building the form, and one without them, for the server.
+  // Two versions of the room document: one that keeps every param, for
+  // building the form, and one with only what the server understands.
   const forForm = await rpc.agentTemplates.serverDocument({ yamlText, keepConsoleParams: true });
   const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
   // Without the schema the form is built from the Console's own parse and
@@ -156,14 +154,8 @@ async function loadUsePageTemplate(serverId: string, params: Params): Promise<Us
     ? await rpc.roomTemplates.parse({ yamlText: forForm, schema: schema ?? undefined })
     : null;
   // A document without rooms can still declare params, used in agent names.
-  // `prefill` is read from the full document: the room document above has it
-  // removed, since a server that predates the key refuses it.
-  const written = await rpc.roomTemplates.params({ yamlText });
-  const prefillOf = new Map(written.map((p) => [p.name, p.prefill]));
-  const declaredParams = (parsed?.params ?? written).map((p) => ({
-    ...p,
-    prefill: prefillOf.get(p.name) ?? null,
-  }));
+  const declaredParams = parsed?.params ?? (await rpc.roomTemplates.params({ yamlText }));
+  const serverParams = coreYaml ? await rpc.roomTemplates.params({ yamlText: coreYaml }) : [];
   return {
     name,
     yamlText,
@@ -173,6 +165,7 @@ async function loadUsePageTemplate(serverId: string, params: Params): Promise<Us
     agents,
     singular,
     params: declaredParams,
+    serverParamNames: new Set(serverParams.map((p) => p.name)),
     parsed,
     coreYaml,
     warnings: [...warnings, ...(parsed?.warnings ?? [])],
@@ -202,6 +195,34 @@ function SectionTitle({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
+/** A value the template fixed: shown so nothing is hidden, not editable. */
+function FixedRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-3 rounded-[10px] border border-dashed border-border px-3 py-2.5">
+      <span className="w-[104px] shrink-0 truncate text-[12.5px] font-medium">{label}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-foreground-muted">
+        {value}
+      </span>
+      <span className="shrink-0 text-[11px] text-foreground-passive">Set by the template</span>
+    </div>
+  );
+}
+
+/** Everything the page has worked out about one agent entry from the inputs. */
+type SlotSetup = {
+  /** The identifier the agent is created under. */
+  name: string;
+  displayName: string | null;
+  provider: AgentProviderId | null;
+  /** `local`, or an SSH host. */
+  location: string;
+  directory: string;
+  /** Rooms the agent joins once it exists, by name. */
+  joins: string[];
+  /** Whether the run creates the template's room for it. */
+  makesRoom: boolean;
+};
+
 const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
@@ -213,10 +234,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const [values, setValues] = useState<Values>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [slots, setSlots] = useState<AgentSlot[]>([]);
-  const [nameOverride, setNameOverride] = useState<string | null>(null);
   const [editedAgents, setEditedAgents] = useState<string[]>([]);
   const [editedUsers, setEditedUsers] = useState<string[]>([]);
-  const [runHost, setRunHost] = useState<string>(LOCAL_RUN_LOCATION);
+  // The provider for agents whose template names none and declares no
+  // `provider` param: asked on the page, never chosen for the deployer.
   const [pickedProvider, setPickedProvider] = useState<AgentProviderId | null>(null);
   const [phase, setPhase] = useState<'form' | 'creating' | 'done' | 'failed'>('form');
   const [doneDetail, setDoneDetail] = useState<string | null>(null);
@@ -226,29 +247,15 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     ReturnType<typeof rpc.switchServers.createRoomFromTemplate>
   > | null>(null);
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
-  // An agent template is used in two steps: the agent, then the room it is
-  // talked to in. The room is one the user picks, a new one from the
-  // template, or none when nothing is picked.
-  const [step, setStep] = useState<1 | 2>(1);
-  const [roomChoice, setRoomChoice] = useState<'pick' | 'new'>('pick');
-  const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
-  // How the agent is shown to people. The identifier it is addressed by is
-  // derived from it until the deployer edits the identifier directly.
-  const [displayName, setDisplayName] = useState('');
-  const [displayNameTouched, setDisplayNameTouched] = useState(false);
-  const [identifierOpen, setIdentifierOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  // An input the page filled in is shown as one line until the deployer opens it.
-  const [prefilled, setPrefilled] = useState<ReadonlySet<string>>(new Set());
+  // Advanced inputs the deployer opened, by param name or row key.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
-  const markPrefilled = useCallback(
-    (key: string) => setPrefilled((prev) => (prev.has(key) ? prev : new Set(prev).add(key))),
-    []
-  );
   const open = (key: string) => setOpened((prev) => new Set(prev).add(key));
-  // Params whose `prefill` has been decided, so a value the deployer clears
-  // is not filled in again.
-  const prefillDecided = useRef(new Set<string>());
+  // Chains decided once their candidates are known, so a value the deployer
+  // clears is not filled in again.
+  const chainDecided = useRef(new Set<string>());
+  // The directory agents are kept under, per location, for `{$agents_dir}`.
+  const [agentsDirs, setAgentsDirs] = useState<Record<string, string>>({});
 
   // Reload only when a different document is requested. Reloading on every
   // render would reset the form.
@@ -263,26 +270,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         setLoaded(result);
         const formParams = result.params.filter((p) => !(result.singular && p.name === 'agent'));
         setValues(defaultsFor(formParams));
-        prefillDecided.current = new Set();
+        chainDecided.current = new Set();
         createdRoom.current = null;
         setOpened(new Set());
-        setStep(1);
-        setRoomChoice('pick');
-        setPickedRoomId(null);
-        setNameOverride(null);
-        setDisplayName(
-          result.agents[0]?.displayName ?? (result.kind === 'agent' ? result.name : '')
-        );
-        setDisplayNameTouched(false);
-        setIdentifierOpen(false);
-        const firstName = result.agents[0]?.name ?? '';
-        setPrefilled(
-          new Set([
-            ...formParams.filter((p) => p.default !== null).map((p) => `param:${p.name}`),
-            ...(firstName !== '' && !hasPlaceholder(firstName) ? ['name'] : []),
-            ...(result.agents.length > 0 ? ['location', 'advanced'] : []),
-          ])
-        );
+        setPickedProvider(null);
         setSlots(result.agents.map(newSlot));
         // The editable member list holds the room's fixed agents that the template
         // does not create. Agents it creates have their own cards.
@@ -306,18 +297,43 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     [loaded]
   );
   const createsAgents = (loaded?.agents.length ?? 0) > 0;
-  const isAgentTemplate = loaded?.kind === 'agent' && !intoRoomId;
-  // The room the created agent is added to, when it joins one that exists.
-  const targetRoomId =
-    intoRoomId ?? (isAgentTemplate && roomChoice === 'pick' ? pickedRoomId : null);
-  // Whether this run creates the template's room.
-  const makesRoom =
-    targetRoomId === null &&
-    !(isAgentTemplate && roomChoice !== 'new') &&
-    loaded?.coreYaml !== null;
+  const hasRoomPart = loaded?.coreYaml !== null && parsed !== null && !intoRoomId;
   const isGroupDoc = (parsed?.rooms.length ?? 0) > 1 || parsed?.groupName !== null;
-  const isRemoteRun = runHost !== LOCAL_RUN_LOCATION;
-  const sshHost = isRemoteRun ? runHost : null;
+  const templateRoom = parsed?.rooms[0] ?? null;
+
+  // ── Which section each param belongs to ─────────────────────────────────
+  const agentTexts = useMemo(
+    () =>
+      (loaded?.agents ?? []).map((a) => [
+        a.name ?? '',
+        a.displayName ?? '',
+        a.provider ?? '',
+        a.location ?? '',
+        a.directory ?? '',
+        ...a.join,
+      ]),
+    [loaded]
+  );
+  const roomText = loaded?.coreYaml ?? '';
+  const sections = useMemo(
+    () => new Map(templateParams.map((p) => [p.name, sectionOf(p, agentTexts, roomText)])),
+    [templateParams, agentTexts, roomText]
+  );
+  const paramsOfAgent = (i: number) =>
+    templateParams.filter((p) => {
+      const s = sections.get(p.name);
+      return s?.section === 'agent' && s.index === i;
+    });
+  const roomParams = templateParams.filter((p) => sections.get(p.name)?.section === 'room');
+  // A Console-type param no agent entry binds applies to every agent.
+  const unboundOfType = (type: ParamSpec['type']) =>
+    templateParams.find(
+      (p) =>
+        p.type === type && !agentTexts.some((texts) => texts.some((t) => t.includes(`{${p.name}}`)))
+    ) ?? null;
+  const providerParam = unboundOfType('provider');
+  const locationParam = unboundOfType('location');
+  const directoryParam = unboundOfType('directory');
 
   // ── Server lists (pickers, identities, bridges) ─────────────────────────
   const agents = useRemoteAgents(serverId);
@@ -335,6 +351,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   });
   const { identities, refresh: refreshIdentities } = useMyIdentities(serverId);
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
+  const allowedHosts = useAllowedHosts(serverId);
 
   // The messaging app the room is created on: the bridge param's value if
   // there is one, else the bridge named in the template, else the server's default.
@@ -343,7 +360,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const picked = bridgeParam ? String(values[bridgeParam.name] ?? '') : '';
     const named = picked !== '' ? picked : (parsed?.bridge ?? null);
     if (named) return bridges.find((b) => b.displayName === named) ?? null;
-    return bridges.find((b) => b.isDefault) ?? (bridges.length === 1 ? bridges[0] : null);
+    return bridges.find((b) => b.isDefault) ?? null;
   }, [bridges, parsed, templateParams, values]);
   const creatorIdentity = useMemo(() => {
     if (identities === null) return null;
@@ -368,23 +385,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         })
     : null;
   const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
-
-  // The existing-agent picker lists agents that run on the chosen location.
-  // The Console records the host of every agent it created.
-  const locationsQuery = useQuery({
-    queryKey: ['locations'],
-    queryFn: () => rpc.locations.getLocations(),
-  });
-  const agentsAtLocation = useMemo(() => {
-    const hostOf = new Map((locationsQuery.data ?? []).map((l) => [l.id, l.sshHost]));
-    const here = new Set(
-      agentsStore
-        .agentsOnServer(serverId)
-        .filter((a) => (hostOf.get(a.locationId) ?? null) === sshHost)
-        .map((a) => a.name)
-    );
-    return (agents.data ?? []).filter((a) => here.has(a.name));
-  }, [agents.data, locationsQuery.data, serverId, sshHost]);
 
   const lists = useMemo(
     (): EntityLists => ({
@@ -411,186 +411,213 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     ]
   );
 
-  // Apply `prefill: first`, and select the messaging app when the server has
-  // only one. Each param is decided once, when its list has loaded.
+  // ── The agents: what each is made of, from the inputs ───────────────────
+  const setups: SlotSetup[] = useMemo(() => {
+    const roomJoinParam = (entry: ParsedAgentEntry) =>
+      templateParams.find((p) => p.type === 'room' && entry.join.includes(`{${p.name}}`)) ?? null;
+    return slots.map((slot) => {
+      const entry = slot.entry;
+      const name = entry.name
+        ? interpolate(entry.name, values)
+        : slugifyAgentNamePart(interpolate(entry.displayName ?? '', values));
+      const displayName = entry.displayName ? interpolate(entry.displayName, values) : null;
+      const providerText = entry.provider
+        ? interpolate(entry.provider, values)
+        : providerParam
+          ? String(values[providerParam.name] ?? '')
+          : (pickedProvider ?? '');
+      const provider = (AGENT_PROVIDER_IDS as readonly string[]).includes(providerText)
+        ? (providerText as AgentProviderId)
+        : null;
+      const locationText = entry.location
+        ? interpolate(entry.location, values)
+        : locationParam
+          ? String(values[locationParam.name] ?? '')
+          : LOCAL_RUN_LOCATION;
+      const location = locationText === '' ? LOCAL_RUN_LOCATION : locationText;
+      const agentsDir = agentsDirs[location] ?? '';
+      const dirValues: Values = { ...values, agent: name, $agents_dir: agentsDir };
+      // A directory read from a param is interpolated twice: once to reach
+      // the param's value, once for the `{$agents_dir}` and `{agent}` inside it.
+      const directory = slot.dirPicked
+        ? slot.dir
+        : entry.directory
+          ? interpolate(interpolate(entry.directory, dirValues), dirValues)
+          : directoryParam
+            ? interpolate(String(values[directoryParam.name] ?? ''), dirValues)
+            : agentsDir && name && !hasPlaceholder(name)
+              ? `${agentsDir}/${name}`
+              : '';
+      const joinParam = roomJoinParam(entry);
+      const joins = entry.join
+        .map((j) => interpolate(j, values))
+        .filter((j) => j !== '' && j !== NEW && !hasPlaceholder(j));
+      const makesRoom =
+        hasRoomPart && (joinParam === null ? true : String(values[joinParam.name] ?? '') === NEW);
+      return { name, displayName, provider, location, directory, joins, makesRoom };
+    });
+  }, [
+    slots,
+    values,
+    templateParams,
+    providerParam,
+    locationParam,
+    directoryParam,
+    pickedProvider,
+    agentsDirs,
+    hasRoomPart,
+  ]);
+  // A room template with no agents still makes its room.
+  const makesRoom = hasRoomPart && (setups.length === 0 || setups.some((s) => s.makesRoom));
+  const locations = useMemo(() => [...new Set(setups.map((s) => s.location))], [setups]);
+  const firstRemote = locations.find((l) => l !== LOCAL_RUN_LOCATION) ?? null;
+  const hostReachable = locations.every(
+    (l) => l === LOCAL_RUN_LOCATION || !hostReachabilityStore.isBlocked(l)
+  );
+  const hostReadiness = useRemoteHostReadiness(
+    firstRemote,
+    setups.find((s) => s.location === firstRemote)?.provider ?? null
+  );
+  const hostReady = firstRemote === null || (!hostReadiness.blocked && !hostReadiness.checking);
+  // A location the server does not allow falls back to this computer.
+  useEffect(() => {
+    if (!locationParam) return;
+    const v = String(values[locationParam.name] ?? '');
+    if (v !== '' && v !== LOCAL_RUN_LOCATION && !allowedHosts.some((h) => h.sshHost === v)) {
+      setValues((prev) => ({ ...prev, [locationParam.name]: LOCAL_RUN_LOCATION }));
+    }
+  }, [allowedHosts, locationParam, values]);
+
+  // `{$agents_dir}` for every location in play, fetched once each.
+  useEffect(() => {
+    for (const location of locations) {
+      if (agentsDirs[location] !== undefined) continue;
+      const sshHost = location === LOCAL_RUN_LOCATION ? null : location;
+      if (sshHost && hostReachabilityStore.isBlocked(sshHost)) continue;
+      void rpc.agentTemplates
+        .agentsDirectory({ sshHost })
+        .then((dir) => setAgentsDirs((prev) => ({ ...prev, [location]: dir })))
+        .catch(() => {});
+    }
+  }, [locations, agentsDirs]);
+
+  // ── Chains: each decided once its candidates are known ──────────────────
+  const availability = useAgentTypeAvailability(firstRemote ?? undefined);
+  const localAvailability = useAgentTypeAvailability(undefined);
   useEffect(() => {
     if (!loaded) return;
     for (const param of templateParams) {
-      if (prefillDecided.current.has(param.name)) continue;
-      const candidates =
-        param.type === 'bridge'
-          ? bridgesQuery.data && bridgeCandidates(bridgesQuery.data)
-          : param.type === 'agent'
-            ? agents.data?.map((a) => a.name).sort()
-            : param.type === 'room'
-              ? roomsQuery.data?.map((r) => r.name).sort()
-              : [];
+      if (!isChain(param) || chainDecided.current.has(param.name)) continue;
+      let candidates: string[] | undefined;
+      if (param.type === 'bridge') {
+        candidates = bridgesQuery.data && bridgeCandidates(bridgesQuery.data);
+      } else if (param.type === 'agent') {
+        candidates = agents.data?.map((a) => a.name).sort();
+      } else if (param.type === 'room') {
+        candidates = roomsQuery.data?.map((r) => r.name).sort();
+      } else if (param.type === 'location') {
+        candidates = [LOCAL_RUN_LOCATION, ...allowedHosts.map((h) => h.sshHost)];
+      } else if (param.type === 'provider') {
+        // The providers installed where the agent reading this param runs.
+        const section = sections.get(param.name);
+        const at = section?.section === 'agent' ? setups[section.index] : undefined;
+        const list =
+          at && at.location !== LOCAL_RUN_LOCATION ? availability.data : localAvailability.data;
+        candidates = list
+          ?.filter(
+            (a) => a.available && (AGENT_PROVIDER_IDS as readonly string[]).includes(a.agentId)
+          )
+          .map((a) => a.agentId);
+      }
       if (candidates === undefined) continue; // the list is still loading
-      prefillDecided.current.add(param.name);
-      const first = prefillChoice(param, candidates);
-      if (first === null) continue;
-      setValues((prev) => (isEmpty(prev[param.name]) ? { ...prev, [param.name]: first } : prev));
-      markPrefilled(`param:${param.name}`);
-    }
-  }, [loaded, templateParams, bridgesQuery.data, agents.data, roomsQuery.data, markPrefilled]);
-
-  // ── Where the agents run, and what runs them ────────────────────────────
-  const allowedHosts = useAllowedHosts(serverId);
-  useEffect(() => {
-    if (isRemoteRun && !allowedHosts.some((h) => h.sshHost === runHost)) {
-      setRunHost(LOCAL_RUN_LOCATION);
-    }
-  }, [allowedHosts, isRemoteRun, runHost]);
-  // Provider availability differs per machine, so changing the run location
-  // clears the provider picked on the page. A `provider` param keeps its value.
-  useEffect(() => {
-    setPickedProvider(null);
-    setSlots((prev) => prev.map((s) => (s.dirPicked ? s : { ...s, dir: '' })));
-  }, [runHost]);
-  const providerParam = templateParams.find((p) => p.type === 'provider') ?? null;
-  // The first coding agent the run location has is selected for the deployer.
-  const availability = useAgentTypeAvailability(sshHost ?? undefined);
-  useEffect(() => {
-    if (!createsAgents || phase !== 'form') return;
-    const first = availability.data?.find(
-      (a) => a.available && (AGENT_PROVIDER_IDS as readonly string[]).includes(a.agentId)
-    )?.agentId as AgentProviderId | undefined;
-    if (!first) return;
-    if (providerParam) {
-      if (providerParam.default !== null || !isEmpty(values[providerParam.name])) return;
-      setValues((prev) => ({ ...prev, [providerParam.name]: first }));
-      markPrefilled(`param:${providerParam.name}`);
-    } else if (pickedProvider === null) {
-      setPickedProvider(first);
-      markPrefilled('provider');
+      chainDecided.current.add(param.name);
+      const choice = resolveChain(param, candidates, hasRoomPart);
+      if (choice === null) continue;
+      setValues((prev) => (isEmpty(prev[param.name]) ? { ...prev, [param.name]: choice } : prev));
     }
   }, [
+    loaded,
+    templateParams,
+    sections,
+    setups,
+    hasRoomPart,
+    bridgesQuery.data,
+    agents.data,
+    roomsQuery.data,
+    allowedHosts,
     availability.data,
-    createsAgents,
-    phase,
-    providerParam,
-    values,
-    pickedProvider,
-    markPrefilled,
+    localAvailability.data,
   ]);
-  const pageProvider: AgentProviderId | null = providerParam
-    ? ((values[providerParam.name] as AgentProviderId) ?? null) || null
-    : pickedProvider;
-  const providerFor = (entry: ParsedAgentEntry): AgentProviderId | null => {
-    const own = entry.provider ? interpolate(entry.provider, values) : null;
-    if (own && (AGENT_PROVIDER_IDS as readonly string[]).includes(own)) {
-      return own as AgentProviderId;
-    }
-    return pageProvider;
-  };
-  const hostReachable = !isRemoteRun || !hostReachabilityStore.isBlocked(runHost);
-  const hostReadiness = useRemoteHostReadiness(sshHost, pageProvider);
-  const hostReady = !isRemoteRun || (!hostReadiness.blocked && !hostReadiness.checking);
 
-  // ── Names: wanted, taken, and the first free variant ────────────────────
+  // ── Names: taken, invalid, or still unresolved ──────────────────────────
   const takenNames = useMemo(() => new Set((agents.data ?? []).map((a) => a.name)), [agents.data]);
-  const slotNames = useMemo(() => {
-    const used = new Set<string>();
-    return slots.map((slot, i) => {
-      const wanted =
-        i === 0 && isAgentTemplate
-          ? (nameOverride ??
-            (displayNameTouched
-              ? slugifyAgentNamePart(displayName)
-              : (slot.entry.name ?? slugifyAgentNamePart(displayName))))
-          : slotWantedName(slot, values, i === 0 ? nameOverride : null);
-      if (slot.mode === 'existing') return { wanted, final: slot.existingName };
-      if (wanted === '' || hasPlaceholder(wanted)) return { wanted, final: wanted };
-      let candidate = wanted;
-      for (let n = 2; takenNames.has(candidate) || used.has(candidate); n++) {
-        candidate = `${wanted}-${n}`;
-      }
-      used.add(candidate);
-      return { wanted, final: candidate };
-    });
-  }, [slots, values, nameOverride, takenNames, isAgentTemplate, displayName, displayNameTouched]);
-
-  // Suggest a working directory for each new agent, named after it, under the
-  // Console's locations directory or the host's home. The suggestion follows
-  // the agent name until the deployer picks a directory.
-  const suggestSeq = useRef(0);
-  useEffect(() => {
-    if (!hostReachable || phase !== 'form') return;
-    const seq = ++suggestSeq.current;
-    slots.forEach((slot, i) => {
-      if (slot.mode !== 'new' || slot.dirPicked) return;
-      const name = slotNames[i]?.final ?? '';
-      if (name === '' || hasPlaceholder(name) || !AGENT_NAME_PATTERN.test(name)) return;
-      void rpc.agentTemplates
-        .suggestDirectory({ agentName: name, sshHost })
-        .then((dir) => {
-          if (seq !== suggestSeq.current) return;
-          setSlots((prev) => {
-            const s = prev[i];
-            if (!s || s.dirPicked || s.dir === dir) return prev; // same array: no re-run
-            return prev.map((x, j) => (j === i ? { ...x, dir } : x));
-          });
-          markPrefilled(`dir:${i}`);
-        })
-        .catch(() => {});
-    });
-  }, [slots, slotNames, sshHost, hostReachable, phase, markPrefilled]);
 
   // ── Why Create is disabled ──────────────────────────────────────────────
-  // For an agent template the params belong to the room, which only a new
-  // room needs; the agent's own problems are the identifier and its setup.
-  const missing =
-    isAgentTemplate && roomChoice !== 'new' ? [] : missingParams(templateParams, values);
+  const missing = missingParams(templateParams, values);
+  const invalid = templateParams
+    .map((p) => ({ p, problem: valueProblem(p, values[p.name] ?? '') }))
+    .filter((x) => x.problem !== null);
   const slotProblems: string[] = [];
+  const seenNames = new Set<string>();
   slots.forEach((slot, i) => {
-    const { wanted, final } = slotNames[i] ?? { wanted: '', final: '' };
+    const setup = setups[i];
     if (slot.mode === 'existing') {
-      if (final === '')
-        slotProblems.push(`Pick the existing agent for ${wanted || `agent ${i + 1}`}.`);
+      if (slot.existingName === '')
+        slotProblems.push(`Pick the existing agent for ${setup.name || `agent ${i + 1}`}.`);
       return;
     }
-    if (i === 0 && isAgentTemplate && final === '') {
+    const name = slot.createdName ?? setup.name;
+    if (name === '') {
       slotProblems.push('Give the agent a name.');
       return;
     }
-    if (final === '' || hasPlaceholder(final)) return; // an input still fills it in
-    if (!AGENT_NAME_PATTERN.test(final)) {
+    if (hasPlaceholder(name)) return; // an input still fills it in
+    if (!AGENT_NAME_PATTERN.test(name)) {
       slotProblems.push(
-        `${final} is not a valid agent name: lowercase letters, digits, . - _, starting with a letter or digit.`
+        `${name} is not a valid agent name: lowercase letters, digits, . - _, starting with a letter or digit.`
       );
+    } else if (slot.createdName === null && (takenNames.has(name) || seenNames.has(name))) {
+      slotProblems.push(`An agent called ${name} already exists on this server. Change the name.`);
     }
-    if (!providerFor(slot.entry))
-      slotProblems.push('Choose which coding agent backs the new agents.');
-    if (slot.dir.trim() === '') slotProblems.push(`Choose a directory for ${final}.`);
+    seenNames.add(name);
+    if (!setup.provider) slotProblems.push(`Choose which coding agent runs ${name}.`);
+    if (setup.directory.trim() === '') slotProblems.push(`Choose a directory for ${name}.`);
+    for (const room of setup.joins) {
+      if (roomsQuery.data && !roomsQuery.data.some((r) => r.name === room))
+        slotProblems.push(`There is no room called ${room} on this server.`);
+    }
   });
   const newSlots = slots.filter((s) => s.mode === 'new');
+  const remoteLabel = firstRemote ? runLocationLabel(firstRemote, allowedHosts) : '';
   const blockedReason: string | null =
     phase !== 'form'
       ? null
       : loaded === null
         ? 'Loading…'
         : missing.length > 0
-          ? `Fill in ${missing.map((p) => p.name).join(', ')}`
-          : slotProblems.length > 0
-            ? slotProblems[0]
-            : newSlots.length > 0 && !hostReachable
-              ? `${runLocationLabel(runHost, allowedHosts)} cannot be reached right now.`
-              : newSlots.length > 0 && !hostReady
-                ? hostReadiness.checking
-                  ? `Checking what ${runLocationLabel(runHost, allowedHosts)} has installed…`
-                  : `${runLocationLabel(runHost, allowedHosts)} is missing setup the agents need.`
-                : !makesRoom
-                  ? null // no room is made, so nothing below applies
-                  : creatorBlocked
-                    ? 'Link your messaging account first.'
-                    : parsed !== null && noMessagingApp && parsed.usesCreator
-                      ? 'This server has no messaging app, so the room would have no chat.'
-                      : null;
+          ? `Fill in ${missing.map(paramLabel).join(', ')}`
+          : invalid.length > 0
+            ? `${paramLabel(invalid[0].p)}: ${invalid[0].problem}`
+            : slotProblems.length > 0
+              ? slotProblems[0]
+              : newSlots.length > 0 && !hostReachable
+                ? `${remoteLabel} cannot be reached right now.`
+                : newSlots.length > 0 && !hostReady
+                  ? hostReadiness.checking
+                    ? `Checking what ${remoteLabel} has installed…`
+                    : `${remoteLabel} is missing setup the agents need.`
+                  : !makesRoom
+                    ? null // no room is made, so nothing below applies
+                    : creatorBlocked
+                      ? 'Link your messaging account first.'
+                      : parsed !== null && noMessagingApp && parsed.usesCreator
+                        ? 'This server has no messaging app, so the room would have no chat.'
+                        : null;
   const stillNeeded =
     missing.length > 0
       ? `${missing.length} input${missing.length === 1 ? '' : 's'} still needed`
-      : slotProblems.length > 0
-        ? `${slotProblems.length} thing${slotProblems.length === 1 ? '' : 's'} to settle`
+      : slotProblems.length > 0 || invalid.length > 0
+        ? `${slotProblems.length + invalid.length} thing${slotProblems.length + invalid.length === 1 ? '' : 's'} to settle`
         : 'Every input filled in';
 
   // Existing agents in the room whose addressing policy blocks messages from
@@ -654,22 +681,23 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setPhase('creating');
     setCreateError(null);
     setFieldErrors({});
-    const finalNames = slotNames.map((n) => n.final);
     const created: { slotIndex: number; name: string; switchAgentId: string | null }[] = [];
 
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
+      const setup = setups[i];
       if (slot.mode !== 'new' || slot.status === 'created') continue;
-      const name = slot.createdName ?? finalNames[i];
-      const providerId = providerFor(slot.entry);
+      const name = slot.createdName ?? setup.name;
+      const providerId = setup.provider;
       if (!providerId) continue;
+      const sshHost = setup.location === LOCAL_RUN_LOCATION ? null : setup.location;
       setSlot(i, { status: 'creating', error: null, step: 'prepare' });
       try {
         // An agent created on an earlier attempt is not created again; only its policy is set.
         let switchAgentId = slot.createdSwitchAgentId;
         if (!switchAgentId) {
           const prepared = await rpc.agentTemplates.prepareWorkspace({
-            dir: slot.dir.trim(),
+            dir: setup.directory.trim(),
             repoUrl: slot.cloneRepo ? slot.entry.repoUrl : null,
             sshHost,
           });
@@ -686,19 +714,19 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           setSlot(i, { step: 'create' });
           const result = await rpc.agents.addAgent({
             sshHost,
-            dir: slot.dir.trim(),
+            dir: setup.directory.trim(),
             name,
             providerId,
             serverId,
             description: slot.entry.description,
             displayName:
-              i === 0 && isAgentTemplate && displayName.trim() && displayName.trim() !== name
-                ? displayName.trim()
+              setup.displayName && setup.displayName.trim() !== name
+                ? setup.displayName.trim()
                 : null,
             iconUrl: null,
             autoSession: true,
             // Nobody sits at a host's terminal to approve tool calls.
-            autoApprove: isRemoteRun,
+            autoApprove: sshHost !== null,
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
@@ -750,46 +778,66 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
       .catch(() => {});
 
-    if (targetRoomId) {
-      const byName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
-      const ids = slots
-        .map((s) =>
-          s.mode === 'existing' ? (byName.get(s.existingName) ?? null) : s.createdSwitchAgentId
-        )
-        .concat(created.map((c) => c.switchAgentId))
-        .filter((id): id is string => !!id);
+    // Rooms the agents join: the one this page was opened from, and the ones
+    // the template names for each agent.
+    const byRoomName = new Map((roomsQuery.data ?? []).map((r) => [r.name, r.id]));
+    const byAgentName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
+    const joinsByRoom = new Map<string, string[]>();
+    slots.forEach((slot, i) => {
+      const agentId =
+        slot.mode === 'existing'
+          ? (byAgentName.get(slot.existingName) ?? null)
+          : (slot.createdSwitchAgentId ??
+            created.find((c) => c.slotIndex === i)?.switchAgentId ??
+            null);
+      if (!agentId) return;
+      const roomIds = [
+        ...(intoRoomId ? [intoRoomId] : []),
+        ...setups[i].joins.map((r) => byRoomName.get(r)).filter((id): id is string => !!id),
+      ];
+      for (const roomId of roomIds) {
+        joinsByRoom.set(roomId, [...(joinsByRoom.get(roomId) ?? []), agentId]);
+      }
+    });
+    let joinedRoomId: string | null = null;
+    if (joinsByRoom.size > 0) {
       setRoomStatus('creating');
       try {
-        if (ids.length > 0) {
+        for (const [roomId, ids] of joinsByRoom) {
           await rpc.switchServers.addRoomAgents({
             serverId,
-            roomId: targetRoomId,
+            roomId,
             agentIds: [...new Set(ids)],
             direction: 'agents_to_room',
           });
+          joinedRoomId = roomId;
         }
-        setRoomStatus('created');
+        if (!makesRoom) setRoomStatus('created');
         await refreshSidebarRoomState(true).catch(() => {});
-        toast({
-          title: 'In the room',
-          description: 'Mention an agent there to start it. A message from you is what wakes it.',
-        });
-        finish(`Opening ${targetRoomName ?? 'the room'}…`, () =>
-          navigate('room', { roomId: targetRoomId })
-        );
       } catch (e) {
         setRoomStatus('failed');
         setCreateError(
           failureText(e, 'The agents were created, but could not be added to the room.')
         );
         setPhase('failed');
+        return;
       }
-      return;
     }
 
-    if (!loaded.coreYaml || !parsed || (isAgentTemplate && roomChoice !== 'new')) {
+    if (!makesRoom || !loaded.coreYaml || !parsed) {
       // No room to make. Every path out of here navigates, so a run that
       // created nothing new does not stay on the creating screen.
+      if (joinedRoomId) {
+        toast({
+          title: 'In the room',
+          description: 'Mention an agent there to start it. A message from you is what wakes it.',
+        });
+        const roomId = joinedRoomId;
+        finish(`Opening ${switchRoomsStore.roomNameById(roomId) ?? 'the room'}…`, () =>
+          navigate('room', { roomId })
+        );
+        return;
+      }
       const firstName = created[0]?.name ?? slots.find((s) => s.createdName)?.createdName;
       const local = firstName
         ? agentsStore.agentsOnServer(serverId).find((a) => a.name === firstName)
@@ -810,16 +858,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       slots.forEach((slot, i) => {
         const expression = slot.entry.name ?? '';
         const actual =
-          slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? finalNames[i]);
+          slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? setups[i].name);
         if (expression && actual && expression !== actual) replacements[expression] = actual;
       });
       let coreYaml = await rpc.agentTemplates.substituteSlots({
         coreYaml: loaded.coreYaml,
         replacements,
-      });
-      coreYaml = await rpc.agentTemplates.dropParams({
-        coreYaml,
-        names: unsetBridgeParams(templateParams, values),
       });
       if (!isGroupDoc) {
         // The member lists are rebuilt from the parsed template, so the renamed
@@ -835,12 +879,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           users: [...keep(parsed.users), ...editedUsers],
         });
       }
-      const inputs = serverInputs(templateParams, values);
+      const inputs = serverInputs(templateParams, values, loaded.serverParamNames);
       if (loaded.singular && slots.length === 1) {
         // The singular `agent:` form: the server fills `{agent}` from this input.
         const slot = slots[0];
         inputs.agent =
-          slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? finalNames[0] ?? '');
+          slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? setups[0].name);
       }
       const result =
         createdRoom.current ??
@@ -904,7 +948,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       const paramMatch = message.match(/param(?:\(s\))?:?\s*['"]?(\w+)/i);
       if (paramMatch && templateParams.some((p) => p.name === paramMatch[1])) {
         setFieldErrors({ [paramMatch[1]]: message });
-        open(`param:${paramMatch[1]}`);
+        open(paramMatch[1]);
       }
       setCreateError(
         created.length > 0
@@ -927,40 +971,36 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // Values for the preview cards: the inputs, `{agent}` for a single-agent
   // template, and every agent's final name.
   const railValues: Values =
-    loaded?.singular && slotNames[0]
-      ? { ...values, agent: slotNames[0].final || '{agent}' }
-      : values;
+    loaded?.singular && setups[0] ? { ...values, agent: setups[0].name || '{agent}' } : values;
   const railRenames = useMemo(() => {
     const out: Record<string, string> = {};
     slots.forEach((slot, i) => {
       const expression = slot.entry.name ?? '';
       const actual =
-        slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? slotNames[i]?.final);
+        slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? setups[i]?.name);
       if (expression && actual && expression !== actual) out[expression] = actual;
     });
     return out;
-  }, [slots, slotNames]);
+  }, [slots, setups]);
 
   // ── Render ──────────────────────────────────────────────────────────────
   const partlyDone =
     slots.some((s) => s.status === 'created' || s.status === 'failed') || roomStatus === 'failed';
-  const targetRoomName = targetRoomId ? switchRoomsStore.roomNameById(targetRoomId) : null;
+  const roomCount = makesRoom ? (parsed?.rooms.length ?? 0) : 0;
   const primaryLabel = partlyDone
     ? 'Retry remaining steps'
     : intoRoomId
       ? 'Create and add to room'
-      : isAgentTemplate
-        ? step === 1
-          ? 'Next'
-          : roomChoice === 'new'
-            ? 'Create agent and room'
-            : pickedRoomId
-              ? 'Create agent'
-              : 'Create without a room'
-        : loaded?.kind === 'group'
-          ? 'Create all'
-          : loaded?.kind === 'agent'
+      : createsAgents && roomCount > 0
+        ? slots.length === 1
+          ? 'Create agent and room'
+          : 'Create all'
+        : createsAgents
+          ? slots.length === 1
             ? 'Create agent'
+            : 'Create agents'
+          : roomCount > 1
+            ? 'Create rooms'
             : 'Create room';
   const intoRoomName = intoRoomId ? switchRoomsStore.roomNameById(intoRoomId) : null;
 
@@ -977,7 +1017,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               edit: true,
             })
           : navigate('templates', { serverId });
-  const showNameField = loaded?.kind === 'agent' && slots.length === 1 && slots[0].mode === 'new';
   const showAgentLists =
     parsed !== null &&
     !isGroupDoc &&
@@ -989,7 +1028,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const createSteps: CreateStep[] = slots.flatMap((slot, i) =>
     slot.mode === 'new'
       ? agentCreateSteps(i, {
-          name: slot.createdName ?? slotNames[i]?.final ?? 'the agent',
+          name: slot.createdName ?? setups[i]?.name ?? 'the agent',
           status: slot.status,
           step: slot.step,
           clones: slot.cloneRepo && !!slot.entry.repoUrl,
@@ -998,13 +1037,18 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         })
       : []
   );
-  if (targetRoomId) {
+  const joinNames = [
+    ...(intoRoomName ? [intoRoomName] : []),
+    ...new Set(setups.flatMap((s) => s.joins)),
+  ];
+  if (joinNames.length > 0) {
     createSteps.push({
-      key: 'room',
-      label: `Add to ${targetRoomName ?? 'the room'}`,
-      status: createStepStatus(roomStatus),
+      key: 'join',
+      label: `Add to ${joinNames.join(', ')}`,
+      status: makesRoom && roomStatus === 'created' ? 'done' : createStepStatus(roomStatus),
     });
-  } else if (loaded?.coreYaml && parsed && !(isAgentTemplate && roomChoice !== 'new')) {
+  }
+  if (makesRoom && parsed) {
     const count = parsed.rooms.length;
     const hasKickoff = parsed.kickoff !== null || parsed.rooms.some((r) => r.kickoff);
     createSteps.push({
@@ -1018,114 +1062,154 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const runError =
     createError ?? slots.find((s) => s.status === 'failed')?.error ?? Object.values(fieldErrors)[0];
 
-  const isCollapsed = (key: string) => prefilled.has(key) && !opened.has(key) && phase === 'form';
-  const singleNewAgent = slots.length === 1 && slots[0].mode === 'new';
+  const busy = phase === 'creating';
+  const newRoomForPick =
+    hasRoomPart && templateRoom
+      ? {
+          name: interpolate(templateRoom.name ?? 'New room', railValues),
+          bridgeType: templateBridge?.type ?? null,
+        }
+      : null;
 
-  const nameField = showNameField && (
-    <CollapsibleInput
-      label="Name"
-      summary={slotNames[0]?.final || (nameOverride ?? slotNames[0]?.wanted ?? '')}
-      collapsed={isCollapsed('name') && (nameOverride ?? slotNames[0]?.wanted ?? '') !== ''}
-      onOpen={() => open('name')}
-    >
-      <div className="flex flex-col gap-2">
-        <div className="flex items-baseline gap-2">
-          <span className="font-mono text-[12.5px] font-medium">name</span>
-          <span className="text-[11px] text-foreground-passive">text</span>
-          <span className="flex-1" />
-          <span className="text-[11px] text-amber-600 dark:text-amber-400">Required</span>
-        </div>
-        <p className="text-xs text-foreground-muted">
-          What the agent is called on this server. In rooms it is addressed by this name.
-        </p>
-        <Input
-          className="font-mono"
-          value={nameOverride ?? slotNames[0]?.wanted ?? ''}
-          onChange={(e) => setNameOverride(e.target.value)}
-          disabled={phase === 'creating'}
-        />
-      </div>
-    </CollapsibleInput>
-  );
-
-  // For an agent template the name is how people see the agent; the
-  // identifier it is addressed by follows from it and is shown underneath.
-  const identifier = slotNames[0]?.final ?? '';
-  const agentNameField = isAgentTemplate && (
-    <div className="flex flex-col gap-2">
-      <span className="text-[12.5px] font-medium">Name</span>
-      <Input
-        value={displayName}
-        onChange={(e) => {
-          setDisplayName(e.target.value);
-          setDisplayNameTouched(true);
-        }}
-        disabled={phase === 'creating'}
-        autoFocus
-      />
-      {identifierOpen ? (
-        <div className="flex items-center gap-2 text-xs text-foreground-muted">
-          <span>Addressed as @</span>
-          <Input
-            className="h-7 max-w-[240px] font-mono text-xs"
-            value={nameOverride ?? slotNames[0]?.wanted ?? ''}
-            onChange={(e) => setNameOverride(e.target.value)}
-            disabled={phase === 'creating'}
-          />
-          {identifier && identifier !== (nameOverride ?? slotNames[0]?.wanted) && (
-            <span>
-              taken, so <span className="font-mono">@{identifier}</span>
-            </span>
-          )}
-        </div>
-      ) : (
-        <p className="text-xs text-foreground-muted">
-          Addressed as <span className="font-mono">@{identifier || '…'}</span>{' '}
-          <button
-            type="button"
-            onClick={() => setIdentifierOpen(true)}
-            className="cursor-pointer underline underline-offset-2 hover:text-foreground"
-          >
-            Change
-          </button>
-        </p>
-      )}
-    </div>
-  );
-
-  const paramFields = templateParams.map((param) => (
-    <CollapsibleInput
-      key={param.name}
-      label={
-        param.type === 'bridge'
-          ? 'Messaging app'
-          : param.type === 'provider'
-            ? 'Provider'
-            : param.name
-      }
-      summary={
-        param.type === 'provider'
-          ? (providerDisplayName(String(values[param.name] ?? '')) ?? String(values[param.name]))
-          : String(values[param.name] ?? '')
-      }
-      collapsed={
-        isCollapsed(`param:${param.name}`) &&
-        !isEmpty(values[param.name]) &&
-        !fieldErrors[param.name]
-      }
-      onOpen={() => open(`param:${param.name}`)}
-    >
+  /** One param as the template says to show it: asked, folded, or fixed. */
+  const paramRow = (param: ParamSpec, sshHost: string | null) => {
+    const value = values[param.name] ?? '';
+    const error = fieldErrors[param.name] ?? valueProblem(param, value);
+    const summary =
+      param.type === 'provider'
+        ? (providerDisplayName(String(value)) ?? String(value))
+        : param.type === 'location'
+          ? runLocationLabel(String(value) || LOCAL_RUN_LOCATION, allowedHosts)
+          : param.type === 'room' && value === NEW
+            ? (newRoomForPick?.name ?? 'New room')
+            : param.type === 'directory'
+              ? (setups.find((s) => s.directory !== '')?.directory ?? String(value)).replace(
+                  /^\/(?:Users|home)\/[^/]+/,
+                  '~'
+                )
+              : String(value);
+    if (param.input === 'fixed') {
+      return <FixedRow key={param.name} label={paramLabel(param)} value={summary} />;
+    }
+    const field = (
       <ParamField
+        key={param.name}
         param={param}
-        value={values[param.name] ?? ''}
+        value={value}
         onChange={(v) => setValues((prev) => ({ ...prev, [param.name]: v }))}
-        error={fieldErrors[param.name] ?? null}
+        error={error}
         lists={lists}
         sshHost={sshHost}
-        onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+        hosts={allowedHosts}
+        newRoom={newRoomForPick}
+        disabled={busy}
+        onNavigateAway={() =>
+          param.type === 'location'
+            ? navigate('remoteHosts')
+            : navigate('settings', { tab: 'clis-models' })
+        }
       />
-    </CollapsibleInput>
-  ));
+    );
+    if (param.input === 'advanced') {
+      const settled = !isEmpty(value) && error === null;
+      return (
+        <CollapsibleInput
+          key={param.name}
+          label={paramLabel(param)}
+          summary={summary}
+          collapsed={settled && !opened.has(param.name) && phase === 'form'}
+          onOpen={() => open(param.name)}
+          disabled={busy}
+        >
+          {field}
+        </CollapsibleInput>
+      );
+    }
+    return field;
+  };
+
+  /** The section for one agent entry: its params, then what the template left open. */
+  const agentSection = (slot: AgentSlot, i: number) => {
+    const setup = setups[i];
+    const sshHost = setup.location === LOCAL_RUN_LOCATION ? null : setup.location;
+    const own = paramsOfAgent(i);
+    const shared = i === 0 ? [providerParam, locationParam, directoryParam] : [];
+    const rows = [...own, ...shared.filter((p): p is ParamSpec => p !== null && !own.includes(p))];
+    const asksProvider = !slot.entry.provider && !providerParam && slot.mode === 'new';
+    const asksDirectory = !slot.entry.directory && !directoryParam && slot.mode === 'new';
+    const isRemote = sshHost !== null;
+    return (
+      <div key={i} className="flex flex-col gap-4">
+        {slots.length > 1 && (
+          <SectionTitle
+            title={setup.name && !hasPlaceholder(setup.name) ? setup.name : `Agent ${i + 1}`}
+            hint={slot.entry.description || undefined}
+          />
+        )}
+        {rows.filter((p) => p.input !== 'advanced').map((p) => paramRow(p, sshHost))}
+        {asksProvider && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-baseline gap-2">
+              <span className="text-[12.5px] font-medium">Provider</span>
+              <span className="flex-1" />
+              <span className="text-[11px] text-amber-600 dark:text-amber-400">Required</span>
+            </div>
+            <p className="text-xs text-foreground-muted">
+              The template names no coding agent. Only what{' '}
+              {runLocationLabel(setup.location, allowedHosts)} has installed is offered.
+            </p>
+            {hostReachable ? (
+              <AgentTypePicker
+                value={pickedProvider}
+                onChange={setPickedProvider}
+                sshHost={sshHost ?? undefined}
+                onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
+              />
+            ) : (
+              <p className="text-xs text-foreground-passive">Waiting for the host…</p>
+            )}
+          </div>
+        )}
+        {rows.filter((p) => p.input === 'advanced').map((p) => paramRow(p, sshHost))}
+        {asksDirectory && (
+          <CollapsibleInput
+            label="Directory"
+            summary={setup.directory.replace(/^\/(?:Users|home)\/[^/]+/, '~')}
+            collapsed={
+              setup.directory !== '' &&
+              !slot.dirPicked &&
+              !opened.has(`dir:${i}`) &&
+              phase === 'form'
+            }
+            onOpen={() => open(`dir:${i}`)}
+            disabled={busy}
+          >
+            <div className="flex flex-col gap-2">
+              <span className="text-[12.5px] font-medium">Directory</span>
+              <p className="text-xs text-foreground-muted">
+                The template names no directory, so the agent gets a folder of its own under the one
+                this Console keeps agents in.
+              </p>
+              <SlotDirectoryField
+                slot={{ ...slot, dir: setup.directory }}
+                onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === i ? next : x)))}
+                sshHost={sshHost}
+                busy={busy}
+              />
+            </div>
+          </CollapsibleInput>
+        )}
+        {isRemote && <HostReachabilityNotice sshHost={setup.location} />}
+        {isRemote && hostReachable && firstRemote === setup.location && !hostReadiness.checking && (
+          <HostReadinessNotice
+            sshHost={setup.location}
+            readiness={hostReadiness}
+            onNavigateAway={() => navigate('remoteHosts')}
+          />
+        )}
+      </div>
+    );
+  };
 
   const memberLists = (
     <>
@@ -1157,207 +1241,21 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     </>
   );
 
-  // Hidden when the server allows no SSH host, since agents can then only run on this computer.
-  const locationField = createsAgents && allowedHosts.length > 0 && (
-    <CollapsibleInput
-      label="Runs on"
-      summary={runLocationLabel(runHost, allowedHosts)}
-      collapsed={isCollapsed('location')}
-      onOpen={() => open('location')}
-    >
-      <div className="flex flex-col gap-2">
-        <span className="text-[12.5px] font-medium">Runs on</span>
-        <RunLocationSelect
-          value={runHost}
-          onChange={setRunHost}
-          hosts={allowedHosts}
-          disabled={phase === 'creating'}
-        />
-        {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
-        {isRemoteRun && hostReachable && !hostReadiness.checking && (
-          <HostReadinessNotice
-            sshHost={runHost}
-            readiness={hostReadiness}
-            onNavigateAway={() => navigate('remoteHosts')}
-          />
-        )}
-      </div>
-    </CollapsibleInput>
-  );
-
-  const providerField = createsAgents && !providerParam && (
-    <CollapsibleInput
-      label="Provider"
-      summary={pickedProvider ? (providerDisplayName(pickedProvider) ?? pickedProvider) : ''}
-      collapsed={isCollapsed('provider') && pickedProvider !== null}
-      onOpen={() => open('provider')}
-    >
-      <div className="flex flex-col gap-2">
-        <span className="text-[12.5px] font-medium">Provider</span>
-        <p className="text-xs text-foreground-muted">
-          Which coding agent backs {slots.length === 1 ? 'it' : 'them'}. Only what{' '}
-          {runLocationLabel(runHost, allowedHosts)} has installed is offered.
-        </p>
-        {hostReachable ? (
-          <AgentTypePicker
-            value={pickedProvider}
-            onChange={setPickedProvider}
-            sshHost={sshHost ?? undefined}
-            onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
-          />
-        ) : (
-          <p className="text-xs text-foreground-passive">Waiting for the host…</p>
-        )}
-      </div>
-    </CollapsibleInput>
-  );
-
-  // Every new agent's directory is an input of the page. The cards in the
-  // rail keep only what they are: a preview, plus the choice of a new or an
-  // existing agent, which decides whether there is a directory to ask for.
-  const directoryFields = slots.map((slot, i) => {
-    if (slot.mode !== 'new') return null;
-    const agentName = slot.createdName ?? slotNames[i]?.final ?? '';
-    return (
-      <CollapsibleInput
-        key={`dir:${i}`}
-        label={slots.length === 1 ? 'Directory' : agentName || `Agent ${i + 1}`}
-        summary={slot.dir.replace(/^\/(?:Users|home)\/[^/]+/, '~')}
-        collapsed={isCollapsed(`dir:${i}`) && !slot.dirPicked && slot.dir !== ''}
-        onOpen={() => open(`dir:${i}`)}
-      >
-        <div className="flex flex-col gap-2">
-          <span className="text-[12.5px] font-medium">
-            {slots.length === 1 ? 'Directory' : `Directory for ${agentName || `agent ${i + 1}`}`}
-          </span>
-          <SlotDirectoryField
-            slot={slot}
-            onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === i ? next : x)))}
-            sshHost={sshHost}
-            busy={phase === 'creating'}
-          />
-        </div>
-      </CollapsibleInput>
-    );
-  });
-
-  // For an agent template the setup the page filled in sits behind one row.
-  // It opens by itself when something in it is unsettled.
-  const advancedSettled =
-    pickedProvider !== null &&
-    hostReachable &&
-    hostReady &&
-    slots[0] !== undefined &&
-    slots[0].dir !== '' &&
-    !slots[0].dirPicked;
-  const advancedGroup = isAgentTemplate && slots[0] && (
-    <CollapsibleInput
-      label="Advanced"
-      summary={[
-        pickedProvider ? (providerDisplayName(pickedProvider) ?? pickedProvider) : 'no provider',
-        runLocationLabel(runHost, allowedHosts),
-        slots[0].dir.replace(/^\/(?:Users|home)\/[^/]+/, '~'),
-      ].join('  ·  ')}
-      collapsed={isCollapsed('advanced') && advancedSettled}
-      onOpen={() => open('advanced')}
-      wrap
-    >
-      <div className="flex flex-col gap-5 rounded-[10px] border border-border px-4 py-4">
-        {!providerParam && (
-          <div className="flex flex-col gap-2">
-            <span className="text-[12.5px] font-medium">Provider</span>
-            {hostReachable ? (
-              <AgentTypePicker
-                value={pickedProvider}
-                onChange={setPickedProvider}
-                sshHost={sshHost ?? undefined}
-                onNavigateAway={() => navigate('settings', { tab: 'clis-models' })}
-              />
-            ) : (
-              <p className="text-xs text-foreground-passive">Waiting for the host…</p>
-            )}
-          </div>
-        )}
-        {allowedHosts.length > 0 && (
-          <div className="flex flex-col gap-2">
-            <span className="text-[12.5px] font-medium">Runs on</span>
-            <RunLocationSelect
-              value={runHost}
-              onChange={setRunHost}
-              hosts={allowedHosts}
-              disabled={phase === 'creating'}
-            />
-            {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
-            {isRemoteRun && hostReachable && !hostReadiness.checking && (
-              <HostReadinessNotice
-                sshHost={runHost}
-                readiness={hostReadiness}
-                onNavigateAway={() => navigate('remoteHosts')}
-              />
-            )}
-          </div>
-        )}
-        <div className="flex flex-col gap-2">
-          <span className="text-[12.5px] font-medium">Directory</span>
-          <SlotDirectoryField
-            slot={slots[0]}
-            onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === 0 ? next : x)))}
-            sshHost={sshHost}
-            busy={phase === 'creating'}
-          />
-        </div>
-      </div>
-    </CollapsibleInput>
-  );
-
-  // Step 2 of an agent template: the room it is talked to in.
-  const templateRoom = parsed?.rooms[0] ?? null;
-  const roomStep = isAgentTemplate && (
+  const roomSection = (hasRoomPart || roomParams.length > 0 || intoRoomId) && (
     <div className="flex flex-col gap-4">
-      {roomChoice === 'pick' ? (
-        <>
-          <div className="flex flex-col gap-2">
-            <p className="text-xs text-foreground-muted">
-              The agent joins the room you pick. Mention it there to start it. Leave it empty to
-              create the agent on its own.
-            </p>
-            <RoomPickField
-              rooms={lists.rooms}
-              loading={lists.roomsLoading}
-              value={pickedRoomId}
-              onChange={setPickedRoomId}
-            />
-          </div>
-          {templateRoom && (
-            <button
-              type="button"
-              onClick={() => setRoomChoice('new')}
-              className="w-max cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-            >
-              Or create a new room for it
-            </button>
-          )}
-        </>
-      ) : (
-        <>
-          <div className="flex flex-col gap-2">
-            <span className="text-[12.5px] font-medium">New room</span>
-            <p className="text-xs text-foreground-muted">
-              The template's room is created with the agent in it, and its first message is posted
-              for you.
-            </p>
-          </div>
-          {paramFields}
-          {memberLists}
-          <button
-            type="button"
-            onClick={() => setRoomChoice('pick')}
-            className="w-max cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-          >
-            Or pick a room that exists
-          </button>
-        </>
-      )}
+      <SectionTitle
+        title={roomCount > 1 ? 'Rooms' : 'Room'}
+        hint={
+          intoRoomId
+            ? `The agent joins ${intoRoomName ?? 'the room'} you came from.`
+            : roomParams.length === 0 && makesRoom
+              ? 'Created as the template describes, with the agent in it.'
+              : undefined
+        }
+      />
+      {roomParams.filter((p) => p.input !== 'advanced').map((p) => paramRow(p, null))}
+      {makesRoom && memberLists}
+      {roomParams.filter((p) => p.input === 'advanced').map((p) => paramRow(p, null))}
     </div>
   );
 
@@ -1366,11 +1264,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       <div className="flex shrink-0 items-start gap-4 border-b border-border px-8 pt-8 pb-5 [-webkit-app-region:drag]">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-xs text-foreground-passive">
-            {intoRoomId
-              ? `Add an agent to ${intoRoomName ?? 'the room'}`
-              : isAgentTemplate
-                ? `Step ${step} of 2`
-                : 'Use template'}
+            {intoRoomId ? `Add an agent to ${intoRoomName ?? 'the room'}` : 'Use template'}
           </span>
           <h2 className="truncate text-xl font-semibold tracking-tight">
             {loaded?.name ?? params.sourceName ?? 'Template'}
@@ -1389,23 +1283,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           )}
         >
           <div className="flex items-center gap-2">
-            {isAgentTemplate && step === 2 && !partlyDone ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setStep(1)}
-                disabled={phase !== 'form'}
-              >
-                Back
-              </Button>
-            ) : (
-              <Button variant="outline" size="sm" onClick={cancel} disabled={phase !== 'form'}>
-                {params.yamlText && !intoRoomId ? 'Back to the document' : 'Cancel'}
-              </Button>
-            )}
+            <Button variant="outline" size="sm" onClick={cancel} disabled={phase !== 'form'}>
+              {params.yamlText && !intoRoomId ? 'Back to the document' : 'Cancel'}
+            </Button>
             <Button
               size="sm"
-              onClick={() => (isAgentTemplate && step === 1 ? setStep(2) : void createAll())}
+              onClick={() => void createAll()}
               disabled={blockedReason !== null || phase !== 'form'}
               title={blockedReason ?? undefined}
             >
@@ -1458,7 +1341,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                   <AlertDescription>{w}</AlertDescription>
                 </Alert>
               ))}
-              {creatorBlocked && !intoRoomId && (
+              {creatorBlocked && makesRoom && (
                 <Alert>
                   <AlertDescription>
                     <div className="flex flex-col gap-2">
@@ -1502,54 +1385,24 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 </Alert>
               )}
 
-              <SectionTitle
-                title={isAgentTemplate ? (step === 1 ? 'The agent' : 'Room') : 'Setup'}
-                hint={
-                  isAgentTemplate
-                    ? undefined
-                    : blockedReason === null && prefilled.size > 0
-                      ? 'Filled in for you. Change anything, or create it as it is.'
-                      : 'Values are substituted into the template. Nothing is created until you confirm.'
-                }
-              />
-              {!isAgentTemplate && templateParams.length === 0 && !showNameField && (
+              {createsAgents && (
+                <>
+                  <SectionTitle
+                    title={slots.length === 1 ? 'Agent' : 'Agents'}
+                    hint={
+                      templateParams.length === 0
+                        ? 'This template asks for nothing. Create it as it is, or open Advanced.'
+                        : undefined
+                    }
+                  />
+                  {slots.map(agentSection)}
+                </>
+              )}
+              {createsAgents && roomSection && <div className="border-t border-border" />}
+              {!createsAgents && templateParams.length === 0 && (
                 <p className="text-sm text-foreground-muted">This template asks for nothing.</p>
               )}
-              {isAgentTemplate ? (
-                step === 1 ? (
-                  <>
-                    {agentNameField}
-                    {advancedGroup}
-                  </>
-                ) : (
-                  roomStep
-                )
-              ) : singleNewAgent ? (
-                <>
-                  {nameField}
-                  {providerField}
-                  {paramFields}
-                  {memberLists}
-                  {locationField}
-                  {directoryFields}
-                </>
-              ) : (
-                <>
-                  {nameField}
-                  {paramFields}
-                  {memberLists}
-                  {createsAgents && (
-                    <>
-                      <SectionTitle
-                        title={slots.length === 1 ? 'Where the agent runs' : 'Where the agents run'}
-                      />
-                      {locationField}
-                      {providerField}
-                      {directoryFields}
-                    </>
-                  )}
-                </>
-              )}
+              {roomSection}
             </div>
 
             {/* Right: what this will create */}
@@ -1564,7 +1417,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 <span
                   className={cn(
                     'shrink-0 text-[11.5px]',
-                    missing.length > 0 || slotProblems.length > 0
+                    missing.length > 0 || slotProblems.length > 0 || invalid.length > 0
                       ? 'text-amber-600 dark:text-amber-400'
                       : 'text-emerald-700 dark:text-emerald-400'
                   )}
@@ -1574,12 +1427,41 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-5 py-4">
                 <div className="flex flex-col gap-2">
+                  {slots.map((slot, i) => (
+                    <AgentSlotCard
+                      key={i}
+                      slot={slot}
+                      wantedName={setups[i]?.name ?? ''}
+                      finalName={setups[i]?.name ?? ''}
+                      onChange={(next) =>
+                        setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
+                      }
+                      lists={lists}
+                      locationLabel={runLocationLabel(
+                        setups[i]?.location ?? LOCAL_RUN_LOCATION,
+                        allowedHosts
+                      )}
+                      choice={loaded.kind === 'group'}
+                    />
+                  ))}
                   {intoRoomId ? (
-                    <p className="text-xs text-foreground-muted">
-                      The new agent joins the room you came from; no room is made.
+                    <p className="px-1 text-xs text-foreground-muted">
+                      Joins{' '}
+                      <span className="font-medium text-foreground">
+                        {intoRoomName ?? 'the room'}
+                      </span>
+                      . Mention it there to start it.
                     </p>
-                  ) : isAgentTemplate ? null : (
-                    !isAgentTemplate &&
+                  ) : null}
+                  {joinNames
+                    .filter((n) => n !== intoRoomName)
+                    .map((n) => (
+                      <p key={n} className="px-1 text-xs text-foreground-muted">
+                        Joins <span className="font-medium text-foreground">{n}</span>. Mention it
+                        there to start it.
+                      </p>
+                    ))}
+                  {makesRoom &&
                     parsed?.rooms.map((room, i) => (
                       <RoomCard
                         key={i}
@@ -1591,43 +1473,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                         status={roomStatus}
                         toggle={null}
                       />
-                    ))
-                  )}
-                  {slots.map((slot, i) => (
-                    <AgentSlotCard
-                      key={i}
-                      slot={slot}
-                      wantedName={slotNames[i]?.wanted ?? ''}
-                      finalName={slotNames[i]?.final ?? ''}
-                      onChange={(next) =>
-                        setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
-                      }
-                      lists={{ ...lists, agents: agentsAtLocation }}
-                      locationLabel={runLocationLabel(runHost, allowedHosts)}
-                      choice={!isAgentTemplate}
-                    />
-                  ))}
-                  {isAgentTemplate &&
-                    step === 2 &&
-                    (roomChoice === 'new' && templateRoom ? (
-                      <RoomCard
-                        room={templateRoom}
-                        values={railValues}
-                        renames={railRenames}
-                        bridgeName={templateBridge?.displayName ?? parsed?.bridge ?? null}
-                        creatorIdentity={creatorIdentity}
-                        status={roomStatus}
-                        toggle={null}
-                      />
-                    ) : pickedRoomId ? (
-                      <p className="px-1 text-xs text-foreground-muted">
-                        Joins{' '}
-                        <span className="font-medium text-foreground">
-                          {switchRoomsStore.roomNameById(pickedRoomId) ?? 'the room'}
-                        </span>
-                        . Mention it there to start it.
-                      </p>
-                    ) : null)}
+                    ))}
                 </div>
                 <ResolvedDocument
                   yamlText={loaded.yamlText}

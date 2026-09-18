@@ -21,7 +21,6 @@ import {
 } from './agent-template-format';
 import {
   serverDocument,
-  dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
   type TemplateAgents,
@@ -141,10 +140,6 @@ export const agentTemplatesController = createRPCController({
   serverDocument: (params: { yamlText: string; keepConsoleParams?: boolean }): string | null =>
     serverDocument(params.yamlText, { keepConsoleParams: params.keepConsoleParams }),
 
-  /** The server document with the named params removed (see `dropUnsetParams`). */
-  dropParams: (params: { coreYaml: string; names: string[] }): string =>
-    dropUnsetParams(params.coreYaml, params.names),
-
   /** The server document with agent names replaced (see `substituteAgentSlots`). */
   substituteSlots: (params: { coreYaml: string; replacements: Record<string, string> }): string =>
     substituteAgentSlots(params.coreYaml, params.replacements),
@@ -152,6 +147,22 @@ export const agentTemplatesController = createRPCController({
   /** The document with every agent's instructions inlined, ready to store on a server. */
   compose: (params: { yamlText: string; instructions: string }): string =>
     composeAgentTemplateDocument(params.yamlText, params.instructions),
+
+  /** The directory agents are kept under, on this machine or on `sshHost`:
+   * the `{$agents_dir}` a template's `directory` field may refer to. */
+  agentsDirectory: async (params: { sshHost?: string | null }): Promise<string> => {
+    if (params.sshHost) {
+      const ctx = await remoteContext(params.sshHost);
+      try {
+        const home = await resolveRemoteHome(ctx);
+        return `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}`;
+      } finally {
+        ctx.dispose();
+      }
+    }
+    const { defaultLocationsDirectory } = await appSettingsService.get('localLocation');
+    return defaultLocationsDirectory;
+  },
 
   /** The default working directory for an agent of this name: a folder named
    * after it under the Console's locations directory, or under the host's

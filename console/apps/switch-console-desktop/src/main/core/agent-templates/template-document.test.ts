@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   composeTemplateDocument,
   serverDocument,
-  dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
   templateKind,
@@ -103,24 +102,35 @@ describe('serverDocument', () => {
     expect(Object.keys(doc.params)).toEqual(['team', 'provider', 'bridge']);
   });
 
-  it('drops prefill, which a server that predates the key refuses', () => {
+  it('drops params only an agent entry reads, and every Console type', () => {
     const doc = load(
       serverDocument(
         [
           'params:',
+          '  name:',
+          '    type: string',
+          '    default: Expert',
+          '  where:',
+          '    type: room',
+          '    default: [$new]',
+          '  location:',
+          '    type: location',
+          '    default: local',
           '  bridge:',
           '    type: bridge',
-          '    description: Where the room lives',
-          '    prefill: first',
+          '    default: [$first]',
+          'agent:',
+          '  display_name: "{name}"',
+          '  location: "{location}"',
+          '  join: ["{where}"]',
           'room:',
-          '  name: n',
-          '  description: d',
+          '  name: "Ask {agent}"',
           '  bridge: "{bridge}"',
-        ].join('\n'),
-        { keepConsoleParams: true }
+        ].join('\n')
       ) ?? ''
     ) as { params: Record<string, unknown> };
-    expect(doc.params.bridge).toEqual({ type: 'bridge', description: 'Where the room lives' });
+    expect(Object.keys(doc.params)).toEqual(['agent', 'bridge']);
+    expect(doc.params.bridge).toEqual({ type: 'bridge', default: ['$first'] });
   });
 
   it('declares {agent} for a lone agent', () => {
@@ -168,19 +178,6 @@ describe('substituteAgentSlots kickoffs', () => {
     };
     expect(out.kickoff).toBe('@alpha-a-2 hi');
     expect(out.room.kickoff).toBe('@alpha-a-2 go');
-  });
-});
-
-describe('dropUnsetParams', () => {
-  it('removes the declaration and the room fields that read it', () => {
-    const out = load(
-      dropUnsetParams(
-        'params:\n  bridge:\n    type: bridge\n  team:\n    type: string\nroom:\n  name: "{team}"\n  bridge: "{bridge}"\n',
-        ['bridge']
-      )
-    ) as { params: Record<string, unknown>; room: Record<string, unknown> };
-    expect(Object.keys(out.params)).toEqual(['team']);
-    expect(out.room).toEqual({ name: '{team}' });
   });
 });
 

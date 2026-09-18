@@ -9,9 +9,11 @@
 export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
 export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
 
-/** Param types the Console answers itself and leaves out of the request to the server.
- * `provider` chooses the coding agent that runs the agents a template creates. */
-export const CONSOLE_PARAM_TYPES = ['provider'] as const;
+/** Param types the Console answers itself and leaves out of the request to
+ * the server. `provider` is the coding agent that runs an agent the template
+ * creates, `location` the machine it runs on, `directory` its working
+ * directory. Mirrors `CONSOLE_PARAM_TYPES` in core. */
+export const CONSOLE_PARAM_TYPES = ['provider', 'location', 'directory'] as const;
 export type ConsoleParamType = (typeof CONSOLE_PARAM_TYPES)[number];
 
 export type ParamType =
@@ -39,6 +41,24 @@ export function isEntityParamType(type: ParamType): type is EntityParamType {
   return (ENTITY_PARAM_TYPES as readonly string[]).includes(type);
 }
 
-/** Param types that accept `prefill: first`. A `user` param has no first:
+/** Param types whose `default` may be a list of candidates tried in order.
+ * Mirrors `CHAIN_PARAM_TYPES` in core. A `user` param has no first:
  * `{$creator}` already names the deployer. */
-export const PREFILL_PARAM_TYPES: readonly ParamType[] = ['agent', 'bridge', 'room'];
+export const CHAIN_PARAM_TYPES: readonly ParamType[] = [
+  'agent',
+  'bridge',
+  'room',
+  'provider',
+  'location',
+];
+
+/** In a chain: the first thing of the param's type the server or the Console has. */
+export const FIRST = '$first';
+/** In a `room` param's chain: the room the template's own `room:` block describes. */
+export const NEW = '$new';
+
+/** How a form presents a param. `ask` is a visible input; `advanced` is
+ * prefilled and folded away; `fixed` is shown but not editable. Mirrors
+ * `ParamInput` in core. */
+export type ParamInput = 'ask' | 'advanced' | 'fixed';
+export const PARAM_INPUTS: readonly ParamInput[] = ['ask', 'advanced', 'fixed'];

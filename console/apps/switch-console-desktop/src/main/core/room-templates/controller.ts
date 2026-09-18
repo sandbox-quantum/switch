@@ -3,24 +3,37 @@ import { dump, load } from 'js-yaml';
 import type { KV } from '@main/db/kv';
 import exampleTemplateYaml from '@root/../../../examples/room-templates/red-blue-workroom.template.yaml?raw';
 import {
+  CHAIN_PARAM_TYPES,
+  PARAM_INPUTS,
   PARAM_TYPES,
-  PREFILL_PARAM_TYPES,
+  type ParamInput,
   type ParamType,
 } from '@shared/core/switch-servers/room-template-params';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
+/** One entry of a template's `params:`, as core's `ParamSpec` reads it. */
 export type ParamSpec = {
   name: string;
   type: ParamType;
   description: string | null;
-  default: string | number | boolean | null;
+  /** The human name of the input, when the key is not one. */
+  label: string | null;
+  /** A value, or for a chain type (`CHAIN_PARAM_TYPES`) the candidates tried in order. */
+  default: string | number | boolean | string[] | null;
+  /** Whether the value may be empty when the template is used. Without a
+   * default, or with a chain, a param is required unless the template says
+   * `required: false`. */
+  required: boolean;
+  input: ParamInput;
   enum: string[] | null;
   /** String params carrying long text render as a textarea (a one-line input
    * would strip pasted newlines). Declared in the template: `multiline: true`. */
   multiline: boolean;
-  /** With `first`, the form selects the first agent, room or messaging app
-   * and the deployer can change it. Declared in the template: `prefill: first`. */
-  prefill: 'first' | null;
+  /** A regular expression the whole value of a string param must match. */
+  pattern: string | null;
+  /** Bounds of a number param, inclusive. */
+  min: number | null;
+  max: number | null;
 };
 
 /** One room of a template, with the fields the Use page shows and edits. */
@@ -68,10 +81,15 @@ export function extractParams(raw: unknown): ParamSpec[] {
         name,
         type: 'string' as const,
         description: null,
+        label: null,
         default: null,
+        required: true,
+        input: 'ask' as const,
         enum: null,
         multiline: false,
-        prefill: null,
+        pattern: null,
+        min: null,
+        max: null,
       };
     }
     const s = spec as Record<string, unknown>;
@@ -79,17 +97,29 @@ export function extractParams(raw: unknown): ParamSpec[] {
     // An unknown type is read as a string so the form still renders; the
     // server's schema is what rejects it, with a message naming the type.
     const validType = PARAM_TYPES.includes(type as ParamType) ? (type as ParamType) : 'string';
+    const chain =
+      Array.isArray(s.default) && CHAIN_PARAM_TYPES.includes(validType)
+        ? s.default.filter((c): c is string => typeof c === 'string')
+        : null;
+    const def: ParamSpec['default'] =
+      chain !== null
+        ? chain
+        : s.default !== undefined && !Array.isArray(s.default)
+          ? (s.default as string | number | boolean | null)
+          : null;
     return {
       name,
       type: validType,
       description: typeof s.description === 'string' ? s.description : null,
-      default: s.default !== undefined ? (s.default as ParamSpec['default']) : null,
+      label: typeof s.label === 'string' && s.label.trim() ? s.label.trim() : null,
+      default: def,
+      required: typeof s.required === 'boolean' ? s.required : def === null || chain !== null,
+      input: PARAM_INPUTS.includes(s.input as ParamInput) ? (s.input as ParamInput) : 'ask',
       enum: Array.isArray(s.enum) ? (s.enum as string[]) : null,
       multiline: validType === 'string' && s.multiline === true,
-      prefill:
-        s.prefill === 'first' && PREFILL_PARAM_TYPES.includes(validType)
-          ? ('first' as const)
-          : null,
+      pattern: validType === 'string' && typeof s.pattern === 'string' ? s.pattern : null,
+      min: validType === 'number' && typeof s.min === 'number' ? s.min : null,
+      max: validType === 'number' && typeof s.max === 'number' ? s.max : null,
     };
   });
 }

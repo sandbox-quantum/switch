@@ -25,7 +25,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
-import { isRequired, typeLabel } from './use/use-template-model';
+import { isRequired, paramLabel, typeLabel } from './use/use-template-model';
 
 function useViewParams() {
   return useParams('templateDetail').params;
@@ -451,13 +451,24 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
             <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
               {params.map((p) => (
                 <div key={p.name} className="flex items-start gap-3 px-3.5 py-2.5 text-[12.5px]">
-                  <span className="w-36 shrink-0 truncate font-mono">{p.name}</span>
+                  <span
+                    className={cn(
+                      'w-36 shrink-0 truncate',
+                      paramLabel(p) === p.name && 'font-mono'
+                    )}
+                  >
+                    {paramLabel(p)}
+                  </span>
                   <span className="w-16 shrink-0 text-[11.5px] text-foreground-passive">
                     {typeLabel(p.type)}
                   </span>
                   <span className="min-w-0 flex-1 leading-snug text-foreground-muted">
                     {p.description ??
-                      (p.default !== null ? `Defaults to ${String(p.default)}` : '')}
+                      (Array.isArray(p.default)
+                        ? `Tries ${p.default.join(', then ')}`
+                        : p.default !== null
+                          ? `Defaults to ${String(p.default)}`
+                          : '')}
                   </span>
                   <span
                     className={cn(
@@ -467,7 +478,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                         : 'text-foreground-passive'
                     )}
                   >
-                    {isRequired(p) ? 'Required' : 'Optional'}
+                    {p.input === 'fixed'
+                      ? 'Set by the template'
+                      : p.input === 'advanced'
+                        ? 'Advanced'
+                        : isRequired(p)
+                          ? 'Required'
+                          : 'Optional'}
                   </span>
                 </div>
               ))}

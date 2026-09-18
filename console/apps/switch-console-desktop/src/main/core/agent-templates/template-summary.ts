@@ -60,11 +60,12 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     doc = null;
   }
   const root = asRecord(doc) ?? {};
-  // Only params the deployer has to answer. One with a default, or one the
-  // form fills in for them (`prefill`), is not a question.
+  // Only params the deployer has to answer: no default to prefill from, and
+  // not marked optional. A chain default counts as a default here, since a
+  // server with the first candidate set up asks nothing.
   const inputs = Object.values(asRecord(root.params) ?? {}).filter((spec) => {
     const record = asRecord(spec);
-    return record?.default === undefined && record?.prefill === undefined;
+    return record?.default === undefined && record?.required !== false;
   }).length;
 
   const agentEntries: Record<string, unknown>[] = Array.isArray(root.agents)
