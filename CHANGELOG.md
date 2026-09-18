@@ -44,6 +44,12 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.27.0] - Unreleased
+
+#### Added
+- Persistent SDK session support with durable commands, session context and attachments.
+- Authenticated gateway compatibility declaration for SDK sessions, allowing Console to require a compatible server before starting sessions.
+
 ### [0.26.0] - 2026-09-09
 
 #### Added

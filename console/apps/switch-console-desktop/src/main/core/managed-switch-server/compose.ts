@@ -171,7 +171,13 @@ export async function isStackRunning(host: ServerHost): Promise<boolean> {
 export async function runningImages(host: ServerHost): Promise<Map<string, string>> {
   const stdout = await runCompose(
     host,
-    [...baseArgs(host, []), 'ps', '--status', 'running', '--format', 'json'],
+    [
+      'ps',
+      '--filter',
+      `label=com.docker.compose.project=${host.composeProjectName}`,
+      '--format',
+      '{"Service":{{json (.Label "com.docker.compose.service")}},"Image":{{json .Image}}}',
+    ],
     60_000
   );
   const images = new Map<string, string>();

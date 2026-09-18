@@ -96,9 +96,16 @@ export class LocalServerStore {
   async init(): Promise<void> {
     if (!this.off) {
       this.off = events.on(localServerStatusChannel, (status) => {
+        const becameReady = status.phase === 'running' && this.status?.phase !== 'running';
         runInAction(() => {
           this.status = status;
+          if (becameReady) {
+            this.error = null;
+            this.errorDetail = null;
+            this.docker = null;
+          }
         });
+        if (becameReady) void switchServersStore.init();
       });
     }
     if (!this.offLog) {
@@ -159,6 +166,7 @@ export class LocalServerStore {
   }
 
   async start(): Promise<void> {
+    this.docker = null;
     this.pendingLines = [];
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
@@ -194,6 +202,7 @@ export class LocalServerStore {
       // The command has finished, so nothing more will arrive to trigger a
       // flush — the tail's last lines are the ones that say how it went.
       this.flushLines();
+      await this.checkDocker();
       runInAction(() => {
         this.busy = false;
       });

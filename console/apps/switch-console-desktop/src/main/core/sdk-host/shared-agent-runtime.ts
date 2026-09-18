@@ -1,3 +1,4 @@
+import { assertLegacySessionsStopped } from './legacy-session-guard';
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
 import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
@@ -24,6 +25,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { LocationTransport } from '@main/core/locations/location-transport';
+import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
@@ -125,6 +127,8 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     this.server = await getServer(agent.serverId);
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
     const server = this.server;
+    this.startupStage = 'Waiting for the Switch server…';
+    await ensureServerSessionReady(server);
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
     const previousEpoch = restart
@@ -135,6 +139,12 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       this.params.sessionPath,
       session.id,
       false
+    );
+    await assertLegacySessionsStopped(
+      ctx,
+      agent.id,
+      this.params.sessionPath,
+      session.agentName ?? agent.name
     );
     this.startupStage = restart
       ? 'Stopping the previous process and starting its replacement…'

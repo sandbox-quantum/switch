@@ -3,7 +3,10 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport } from '@main/core/locations/location-transport';
+import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { adoptSubagent } from './adopt-subagent';
+import { assertLegacySessionsStopped } from './legacy-session-guard';
 import { buildSharedHostConfig } from './shared-agent-runtime';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 import { waitForWatcherStop } from './watcher-inspection';
@@ -18,6 +21,12 @@ export async function configureSharedWatcher(
   if (!agent.switchAgentId) {
     if (!enabled) return;
     throw new Error('Link the agent to Switch before enabling automatic sessions.');
+  }
+  if (enabled) {
+    const server = agent.serverId ? await getServer(agent.serverId) : null;
+    if (!server)
+      throw new Error('Link the agent to a Switch server before enabling automatic sessions.');
+    await ensureServerSessionReady(server);
   }
   const location = await getAgentLocation(agent);
   const transport = locationTransport(location);
@@ -60,6 +69,7 @@ export async function configureSharedWatcher(
     config.session.agentId,
     true
   );
+  if (enabled) await assertLegacySessionsStopped(ctx, agent.id, location.dir, name ?? agent.name);
   await ctx.exec('node', [
     '-e',
     "const fs=require('node:fs');const path=require('node:path');const [root,enabled]=process.argv.slice(1);fs.mkdirSync(root,{recursive:true,mode:0o700});const dest=path.join(root,'watch.json');const tmp=dest+'.'+require('node:crypto').randomUUID();const fd=fs.openSync(tmp,'wx',0o600);try{fs.writeFileSync(fd,JSON.stringify({enabled:enabled==='true'}));fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(tmp,dest)",

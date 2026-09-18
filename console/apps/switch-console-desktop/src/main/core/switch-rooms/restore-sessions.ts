@@ -7,7 +7,7 @@ import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
 import { switchRoomService } from './switch-room-service';
 
-export async function restoreSwitchRoomSessions(): Promise<void> {
+export async function restoreSwitchRoomSessions(serverId?: string): Promise<void> {
   const sessionIds = await switchRoomService.listPersistedSessionIds();
   if (sessionIds.length === 0) return;
 
@@ -38,6 +38,8 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         });
         continue;
       }
+
+      if (serverId && loaded.serverId !== serverId) continue;
 
       const location = await getLocationById(loaded.locationId);
       if (!location) {

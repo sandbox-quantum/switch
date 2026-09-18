@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from switch_core import version as version_module
+from switch_core.gateway.auth_routes import _gateway_declaration
 from switch_core.version import server_declaration, switch_core_version
 
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
@@ -96,3 +97,10 @@ def test_db_schema_cannot_ride_alongside_a_public_contract() -> None:
     """The likelier mistake than asking for it alone."""
     with pytest.raises(ValueError, match="internal to switch-core"):
         server_declaration("gateway-api", "db-schema")
+
+
+def test_gateway_discloses_sdk_support_for_the_console_readiness_gate() -> None:
+    declaration = _gateway_declaration()
+    assert declaration.contracts["sdk-sessions"].speaks == 1
+    assert declaration.contracts["sdk-sessions"].accepts == 1
+    assert "db-schema" not in declaration.contracts

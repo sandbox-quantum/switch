@@ -107,9 +107,9 @@ export const LocalServerControls = observer(function LocalServerControls() {
           </Alert>
         )}
 
-        {store.error && !dockerUnavailable && (
+        {(store.error || store.status?.error) && !dockerUnavailable && (
           <Alert variant="destructive">
-            <AlertTitle>{store.error}</AlertTitle>
+            <AlertTitle>{store.error ?? store.status?.error}</AlertTitle>
             {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
         )}
