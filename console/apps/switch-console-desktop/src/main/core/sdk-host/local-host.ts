@@ -12,6 +12,7 @@ import {
 } from '@switch-console/agent-providers';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { log } from '@main/lib/logger';
+import { clearStaleOwners } from './local-host-owners';
 
 /**
  * Local hosts belong to Console's process tree: a local agent must not answer
@@ -49,13 +50,11 @@ export function localWatcherRoot(identity: string): string {
   return matches[0] ? join(base, matches[0]) : keyed;
 }
 
-export async function writeWatchEnabled(root: string, enabled: boolean): Promise<void> {
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  const destination = join(root, 'watch.json');
+async function writeAtomic(destination: string, body: unknown): Promise<void> {
   const temporary = `${destination}.${randomUUID()}`;
   const file = await open(temporary, 'wx', 0o600);
   try {
-    await file.writeFile(JSON.stringify({ enabled }));
+    await file.writeFile(JSON.stringify(body));
     await file.sync();
   } finally {
     await file.close();
@@ -63,17 +62,41 @@ export async function writeWatchEnabled(root: string, enabled: boolean): Promise
   await rename(temporary, destination);
 }
 
+export async function writeWatchEnabled(root: string, enabled: boolean): Promise<void> {
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await writeAtomic(join(root, 'watch.json'), { enabled });
+}
+
+/**
+ * Records why a host stopped where the agent's panel reads it. A deployed host
+ * writes this from its own process; one running inside Console has to write it
+ * here, or the panel would report the watcher as down with no reason.
+ */
+async function recordFailure(root: string, message: string): Promise<void> {
+  await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+  await writeAtomic(join(root, 'supervisor', 'failure.json'), { message });
+}
+
 function track(
   registry: Map<string, { stop: AbortController; done: Promise<void> }>,
   root: string,
   run: (signal: AbortSignal) => Promise<void>,
-  describe: string
+  describe: string,
+  report: boolean
 ): void {
   if (registry.has(root)) return;
   const stop = new AbortController();
   const done = run(AbortSignal.any([stop.signal, consoleLifetime.signal]))
-    .catch((error: unknown) => {
-      log.error(describe, { root, error: String(error) });
+    .catch(async (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(describe, { root, error: message });
+      if (!report || consoleLifetime.signal.aborted) return;
+      await recordFailure(root, message).catch((failure: unknown) => {
+        log.error('Could not record why a local host stopped', {
+          root,
+          error: String(failure),
+        });
+      });
     })
     .finally(() => {
       registry.delete(root);
@@ -110,7 +133,9 @@ export const consoleSupervision: Supervision = {
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           signal,
         }),
-      'Local SDK host supervisor stopped'
+      'Local SDK host supervisor stopped',
+      // The supervisor records a worker's own failure under this root already.
+      false
     );
   },
   stop: (root) => halt(sessions, root),
@@ -145,6 +170,7 @@ export async function readLocalHostFailure(root: string): Promise<unknown> {
 /** Runs the room watcher inside Console rather than deploying a detached host. */
 export async function startLocalWatcher(config: SharedHostConfig): Promise<void> {
   const root = localWatcherRoot(config.session.agentId);
+  await clearStaleOwners(root);
   await writeWatchEnabled(root, true);
   await ensureSharedProcess({
     root,
@@ -158,7 +184,8 @@ export async function startLocalWatcher(config: SharedHostConfig): Promise<void>
           watchers,
           prepared,
           (signal) => runSharedWatcher(prepared, config, signal, consoleSupervision),
-          'Local room watcher stopped'
+          'Local room watcher stopped',
+          true
         );
       },
       stop: (target) => halt(watchers, target),
