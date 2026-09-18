@@ -58,6 +58,10 @@ class FakeWebClient:
         self.started: list[dict[str, Any]] = []
         self.appended: list[dict[str, Any]] = []
         self.stopped: list[dict[str, Any]] = []
+        # Every chat.stopStream the adapter tried, refused ones included.
+        # `stopped` holds only those Slack took, so a test that a refusal was
+        # not answered by asking twice has to read the attempts.
+        self.stop_attempts: list[dict[str, Any]] = []
         self.start_error: str | None = None
         self.append_error: str | FakeResponse | None = None
         self.stop_error: str | FakeResponse | None = None
@@ -118,6 +122,7 @@ class FakeWebClient:
         return FakeResponse({"ok": True})
 
     async def chat_stopStream(self, **kwargs: Any) -> FakeResponse:
+        self.stop_attempts.append(kwargs)
         if self.stop_error is not None:
             raise SlackApiError("no", _refusal(self.stop_error))
         self.stopped.append(kwargs)

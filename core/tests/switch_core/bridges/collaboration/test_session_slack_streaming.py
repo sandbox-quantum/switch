@@ -756,6 +756,114 @@ async def test_turns_that_never_end_do_not_pile_up_forever(caplog: Any) -> None:
     assert "Forgetting the activity stream" in caplog.text
 
 
+# ── When the stop is refused ─────────────────────────────────────────────────
+#
+# The publisher records a turn as ended on a draw that reported success and
+# drops its anchor with it. So a stop that quietly failed leaves a message in
+# its streaming state that nothing is coming back for — a spinner over a turn
+# that finished, for good. Every refusal has to reach the caller instead.
+
+
+async def test_a_turn_whose_stream_will_not_close_is_still_owed() -> None:
+    """A refused stop fails the publication rather than being logged past.
+
+    The stream is kept rather than forgotten, which is the safer half: one this
+    process has forgotten is one the next publication tries to *edit*, and
+    there is no edit that can hold a turn drawn in two sections. Holding the
+    record means the retry appends, finds nothing moved, and asks again.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+
+    client.stop_error = "internal_error"
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert client.stopped == []
+    assert ref in adapter._streams
+    assert ref not in adapter._unredrawable
+
+
+async def test_a_close_slack_is_too_busy_for_holds_the_rest_of_the_batch_back() -> None:
+    """The likely refusal, and the reason the close is careful at all.
+
+    A restart ends every stream it stranded at roughly the same moment, through
+    a budget belonging to the workspace rather than to any one message. So the
+    cooldown is recorded as well as reported, and the turns queued behind this
+    one wait it out instead of walking into the refusal it was just given.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+
+    client.stop_error = FakeResponse(
+        {"error": "ratelimited"}, headers={"Retry-After": "13"}
+    )
+    with pytest.raises(RichContentThrottled) as waiting:
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert waiting.value.retry_after == 13
+    assert ref in adapter._streams
+    assert len(client.stop_attempts) == 1
+
+
+async def test_a_close_that_was_refused_is_simply_asked_again() -> None:
+    """What the retry costs, which is the point of keeping the stream.
+
+    Everything the turn drew is already recorded as sent, so the second attempt
+    appends nothing at all and spends one call: the stop that was refused.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    ended = TurnActivity([tool], _turn("completed"), 9.0)
+
+    client.stop_error = "internal_error"
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(CHANNEL, "Agent", ref, ended, THREAD)
+    drawn = len(client.appended)
+
+    client.stop_error = None
+    await adapter.update_rich(CHANNEL, "Agent", ref, ended, THREAD)
+
+    assert client.stopped == [{"channel": CHANNEL, "ts": "1.0"}]
+    assert len(client.appended) == drawn
+    assert adapter._streams == {}
+
+
+async def test_a_stream_slack_says_is_already_closed_is_treated_as_closed() -> None:
+    """Closed is closed, whoever closed it — a reader pressing stop, or a run
+    of this that got as far as the stop last time. Nothing is owed and there is
+    nothing to report, so it settles exactly as a clean close does."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+
+    client.stop_error = "message_not_in_streaming_state"
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+    )
+
+    assert adapter._streams == {}
+
+
 # ── When Slack will not stream ───────────────────────────────────────────────
 
 
@@ -1322,6 +1430,70 @@ async def test_a_stranded_stream_slack_is_too_busy_to_append_to_is_waited_out() 
         await adapter.update_rich(
             CHANNEL, "Agent", "C1:2.0", TurnActivity([tool], _turn(), 9.0), THREAD
         )
+
+
+async def test_a_reattached_turn_whose_close_is_throttled_stays_owed() -> None:
+    """The burst this whole recovery exists for, at its last step.
+
+    Twenty-two stranded streams take their repair appends and then reach the
+    stop one after another through the workspace's budget. A refusal there has
+    to be waited out and still owed — otherwise the message is repaired,
+    reported as ended, and left streaming with nothing coming back for it.
+
+    The fallback is deliberately not run. The append landed and the message is
+    already right; closing and editing has nothing to offer but the same
+    refusal a second time, on the budget that just gave it.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    client.stop_error = FakeResponse(
+        {"error": "ratelimited"}, headers={"Retry-After": "11"}
+    )
+    with pytest.raises(RichContentThrottled) as waiting:
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert waiting.value.retry_after == 11
+    assert len(client.stop_attempts) == 1
+    assert client.updated == []
+    assert len(client.update_attempts) == 1
+    # Adopted and kept, so the retry appends straight to it rather than going
+    # back through a conflict to find its way here again.
+    assert ref in adapter._streams
+
+
+async def test_a_reattached_turn_whose_close_is_refused_does_not_run_the_fallback() -> (
+    None
+):
+    """A definite refusal, same reasoning: the repair is done and the fallback
+    would only ask a second time. It reaches the caller as a failure so the
+    turn stays owed, and the adopted stream is kept for the retry."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    client.stop_error = "internal_error"
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert len(client.stop_attempts) == 1
+    assert client.updated == []
+    assert ref in adapter._streams
 
 
 # ── Closing it instead, when the append is refused ───────────────────────

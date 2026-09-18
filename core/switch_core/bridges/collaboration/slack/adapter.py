@@ -217,6 +217,20 @@ _STREAMING_CONFLICT = "streaming_state_conflict"
 _STRANDED_BLOCKS: dict[str, dict[str, Any]] = {INTERRUPT_BLOCK_ID: {}}
 
 
+class _StreamNotClosed(RichContentFailed):
+    """A turn drawn to the end on a stream Slack would not then stop.
+
+    Its own type only so that the stranded-stream recovery can tell it from a
+    refused append. Everything the recovery falls back to is about Slack not
+    taking an append; by the time this is raised the append has landed and the
+    message is right, and running the fallback would spend a second stop call
+    on the refusal that just happened and log it as something it was not.
+
+    To every other caller it is the `RichContentFailed` it inherits from: the
+    publication did not finish, so the turn is still owed.
+    """
+
+
 @dataclass
 class _ActivityStream:
     """An open `chat.startStream` message, and what it has been told so far.
@@ -754,6 +768,11 @@ class SlackAdapter(CollaborationAdapter):
         nothing else. A throttle is not a refusal and is left to propagate: the
         adopted record stays, and the next publication appends to it directly
         without going back through a conflict.
+
+        Nor is a stop Slack would not take. By then the append has landed and
+        the message is right; only the streaming state is left to clear, and
+        the fallback has nothing to offer it but the same refusal a second
+        time. It propagates so the turn stays owed — see `_StreamNotClosed`.
         """
         if not isinstance(content, TurnActivity):
             await self._redraw_stranded_stream(channel_id, message_ref, message)
@@ -769,7 +788,7 @@ class SlackAdapter(CollaborationAdapter):
         self._register_stream(message_ref, stream)
         try:
             await self._extend_stream(stream, message_ref, content)
-        except RichContentThrottled:
+        except (RichContentThrottled, _StreamNotClosed):
             raise
         except RichContentFailed as refused:
             self._streams.pop(message_ref, None)
@@ -1141,26 +1160,62 @@ class SlackAdapter(CollaborationAdapter):
             for block in moved:
                 stream.blocks[block["block_id"]] = block
         if content.turn.status in TURN_ENDED:
-            await self._close_stream(client, stream, message_ref)
+            await self._close_stream(client, stream, message_ref, drawn.title)
 
     async def _close_stream(
-        self, client: AsyncWebClient, stream: _ActivityStream, message_ref: str
+        self,
+        client: AsyncWebClient,
+        stream: _ActivityStream,
+        message_ref: str,
+        text: str,
     ) -> None:
-        """Stop the stream and leave the message where it is.
+        """Stop the stream, and settle it only once Slack says it is stopped.
 
         The turn is over and the plan is the record of what it did, so unlike
         the old progress card there is nothing here to delete.
+
+        A refused stop is the publication failing rather than a detail to log.
+        The publisher records a turn as ended on a draw that reported success
+        and drops its anchor with it, so a refusal swallowed here is a message
+        left in its streaming state that nothing is coming back for — a
+        spinner over a finished turn, for good. Raising is what keeps it owed.
+
+        The order matters as much as the raise. Settling forgets the stream,
+        and a stream this process has forgotten is one the next publication
+        tries to *edit* — which for a turn drawn in two sections there is no
+        edit that can hold. Keeping the record until Slack confirms the close
+        means the retry appends instead, finds nothing moved, and asks again.
+
+        A rate limit is the likely refusal and the reason this is careful: a
+        restart ends every stream it stranded at roughly the same moment,
+        through a budget belonging to the workspace rather than to any one of
+        them. `_throttled` puts the cooldown behind the whole batch.
+
+        A stream Slack says is already closed is closed, whoever closed it, so
+        those settle rather than raise. They are the same refusals an append
+        reads as the stream being gone.
         """
-        self._settle_stream(message_ref)
         try:
             await client.chat_stopStream(channel=stream.channel_id, ts=stream.ts)
         except SlackApiError as error:
-            logger.warning(
-                "Slack would not close the activity stream %s (%s); the message "
-                "stands, but it will keep its streaming state.",
-                message_ref,
-                error.response.get("error"),
-            )
+            code = error.response.get("error")
+            if code in _STREAM_CLOSED_ERRORS:
+                logger.warning(
+                    "The activity stream %s was already closed (%s); the turn "
+                    "stands as the stream last drew it.",
+                    message_ref,
+                    code,
+                )
+                self._settle_stream(message_ref)
+                return
+            throttled = self._throttled(error, text)
+            if throttled is not None:
+                raise throttled from error
+            raise _StreamNotClosed(
+                f"Slack would not close the activity stream {message_ref}: {code}",
+                text=text,
+            ) from error
+        self._settle_stream(message_ref)
 
     def _stream_failed(
         self,
