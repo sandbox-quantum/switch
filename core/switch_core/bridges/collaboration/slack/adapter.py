@@ -2520,10 +2520,15 @@ class SlackAdapter(CollaborationAdapter):
             or container.get("channel_id", "")
         )
         message_ts = str(container.get("message_ts", ""))
+        # Same shape `_handle_message_event` normalises: a thread root sets
+        # thread_ts == ts once it has replies, and a control on one is at the
+        # channel root however many replies hang off it.
         thread_ts = str(
             container.get("thread_ts", "")
             or (payload.get("message") or {}).get("thread_ts", "")
         )
+        if thread_ts == message_ts:
+            thread_ts = ""
         if not user_id or not channel_id:
             logger.warning("Slack block_actions missing user or channel, skipping")
             return

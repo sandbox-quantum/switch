@@ -493,6 +493,28 @@ def test_a_press_on_a_top_level_message_reports_no_thread() -> None:
     assert _pressed(_block_actions())[0].thread_ref is None
 
 
+def test_a_control_on_a_thread_root_is_not_treated_as_being_in_that_thread() -> None:
+    """Slack sets `thread_ts == ts` on a root once it has replies, so the root of
+    a thread reports a thread — its own. Answering a press there *inside* that
+    thread would hide the notice under replies the presser may have collapsed,
+    when the control they pressed is sitting at the channel root.
+
+    `_handle_message_event` already normalises exactly this shape; a press has
+    to agree with it or the same message is in a thread for one and not the
+    other.
+    """
+    payload = _block_actions(
+        container={
+            "type": "message",
+            "channel_id": "C1",
+            "message_ts": "111.0",
+            "thread_ts": "111.0",
+        }
+    )
+
+    assert _pressed(payload)[0].thread_ref is None
+
+
 def test_a_thread_slack_puts_only_on_the_message_is_still_found() -> None:
     """Slack does not always repeat `thread_ts` in the container. Missing it
     would silently send every ephemeral in that thread to the channel root,
