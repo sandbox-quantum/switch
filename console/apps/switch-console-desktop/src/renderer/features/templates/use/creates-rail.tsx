@@ -214,10 +214,7 @@ export function AgentSlotCard({
   finalName,
   onChange,
   lists,
-  sshHost,
   locationLabel,
-  busy,
-  directoryInForm = false,
 }: {
   slot: AgentSlot;
   /** The name the deployer asked for; see `slotWantedName`. */
@@ -226,12 +223,8 @@ export function AgentSlotCard({
   finalName: string;
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;
-  sshHost: string | null;
   /** The run location's display name, shown under the existing-agent picker. */
   locationLabel: string;
-  busy: boolean;
-  /** The page shows the directory among its inputs, so the card leaves it out. */
-  directoryInForm?: boolean;
 }) {
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
   const shownName =
@@ -292,9 +285,6 @@ export function AgentSlotCard({
                   An agent called {wantedName} already exists on this server, so this one will be{' '}
                   <span className="font-mono">{finalName}</span>.
                 </p>
-              )}
-              {!directoryInForm && (
-                <SlotDirectoryField slot={slot} onChange={onChange} sshHost={sshHost} busy={busy} />
               )}
             </>
           )}

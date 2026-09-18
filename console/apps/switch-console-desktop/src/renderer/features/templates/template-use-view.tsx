@@ -496,7 +496,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             if (!s || s.dirPicked || s.dir === dir) return prev; // same array: no re-run
             return prev.map((x, j) => (j === i ? { ...x, dir } : x));
           });
-          if (i === 0) markPrefilled('dir');
+          markPrefilled(`dir:${i}`);
         })
         .catch(() => {});
     });
@@ -966,8 +966,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     createError ?? slots.find((s) => s.status === 'failed')?.error ?? Object.values(fieldErrors)[0];
 
   const isCollapsed = (key: string) => prefilled.has(key) && !opened.has(key) && phase === 'form';
-  // One new agent: its name, provider and directory are inputs of the page.
-  // With several agents each card in the rail holds its own directory.
   const singleNewAgent = slots.length === 1 && slots[0].mode === 'new';
 
   const nameField = showNameField && (
@@ -1116,24 +1114,34 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     </CollapsibleInput>
   );
 
-  const directoryField = singleNewAgent && (
-    <CollapsibleInput
-      label="Directory"
-      summary={slots[0].dir.replace(/^\/(?:Users|home)\/[^/]+/, '~')}
-      collapsed={isCollapsed('dir') && !slots[0].dirPicked && slots[0].dir !== ''}
-      onOpen={() => open('dir')}
-    >
-      <div className="flex flex-col gap-2">
-        <span className="text-[12.5px] font-medium">Directory</span>
-        <SlotDirectoryField
-          slot={slots[0]}
-          onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === 0 ? next : x)))}
-          sshHost={sshHost}
-          busy={phase === 'creating'}
-        />
-      </div>
-    </CollapsibleInput>
-  );
+  // Every new agent's directory is an input of the page. The cards in the
+  // rail keep only what they are: a preview, plus the choice of a new or an
+  // existing agent, which decides whether there is a directory to ask for.
+  const directoryFields = slots.map((slot, i) => {
+    if (slot.mode !== 'new') return null;
+    const agentName = slot.createdName ?? slotNames[i]?.final ?? '';
+    return (
+      <CollapsibleInput
+        key={`dir:${i}`}
+        label={slots.length === 1 ? 'Directory' : agentName || `Agent ${i + 1}`}
+        summary={slot.dir.replace(/^\/(?:Users|home)\/[^/]+/, '~')}
+        collapsed={isCollapsed(`dir:${i}`) && !slot.dirPicked && slot.dir !== ''}
+        onOpen={() => open(`dir:${i}`)}
+      >
+        <div className="flex flex-col gap-2">
+          <span className="text-[12.5px] font-medium">
+            {slots.length === 1 ? 'Directory' : `Directory for ${agentName || `agent ${i + 1}`}`}
+          </span>
+          <SlotDirectoryField
+            slot={slot}
+            onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === i ? next : x)))}
+            sshHost={sshHost}
+            busy={phase === 'creating'}
+          />
+        </div>
+      </CollapsibleInput>
+    );
+  });
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
@@ -1262,7 +1270,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               )}
 
               <SectionTitle
-                title="Inputs"
+                title="Setup"
                 hint={
                   blockedReason === null && prefilled.size > 0
                     ? 'Filled in for you. Change anything, or create it as it is.'
@@ -1279,7 +1287,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                   {paramFields}
                   {memberLists}
                   {locationField}
-                  {directoryField}
+                  {directoryFields}
                 </>
               ) : (
                 <>
@@ -1290,10 +1298,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                     <>
                       <SectionTitle
                         title={slots.length === 1 ? 'Where the agent runs' : 'Where the agents run'}
-                        hint="Each new agent gets its own directory there, named after it."
                       />
                       {locationField}
                       {providerField}
+                      {directoryFields}
                     </>
                   )}
                 </>
@@ -1303,8 +1311,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             {/* Right: what this will create */}
             <div className="flex min-w-0 flex-1 flex-col border-l border-border bg-background-1">
               <div className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-3">
-                <span className="min-w-0 flex-1 text-[13px] font-semibold">
-                  What this will create
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-[10.5px] font-medium tracking-wide text-foreground-passive uppercase">
+                    Preview
+                  </span>
+                  <span className="text-[13px] font-semibold">What this will create</span>
                 </span>
                 <span
                   className={cn(
@@ -1352,9 +1363,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                       }
                       lists={{ ...lists, agents: agentsAtLocation }}
                       locationLabel={runLocationLabel(runHost, allowedHosts)}
-                      sshHost={sshHost}
-                      busy={phase === 'creating'}
-                      directoryInForm={singleNewAgent}
                     />
                   ))}
                 </div>
