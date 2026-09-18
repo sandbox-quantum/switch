@@ -2167,8 +2167,10 @@ class WedgedPlatform(ActivitySlack):
         self.notices = []
         self.wedged = True
         self.refuse_notices = False
+        self.probes = 0
 
     async def update_rich(self, channel, agent, ref, content, thread):
+        self.probes += 1
         if not self.wedged:
             await super().update_rich(channel, agent, ref, content, thread)
             return
@@ -2199,6 +2201,39 @@ async def _age_the_card(session_factory, minutes):
                 SessionActivityPost.command_id == row.command_id,
             )
             .values(data=row.data | {"status": status})
+        )
+        await db.commit()
+
+
+async def _activity_record(session_factory):
+    """The journal row behind the card, as a plain dict."""
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        return dict(row.data)
+
+
+async def _replace_the_card(session_factory, ref):
+    """Repost the card: same journal row, same slot, a new message.
+
+    The anchor is stored beside the delivery and is what a later publication
+    reads, so both have to name the new message or this is not a repost.
+    """
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        status = row.data["status"] | {
+            "ref": ref,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        anchor = row.data["anchor"] | {"message_ref": ref}
+        await db.execute(
+            update(SessionActivityPost)
+            .where(
+                SessionActivityPost.tenant_id == row.tenant_id,
+                SessionActivityPost.bridge_id == row.bridge_id,
+                SessionActivityPost.session_id == row.session_id,
+                SessionActivityPost.command_id == row.command_id,
+            )
+            .values(data=row.data | {"status": status, "anchor": anchor})
         )
         await db.commit()
 
@@ -2289,6 +2324,67 @@ async def test_a_frozen_card_still_on_screen_is_explained(session_factory):
     assert await publish(activity(session_factory, platform), "completed")
 
     assert len(platform.notices) == 1
+
+
+async def test_a_restart_does_not_probe_a_card_already_known_to_be_frozen(
+    session_factory,
+):
+    """The cost of the wedge is paid once, not once per restart.
+
+    A turn still running when the process goes down is republished when it
+    comes back, and nothing in the adapter remembers the wedge across that. The
+    journal has to answer instead, or every restart spends an edit and both
+    recovery calls on each frozen card — which is the burst the giving-up was
+    written to stop, arriving on exactly the event that produces the most
+    wedged cards at once.
+    """
+    await setup(session_factory)
+    first = WedgedPlatform()
+    first.wedged = False
+    assert await publish(activity(session_factory, first))
+    first.wedged = True
+    assert await publish(activity(session_factory, first), tools=False)
+    assert len(first.notices) == 1
+
+    restarted = WedgedPlatform()
+    assert await publish(activity(session_factory, restarted), tools=False)
+
+    assert restarted.probes == 0, "the journal already knows this card is frozen"
+    assert restarted.notices == [], "and that it has already been explained"
+
+    assert await publish(activity(session_factory, restarted), "completed", tools=False)
+
+    assert restarted.probes == 0, "an ended turn settles without asking either"
+
+
+async def test_a_replacement_card_is_drawn_even_though_the_old_one_froze(
+    session_factory,
+):
+    """The durable state names the frozen card, so it cannot silence a new one.
+
+    Held apart from the turn deliberately. A card can be reposted under this
+    same journal record, and a flag meaning only "something here wedged once"
+    would leave its replacement permanently undrawn — a worse fault than the
+    stale card it was added to spare, and a silent one.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    platform.wedged = False
+    assert await publish(activity(session_factory, platform))
+    platform.wedged = True
+    assert await publish(activity(session_factory, platform), tools=False)
+
+    record = await _activity_record(session_factory)
+    assert record["wedged"] == record["status"]["ref"], "the frozen card, by name"
+
+    await _replace_the_card(session_factory, ref="channel-demo:replacement")
+    platform.wedged = False
+    platform.messages["channel-demo:replacement"] = None
+    before = platform.probes
+
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert platform.probes > before, "the new card is drawn, not silenced"
 
 
 async def test_a_notice_the_platform_refused_is_not_written_down_as_sent(

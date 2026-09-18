@@ -977,7 +977,19 @@ class SessionTurnActivity:
         elapsed_seconds: float | None,
         interrupt_turn_id: str | None,
     ) -> bool:
-        """Rewrite the posted message with the turn as it now stands."""
+        """Rewrite the posted message with the turn as it now stands.
+
+        A message already known to be wedged is not asked again. The adapter
+        forgets that at every restart, and a turn still running when one
+        happens is republished — so without a durable answer each restart
+        spends an edit and both recovery calls per frozen card, which is the
+        burst the giving-up existed to stop. Matched on the reference rather
+        than on the turn: a card can be replaced under this same record, and
+        the new one deserves to be drawn.
+        """
+        record = self._record.get()
+        if record is not None and record.data.get("wedged") == anchor.message_ref:
+            return True
         state = self._status_state(
             turn, items, elapsed_seconds, anchor.session_url, interrupt_turn_id
         )
@@ -1040,11 +1052,15 @@ class SessionTurnActivity:
         as owed holds the turn open forever over a message that will never
         move.
 
-        Sent once. The note of having sent it is kept on the turn's journal
-        record, so a second discovery of the same wedge — after a restart, say
-        — does not put a second copy under the same card. Without a journal
-        there is nowhere to keep that, and a notice repeated every few seconds
-        is worse than the frozen card it describes, so nothing is sent.
+        Sent once. The reference of the card it was said about is kept on the
+        turn's journal record, so a second discovery of the same wedge — after
+        a restart, say — does not put a second copy under the same card, and
+        `_edit` reads it to stop asking the platform about that card at all.
+        The reference rather than a bare flag because a card can be replaced
+        under this record, and a fresh one is owed both a drawing and, if it
+        wedges in its turn, a notice of its own. Without a journal there is
+        nowhere to keep any of this, and a notice repeated every few seconds is
+        worse than the frozen card it describes, so nothing is sent.
 
         Old cards are left alone. A notice earns its place by reaching someone
         who is looking at the card it describes; under a card from yesterday it
@@ -1058,7 +1074,7 @@ class SessionTurnActivity:
         """
         logger.error("%s", wedged)
         record = self._record.get()
-        if record is None or record.data.get("wedged"):
+        if record is None or record.data.get("wedged") == anchor.message_ref:
             return
         posted_at = (record.data.get("status") or {}).get("created_at")
         if posted_at is None:
@@ -1072,7 +1088,7 @@ class SessionTurnActivity:
                 anchor.message_ref,
                 age.total_seconds() / 60,
             )
-            record.data["wedged"] = True
+            record.data["wedged"] = anchor.message_ref
             await record.save()
             return
         try:
@@ -1103,7 +1119,7 @@ class SessionTurnActivity:
                 session_id,
             )
             return
-        record.data["wedged"] = True
+        record.data["wedged"] = anchor.message_ref
         await record.save()
 
     def _wanted_mark(self, turn: TurnUpsert) -> ActivityMark:
