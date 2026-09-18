@@ -168,7 +168,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     let cancelled = false;
     setLoaded(null);
     setError(null);
-    loadTemplateById(serverId, templateId)
+    loadTemplateById(serverId, templateId, me?.id ?? null)
       .then((t) => {
         if (cancelled) return;
         setLoaded(t);
@@ -181,7 +181,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
       cancelled = true;
       setCurrentName(null);
     };
-  }, [serverId, templateId]);
+  }, [serverId, templateId, me?.id]);
 
   const back = (
     <Button

@@ -436,8 +436,11 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const { builtIn, onWorkspace } = useMemo(() => {
     // A bundled card is always the bundled document. Saving it creates a
     // workspace template, listed below as the user's own; the bundled card
-    // only marks that a copy exists.
-    const byName = new Map(templates.map((t) => [t.name, t]));
+    // only marks that a copy exists. Names are unique per owner, so only the
+    // user's own template of that name counts as the copy.
+    const byName = new Map(
+      templates.filter((t) => meId !== null && t.ownerId === meId).map((t) => [t.name, t])
+    );
     const builtIn: TemplateListEntry[] = bundledTemplates.map((b) => ({
       id: b.id,
       kind: kindOf(b.kind),

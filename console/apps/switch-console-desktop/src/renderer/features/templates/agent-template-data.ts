@@ -140,13 +140,15 @@ export function documentKind(yamlText: string): TemplateKind {
 
 /**
  * Load one template by the id the listing gave it: a bundled id, or a registry
- * row id. A bundled template also records whether a copy of it is saved on
- * the workspace, and a workspace row records which built-in it copies, so
- * the page can say either.
+ * row id. A bundled template also records whether the signed-in user saved a
+ * copy of it on the workspace, and a workspace row of theirs records which
+ * built-in it copies, so the page can say either. Names are unique only per
+ * owner, so someone else's template of the same name is not a copy.
  */
 export async function loadTemplateById(
   serverId: string,
-  templateId: string
+  templateId: string,
+  meId: string | null
 ): Promise<LoadedTemplate> {
   const bundled = findBundledTemplate(templateId);
   let name: string;
@@ -158,7 +160,7 @@ export async function loadTemplateById(
   if (bundled) {
     savedCopy =
       (await rpc.switchServers.listTemplates({ serverId }).catch(() => [])).find(
-        (t) => t.name === bundled.name
+        (t) => t.name === bundled.name && meId !== null && t.ownerId === meId
       ) ?? null;
     name = bundled.name;
     description = bundled.description;
@@ -175,7 +177,10 @@ export async function loadTemplateById(
     description = detail.description;
     document = definition;
     server = summary;
-    copyOf = bundledTemplates.find((b) => b.name === detail.name) ?? null;
+    copyOf =
+      meId !== null && detail.ownerId === meId
+        ? (bundledTemplates.find((b) => b.name === detail.name) ?? null)
+        : null;
   }
   const kind = await rpc.agentTemplates.kind({ yamlText: document });
   const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
