@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "image",
+    "serviceAccount",
+    "persistence",
+    "controllerConfig"
+  ],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": [
+        "repository",
+        "digest"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "required": [
+        "name",
+        "roleArn"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "roleArn": {
+          "type": "string",
+          "pattern": "^arn:aws[^:]*:iam::[0-9]{12}:role/.+$"
+        }
+      }
+    },
+    "controllerConfig": {
+      "type": "object",
+      "required": [
+        "installation_id",
+        "region",
+        "availability_zone",
+        "subnet_id",
+        "security_group_ids",
+        "image_id",
+        "root_device_name",
+        "allowed_instance_types",
+        "max_agents",
+        "root_volume_gib",
+        "data_volume_gib",
+        "worker_assignments",
+        "poll_interval_seconds"
+      ]
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storageClass": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+[Unit]
+Description=Switch hosted agent worker
+Wants=network-online.target
+After=network-online.target cloud-final.service
+ConditionPathExists=/etc/switch-hosted/assignment.json
+ConditionPathExists=/etc/switch-hosted/runtime.json
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/libexec/switch-hosted-worker --config /etc/switch-hosted/assignment.json --runtime-config /etc/switch-hosted/runtime.json
+Restart=always
+RestartSec=15s
+TimeoutStopSec=45s
+KillMode=control-group
+RuntimeDirectory=switch-hosted
+RuntimeDirectoryMode=0750
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_SETPCAP
+AmbientCapabilities=
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,13 @@
 # Hosted execution backend: M0 proposal
 
 Date: 2026-09-18. Status: proposed, not deployed or cloud-validated.
-Related: [PRD](hosted-agents-prd.md), [runtime checkpoint](hosted-agents-phase-1.md).
+Related: [PRD](hosted-agents-prd.md), [runtime checkpoint](hosted-agents-phase-1.md),
+[operator infrastructure implementation](../../deploy/hosted/README.md).
+
+An operator-controlled implementation now exists for EC2 provisioning and
+same-instance stop/start. It does not complete the pilot acceptance gates below:
+live validation, service-owned assignments, agent readiness, and retained-disk
+replacement/recovery remain follow-up work.
 
 ## Decision to review
 
