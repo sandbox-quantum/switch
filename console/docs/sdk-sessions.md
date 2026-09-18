@@ -280,3 +280,138 @@ the provider is ready. The saved initial prompt is submitted only after readines
 using its durable command identity. Startup failures remain visible in the chat.
 This separates opening the conversation from provider readiness; it does not
 promise that a fresh provider process can authenticate in under 500 milliseconds.
+
+## Updating from a terminal-based release
+
+Console checks its local managed server on startup. A running server behind the
+app's pinned core release is upgraded automatically. A stopped server stays
+stopped until Start is selected. Sessions and automatic-session watchers wait for
+that server; other servers can restore independently.
+
+Before changing an existing released local stack, Console saves a PostgreSQL dump
+and its previous Compose configuration under `local-switch-server/backups` in the
+app's user-data directory. These files contain private data and credentials. The
+backup covers PostgreSQL, not uploaded files in Docker volumes; the update keeps
+those volumes. A backup failure prevents the upgrade. An `upgrade.json` journal
+retains the original backup across retries and interrupted container updates.
+Only a successful authenticated SDK compatibility check clears that journal.
+Restoring a backup is a separate recovery operation into a clean database, not an
+automatic image rollback against an already migrated database.
+
+The workspace shows progress and a details disclosure. If Docker is closed or an
+update fails, Retry update continues the operation. Successful retry restores the
+server's saved room sessions and automatic-session watchers. Console never
+silently downgrades a newer local database or automatically upgrades an external
+server. External servers must advertise a compatible `sdk-sessions` contract.
+
+Existing tmux sessions are not converted into SDK processes. Launch checks the
+execution host for the agent's saved terminal sessions and its old sidecar, and
+refuses a competing SDK process while any remain. Stop them on the execution
+computer before retrying. Their stored session rows and native conversation IDs
+are retained; initial prompts are never replayed by the upgrade.
+
+### Release and acceptance checks
+
+This branch prepares core `0.27.0` and pins Console to that planned release.
+The pin is intentionally ahead of publication while the SDK release is prepared.
+Merging does not publish images: publish `switch-v0.27.0` and verify all core,
+gateway, setup and Compose publication jobs before distributing this Console
+build. Until then, a normal start that needs to pull `0.27.0` will fail.
+Regenerate artifacts and sync the bundled Compose file whenever the pairing changes.
+
+#### Test the candidate before publication
+
+The opt-in Docker integration test starts the published `0.25.0` core with its
+original Compose file in a random, disposable project. It creates a room and
+agent, invokes the app's real backup helper, simulates interruption after rewriting
+configuration, and starts the candidate on the same PostgreSQL volume. It checks
+that authenticated login advertises the SDK contract, the original room survives,
+the backup contains the room, and retry retains the original backup. It removes
+only that test project's containers and volumes in cleanup.
+
+From the repository root, with Docker running and the `switch-v0.25.0` git tag
+available:
+
+```sh
+docker build -f deploy/shared_resources/images/Dockerfile.switch \
+  -t switch-upgrade-test:0.27.0 .
+SWITCH_UPGRADE_DOCKER_TEST=1 pnpm --dir console/apps/switch-console-desktop \
+  exec vitest run --project node \
+  src/main/core/managed-switch-server/local-upgrade.docker.test.ts
+```
+
+The image is local only; nothing is pushed or tagged under the production image
+name. `SWITCH_UPGRADE_TEST_IMAGE` can select another locally built candidate.
+The test requires the old published core image (Docker pulls it if absent).
+Normal unit runs skip this test. If the build tool cannot write its cache in a
+restricted environment, set `BUILDX_CONFIG` to a writable temporary directory.
+
+This covers real PostgreSQL backup and migration plus authenticated API access.
+It does not exercise Electron startup, the full local-server supervisor,
+Mattermost, provider session resumption, or the rendered update banner. The
+checkout-build toggle is not a substitute: it deliberately bypasses released
+version backup checks. For the complete desktop test, use a disposable OS account
+or VM with its own Docker daemon; install the previous app and then the candidate.
+Do not point a development build at a real user's managed stack.
+
+Exercise an isolated previous-release installation containing rooms, agents and
+history: automatic upgrade, deliberately stopped server, Docker closed, failed
+image download, failed backup, interruption after configuration changes, retry,
+and a newer-than-app server. Confirm data survives, only one SDK replacement can
+start, active legacy sessions block replacement, and switching to another server
+still works. Verify the progress and retry controls in the desktop app as well as
+with automated tests; DOM interaction tests do not validate native layout or the
+Docker migration itself.
+
+#### Rendered upgrade controls
+
+The browser suite exercises the actual `LocalServerUpgradeNotice` component with
+controlled status inputs: progress, details, retry clicks, stopped/newer servers,
+switching servers, successful completion and narrow-panel layout. These are
+component tests, not an Electron or provider recovery test.
+
+When a local browser cannot launch, the existing Playwright provider can connect
+to an isolated Linux browser. Use the same Playwright version as the checkout:
+
+```sh
+docker run -d --name switch-upgrade-browser-test --init --shm-size=1g \
+  -p 127.0.0.1:39327:3000 mcr.microsoft.com/playwright:v1.60.0-noble \
+  npx -y playwright@1.60.0 run-server --port 3000 --host 0.0.0.0
+SWITCH_TEST_BROWSER_WS=ws://127.0.0.1:39327 \
+  pnpm --dir console/apps/switch-console-desktop exec vitest run \
+  --project browser src/renderer/tests/browser/local-server-upgrade.test.tsx
+docker rm -f switch-upgrade-browser-test
+```
+
+The connection forwards loopback requests to the local test server. Screenshots
+are written below the test's `__screenshots__` directory. Neither the browser
+container nor this component test receives the installed app's data or Docker
+socket.
+
+The isolated Linux Electron walkthrough also covers first-run consent, opening
+Add a server, selecting this computer, and checking Docker again when the CLI
+is absent. Start remains disabled until Docker is available. That walkthrough
+does not establish successful in-app migration or provider-session recovery: the
+disposable desktop has neither a managed Docker daemon nor provider sign-ins.
+
+#### Native macOS acceptance run
+
+The isolated macOS Electron run used a separate app profile, Compose project,
+ports and volumes with the published `0.25.0` server. Its existing-server record
+was marked managed as a test fixture; this was not an installation of the old
+desktop package. On candidate startup, the app created a PostgreSQL backup and
+attempted the required `0.27.0` upgrade. An unavailable image produced the error
+banner and an enabled retry action. After supplying locally built candidate
+images, clicking Retry update completed the migration and cleared the banner.
+The original room and agent membership survived, the authenticated server
+reported the SDK contract, and retry retained the original backup.
+
+On the upgraded server, a signed-in Codex agent answered an initial prompt. The
+session was stopped, the renderer reloaded, and the saved session resumed. A
+follow-up correctly recalled a verification word from the first turn; the UI
+showed the initial prompt once. This verifies SDK stop/resume and renderer
+reattachment, not legacy tmux conversation migration or recovery after a full
+desktop-process restart. Other providers and the signed release package still
+need release acceptance coverage. Candidate image tags were local test aliases,
+not registry publications; publish all `0.27.0` server artifacts before shipping
+the desktop pin.

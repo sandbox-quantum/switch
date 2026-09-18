@@ -60,7 +60,7 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.26.0
+    version: 0.27.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
@@ -78,7 +78,7 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.25.0
+      switch-core: 0.27.0
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
@@ -144,6 +144,12 @@ artifacts:
     declared_in: connectors/opencode-plugin/package.json
 
 contracts:
+  sdk-sessions:
+    description: The persistent SDK session, command, lease and recovery protocol.
+    artifacts:
+      switch-core: { speaks: 1, accepts: 1 }
+      switch-console: { speaks: 1, accepts: 1 }
+
   agent-protocol:
     description: >-
       The wire protocol between switch-core's agent bridge and an agent

@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   runHost: vi.fn(),
   exec: vi.fn(),
   specialization: vi.fn(),
+  ready: vi.fn(),
+  legacy: vi.fn(),
 }));
 
 class FakeGatewayError extends Error {
@@ -30,6 +32,10 @@ vi.mock('@switch-console/shared/session-v1', async (importOriginal) => ({
   snapshotSchema: { parse: (value: unknown) => value },
   commandStatusSchema: { parse: (value: unknown) => value },
 }));
+vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
+  ensureServerSessionReady: mocks.ready,
+}));
+vi.mock('./legacy-session-guard', () => ({ assertLegacySessionsStopped: mocks.legacy }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
@@ -346,5 +352,19 @@ it('reports restart progress through host replacement and authentication until r
   });
   await pending;
   expect(agent.startupStatus()).toEqual({ status: 'ready', message: null });
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it('never deploys a provider or replays its initial prompt when server readiness fails', async () => {
+  mocks.ready.mockRejectedValueOnce(new Error('Finish updating your server'));
+  await expect(runtime().start(session, false, 'Do work')).rejects.toThrow('Finish updating');
+  expect(mocks.runHost).not.toHaveBeenCalled();
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it('refuses an SDK replacement while the previous terminal session still exists', async () => {
+  mocks.legacy.mockRejectedValueOnce(new Error('Stop the old terminal session'));
+  await expect(runtime().start(session, true)).rejects.toThrow('Stop the old terminal');
+  expect(mocks.runHost).not.toHaveBeenCalled();
   expect(mocks.submit).not.toHaveBeenCalled();
 });

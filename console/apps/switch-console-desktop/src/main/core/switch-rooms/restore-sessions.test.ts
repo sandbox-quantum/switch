@@ -113,3 +113,18 @@ describe('restoreSwitchRoomSessions', () => {
     expect(hydrateSession).toHaveBeenCalledWith('good-1');
   });
 });
+
+it('restores only the server that became ready after an upgrade', async () => {
+  vi.clearAllMocks();
+  listPersistedSessionIds.mockResolvedValue(['local-session', 'external-session']);
+  loadSessionWithAgent.mockImplementation(async (sessionId: string) => ({
+    locationId: 'location-1',
+    serverId: sessionId === 'local-session' ? 'local' : 'external',
+    name: 'agent',
+  }));
+  getLocationById.mockResolvedValue({ id: 'location-1', sshHost: null, dir: '/repo' });
+  getLocation.mockReturnValue({});
+  provisionSession.mockResolvedValue({ success: true });
+  await restoreSwitchRoomSessions('local');
+  expect(hydrateSession).toHaveBeenCalledExactlyOnceWith('local-session');
+});

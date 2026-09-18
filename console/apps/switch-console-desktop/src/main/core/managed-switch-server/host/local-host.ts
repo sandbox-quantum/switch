@@ -24,7 +24,7 @@ const execFileAsync = promisify(execFile);
  * file, and losing the stack over a hardening step nobody asked for is worse
  * than a degraded mode that says so out loud.
  */
-async function restrictWindowsFileToOwner(path: string): Promise<void> {
+export async function restrictWindowsFileToOwner(path: string): Promise<void> {
   const account = process.env.USERNAME;
   if (!account) {
     log.warn('local-switch-server: USERNAME unset; file left with inherited permissions', {

@@ -113,6 +113,8 @@ export type CheckoutBuild = {
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
+  /** Local update state stays visible across navigation and failed retries. */
+  upgrade?: 'checking' | 'updating' | 'required' | null;
   /** The registered server's id once the stack is up, else null. */
   serverId: string | null;
   /** The pinned switch-core version this build runs. */

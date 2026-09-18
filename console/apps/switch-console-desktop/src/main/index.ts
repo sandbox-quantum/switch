@@ -34,6 +34,7 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
+import { listServers } from './core/switch-servers/servers-store';
 import { catchUpConnectorsToCurrentVersion } from './core/switch-setup/catch-up-connectors';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
 import { trackEvent } from './core/telemetry/telemetry-service';
@@ -205,37 +206,48 @@ void app.whenReady().then(async () => {
   // Restore first so already-live sessions register their room connections,
   // then start the auto_session watchers — the watcher's "is a session already
   // attending this room?" check relies on those connections being present.
-  void Promise.all([agentHookReady, dependenciesReady, migrationReady]).then(async () => {
-    try {
-      bridgeAgentEventsToRenderer();
-      await initializeRemoteDiscovery();
-    } catch (e) {
-      log.error('Failed to initialise remote session discovery at startup:', e);
-    }
-    // Must precede the remote watchers: they gate on host reachability, and
-    // starting them first would let every agent on a known-down host attempt a
-    // connect before the persisted state is loaded.
-    try {
-      await initializeHostReachability();
-    } catch (e) {
-      log.error('Failed to initialise host reachability at startup:', e);
-    }
-    try {
-      await restoreSwitchRoomSessions();
-    } catch (e) {
-      log.error('Failed to restore Switch room sessions at startup:', e);
-    }
-    try {
-      await autoSessionWatcher.initialize();
-    } catch (e) {
-      log.error('Failed to initialise auto_session watcher at startup:', e);
-    }
-    try {
+  void Promise.all([agentHookReady, dependenciesReady, migrationReady])
+    .then(async () => {
+      try {
+        bridgeAgentEventsToRenderer();
+        await initializeRemoteDiscovery();
+      } catch (e) {
+        log.error('Failed to initialise remote session discovery at startup:', e);
+      }
+      // Must precede the remote watchers: they gate on host reachability, and
+      // starting them first would let every agent on a known-down host attempt a
+      // connect before the persisted state is loaded.
+      try {
+        await initializeHostReachability();
+      } catch (e) {
+        log.error('Failed to initialise host reachability at startup:', e);
+      }
+      const restoring = new Map<string, Promise<void>>();
+      const restoreServer = (serverId: string): Promise<void> => {
+        const pending = restoring.get(serverId);
+        if (pending) return pending;
+        const operation = (async () => {
+          await restoreSwitchRoomSessions(serverId);
+          await autoSessionWatcher.initialize(serverId);
+        })()
+          .catch((error: unknown) => {
+            log.error('Could not restore sessions for a Switch server', { serverId, error });
+          })
+          .finally(() => restoring.delete(serverId));
+        restoring.set(serverId, operation);
+        return operation;
+      };
+      localServerService.onReady((serverId) => {
+        void restoreServer(serverId);
+      });
+      // Each server restores its own sessions before starting its watchers. A
+      // local upgrade must not delay independent servers.
+      await Promise.all((await listServers()).map((server) => restoreServer(server.id)));
       await initializeRemoteWatchers();
-    } catch (e) {
-      log.error('Failed to initialise remote watchers at startup:', e);
-    }
-  });
+    })
+    .catch((error: unknown) => {
+      log.error('Failed to restore server sessions at startup', { error });
+    });
 
   // A laptop waking from sleep usually has stale (frozen) SSH sockets to remote
   // agents; refresh them immediately rather than waiting out keepalive probes,
