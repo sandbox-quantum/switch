@@ -1,11 +1,17 @@
 """A platform-wide rate limit has to be visible at both of its edges.
 
 The failure these guard against is not a wrong answer, it is silence. A
-cooldown is charged to the workspace or the chat rather than to the call that
-earned it, so while one is running every card the bridge draws stops moving at
-once. With nothing in the log saying why, that is indistinguishable from the
-bridge being dead, and it cost a long investigation on Slack before anybody
-thought to look for a limit that was never reported.
+cooldown is held for the whole account the bridge connects as — a workspace, a
+bot — rather than for the call that earned it, so while one is running every
+card the bridge draws stops moving at once. With nothing in the log saying why,
+that is indistinguishable from the bridge being dead, and it cost a long
+investigation on Slack before anybody thought to look for a limit that was
+never reported.
+
+The scope in the line has to be the one the reader sees stop, which is what the
+adapter holds back and not necessarily what the platform metered. Naming it
+too narrowly is its own kind of silence: it sends the reader to look for a
+second fault in the chat that was never throttled.
 """
 
 import logging
@@ -67,12 +73,15 @@ def test_a_cooldown_names_the_platform_the_scope_and_the_cost(caplog: Any) -> No
     assert "Marks on messages stop changing until then." in caplog.text
 
 
-def test_telegram_says_when_a_chat_wide_limit_freezes_its_cards(caplog: Any) -> None:
+def test_telegram_says_a_limit_holds_back_the_whole_bot(caplog: Any) -> None:
     """Telegram had the same silent deadline Slack did, and the same symptom.
 
-    Its 429 is charged to the chat, so one throttled redraw holds back every
-    publication in that chat. Nothing reported either edge, which is the defect
-    this shares with the Slack one rather than a separate cosmetic gap.
+    The scope it reports has to be the one the reader sees. Telegram meters a
+    single chat and the bot across all of them, and a 429 does not say which
+    was hit, so the adapter holds one cooldown for the bot and cards stop in
+    chats that were never throttled. A line claiming the chat would send a
+    reader looking for a fault in the wrong place — the failure this whole
+    class exists to prevent, in a subtler form than saying nothing at all.
     """
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="000:test", bot_username="@acme_bot")
@@ -84,5 +93,7 @@ def test_telegram_says_when_a_chat_wide_limit_freezes_its_cards(caplog: Any) -> 
         )
 
     assert isinstance(failure, Exception)
-    assert "Telegram is rate limiting message updates for the whole chat" in caplog.text
-    assert "Every card the bridge draws there is frozen" in caplog.text
+    assert "Telegram is rate limiting message updates for the whole bot" in caplog.text
+    assert "in every chat" in caplog.text, (
+        "the scope the reader sees, not the metered one"
+    )

@@ -9,12 +9,17 @@ logger = logging.getLogger(__name__)
 class Cooldown:
     """One platform-wide wait, shared by every call it holds back.
 
-    A 429 usually answers for the workspace or the chat rather than for the
-    message that earned it, so the wait it asks for holds back every call of
-    that kind. Kept in one place so each of those reads the same answer, and so
-    that both edges are said out loud: a silent cooldown and a bridge that has
-    stopped working look exactly the same from the outside, and this one can be
-    minutes long.
+    A 429 answers for the account the bridge connects as — a workspace, a bot —
+    rather than for the message that earned it, so the wait it asks for holds
+    back every call of that kind. Kept in one place so each of those reads the
+    same answer, and so that both edges are said out loud: a silent cooldown
+    and a bridge that has stopped working look exactly the same from the
+    outside, and this one can be minutes long.
+
+    `scope` is what the caller actually holds back, which is not always the
+    narrowest thing the platform metered. A hold applied more widely than the
+    limit that caused it is a defensible choice; describing it as narrower than
+    it is leaves a reader hunting a fault in the chat that never stopped.
 
     Shared between adapters because the trap is shared. Both Slack's and
     Telegram's cooldowns were written as a bare deadline that nothing logged,

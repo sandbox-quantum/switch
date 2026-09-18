@@ -538,15 +538,17 @@ class TelegramAdapter(CollaborationAdapter):
         # chat id -> whether it is a forum. What a thread root means depends on
         # the answer, and nothing in a message ref says which kind it is.
         self._forum_chats: dict[str, bool] = {}
-        # A 429 is charged to the chat, not the message, so one throttled
-        # redraw pauses every publication rather than only its own. Said out
-        # loud at both edges: without that, every card in the chat stops at
-        # once and nothing anywhere explains it.
+        # Held for the bot rather than for the chat that earned it. Telegram
+        # limits both a single chat and the bot across all of them, and a 429
+        # does not say which one was hit, so the wait is applied to everything
+        # this bot draws. Said out loud at both edges, and as the whole bot:
+        # the reader watching cards stop in a chat that was never throttled
+        # has to be able to find out why from the log.
         self._rich_update_cooldown = Cooldown(
             "Telegram",
             "message updates",
-            "chat",
-            "Every card the bridge draws there is frozen until then.",
+            "bot",
+            "Every card it draws is frozen until then, in every chat.",
         )
         # chat id -> when a publication was last sent or edited in it. Telegram
         # charges its limits to the chat, and several agents publish into one
