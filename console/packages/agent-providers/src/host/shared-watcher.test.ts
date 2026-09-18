@@ -97,3 +97,75 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     expect(restarted.cursor).toBe(10);
   }
 );
+
+function template(root: string) {
+  return sharedConfigSchema.parse({
+    session: {
+      sessionId: 'watcher',
+      agentId: randomUUID(),
+      hostId: 'host',
+      epoch: 'initial',
+      provider: 'codex',
+      status: 'starting',
+      connectivity: 'online',
+      pendingRequestIds: [],
+      capabilities: {
+        input: 'queue',
+        approvals: true,
+        questions: true,
+        interrupt: true,
+        reset: false,
+        compact: false,
+        modelChange: false,
+        attachmentMimeTypes: [],
+      },
+    },
+    start: {
+      provider: 'codex',
+      input: {
+        sessionId: 'watcher',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+      },
+    },
+    roomConnection: { connectionId: 'watcher', rooms: [], startCursor: 0 },
+  });
+}
+
+it('resumes at the server head after its numbering restarts, keeping room sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const before = await assignments.assign(config, {
+    sequence: 13,
+    roomId: 'room',
+    messageId: 'before',
+  });
+  expect(assignments.cursor).toBe(13);
+
+  await assignments.restart();
+
+  // A saved position from the old numbering would be asked for again on every
+  // reconnect, so the watcher must forget it rather than stall behind head.
+  expect(assignments.cursor).toBe(0);
+  const reloaded = await SharedWatchAssignments.open(root);
+  expect(reloaded.cursor).toBe(0);
+
+  // Low sequence numbers are fresh events now, not duplicates of old ones.
+  const after = await reloaded.assign(config, { sequence: 2, roomId: 'other', messageId: 'after' });
+  expect(after.session.sessionId).not.toBe(before.session.sessionId);
+  expect(reloaded.cursor).toBe(2);
+
+  // The room keeps the session it already had.
+  expect(
+    await reloaded.assign(config, { sequence: 3, roomId: 'room', messageId: 'again' })
+  ).toEqual(before);
+  expect(reloaded.sessions().map((entry) => entry.session.sessionId)).toEqual([
+    before.session.sessionId,
+    after.session.sessionId,
+  ]);
+});

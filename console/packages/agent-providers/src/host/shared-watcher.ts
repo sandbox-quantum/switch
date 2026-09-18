@@ -17,6 +17,17 @@ const assignmentSchema = z.strictObject({
   config: sharedConfigSchema,
 });
 
+/** Marks where the server's sequence numbering restarted. */
+const restartSchema = z.strictObject({ restarted: z.literal(true), at: z.string().min(1) });
+const recordSchema = z.union([assignmentSchema, restartSchema]);
+
+type Assignment = z.infer<typeof assignmentSchema>;
+type WatchRecord = z.infer<typeof recordSchema>;
+
+function restarted(record: WatchRecord): record is z.infer<typeof restartSchema> {
+  return 'restarted' in record;
+}
+
 function sessionIdFor(agentId: string, roomId: string, messageId: string): string {
   const bytes = createHash('sha256')
     .update(JSON.stringify([agentId, roomId, messageId]))
@@ -46,31 +57,50 @@ async function stopped(sessionId: string): Promise<boolean> {
 
 /** Each assignment is durable before the watcher lets the stream advance its cursor. */
 export class SharedWatchAssignments {
-  private constructor(private readonly journal: Journal<z.infer<typeof assignmentSchema>>) {}
+  private constructor(private readonly journal: Journal<WatchRecord>) {}
 
   static async open(root: string): Promise<SharedWatchAssignments> {
     return new SharedWatchAssignments(
-      await Journal.load(join(root, 'assignments.jsonl'), (value) => assignmentSchema.parse(value))
+      await Journal.load(join(root, 'assignments.jsonl'), (value) => recordSchema.parse(value))
     );
   }
 
+  /** Assignments made under the server's current numbering. */
+  private get current(): Assignment[] {
+    const records = this.journal.records;
+    let index = records.length - 1;
+    while (index >= 0 && !restarted(records[index]!)) index--;
+    return records.slice(index + 1) as Assignment[];
+  }
+
+  private get every(): Assignment[] {
+    return this.journal.records.filter((record): record is Assignment => !restarted(record));
+  }
+
   get cursor(): number {
-    return this.journal.records.at(-1)?.sequence ?? 0;
+    return this.current.at(-1)?.sequence ?? 0;
+  }
+
+  /**
+   * Notes that the server restarted its numbering. Past sequence numbers no
+   * longer identify an event, so they stop being read as a saved position or
+   * matched for duplicates — but which session serves which room is kept.
+   */
+  async restart(): Promise<void> {
+    await this.journal.append({ restarted: true, at: new Date().toISOString() });
   }
 
   async assign(
     template: SharedHostConfig,
     event: { sequence: number; roomId: string; messageId: string }
   ): Promise<SharedHostConfig> {
-    const duplicate = this.journal.records.find((record) => record.sequence === event.sequence);
+    const duplicate = this.current.find((record) => record.sequence === event.sequence);
     if (duplicate) {
       if (duplicate.roomId !== event.roomId || duplicate.messageId !== event.messageId)
         throw new Error('Watcher sequence changed message identity.');
       return duplicate.config;
     }
-    const previous = [...this.journal.records]
-      .reverse()
-      .find((record) => record.roomId === event.roomId);
+    const previous = [...this.every].reverse().find((record) => record.roomId === event.roomId);
     let config: SharedHostConfig;
     const savedRooms = previous
       ? await SharedRoomInbox.savedRooms(sharedSessionRoot(previous.config.session.sessionId))
@@ -102,7 +132,7 @@ export class SharedWatchAssignments {
   sessions(): SharedHostConfig[] {
     return [
       ...new Map(
-        this.journal.records.map((record) => [record.config.session.sessionId, record.config])
+        this.every.map((record) => [record.config.session.sessionId, record.config])
       ).values(),
     ];
   }
@@ -193,12 +223,23 @@ export async function runSharedWatcher(
           throw error;
         });
       },
-      onGap: (gap) =>
-        fail(
-          new Error(
-            `Shared SDK watcher delivery gap: ${gap.reason}. Read room context before restarting.`
-          )
-        ),
+      // A gap is terminal for a session host, which has context to re-read. The
+      // watcher has none: the events it missed are gone from the server, and
+      // the sessions it starts read room context themselves. Stopping here
+      // would end auto-start until someone deleted this journal by hand — and
+      // a server restart resets the numbering, so it would happen again on
+      // every reconnect.
+      onGap: (gap) => {
+        console.warn(
+          `Shared SDK watcher delivery gap: ${gap.reason}. Resuming from the server's current position; rooms addressed during the gap must be re-addressed to start a session.`
+        );
+        if (!gap.cursorReset) return;
+        pending = pending.then(() => assignments.restart());
+        return pending.catch((error: Error) => {
+          fail(error);
+          throw error;
+        });
+      },
       onEvicted: (reason) => {
         if (reason === 'heartbeat lapsed')
           console.warn('Watcher heartbeat lapsed; reconnecting from the saved cursor.');
