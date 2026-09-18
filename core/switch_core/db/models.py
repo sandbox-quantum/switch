@@ -1132,6 +1132,221 @@ class CollaborationBridge(TenantScoped, Base):
     )
 
 
+# ── Messaging Installs ─────────────────────────────────────────────────────────
+
+
+class MessagingInstall(TenantScoped, Base):
+    """A tenant's installation of the Switch app into one external workspace.
+
+    The difference from `collaboration_bridges` is who supplied the
+    credential. A bridge holds a token an operator pasted in, from an app that
+    operator registered; an install holds a token *we* were granted, for our
+    app, by whoever clicked Add to Slack. Both end up driving the same adapter,
+    so this table records only what the install added: which workspace, whose
+    token, and what it may do.
+
+    **`(platform, external_workspace_id)` is unique across the whole
+    deployment among rows that are still `active`**, and that is the single
+    most important line here. Inbound events arrive over one public endpoint
+    carrying a workspace id and no tenant, so a workspace claimed by two
+    tenants is a message with two possible destinations and no way to choose —
+    which is the failure this whole phase exists to make unrepresentable. The
+    database decides it rather than a read-then-insert in application code,
+    because the check and the write cannot be made atomic from outside.
+
+    It is a *partial* index rather than a plain constraint because an install
+    has to be able to end. A customer who removes the app in Slack, or an
+    operator who disconnects it here, leaves a row behind — and a row that
+    still occupied the workspace would mean nobody could ever install that
+    workspace again, including the customer who just removed it. Ending an
+    install therefore frees the workspace, and keeps the record of the one
+    that ended.
+
+    That index is also the one place a tenant learns something about another:
+    claiming a workspace somebody else already holds fails, and the failure
+    says so. It is the right answer — the alternative is a silent second claim
+    — and what it discloses is that *some* tenant holds a workspace the caller
+    was already able to name.
+
+    `status` is `active`, `disconnected` (an operator here ended it) or
+    `revoked` (the platform told us it was over). The two endings are recorded
+    apart because they call for different things: one is somebody's decision
+    and the other is news, and an operator looking at a bridge that stopped
+    working needs to know which.
+
+    `bridge_id` is nullable because the install row is written before anything
+    is built on it, and because removing a bridge should not force the
+    credential to be thrown away and re-granted. A null there means the
+    install is recorded and not yet serving.
+
+    `encrypted_bot_token` uses the same key as every other credential this
+    schema stores (`crypto.encrypt_token` over the configured secret), so it
+    is protected against a stolen dump and not against a compromised process.
+    A per-tenant key is a stronger boundary and a later decision. It is
+    nullable so that an install which has ended can keep its record without
+    keeping its secret: the token is worthless by then, and a worthless
+    credential still reads like a credential to whoever finds the dump.
+
+    `scopes` is the platform's own spelling of what was granted, stored
+    verbatim rather than parsed into a list — a scope string that means
+    nothing to us is still the thing to show an operator asking why a call was
+    refused.
+    """
+
+    __tablename__ = "messaging_installs"
+    __table_args__ = (
+        Index(
+            "uq_messaging_installs_workspace",
+            "platform",
+            "external_workspace_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_messaging_installs_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_messaging_installs_bridge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    external_workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_bot_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scopes: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    installed_by_user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    installed_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class MessagingInstallState(TenantScoped, Base):
+    """One in-flight install: minted when the flow starts, burnt when it lands.
+
+    An install is two requests with a trip through the platform in between. The
+    first is an authenticated operator asking to install; the second is a
+    browser arriving back at a public endpoint from the platform, carrying an
+    authorization code and a `state` we chose. Nothing else ties the two
+    together, so `state` has to carry the whole of what the second request may
+    not be trusted to assert: which tenant, and on whose behalf.
+
+    **The row is not what carries the tenant across.** The `state` parameter is
+    a signed token naming the tenant, so the callback binds a tenant it can
+    verify without reading anything first. That is the point of the design:
+    every other unauthenticated entry point resolves its tenant through a
+    `SECURITY DEFINER` lookup, and this one does not have to, so it does not —
+    the closed list in `db/tenant_lookup.py` stays as short as it is. What this
+    row adds is the one property a signature cannot have: **single use.** A
+    signed token is valid until it expires and a captured one can be replayed;
+    the redemption below happens once because `consumed_at` is set in the same
+    statement that checks it is null.
+
+    Which makes the failure this prevents worth naming. Replaying a captured
+    state completes an install of the attacker's own workspace against the
+    victim's tenant — that workspace's messages then arrive in the victim's
+    rooms, which is message injection, not a leak. Single use and a short
+    expiry are what close it.
+
+    Redemption is a scoped write like any other, run after the signature has
+    bound the tenant, so row-level security is a second check on the first: a
+    token whose signed tenant disagrees with the row's finds no row at all.
+
+    The two timestamps are both needed and mean different things. `expires_at`
+    is a bound on how long the platform's round trip may take; `consumed_at`
+    is the fact of redemption, kept rather than deleted so an operator asking
+    why a link stopped working can see it was used rather than lost.
+    """
+
+    __tablename__ = "messaging_install_states"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class MessagingEventReceipt(TenantScoped, Base):
+    """One inbound platform event, claimed once so it is handled once.
+
+    Platforms deliver at least once. Slack gives three seconds to acknowledge
+    an event and retries what it does not get an answer to — so a deployment
+    under load, or one restarted mid-request, is told the same thing again.
+    Without a record of what has been taken, the second telling produces a
+    second answer in the customer's channel, which is the visible failure: an
+    agent replying twice to one question.
+
+    **The row is written before the work, not after**, and the unique index is
+    what arbitrates. Two retries in flight at once both reach the insert and
+    exactly one survives it; the loser stops there. Recording afterwards would
+    order the two the wrong way round — both would dispatch, and the duplicate
+    would be detected once it no longer mattered.
+
+    That ordering chooses at-most-once over at-least-once, which is worth
+    stating plainly: an event claimed by a process that then dies is not
+    retried, because the platform has already been told 200 and this table says
+    the event is taken. It is not a new loss. The route has acknowledged before
+    handling since it was written — it has to, the deadline is shorter than a
+    turn — so the event was already unrecoverable at that point. What this adds
+    is `handled_at`, which makes the loss visible: a claimed row that never
+    completed is a real event that reached nobody, and it can be found.
+
+    `external_event_id` is the platform's own id for the delivery, and only
+    some envelopes have one. Slack numbers Events API envelopes and retries
+    only those; a slash command and an interaction get one shot and no id, so
+    there is nothing to deduplicate and no row here. A missing id means "the
+    platform does not retry this", not "this was not checked".
+
+    Uniqueness is `(tenant_id, platform, external_event_id)` and not the
+    deployment-wide pair, unlike the workspace claim on `messaging_installs`.
+    The two would be equivalent — an event id is unique in the platform's own
+    namespace and a workspace belongs to one tenant — so the tenant-local index
+    is the one to prefer: it keeps one customer's event ids out of another's
+    namespace entirely, and it means a conflict is always with a row the
+    inserting tenant can actually see rather than an opaque refusal naming
+    somebody else's.
+    """
+
+    __tablename__ = "messaging_event_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "platform",
+            "external_event_id",
+            name="uq_messaging_event_receipts_event",
+        ),
+        # Pruning reads this and nothing else. Receipts are only useful for as
+        # long as the platform might still retry, and the table would otherwise
+        # grow with every message the busiest workspace ever sends.
+        Index("ix_messaging_event_receipts_received_at", "received_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    external_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    handled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 
@@ -1869,6 +2084,7 @@ class SdkSession(TenantScoped, Base):
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
             name="fk_sdk_sessions_agent",
+            ondelete="CASCADE",
         ),
     )
 

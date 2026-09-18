@@ -1,62 +1,34 @@
-import { CheckIcon, XIcon } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import { Dialog, DialogContent, DialogContentArea, DialogFooter } from '@renderer/lib/ui/dialog';
-import { SectionLabel } from '@renderer/lib/ui/label';
 import { Shortcut } from '@renderer/lib/ui/shortcut';
 import { Switch } from '@renderer/lib/ui/switch';
 import {
-  TELEMETRY_NEVER_SHARED,
-  TELEMETRY_REVERSIBLE,
-  TELEMETRY_SHARED,
+  TELEMETRY_DETAILS_LABEL,
+  TELEMETRY_DETAILS_URL,
   TELEMETRY_SUMMARY,
 } from './telemetry-copy';
 
-function DisclosureList({
-  title,
-  items,
-  tone,
-}: {
-  title: string;
-  items: string[];
-  tone: 'shared' | 'never';
-}) {
-  const Icon = tone === 'shared' ? CheckIcon : XIcon;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <SectionLabel className="text-foreground-tertiary-passive">{title}</SectionLabel>
-      <ul className="flex flex-col gap-1.5">
-        {items.map((item) => (
-          <li key={item} className="flex items-start gap-2 text-sm text-foreground-muted">
-            <Icon
-              aria-hidden
-              className={
-                tone === 'shared'
-                  ? 'mt-0.5 size-3.5 shrink-0 text-foreground-success'
-                  : 'mt-0.5 size-3.5 shrink-0 text-foreground-tertiary-passive'
-              }
-            />
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /**
- * The first-run consent prompt.
+ * The first-run telemetry notice.
  *
- * Rendered only when the user has never answered it, and not dismissible: the
- * answer is recorded by `askedAt`, so closing it without choosing would leave
- * the app asking again on every launch. The toggle starts off, matching the
- * default: what is sent carries a random per-install id, so sharing has to be
- * something the user turns on rather than something they failed to turn off.
+ * Rendered only when the user has never acknowledged it, and not dismissible:
+ * acknowledgement is recorded by `askedAt`, so closing it without answering
+ * would leave the app showing it again on every launch. The toggle starts on,
+ * matching the default — sharing is opt-out — so the notice's job is to tell
+ * the user it is happening and put the off switch in front of them before they
+ * go any further.
+ *
+ * It says the data is anonymous and links to the full account rather than
+ * listing fields: the itemised version runs to every event and every field, and
+ * a dialog that tries to hold it gets skimmed instead of read.
  */
 export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void }) {
   const { value, updateAsync } = useAppSettingsKey('telemetry');
-  const [enabled, setEnabled] = useState(value?.enabled ?? false);
+  const [enabled, setEnabled] = useState(value?.enabled ?? true);
   const [saving, setSaving] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
 
@@ -80,12 +52,12 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
 
   return (
     // Controlled `open` with no `onOpenChange`: Escape and outside clicks are
-    // requests the parent ignores, so the prompt cannot be dismissed unanswered.
+    // requests the parent ignores, so the notice cannot be dismissed unanswered.
     <Dialog open>
       {/* Focus the popup, not its first tabbable child. The default would land
           on the consent switch, which renders its focus ring as a highlighted
-          band around the toggle row — reading as a pre-selected answer to a
-          question the user has not answered yet. */}
+          band around the toggle row — pulling the eye to the control before the
+          text that explains it. */}
       <DialogContent
         ref={popupRef}
         initialFocus={popupRef}
@@ -99,13 +71,7 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
           <p className="text-sm text-foreground-muted">{TELEMETRY_SUMMARY}</p>
         </div>
         <DialogContentArea className="gap-4">
-          <DisclosureList title="What is shared" items={TELEMETRY_SHARED} tone="shared" />
-          <DisclosureList
-            title="What is never shared"
-            items={TELEMETRY_NEVER_SHARED}
-            tone="never"
-          />
-          <div className="mt-1 flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
             <label htmlFor="telemetry-consent-switch" className="text-sm text-foreground">
               Share usage data
             </label>
@@ -117,7 +83,16 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
               className="data-checked:bg-foreground-success [&[data-checked]:not([data-disabled]):hover]:bg-foreground-success/85"
             />
           </div>
-          <p className="text-xs text-foreground-tertiary-passive">{TELEMETRY_REVERSIBLE}</p>
+          <button
+            type="button"
+            className="inline-flex w-fit cursor-pointer items-center gap-1.5 text-xs text-foreground-tertiary-passive underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            onClick={() => {
+              void openExternalUrl(TELEMETRY_DETAILS_URL, 'Could not open the telemetry document');
+            }}
+          >
+            {TELEMETRY_DETAILS_LABEL}
+            <ExternalLink aria-hidden className="size-3" />
+          </button>
         </DialogContentArea>
         <DialogFooter>
           <Button disabled={saving} onClick={confirm}>

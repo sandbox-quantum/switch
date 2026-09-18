@@ -32,6 +32,18 @@ ingress:
   # Emit ingress-nginx annotations that keep MCP/SSE streams alive (long read
   # timeouts, buffering off). Harmless on other controllers but ignored by them
   # — set false and add your controller's equivalents via annotations.
+  #
+  # Your controller almost certainly needs an equivalent, because the defaults
+  # elsewhere are short enough to cut an idle agent stream. An AWS ALB idles a
+  # connection out after 60 seconds; a GCE backend service after 30. On an ALB,
+  # add to annotations above:
+  #
+  #   alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+  #
+  # — a property of the load balancer rather than of this Ingress, so Ingresses
+  # sharing a group must all agree on the value or the controller reconciles
+  # none of them. On GCE it is `timeoutSec` on a BackendConfig, which is a
+  # separate object this chart does not render.
   streamingAnnotations: true
   tls:
     enabled: false
@@ -45,6 +57,7 @@ ingress:
     - /mcp
     - /oauth
     - /.well-known
+    - /messaging
     - /health
   # Path prefixes served by the Teams bridge listener rather than the FastAPI
   # app, because that listener is a separate HTTP server on its own port. Used
@@ -89,6 +102,11 @@ secrets:
   mattermostUserPassword: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # Distributed Slack app (required when switchCore.slackApp.enabled). The
+  # signing secret is the whole of what distinguishes a real Slack event from
+  # a post by anyone who learned the URL.
+  slackAppClientSecret: ""
+  slackAppSigningSecret: ""
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
@@ -149,6 +167,24 @@ switchCore:
     requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # The distributed Slack app: the one a customer installs into their workspace
+  # by clicking a button, as opposed to an app an operator registers themselves
+  # and pastes a bot token for. Off unless you have registered such an app and
+  # are distributing it — a self-hosted install almost certainly wants the
+  # per-tenant Socket Mode bridge instead.
+  #
+  # Enabling it commits the deployment to being reachable from the internet:
+  # Slack dials messagingPublicUrl and gives up on anything it cannot resolve
+  # or cannot verify a certificate for. Add /messaging to ingress.agentApiPaths
+  # as well, or the URLs exist and nothing routes to them.
+  slackApp:
+    enabled: false
+    # Public origin Slack reaches Switch on — scheme + host, https, no path.
+    # Not the same thing as gatewayPublicUrl, which is where a person lands
+    # from a deeplink and may be private; setting this one to that host would
+    # move every deeplink along with it.
+    messagingPublicUrl: ""
+    clientId: ""
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token
