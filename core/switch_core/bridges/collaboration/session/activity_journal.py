@@ -234,6 +234,16 @@ class ActivityJournal:
         Scoped to this bridge and this tenant, and matched on the pair rather
         than on the reference alone — a platform numbering its messages per
         channel would otherwise answer for a message in a different one.
+
+        Either of a turn's messages answers, because either can be pressed. The
+        status is the turn; the attention reply beside it is one sentence about
+        that same turn, and it carries the same controls — so a reader who
+        stops the agent from the message telling them to has to reach the
+        session the same way. The two are addressed differently because they
+        are written for different reasons: one is recorded beside the anchor as
+        an address, the other is the delivery reservation itself. Matching on
+        its `ref` is what keeps a reservation whose post was never acknowledged
+        out of the answer; it has no reference yet, and nothing is on screen.
         """
         async with self.sessions() as db:
             found = (
@@ -244,8 +254,13 @@ class ActivityJournal:
                     ).where(
                         SessionActivityPost.tenant_id == require_tenant_id(),
                         SessionActivityPost.bridge_id == self.bridge_id,
-                        SessionActivityPost.data.contains(
-                            {"shown": {"channel_id": channel_id, "ref": ref}}
+                        or_(
+                            SessionActivityPost.data.contains(
+                                {"shown": {"channel_id": channel_id, "ref": ref}}
+                            ),
+                            SessionActivityPost.data.contains(
+                                {"attention": {"channel": channel_id, "ref": ref}}
+                            ),
                         ),
                     )
                 )

@@ -488,15 +488,25 @@ class SessionTurnActivity:
                         # about what the row still says. `shown` survives for a
                         # different reason: the message is still in the channel
                         # after the turn it is showing has ended, and it is the
-                        # only thing left that says which turn that was.
+                        # only thing left that says which turn that was. A
+                        # delivered attention reply survives for that same
+                        # reason and no other — it is a second message of this
+                        # turn's, still on screen and still carrying controls,
+                        # and a press on it has to find the turn as surely as a
+                        # press on the status does. Only a delivered one: a
+                        # reservation with no reference names nothing.
+                        kept = {
+                            field: record.data[field]
+                            for field in ("mark", "mark_attempt", "shown")
+                            if field in record.data
+                        }
+                        attention = record.data.get("attention")
+                        if attention and attention.get("ref"):
+                            kept["attention"] = attention
                         record.data = {
                             "turn_id": turn.turn_id,
                             "ended": True,
-                            **{
-                                field: record.data[field]
-                                for field in ("mark", "mark_attempt", "shown")
-                                if field in record.data
-                            },
+                            **kept,
                         }
                     record.data["completed"] = True
                     await record.save()
@@ -538,7 +548,15 @@ class SessionTurnActivity:
         )
         if not error_summary and not ref and not saved:
             return
-        state = error_summary or turn.status
+        # The link counts as part of what this message is showing, the way it
+        # does for the status beside it. It is not always there when the
+        # message is first posted — a deployment that has only just been told
+        # where its console is reaches an already-running turn — and left out
+        # of the comparison the reply would keep the state it was posted in and
+        # never gain the way in that is the whole point of carrying it. The url
+        # goes in front because it cannot contain a newline and a summary can,
+        # so the two halves stay tellable apart.
+        state = f"{session_url or ''}\n{error_summary or turn.status}"
         if ref and state == last_state:
             return
         content = TurnActivity(

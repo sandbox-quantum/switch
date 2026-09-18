@@ -36,10 +36,13 @@ from switch_core.db.models import (
 )
 from switch_core.sessions.publication import activity_control_at, activity_shown_at
 
+from ..bridges.collaboration.test_session_activity import _turn
 from .test_activity_durability import ActivitySlack, activity, publish
 from .test_authority import opened, setup
 
 STATUS_REF = "channel-demo:1"
+#: The reply that says somebody has to act, posted after the status it follows.
+ATTENTION_REF = "channel-demo:2"
 
 
 async def read_back(session_factory, renderer, channel="channel-demo", ref=STATUS_REF):
@@ -78,6 +81,38 @@ async def published(session_factory, *, status="completed"):
     await publish(renderer, "running")
     if status != "running":
         await publish(renderer, status)
+    return renderer
+
+
+async def report(renderer, status):
+    """One publish of a turn that has a problem to report beside it."""
+    return await renderer.publish(
+        [],
+        _turn(status).model_copy(update={"command_id": "message-demo"}),
+        session_id="session-demo",
+        channel_id="channel-demo",
+        thread_root_id="channel-demo:root",
+        asked_on="channel-demo:question",
+        agent_name="Agent",
+        elapsed_seconds=12,
+        error_summary="The host went away.",
+    )
+
+
+async def attended(session_factory, *, status="completed"):
+    """A turn drawn into channel-demo with an attention reply beside it.
+
+    Two messages rather than one, and the second is the one this section is
+    about: it carries the same controls the status does, so it has to answer
+    the same question about which turn a press on it is on.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = ActivitySlack()
+    renderer = activity(session_factory, platform)
+    await report(renderer, "running")
+    if status != "running":
+        await report(renderer, status)
     return renderer
 
 
@@ -329,6 +364,82 @@ async def test_an_agent_taken_out_of_the_room_can_no_longer_be_stopped_from_it(
         await db.delete(membership)
 
     assert await control_target(session_factory, renderer) is None
+
+
+# ── The other message: the reply that says somebody has to act ───────────────
+#
+# A turn with a problem draws twice: the status, and a reply beside it. The
+# reply carries the same two controls, so a reader stops the agent, or asks what
+# it was doing, from the message that told them something was wrong — and every
+# press resolves its session from the message it was made on. The two messages
+# are written into the row for different reasons and under different keys, so
+# the reply being answerable is its own guarantee and has its own tests.
+
+
+async def test_the_attention_reply_says_which_turn_it_is_too(session_factory):
+    renderer = await attended(session_factory, status="running")
+
+    assert await renderer.shown_at("channel-demo", ATTENTION_REF) == (
+        "session-demo",
+        "message-demo",
+    )
+
+
+async def test_the_attention_address_survives_the_compaction_too(session_factory):
+    """It is on screen for the same reasons the status is, and for longer than
+    the reservation it was written down as."""
+    renderer = await attended(session_factory)
+
+    async with ActivityJournal(session_factory, "bridge").open(
+        "session-demo", "message-demo"
+    ) as record:
+        assert record is not None
+        assert record.data["attention"]["ref"] == ATTENTION_REF
+    assert await renderer.shown_at("channel-demo", ATTENTION_REF) is not None
+
+
+async def test_the_attention_reply_of_another_channel_is_not_answered_for(
+    session_factory,
+):
+    renderer = await attended(session_factory, status="running")
+
+    assert await renderer.shown_at("channel-elsewhere", ATTENTION_REF) is None
+
+
+async def test_a_press_on_the_attention_reply_reaches_the_session(session_factory):
+    """The stop control is on this message precisely because a turn needing
+    attention is one somebody wants to stop."""
+    renderer = await attended(session_factory, status="running")
+
+    target = await control_target(session_factory, renderer, ref=ATTENTION_REF)
+
+    assert target is not None
+    assert target.session_id == "session-demo"
+    assert target.room_id == "room-demo"
+
+
+async def test_a_press_on_a_finished_turns_attention_reply_still_resolves(
+    session_factory,
+):
+    """The message an error left behind is the one still being read afterwards,
+    and the compaction that discards the reservation must not silence it."""
+    renderer = await attended(session_factory)
+
+    assert (
+        await control_target(session_factory, renderer, ref=ATTENTION_REF) is not None
+    )
+
+
+async def test_the_activity_behind_the_attention_reply_can_be_read_back(
+    session_factory,
+):
+    """The other control on it: what the turn was doing when it went wrong."""
+    renderer = await attended(session_factory)
+
+    snapshot = await read_back(session_factory, renderer, ref=ATTENTION_REF)
+
+    assert snapshot is not None
+    assert snapshot.turn.command_id == "message-demo"
 
 
 async def test_a_press_naming_another_bridges_room_goes_nowhere(session_factory):
