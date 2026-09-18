@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, open, readFile, rename } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -68,6 +68,18 @@ export async function writeWatchEnabled(root: string, enabled: boolean): Promise
 }
 
 /**
+ * The agent panel tails this file. A deployed host writes it from its own
+ * process; one running inside Console has to append here, or the panel would
+ * show a log that stopped updating the day the host moved in-process.
+ */
+async function note(root: string, line: string): Promise<void> {
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await appendFile(join(root, 'supervisor.log'), `${new Date().toISOString()} ${line}\n`, {
+    mode: 0o600,
+  });
+}
+
+/**
  * Records why a host stopped where the agent's panel reads it. A deployed host
  * writes this from its own process; one running inside Console has to write it
  * here, or the panel would report the watcher as down with no reason.
@@ -75,6 +87,7 @@ export async function writeWatchEnabled(root: string, enabled: boolean): Promise
 async function recordFailure(root: string, message: string): Promise<void> {
   await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
   await writeAtomic(join(root, 'supervisor', 'failure.json'), { message });
+  await note(root, `Room watcher stopped: ${message}`);
 }
 
 function track(
@@ -180,6 +193,7 @@ export async function startLocalWatcher(config: SharedHostConfig): Promise<void>
     restart: false,
     supervision: {
       start: async ({ root: prepared }) => {
+        await note(prepared, 'Room watcher started inside Console.');
         track(
           watchers,
           prepared,

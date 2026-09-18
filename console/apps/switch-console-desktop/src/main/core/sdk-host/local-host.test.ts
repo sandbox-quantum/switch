@@ -75,3 +75,13 @@ it('drops a supervisor record left behind by a process that is gone', async () =
   await expect(readFile(join(keyed, 'supervisor', 'owner.json'), 'utf8')).rejects.toThrow('ENOENT');
   expect(root).toBeTruthy();
 });
+
+it('appends start and failure lines to the log the panel tails', async () => {
+  mocks.runWatcher.mockRejectedValue(new Error('Shared SDK watcher delivery gap: sequence reset.'));
+  await startLocalWatcher(config);
+  const log = join(localWatcherRoot('switch-agent-1'), 'supervisor.log');
+  await expect
+    .poll(() => readFile(log, 'utf8'))
+    .toContain('Room watcher stopped: Shared SDK watcher delivery gap: sequence reset.');
+  expect(await readFile(log, 'utf8')).toContain('Room watcher started inside Console.');
+});
