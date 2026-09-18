@@ -83,6 +83,8 @@ An enabled agent keeps its hosted environment and room watcher available. Provid
 | Close Console | Execution and room watching continue. |
 | Interrupt | End the active turn using the provider's supported control; keep conversation and files. |
 | Stop session | Stop that session and retain saved state. If the agent remains enabled, a later room mention may create another session. |
+| Stop agent | Disable new starts, confirm execution has stopped, release allocated compute and retain persistent workspace/session data. |
+| Start stopped agent | Recreate execution, reattach retained storage and restore eligibility for work after ownership and readiness checks. Do not replay uncertain work. |
 | Resume session | Explicitly reopen the saved conversation after required recovery and readiness checks. |
 | Pause agent | Disable new starts, stop active sessions and confirm completion before showing Paused. Surface any unconfirmed stop. |
 | Enable agent | Restore eligibility for room-triggered starts. Do not replay previous uncertain work or automatically repeat a stopped turn. |
@@ -116,6 +118,26 @@ Each worker has bounded CPU, memory and disk, and the operator sets a concurrenc
 Operators need provisioning status, worker health, restart/recovery diagnostics, queue depth, storage usage and authentication failure signals without exposing secrets. Record security-relevant lifecycle and credential actions with actor and outcome. Provider consumption remains charged according to the user's provider account; do not imply that supplying a key includes unlimited model usage.
 
 ## 7. Architecture direction
+
+Target clarified on 2026-09-18: run the Switch service and hosted controller on the
+existing Kubernetes cluster. The controller creates an isolated VM or sandbox per
+hosted agent, attaches persistent workspace/session storage and delivers that
+agent's scoped credentials. Workers connect to Switch, the repository host and the
+model provider. The VM/sandbox technology remains undecided; using Kubernetes for
+the controller does not require execution to use ordinary Kubernetes pods.
+
+An explicit **Stop agent** action must release that agent's allocated compute while
+retaining its disk and saved identity. It disables new starts until explicitly
+started again. Starting recreates execution and reattaches storage after ownership
+checks; a stopped worker must not be revived just because an old desired-state
+record or room message exists. This is distinct from interrupting a turn, stopping
+one session, or closing Console, and does not introduce automatic idle suspension.
+Releasing an agent's allocation does not guarantee that a shared cluster node or
+its cloud bill disappears immediately. Persistent storage remains allocated.
+
+The controller (also called worker manager) is an infrastructure service, not an
+AI agent. An AI onboarding assistant is an optional future UX idea, not required
+for provisioning or included in the current MVP.
 
 1. **Console:** Hosted onboarding and lifecycle UI; authenticated configuration and secret submission; existing session discovery and conversation controls.
 2. **Switch service:** Authoritative agent placement, desired lifecycle state, owner authorization, sessions, commands, approvals and history. Durable provisioning operations and worker assignments extend this authority.
