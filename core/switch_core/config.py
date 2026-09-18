@@ -213,6 +213,14 @@ class SwitchConfig(BaseSettings):
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
 
+    # Development only. No agent host speaks the session interaction contract
+    # yet, so there is no session whose requests could reach a channel. With
+    # this set, `!session-demo` in a bridged Slack channel posts the recorded
+    # fixture's request there as a real card, to exercise the answer path
+    # against a real workspace. It needs the repository checkout for the
+    # fixtures, and it says in the log that there is no session behind the card.
+    session_demo_enabled: bool = False
+
     # Upper bound on a template document uploaded to the registry. The column
     # itself is unbounded, so raising this is a deploy-time change and never a
     # migration. Oversize uploads are refused rather than truncated.

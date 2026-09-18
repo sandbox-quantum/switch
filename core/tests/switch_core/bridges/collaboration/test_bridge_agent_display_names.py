@@ -20,6 +20,7 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     CollaborationAdapter,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -102,6 +103,9 @@ def _bridge(*agents: SimpleNamespace) -> BridgeCore:
     bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore({a.name: a for a in agents})  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
+    bridge._session_publisher = None
+    bridge._session_publication_task = None
+    bridge._session_interactions = None
     return bridge
 
 
@@ -395,46 +399,30 @@ def test_slack_leaves_the_username_field_unescaped() -> None:
     assert client.calls[0]["username"] == "Ops & Co"
 
 
-def test_slack_session_card_opens_under_the_display_name() -> None:
-    """The streamed session card names the agent too, and is the one Slack
-    surface that goes through neither `send_message` nor `send_typing`."""
-    bridge = _bridge(_agent("worker", "Worker Bee"))
+@pytest.mark.parametrize(
+    "display_name,expected", [("Worker Bee", "Worker Bee"), (None, "worker")]
+)
+async def test_sdk_slack_status_uses_the_agent_display_name(display_name, expected):
+    from switch_core.sessions.contract import TurnUpsert
+
+    bridge = _bridge(_agent("worker", display_name))
     adapter, client = _slack_adapter(bridge)
-    adapter._team_id = "T123"
-    adapter._thread_requester[(SLACK_CHANNEL, "500.0")] = "U-asker"
-
-    _run(
-        adapter._drive_stream(
-            SLACK_CHANNEL,
-            "500.0",
-            "worker",
-            working=True,
-            detail="Editing foo.py",
-            deeplink_url=None,
-        )
+    await adapter.post_rich(
+        SLACK_CHANNEL,
+        "worker",
+        TurnActivity(
+            [],
+            TurnUpsert(
+                type="turn.upsert",
+                turn_id="turn",
+                command_id="command",
+                status="running",
+            ),
+            status_only=True,
+        ),
+        "500.0",
     )
-
-    assert client.streams[0]["username"] == "Worker Bee"
-
-
-def test_slack_session_card_opens_under_the_identifier_without_one() -> None:
-    bridge = _bridge(_agent("worker", None))
-    adapter, client = _slack_adapter(bridge)
-    adapter._team_id = "T123"
-    adapter._thread_requester[(SLACK_CHANNEL, "500.0")] = "U-asker"
-
-    _run(
-        adapter._drive_stream(
-            SLACK_CHANNEL,
-            "500.0",
-            "worker",
-            working=True,
-            detail="Editing foo.py",
-            deeplink_url=None,
-        )
-    )
-
-    assert client.streams[0]["username"] == "worker"
+    assert client.calls[0]["username"] == expected
 
 
 def test_slack_still_draws_an_agent_icon_on_its_own_background() -> None:
@@ -458,31 +446,6 @@ def test_slack_resolves_an_agent_once_per_send() -> None:
     _run(adapter.send_message(SLACK_CHANNEL, "worker", "hello"))
 
     assert bridge._agent_store.lookups == ["worker"]  # type: ignore[attr-defined]
-
-
-def test_slack_awaiting_input_ping_uses_the_display_name_in_both_header_and_body() -> (
-    None
-):
-    """The awaiting-input ping posts with the display label as username AND
-    inlines it into the body — the identifier must not leak into the prose."""
-    bridge = _bridge(_agent("switchdev", "Switch Dev"))
-    adapter, client = _slack_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            SLACK_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="U123",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    assert client.calls[-1]["username"] == "Switch Dev"
-    body = client.calls[-1]["text"]
-    assert "Switch Dev" in body
-    assert "switchdev" not in body
 
 
 def test_slack_does_not_reimport_its_own_post_made_under_a_display_name() -> None:
@@ -580,30 +543,6 @@ async def test_the_bridge_echo_check_does_not_match_on_the_display_name() -> Non
 
     assert await bridge._is_registered_agent("worker") is True
     assert await bridge._is_registered_agent("Worker Bee") is False
-
-
-def test_a_slack_display_name_cannot_forge_a_usergroup_mention() -> None:
-    """Escaping `&<>` stops a label writing Slack's own markup, but
-    `_translate_mentions_to_slack` runs over the finished body and turns a
-    plain `@opsbot` in the label into a real usergroup ping."""
-    bridge = _bridge(_agent("switchdev", "@opsbot"), _agent("opsbot", None))
-    adapter, client = _slack_adapter(bridge)
-    adapter._remember_agent_group("S999", "opsbot")
-
-    _run(
-        adapter._apply_runtime_state(
-            SLACK_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="U123",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    text = client.calls[-1]["text"]
-    assert "<!subteam^S999>" not in text
-    assert "@\u200bopsbot" in text
 
 
 # ── Discord ──────────────────────────────────────────────────────────────────

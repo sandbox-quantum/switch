@@ -39,6 +39,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         bridge_store=None,  # type: ignore[arg-type]
         external_user_store=None,  # type: ignore[arg-type]
         bridge_message_map_store=None,  # type: ignore[arg-type]
+        session_request_post_store=None,  # type: ignore[arg-type]
         room_store=None,  # type: ignore[arg-type]
         agent_store=None,  # type: ignore[arg-type]
         client_store=None,  # type: ignore[arg-type]
@@ -98,7 +99,6 @@ def test_get_config_schema_exposes_required_fields() -> None:
         "app_token",
         "workspace_id",
         "agent_usergroups",
-        "agent_sessions",
     }
     # app_token is offered but not required by the schema: a bridge whose
     # events arrive over HTTP has none. What enforces it for a Socket Mode

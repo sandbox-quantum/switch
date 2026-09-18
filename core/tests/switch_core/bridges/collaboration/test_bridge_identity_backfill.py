@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.tenant_context import current_tenant_id
 
 
 class _FakeAdapter:
@@ -40,6 +41,9 @@ def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[attr-defined]
     core._identity_task = None  # type: ignore[attr-defined]
+    core._session_publisher = None
+    core._session_publication_task = None
+    core._session_interactions = None  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None
@@ -131,3 +135,29 @@ async def test_a_failure_is_logged_rather_than_swallowed(
 
     assert any("stopped unexpectedly" in r.getMessage() for r in caplog.records)
     await core.stop()
+
+
+async def test_stop_awaits_session_publisher_shutdown() -> None:
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    class Publisher:
+        async def run(self):
+            assert current_tenant_id() == "bridge-tenant"
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+    async def provision():
+        pass
+
+    core, _ = _core(provision)
+    core._bridge_tenant_id = "bridge-tenant"
+    core._session_publisher = Publisher()
+    await core.start()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await core.stop()
+    assert stopped.is_set()
+    assert core._session_publication_task is None

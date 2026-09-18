@@ -119,6 +119,16 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
+    # The SDK session card, activity and publication layers. Every entry to
+    # them is either an inbound bridge event, which `bridge_core` binds the
+    # channel's tenant around before the handler runs, or the publication
+    # task, created inside that same scope so the task's context carries it.
+    # A caller that arrived with nothing bound would not read an empty set:
+    # publication reads its session row through `require_tenant_id()`, and
+    # every table the other two touch is policied by it.
+    "switch_core.bridges.collaboration.session.inbound",
+    "switch_core.bridges.collaboration.session.outbound",
+    "switch_core.sessions.publication",
     # ── The exemption's own plumbing. It opens a session with nothing bound
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
