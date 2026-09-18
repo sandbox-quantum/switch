@@ -143,6 +143,10 @@ class InboundInteraction(BaseModel):
     # The platform's id for the message the control sits on, in the same form
     # `InboundMessage.message_ref` uses.
     message_ref: str | None = None
+    # The platform's thread root the pressed message sits in, None at the top
+    # level. Only a platform that answers a press with a new post rather than
+    # through the interaction needs it, so most adapters leave it unset.
+    thread_ref: str | None = None
 
 
 class InboundAgentJoin(BaseModel):

@@ -29,7 +29,6 @@ surviving its own omission.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -520,8 +519,11 @@ TARGET = ActivityControlTarget(
     epoch="epoch-demo",
     room_id="room-demo",
     thread_id="thread-demo",
-    thread_ref="C1:1.0",
 )
+
+#: The platform's thread root, as the press itself reports it. Deliberately not
+#: on TARGET: a press that resolves to no target at all still carries this.
+THREAD_REF = "C1:1.0"
 
 
 def _command(
@@ -672,7 +674,11 @@ def _bridge(
     return bridge
 
 
-def _press(action_id: str = INTERRUPT_ACTION, value: str = RUNNING_TURN) -> Any:
+def _press(
+    action_id: str = INTERRUPT_ACTION,
+    value: str = RUNNING_TURN,
+    thread_ref: str | None = THREAD_REF,
+) -> Any:
     return InboundInteraction(
         channel_id=CHANNEL,
         sender_id="U1",
@@ -680,6 +686,7 @@ def _press(action_id: str = INTERRUPT_ACTION, value: str = RUNNING_TURN) -> Any:
         action_id=action_id,
         value=value,
         message_ref="C1:9.9",
+        thread_ref=thread_ref,
     )
 
 
@@ -724,7 +731,7 @@ def test_the_answer_to_a_press_goes_to_the_thread_the_control_was_in() -> None:
 
     _run(bridge._handle_inbound_interaction(_press()))
 
-    assert bridge._adapter.told[0][3] == TARGET.thread_ref
+    assert bridge._adapter.told[0][3] == THREAD_REF
 
 
 def test_a_refusal_lands_in_the_thread_as_well_as_an_acceptance() -> None:
@@ -735,17 +742,44 @@ def test_a_refusal_lands_in_the_thread_as_well_as_an_acceptance() -> None:
 
     _run(bridge._handle_inbound_interaction(_press()))
 
-    assert bridge._adapter.told[0][3] == TARGET.thread_ref
+    assert bridge._adapter.told[0][3] == THREAD_REF
 
 
 def test_a_press_on_a_turn_never_threaded_is_answered_at_the_root() -> None:
     """Not every turn is in a thread. One drawn at the channel root has no
     thread to be put back into, and None is how the adapters are told so."""
-    bridge = _bridge(target=replace(TARGET, thread_ref=None))
+    bridge = _bridge()
+
+    _run(bridge._handle_inbound_interaction(_press(thread_ref=None)))
+
+    assert bridge._adapter.told[0][3] is None
+
+
+def test_a_press_that_resolves_to_nothing_is_still_answered_in_its_thread() -> None:
+    """The refusal reached before anything resolves.
+
+    There is no journal entry to read a thread from here — that is what this
+    refusal means — so a thread taken from anywhere but the press itself would
+    have to be None, and the reader would be told their button is dead in the
+    channel rather than beside the button.
+    """
+    bridge = _bridge(target=None)
 
     _run(bridge._handle_inbound_interaction(_press()))
 
-    assert bridge._adapter.told[0][3] is None
+    assert bridge._adapter.told[0][3] == THREAD_REF
+    assert "no longer connected to a live session" in bridge._adapter.told[0][4]
+
+
+def test_a_press_from_an_unknown_account_is_answered_in_its_thread() -> None:
+    """The other pre-submission refusal. A target has resolved by this point but
+    no actor has, so nothing is ever submitted and the notice is all there is."""
+    bridge = _bridge(actor=None)
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told[0][3] == THREAD_REF
+    assert "does not know who this account belongs to" in bridge._adapter.told[0][4]
 
 
 def test_a_stale_press_is_told_so_even_though_nothing_was_raised() -> None:

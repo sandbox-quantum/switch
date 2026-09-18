@@ -1357,12 +1357,11 @@ class BridgeCore:
         outcome = await interactions.command_for(interaction)
         if isinstance(outcome, Refused):
             # outcome.card_ref is available here too, but deliberately unused:
-            # a press only reaches a platform whose buttons are live, and on
-            # each of those the reply to a press is private to whoever pressed
-            # — Slack's ephemeral, Telegram's alert on the press itself.
-            # thread_ref would only choose where a private notice appeared on
-            # screen, not who saw it.
-            await self._tell_refused(interaction, outcome, thread_ref=None)
+            # the thread comes off the press, which is right even when the card
+            # behind it no longer resolves.
+            await self._tell_refused(
+                interaction, outcome, thread_ref=interaction.thread_ref
+            )
             return
         # Both ways a press can be turned down go the same way out. The two
         # were split once, and the half that went through the channel put one
@@ -1370,7 +1369,7 @@ class BridgeCore:
         await self._submit_session_command(
             outcome,
             interaction,
-            thread_ref=None,
+            thread_ref=interaction.thread_ref,
             refusal="Your answer was not accepted",
             accepted=None,
         )
@@ -1408,7 +1407,7 @@ class BridgeCore:
                 interaction.channel_id,
                 interaction.sender_id,
                 interaction.sender_name,
-                None,
+                interaction.thread_ref,
                 "That message is no longer connected to a live session, so "
                 "there is nothing here to stop.",
             )
@@ -1427,7 +1426,7 @@ class BridgeCore:
                 interaction.channel_id,
                 interaction.sender_id,
                 interaction.sender_name,
-                None,
+                interaction.thread_ref,
                 "Switch does not know who this account belongs to, and "
                 "stopping an agent is only ever recorded against someone it "
                 "can name.",
@@ -1448,7 +1447,7 @@ class BridgeCore:
         await self._submit_session_command(
             command,
             interaction,
-            thread_ref=target.thread_ref,
+            thread_ref=interaction.thread_ref,
             refusal="The agent was not stopped",
             accepted=(
                 "Switch has asked the agent to stop its current work. The "
@@ -1616,12 +1615,17 @@ class BridgeCore:
         press that answers nothing.
 
         `thread_ref` is the thread the answered message sits in, and a press
-        supplies it from the journal entry behind the pressed message. Most
-        platforms never read it for a press, because an interaction is answered
+        takes it from the press itself rather than from anything it resolves
+        to. Most platforms never read it, because an interaction is answered
         through itself and lands where it was made. Slack has no such reply: it
         posts an ephemeral, which goes to the channel root unless it is told a
         thread, so a notice about a control in a thread would otherwise surface
-        in front of everyone — the opposite of the privacy it is chosen for.
+        under the channel instead of beside the message it is about.
+
+        Reading it off the press is what makes the refusals work. A press that
+        resolves to nothing, or comes from an account with no Switch identity,
+        is turned down before there is any journal entry to ask — and those are
+        exactly the answers a reader is least equipped to place on their own.
 
         `refusal` opens that sentence, because not every control is an answer:
         a stop button turned down has to say the agent is still running, not

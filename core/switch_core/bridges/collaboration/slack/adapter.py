@@ -2493,10 +2493,17 @@ class SlackAdapter(CollaborationAdapter):
     async def _handle_interactive(self, payload: dict[str, Any]) -> None:
         """Someone operated a Block Kit control on one of our messages.
 
-        Only two things are read out of the payload: who Slack says acted, and
-        which control they operated. A button's `value` is the opaque token this
-        bridge minted when it posted the message, so a payload that was replayed
-        or hand-built names nothing its sender was not already looking at.
+        Only who Slack says acted, which control they operated, and where the
+        message sits are read out of the payload. A button's `value` is the
+        opaque token this bridge minted when it posted the message, so a payload
+        that was replayed or hand-built names nothing its sender was not already
+        looking at.
+
+        Where it sits includes the thread, because Slack answers a press with a
+        fresh ephemeral post rather than through the interaction, and an
+        ephemeral goes to the channel root unless it is told otherwise. Taking
+        it from the press means every answer lands beside the control, including
+        the refusals that never resolve a session to ask.
 
         Slack sends one `block_actions` envelope per press, but the field is a
         list, and a press this bridge did not put there is somebody else's.
@@ -2513,6 +2520,10 @@ class SlackAdapter(CollaborationAdapter):
             or container.get("channel_id", "")
         )
         message_ts = str(container.get("message_ts", ""))
+        thread_ts = str(
+            container.get("thread_ts", "")
+            or (payload.get("message") or {}).get("thread_ts", "")
+        )
         if not user_id or not channel_id:
             logger.warning("Slack block_actions missing user or channel, skipping")
             return
@@ -2531,6 +2542,7 @@ class SlackAdapter(CollaborationAdapter):
                     action_id=action_id,
                     value=value,
                     message_ref=f"{channel_id}:{message_ts}" if message_ts else None,
+                    thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
                 )
             )
 

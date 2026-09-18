@@ -27,7 +27,6 @@ from switch_core.bridges.collaboration.session.activity_journal import ActivityJ
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.db.models import (
     Agent,
-    BridgeMessageMap,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -44,11 +43,9 @@ from .test_authority import opened, setup
 STATUS_REF = "channel-demo:1"
 #: The reply that says somebody has to act, posted after the status it follows.
 ATTENTION_REF = "channel-demo:2"
-#: Switch's id for the thread a command was typed in. No platform can address
-#: a message with it, which is the whole reason the translation below exists.
+#: Switch's id for the thread a command was typed in. No platform can address a
+#: message with it; it addresses the command a press turns into.
 THREAD_ID = "sw_thread-root"
-#: The platform's id for that same thread, as the bridge recorded it.
-THREAD_REF = "channel-demo:root"
 
 
 async def read_back(session_factory, renderer, channel="channel-demo", ref=STATUS_REF):
@@ -91,21 +88,12 @@ async def published(session_factory, *, status="completed"):
 
 
 async def threaded(session_factory):
-    """A turn whose command was typed in a thread, with that thread bridged.
+    """A turn whose command was typed in a thread.
 
     The default fixture's command has no thread at all, which is the one shape
-    that cannot show a translation happening: nothing in, nothing out.
+    that cannot show a thread being carried: nothing in, nothing out.
     """
     service, epoch = await setup(session_factory)
-    async with session_factory() as db, db.begin():
-        db.add(
-            BridgeMessageMap(
-                bridge_id="bridge",
-                external_channel_id="channel-demo",
-                transport_event_id=THREAD_ID,
-                external_post_id=THREAD_REF,
-            )
-        )
     await opened(service, epoch, thread_id=THREAD_ID)
     renderer = activity(session_factory, ActivitySlack())
     await publish(renderer, "running")
@@ -368,15 +356,16 @@ async def test_a_press_on_a_finished_turns_message_still_resolves(session_factor
     assert await control_target(session_factory, renderer) is not None
 
 
-async def test_the_target_says_which_thread_to_answer_the_press_in(session_factory):
-    """A press is answered privately, and on Slack privately means an ephemeral,
-    which posts at the channel root unless it is handed a thread. So the thread
-    has to come back with the target or the notice meant for one person in a
-    thread is shown to the whole channel instead.
+async def test_the_target_carries_the_thread_the_command_was_typed_in(
+    session_factory,
+):
+    """The interrupt this press becomes is a command like any other, so it has
+    to be addressed to the thread the original command was, not to the channel.
 
-    It is the platform's own id for the thread, resolved the same way the
-    publisher resolved it to decide where to draw the turn — not the Switch id
-    beside it, which no platform can address a message with.
+    This is Switch's own id, and it is the only thread here. Where an *answer*
+    about the press goes is a different question with a different source: the
+    press reports its own thread in the platform's terms, because the refusals
+    that never reach this read still have to land somewhere sensible.
     """
     renderer = await threaded(session_factory)
 
@@ -384,18 +373,17 @@ async def test_the_target_says_which_thread_to_answer_the_press_in(session_facto
 
     assert target is not None
     assert target.thread_id == THREAD_ID
-    assert target.thread_ref == THREAD_REF
 
 
 async def test_a_press_on_a_turn_never_threaded_has_no_thread_to_name(session_factory):
-    """A command typed at the channel root leaves nothing to translate, and
-    None is the honest answer rather than a reference to somewhere else."""
+    """A command typed at the channel root leaves nothing to carry, and None is
+    the honest answer rather than a reference to somewhere else."""
     renderer = await published(session_factory, status="running")
 
     target = await control_target(session_factory, renderer)
 
     assert target is not None
-    assert target.thread_ref is None
+    assert target.thread_id is None
 
 
 async def test_a_press_on_a_message_this_bridge_drew_nothing_in_goes_nowhere(

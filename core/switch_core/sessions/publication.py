@@ -909,18 +909,17 @@ class ActivityControlTarget:
     redrawn names the turn they were looking at rather than whatever is running
     now.
 
-    Two threads, and they are not interchangeable. `thread_id` is Switch's own
-    id, which is what a command carries. `thread_ref` is the platform's id for
-    that same thread, translated the way the publisher translates it before
-    drawing, and it is what a platform needs to answer the press where the
-    reader is looking rather than in the channel everybody is looking at.
+    `thread_id` is Switch's own id for the thread the command was typed in, and
+    it addresses the command that follows a press. It is not where an answer
+    about the press goes: no platform can address a message with it, and a
+    platform that needs somewhere to put a reply reads the thread off the press
+    itself, which is true even when nothing here resolves.
     """
 
     session_id: str
     epoch: str
     room_id: str
     thread_id: str | None
-    thread_ref: str | None
 
 
 async def _activity_behind(
@@ -980,10 +979,6 @@ async def activity_control_at(
     Whether this particular reader may stop this particular agent is not
     decided here. The session authority decides it, against the same room
     membership every other command from a channel is checked against.
-
-    The thread is resolved the same way and from the same origin the publisher
-    used to decide where to draw the turn, so a reply about the press lands
-    beside the message that was pressed rather than at the channel root.
     """
     found = await activity.shown_at(channel_id, ref)
     if found is None:
@@ -1001,12 +996,6 @@ async def activity_control_at(
             epoch=row.epoch,
             room_id=room.id,
             thread_id=origin.thread_id,
-            thread_ref=await _platform_message_ref(
-                db,
-                bridge_id,
-                channel_id,
-                origin.thread_id or origin.message_id,
-            ),
         )
 
 

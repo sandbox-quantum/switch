@@ -470,6 +470,38 @@ def test_a_press_is_no_longer_acked_and_dropped() -> None:
     assert interaction.message_ref == "C1:111.0"
 
 
+def test_a_press_in_a_thread_reports_the_thread_it_was_made_in() -> None:
+    """Slack answers a press with a fresh ephemeral, and an ephemeral told no
+    thread posts at the channel root. The press is the only place the thread can
+    come from that is still there when the press resolves to nothing."""
+    payload = _block_actions(
+        container={
+            "type": "message",
+            "channel_id": "C1",
+            "message_ts": "111.0",
+            "thread_ts": "100.0",
+        }
+    )
+
+    interaction = _pressed(payload)[0]
+
+    assert interaction.thread_ref == "C1:100.0"
+
+
+def test_a_press_on_a_top_level_message_reports_no_thread() -> None:
+    """Nothing to be put back into, and None is how the adapter is told so."""
+    assert _pressed(_block_actions())[0].thread_ref is None
+
+
+def test_a_thread_slack_puts_only_on_the_message_is_still_found() -> None:
+    """Slack does not always repeat `thread_ts` in the container. Missing it
+    would silently send every ephemeral in that thread to the channel root,
+    which is the whole defect this exists to prevent."""
+    payload = _block_actions(message={"ts": "111.0", "thread_ts": "100.0"})
+
+    assert _pressed(payload)[0].thread_ref == "C1:100.0"
+
+
 def test_a_control_with_no_value_names_no_request() -> None:
     """A select or an overflow carries its choice elsewhere. Not ours to guess."""
     payload = _block_actions(
