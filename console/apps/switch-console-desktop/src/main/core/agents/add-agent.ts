@@ -20,6 +20,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
+import type { AgentTemplateOrigin } from './agent-config-file';
 import { syncAgentConfig } from './agent-config-sync';
 import { foreignCredentialsOwner, sameEndpointAgentId } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
@@ -68,6 +69,9 @@ export type AddAgentParams = {
   providerConfig?: AgentProviderConfig | null;
   /** Which control the user opened the add-agent form from, for reporting. */
   entryPoint: UiEntryPoint;
+  /** The template the agent is created from, if any. Recorded so the agent's
+   * settings page can offer the template's current instructions later. */
+  templateOrigin?: AgentTemplateOrigin | null;
 };
 
 export type AddAgentResult =
@@ -240,6 +244,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     await writeAgentConfigFile(workspace.fs, params.name, {
       instructions: params.instructions,
       settings: params.definitionAttributes,
+      ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
     });
     await syncAgentConfig({
       workspaceFs: workspace.fs,

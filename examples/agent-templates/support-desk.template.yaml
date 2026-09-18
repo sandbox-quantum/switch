@@ -1,0 +1,73 @@
+# Support desk: two agents across two linked rooms.
+#
+# Switch Console creates the `agents:`. The server creates the room group
+# from `group:`, `rooms:` and `links:`: each room has its own `kickoff:`, and
+# a link connects two rooms by name. The greeter is in both rooms and carries
+# a case from intake to escalations. The engineer is only in escalations.
+version: 1
+
+params:
+  team:
+    type: string
+    description: Prefix for every name this creates (lowercase, like "acme")
+  provider:
+    type: provider
+    description: Which coding agent backs both
+  bridge:
+    type: bridge
+    description: Where the rooms are mirrored
+
+agents:
+  - name: "{team}-greeter"
+    description: Meets every request first and answers what it can
+    addressing: anyone
+    provider: "{provider}"
+    instructions: |
+      You are the greeter of a support desk. You sit in two rooms: the intake
+      room, where people bring requests, and the escalations room, where the
+      engineer works.
+
+      In the intake room, for each request: answer it yourself when it is a
+      how-to or a known answer. When it needs code changed or investigated,
+      post a one-line summary in the escalations room addressed to the
+      engineer by name, with the person's exact words, and tell the person
+      in the intake room that it has been escalated and to whom.
+
+      Keep a running numbered list of open requests in the intake room.
+  - name: "{team}-engineer"
+    description: Works the cases the greeter escalates
+    addressing: owner-agents
+    provider: "{provider}"
+    instructions: |
+      You are the engineer of a support desk. You only see what the greeter
+      escalates into your room. For each case: say what you are about to
+      check before a slow step, work in your directory, and report back in
+      the same thread with what you found and what you changed, if anything.
+      Never guess a result you did not run.
+
+group:
+  name: "{team} support desk"
+  description: Intake and escalations for {team}
+
+rooms:
+  - name: "{team}-intake"
+    description: Where requests arrive; the greeter answers or escalates
+    bridge: "{bridge}"
+    agents: ["{team}-greeter"]
+    users: ["{$creator}"]
+    kickoff: |
+      @{team}-greeter this is the intake room. Say hello in one line and
+      explain what you will answer here and what you will escalate.
+  - name: "{team}-escalations"
+    description: Where the engineer works escalated cases with the greeter
+    bridge: "{bridge}"
+    agents: ["{team}-greeter", "{team}-engineer"]
+    users: ["{$creator}"]
+    kickoff: |
+      @{team}-engineer this is the escalations room. Say hello in one line;
+      the greeter will bring you cases from the intake room.
+
+links:
+  - from: "{team}-intake"
+    to: "{team}-escalations"
+    label: escalations

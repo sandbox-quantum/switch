@@ -16,7 +16,7 @@ export const SETTINGS_DEFAULTS = {
     tmuxByDefault: false,
   },
   localLocation: () => ({
-    defaultLocationsDirectory: join(homedir(), 'switchdash', 'repositories'),
+    defaultLocationsDirectory: join(homedir(), '.switch', 'agents'),
     defaultWorktreeDirectory: getDefaultLocalWorktreeDirectory(),
     writeAgentConfigToGitIgnore: true,
   }),

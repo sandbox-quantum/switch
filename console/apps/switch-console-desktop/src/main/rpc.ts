@@ -1,4 +1,5 @@
 import { createRPCNamespace, createRPCRouter } from '../shared/lib/ipc/rpc';
+import { agentTemplatesController } from './core/agent-templates/controller';
 import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
 import { filesController } from './core/fs/controller';
@@ -27,6 +28,7 @@ import { viewStateController } from './core/view-state/controller';
 export const rpcRouter = createRPCRouter({
   providers: providersController,
   agents: agentsController,
+  agentTemplates: agentTemplatesController,
   app: appController,
   appSettings: appSettingsController,
   providerSettings: providerSettingsController,

@@ -1,11 +1,19 @@
-"""Declarative provisioning of a single room from YAML, and export back.
+"""Declarative provisioning of rooms from YAML, and export back.
 
-v0 supports a ``params:`` block beside ``room:`` that declares typed,
-defaultable placeholders. ``parse(text, inputs)`` resolves them and
-interpolates ``{name}`` throughout the ``room:`` tree before validation, so
-one file can stamp out many rooms with different inputs.  A literal
-``{word}`` that collides with a declared param name *is* substituted — this
-is accepted for v0; ``sensitive: true`` is deferred to a later version.
+Two document shapes are supported, told apart by their top-level key:
+
+* **Single room** (``room:``): one room with its attachments, and an optional
+  top-level ``kickoff:`` posted once it exists.
+* **Group** (``group:`` + ``rooms:``): a room group, several rooms filed under
+  it, and optional directed ``links:`` between them. A kickoff belongs to the
+  room it is for, so in a group it sits inside each room entry.
+
+v0 supports a ``params:`` block that declares typed, defaultable
+placeholders. ``parse_template(text, inputs)`` resolves them and interpolates
+``{name}`` throughout the document before validation, so one file can stamp
+out many rooms with different inputs.  A literal ``{word}`` that collides
+with a declared param name *is* substituted — this is accepted for v0;
+``sensitive: true`` is deferred to a later version.
 
 An optional top-level ``version:`` key (default ``0``) is accepted and
 validated as an integer, but not acted on yet.
@@ -13,7 +21,8 @@ validated as an integer, but not acted on yet.
 Provisioning is room-first and best-effort: the room is created first (which
 fails loud on bad agents / refs / config), then inline references and docs are
 attached, with any post-creation failures collected into ``failed_attachments``
-rather than silently dropped.
+rather than silently dropped. A group is provisioned room by room in order; a
+room that fails is reported in ``errors`` and does not roll back the others.
 
 Export emits resolved rooms and never emits ``params:``.
 """
@@ -25,10 +34,10 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import yaml
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
@@ -47,6 +56,7 @@ if TYPE_CHECKING:
         CollaborationBridgeStore,
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
+    from switch_core.db.stores.room_group_store import RoomGroupStore
     from switch_core.db.stores.room_role_store import RoomRoleStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.room_service import RoomService
@@ -66,9 +76,44 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # box. The value is the name a template would write: an agent's name, a
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
+# A `user` param has no "first": which account is meant depends on who asks,
+# and `{$creator}` already covers the deployer.
+PREFILL_PARAM_TYPES = ("agent", "bridge", "room")
 
+# A kickoff wakes the agents it mentions, and a woken agent can create a room
+# with a kickoff of its own. A room this many agent-created rooms away from
+# one a person created still gets its kickoff; a deeper one is created
+# without it, so a chain of templates stops after one hop and the agents
+# there wait to be addressed.
+MAX_KICKOFF_DEPTH = 1
+
+
+class ActingAgent(NamedTuple):
+    """The agent provisioning through ``create_room_from_yaml``.
+
+    ``depth`` is the ``agent_creation_depth`` its rooms get.
+    """
+
+    agent_id: str
+    name: str
+    depth: int
+
+
+# A `provider` param chooses the coding agent that runs the agents a template
+# creates. The Console answers it and removes it before provisioning, so the
+# server sees it only in stored documents. It is a known type so such a
+# document passes the lint and can be stored; if one does reach provisioning
+# it is treated as a string.
 ParamType = Literal[
-    "string", "number", "boolean", "enum", "agent", "bridge", "room", "user"
+    "string",
+    "number",
+    "boolean",
+    "enum",
+    "agent",
+    "bridge",
+    "room",
+    "user",
+    "provider",
 ]
 
 
@@ -82,6 +127,20 @@ class ParamSpec(BaseModel):
     # instructions): the form shows a textarea instead of a one-line input,
     # which would strip the pasted text's newlines.
     multiline: bool = False
+    # ``first`` fills a param left without an input or a default with the
+    # first thing of its type the server has: the default messaging app, or
+    # the first agent or room by name. A form shows it as a selection the
+    # deployer can change; ``create_room_from_yaml`` applies it for a caller
+    # that sends no value.
+    prefill: Literal["first"] | None = None
+
+    @model_validator(mode="after")
+    def _prefill_needs_a_list(self) -> ParamSpec:
+        if self.prefill is not None and self.type not in PREFILL_PARAM_TYPES:
+            raise ValueError(
+                "'prefill' applies to params of type " + ", ".join(PREFILL_PARAM_TYPES)
+            )
+        return self
 
 
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
@@ -168,7 +227,9 @@ def interpolate(
 
         return PLACEHOLDER_RE.sub(_replace, node)
     if isinstance(node, dict):
-        return {k: interpolate(v, values) for k, v in node.items()}
+        # Keys are interpolated as well as values. An alias map is written
+        # `"{bot}": helper`, where the key is the agent name a param provides.
+        return {interpolate(k, values): interpolate(v, values) for k, v in node.items()}
     if isinstance(node, list):
         return [interpolate(item, values) for item in node]
     return node
@@ -246,21 +307,69 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
+    # Agent name to the alias it can be addressed by in this room.
+    aliases: dict[str, str] | None = None
+    # Used only for a room inside a group's ``rooms:`` list, where each room
+    # has its own kickoff. A single-room document puts ``kickoff:`` at the
+    # top level, next to ``room:``.
+    kickoff: str | None = None
 
 
-class TemplateDocument(BaseModel):
-    """Top-level shape of a room template file (for JSON Schema generation)."""
+# ── Group document models ────────────────────────────────────────────────
+
+
+class GroupLinkSpec(BaseModel):
+    model_config = {"extra": "forbid", "populate_by_name": True}
+    from_: str = Field(alias="from")
+    to: str
+    label: str
+
+
+class GroupMeta(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str
+    description: str | None = None
+    color: str | None = None
+
+
+class GroupSpec(BaseModel):
+    group: GroupMeta
+    rooms: list[RoomSpec]
+    links: list[GroupLinkSpec] = []
+
+
+class RoomTemplateDocument(BaseModel):
+    """Top-level shape of a single-room template file."""
 
     room: RoomSpec
     params: dict[str, ParamSpec] | None = None
     kickoff: str | None = None
 
 
+class GroupTemplateDocument(BaseModel):
+    """Top-level shape of a group template file."""
+
+    group: GroupMeta
+    rooms: list[RoomSpec]
+    links: list[GroupLinkSpec] = []
+    params: dict[str, ParamSpec] | None = None
+
+
+# Both document shapes, for the JSON Schema served by ``GET /rooms/template-schema``.
+TemplateDocument = RoomTemplateDocument | GroupTemplateDocument
+
+
+def template_json_schema() -> dict[str, Any]:
+    """The schema a client validates a template against, either shape."""
+    return TypeAdapter(TemplateDocument).json_schema()
+
+
 @dataclass(frozen=True)
 class ParsedTemplate:
     """What ``parse_template`` makes of one template plus one set of inputs."""
 
-    spec: RoomSpec
+    spec: RoomSpec | GroupSpec
+    #: The kickoff of a single-room document. A group's kickoffs are on its rooms.
     kickoff: str | None
     #: The template's declared params, by name.
     params: dict[str, ParamSpec]
@@ -276,6 +385,13 @@ class ProvisionResult(BaseModel):
     created_document_ids: list[str] = []
     role_names: list[str] = []
     failed_attachments: list[dict[str, Any]] = []
+
+
+class GroupProvisionResult(BaseModel):
+    group_id: str
+    group_name: str
+    rooms: list[ProvisionResult] = []
+    errors: list[dict[str, Any]] = []
 
 
 # ── YAML literal-block dumper (keeps multiline doc content readable) ────────
@@ -294,8 +410,8 @@ _SpecDumper.add_representer(str, _str_representer)
 
 
 class RoomYamlService:
-    """Parse / provision / export a single room as YAML. Free of HTTP concerns
-    so it is unit-testable and reusable for future MCP / CLI surfaces."""
+    """Parse / provision / export rooms as YAML. Free of HTTP concerns so it
+    is unit-testable and reusable for future MCP / CLI surfaces."""
 
     def __init__(
         self,
@@ -308,6 +424,7 @@ class RoomYamlService:
         external_user_store: ExternalUserStore,
         room_role_store: RoomRoleStore,
         session_factory: async_sessionmaker[AsyncSession],
+        room_group_store: RoomGroupStore,
         client_lifecycle: ClientLifecycleService | None = None,
     ) -> None:
         self._rooms = room_service
@@ -317,6 +434,7 @@ class RoomYamlService:
         self._bridge_store = bridge_store
         self._external_users = external_user_store
         self._room_roles = room_role_store
+        self._room_groups = room_group_store
         self._session_factory = session_factory
         self._client_lifecycle = client_lifecycle
 
@@ -335,6 +453,10 @@ class RoomYamlService:
         entity-typed params before provisioning.
         """
         parsed = self.parse_template(text, inputs=inputs, builtins=builtins)
+        if isinstance(parsed.spec, GroupSpec):
+            raise ValueError(
+                "this is a group template; parse_template handles both shapes"
+            )
         return parsed.spec, parsed.kickoff
 
     def parse_template(
@@ -343,7 +465,10 @@ class RoomYamlService:
         inputs: dict[str, Any] | None = None,
         builtins: dict[str, str] | None = None,
     ) -> ParsedTemplate:
-        """Parse a YAML template into its room spec, kickoff, and resolved params.
+        """Parse a YAML template into its spec, kickoff, and resolved params.
+
+        The top-level key tells the shapes apart: ``room:`` gives a
+        ``RoomSpec``, ``group:`` + ``rooms:`` a ``GroupSpec``.
 
         ``builtins`` are server-injected variables (e.g. ``{creator}``) that
         are always available for interpolation alongside user-supplied
@@ -355,12 +480,24 @@ class RoomYamlService:
             data = yaml.safe_load(text)
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML: {e}") from e
-        if not isinstance(data, dict) or "room" not in data:
+        if not isinstance(data, dict):
             raise ValueError("YAML must have a single top-level 'room:' mapping")
+        is_group = "group" in data
+        if not is_group and "room" not in data:
+            raise ValueError("YAML must have a top-level 'room:' or 'group:' mapping")
 
-        allowed_keys = {"room", "params", "version", "kickoff"}
+        allowed_keys = (
+            {"group", "rooms", "links", "params", "version"}
+            if is_group
+            else {"room", "params", "version", "kickoff"}
+        )
         extra = set(data) - allowed_keys
         if extra:
+            if is_group and extra == {"kickoff"}:
+                raise ValueError(
+                    "a group template's kickoff goes on the room it is for: "
+                    "put 'kickoff:' inside each entry of 'rooms:'"
+                )
             raise ValueError(f"Unknown top-level key(s): {', '.join(sorted(extra))}")
 
         # version: accepted, not acted on yet.
@@ -393,27 +530,77 @@ class RoomYamlService:
             resolved = resolve_params(declared, inputs)
             values.update(resolved)
 
+        body = {k: v for k, v in data.items() if k not in ("params", "version")}
         if values:
-            room_data = interpolate(data["room"], values)
-            kickoff_raw = data.get("kickoff")
-            kickoff = (
-                interpolate(kickoff_raw, values)
-                if isinstance(kickoff_raw, str)
-                else None
-            )
-        else:
-            room_data = data["room"]
-            kickoff = (
-                data.get("kickoff") if isinstance(data.get("kickoff"), str) else None
-            )
+            body = interpolate(body, values)
 
-        try:
-            spec = RoomSpec.model_validate(room_data)
-        except ValidationError as e:
-            raise ValueError(f"Invalid room spec: {e}") from e
+        if is_group:
+            spec: RoomSpec | GroupSpec = self._group_spec(body)
+            kickoff = None
+        else:
+            try:
+                spec = RoomSpec.model_validate(body["room"])
+            except ValidationError as e:
+                raise ValueError(f"Invalid room spec: {e}") from e
+            if spec.kickoff is not None:
+                raise ValueError(
+                    "a single-room template's kickoff goes at the top level, "
+                    "beside 'room:'"
+                )
+            kickoff_raw = body.get("kickoff")
+            if kickoff_raw is not None and not isinstance(kickoff_raw, str):
+                raise ValueError(
+                    f"'kickoff' must be a string, got {type(kickoff_raw).__name__}"
+                )
+            kickoff = kickoff_raw
         return ParsedTemplate(
             spec=spec, kickoff=kickoff, params=declared, values=resolved
         )
+
+    @staticmethod
+    def _group_spec(body: dict[str, Any]) -> GroupSpec:
+        """Validate an interpolated group document: the meta, every room, and
+        links that name rooms the document actually has."""
+        if "rooms" not in body:
+            raise ValueError("Group document requires a 'rooms:' list")
+        try:
+            group_meta = GroupMeta.model_validate(body["group"])
+        except ValidationError as e:
+            raise ValueError(f"Invalid group spec: {e}") from e
+        raw_rooms = body["rooms"]
+        if not isinstance(raw_rooms, list) or not raw_rooms:
+            raise ValueError("'rooms:' must be a non-empty list")
+        rooms: list[RoomSpec] = []
+        for i, entry in enumerate(raw_rooms):
+            try:
+                rooms.append(RoomSpec.model_validate(entry))
+            except ValidationError as e:
+                raise ValueError(f"Invalid room spec at index {i}: {e}") from e
+        raw_links = body.get("links") or []
+        if not isinstance(raw_links, list):
+            raise ValueError("'links:' must be a list")
+        links: list[GroupLinkSpec] = []
+        for i, entry in enumerate(raw_links):
+            try:
+                links.append(GroupLinkSpec.model_validate(entry))
+            except ValidationError as e:
+                raise ValueError(f"Invalid link spec at index {i}: {e}") from e
+        # Links refer to rooms by name, so room names must be unique in the document.
+        seen: set[str] = set()
+        dupes: list[str] = []
+        for r in rooms:
+            if r.name in seen and r.name not in dupes:
+                dupes.append(r.name)
+            seen.add(r.name)
+        if dupes:
+            raise ValueError(f"Duplicate room name(s): {', '.join(dupes)}")
+        for link in links:
+            for end, name in (("from", link.from_), ("to", link.to)):
+                if name not in seen:
+                    raise ValueError(
+                        f"Link {end} {name!r} does not match any room name"
+                    )
+        return GroupSpec(group=group_meta, rooms=rooms, links=links)
 
     # ── Entity params ─────────────────────────────────────────────────────
 
@@ -469,7 +656,16 @@ class RoomYamlService:
                         )
 
         if "user" in wanted:
-            bridge_id = await self._resolve_bridge_id(parsed.spec.bridge)
+            # TODO: look users up on each room's messaging app. Only the first
+            # room's app is checked, so a group whose rooms are on different
+            # apps passes here and gets a failed attachment when the other
+            # rooms are provisioned.
+            first = (
+                parsed.spec.rooms[0]
+                if isinstance(parsed.spec, GroupSpec)
+                else parsed.spec
+            )
+            bridge_id = await self._resolve_bridge_id(first.bridge)
             if bridge_id is None:
                 param = wanted["user"][0][0]
                 raise ValueError(
@@ -485,8 +681,70 @@ class RoomYamlService:
                         "room's messaging app"
                     )
 
+    async def prefill_inputs(
+        self, text: str, inputs: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Fill ``prefill: first`` params the caller sent no value for.
+
+        Runs before ``builtins_for``, because a prefilled bridge decides which
+        messaging app ``{$creator}`` is looked up on. A document that does not
+        parse is returned untouched; ``parse_template`` reports the error.
+        """
+        try:
+            data = yaml.safe_load(text)
+            declared = {
+                name: ParamSpec.model_validate(spec)
+                for name, spec in ((data or {}).get("params") or {}).items()
+            }
+        except (yaml.YAMLError, ValidationError, AttributeError, TypeError):
+            return inputs
+        given = inputs if isinstance(inputs, dict) else {}
+        open_params = {
+            name: spec
+            for name, spec in declared.items()
+            if spec.prefill == "first" and spec.default is None and name not in given
+        }
+        if not open_params:
+            return inputs
+
+        filled = dict(given)
+        async with self._session_factory() as session:
+            firsts: dict[str, str | None] = {}
+            for name, spec in open_params.items():
+                if spec.type not in firsts:
+                    firsts[spec.type] = await self._first_of(session, spec.type)
+                value = firsts[spec.type]
+                if value is not None:
+                    filled[name] = value
+        return filled if len(filled) > len(given) else inputs
+
+    async def _first_of(self, session: AsyncSession, param_type: str) -> str | None:
+        if param_type == "bridge":
+            active = [
+                b
+                for b in await self._bridge_store.get_all(session)
+                if b.status == "active"
+            ]
+            default = next((b for b in active if b.is_default), None)
+            if default is not None:
+                return default.display_name
+            return min((b.display_name for b in active), default=None)
+        if param_type == "agent":
+            return min(
+                (a.name for a in await self._agent_store.get_all(session)), default=None
+            )
+        return min(
+            (r.name for r in await self._room_store.get_all(session)), default=None
+        )
+
     async def builtins_for(
-        self, *, user_id: str, name: str, email: str, text: str
+        self,
+        *,
+        user_id: str,
+        name: str,
+        email: str,
+        text: str,
+        inputs: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """The server-injected ``{$...}`` variables for one create call.
 
@@ -499,7 +757,7 @@ class RoomYamlService:
         in.
         """
         creator = name
-        bridge_id = await self._peek_bridge_id(text)
+        bridge_id = await self._peek_bridge_id(text, inputs)
         if bridge_id is not None:
             async with self._session_factory() as session:
                 claimed = await self._external_users.get_by_user(session, user_id)
@@ -523,13 +781,19 @@ class RoomYamlService:
             "$timestamp": str(int(time.time())),
         }
 
-    async def _peek_bridge_id(self, text: str) -> str | None:
+    async def _peek_bridge_id(
+        self, text: str, inputs: dict[str, Any] | None = None
+    ) -> str | None:
         """The bridge the template will land on, read before interpolation.
 
-        Best-effort: an unparseable template, an interpolated bridge name, or
-        an unknown bridge all answer None; parse/provision fails loudly later
-        when it matters. A template naming no bridge lands on the default one,
-        same as provisioning."""
+        A `bridge:` written as `{param}` is filled from `inputs` (or the
+        param's default) the way provisioning will fill it, so a template
+        that asks which app to use still finds the creator's account there.
+
+        Best-effort: an unparseable template, a bridge name that cannot be
+        resolved yet, or an unknown bridge all answer None; parse/provision
+        fails loudly later when it matters. A template naming no bridge lands
+        on the default one, same as provisioning."""
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
@@ -537,12 +801,27 @@ class RoomYamlService:
         if not isinstance(data, dict):
             return None
         room = data.get("room")
+        if room is None:
+            rooms = data.get("rooms")
+            room = rooms[0] if isinstance(rooms, list) and rooms else None
         if not isinstance(room, dict):
             return None
         bridge = room.get("bridge")
-        if bridge is not None and (
-            not isinstance(bridge, str) or PLACEHOLDER_RE.search(bridge)
-        ):
+        if isinstance(bridge, str) and PLACEHOLDER_RE.search(bridge):
+            raw_params = data.get("params")
+            try:
+                declared = {
+                    k: ParamSpec.model_validate(v)
+                    for k, v in (raw_params or {}).items()
+                }
+                values = resolve_params(declared, inputs)
+            except (ValueError, ValidationError, AttributeError):
+                return None
+            filled = interpolate(bridge, values)
+            if not isinstance(filled, str) or PLACEHOLDER_RE.search(filled):
+                return None
+            bridge = filled
+        if bridge is not None and not isinstance(bridge, str):
             return None
         try:
             return await self._resolve_bridge_id(bridge)
@@ -559,12 +838,20 @@ class RoomYamlService:
         is_admin: bool,
         kickoff: str | None = None,
         creator_name: str | None = None,
+        group_id: str | None = None,
+        acting_agent: ActingAgent | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
 
         ``kickoff`` is posted once the room exists, by the platform on the
         creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
-        message names them.
+        message names them. ``group_id`` files the room under a group that
+        already exists (see ``provision_group``).
+
+        With ``acting_agent`` the room is recorded as created by that agent,
+        and the kickoff carries the agent's authority, not its owner's: the
+        agents it mentions wake only if their addressing admits that agent.
+        Past ``MAX_KICKOFF_DEPTH`` the kickoff is withheld.
         """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -585,7 +872,10 @@ class RoomYamlService:
             agent_names=spec.agents or None,
             user_names=spec.users or None,
             bridge_id=bridge_id,
+            group_id=group_id,
             created_by=user_id,
+            created_by_agent_id=acting_agent.agent_id if acting_agent else None,
+            agent_creation_depth=acting_agent.depth if acting_agent else 0,
             owner_id=user_id,
             acting_user_id=user_id,
             acting_is_admin=is_admin,
@@ -593,6 +883,7 @@ class RoomYamlService:
             write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
+            aliases=spec.aliases,
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
@@ -605,15 +896,33 @@ class RoomYamlService:
             room_id, spec.docs, user_id=user_id, failures=failures
         )
 
-        if kickoff:
-            await self._send_kickoff(
-                result.room,
-                kickoff,
-                agent_names=spec.agents,
-                user_id=user_id,
-                user_name=creator_name,
-                failures=failures,
+        if kickoff and acting_agent and acting_agent.depth > MAX_KICKOFF_DEPTH:
+            failures.append(
+                {
+                    "kind": "kickoff",
+                    "id": "kickoff",
+                    "error": (
+                        "not posted: this room was created by an agent working "
+                        "in a room that an agent created. Address the agents "
+                        "here yourself to start them."
+                    ),
+                }
             )
+        elif kickoff:
+            # The room exists at this point. A kickoff failure is recorded on
+            # the result; raising here would report the room as not created.
+            try:
+                await self._send_kickoff(
+                    result.room,
+                    kickoff,
+                    agent_names=spec.agents,
+                    user_id=user_id,
+                    user_name=creator_name,
+                    acting_agent=acting_agent,
+                    failures=failures,
+                )
+            except Exception as e:  # noqa: BLE001 - reported on the result
+                failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
 
         return ProvisionResult(
             room_id=room_id,
@@ -623,6 +932,90 @@ class RoomYamlService:
             created_document_ids=created_doc_ids,
             role_names=[r.name for r in spec.roles],
             failed_attachments=failures,
+        )
+
+    async def provision_group(
+        self,
+        spec: GroupSpec,
+        *,
+        user_id: str,
+        is_admin: bool,
+        creator_name: str | None = None,
+        acting_agent: ActingAgent | None = None,
+    ) -> GroupProvisionResult:
+        """Provision a room group, its rooms, and the links between them.
+
+        Order: group row → each room with ``group_id`` (its own kickoff, if
+        any, posted as it is created) → links by name. A room that fails is
+        reported in ``errors`` and the rest still go ahead; nothing is rolled
+        back, so the caller sees exactly what exists.
+        """
+        async with self._session_factory() as session:
+            group = await self._room_groups.create(
+                session,
+                name=spec.group.name,
+                description=spec.group.description,
+                color=spec.group.color,
+                parent_group_id=None,
+            )
+            await session.commit()
+            group_id = group.id
+
+        room_results: list[ProvisionResult] = []
+        errors: list[dict[str, Any]] = []
+        name_to_room_id: dict[str, str] = {}
+
+        for i, room_spec in enumerate(spec.rooms):
+            try:
+                result = await self.provision(
+                    room_spec,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                    kickoff=room_spec.kickoff,
+                    creator_name=creator_name,
+                    acting_agent=acting_agent,
+                    group_id=group_id,
+                )
+            except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                errors.append(
+                    {"room_index": i, "room_name": room_spec.name, "error": str(e)}
+                )
+                continue
+            room_results.append(result)
+            name_to_room_id[room_spec.name] = result.room_id
+
+        for link in spec.links:
+            from_id = name_to_room_id.get(link.from_)
+            to_id = name_to_room_id.get(link.to)
+            if from_id is None or to_id is None:
+                errors.append(
+                    {
+                        "kind": "link",
+                        "from": link.from_,
+                        "to": link.to,
+                        "error": "one or both rooms were not created",
+                    }
+                )
+                continue
+            try:
+                async with self._session_factory() as session:
+                    await self._resources.attach_linked_room(
+                        session,
+                        source_room_id=from_id,
+                        target_room_id=to_id,
+                        label=link.label,
+                    )
+                    await session.commit()
+            except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                errors.append(
+                    {"kind": "link", "from": link.from_, "to": link.to, "error": str(e)}
+                )
+
+        return GroupProvisionResult(
+            group_id=group_id,
+            group_name=spec.group.name,
+            rooms=room_results,
+            errors=errors,
         )
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
@@ -759,6 +1152,7 @@ class RoomYamlService:
         user_id: str,
         user_name: str | None,
         failures: list[dict[str, Any]],
+        acting_agent: ActingAgent | None = None,
     ) -> None:
         """Post the kickoff into the room the template just created.
 
@@ -793,8 +1187,12 @@ class RoomYamlService:
         if "the platform" in late:
             return
 
-        person = OnBehalfOf(user_id, user_name or user_id)
-        headline = f"Template kickoff on behalf of @{person.name}"
+        person = (
+            OnBehalfOf(user_id, acting_agent.name, acting_agent.agent_id)
+            if acting_agent is not None
+            else OnBehalfOf(user_id, user_name or user_id)
+        )
+        headline = f"Template kickoff on behalf of {person.label}"
         try:
             root_id = await admin.send_platform_message(
                 room.matrix_room_id, headline, on_behalf_of=person
@@ -895,13 +1293,20 @@ class RoomYamlService:
 
             if agents:
                 agent_ids = await self._room_store.get_agent_ids(session, room.id)
-                names: list[str] = []
+                id_to_name: dict[str, str] = {}
                 for aid in agent_ids:
                     agent = await self._agent_store.get(session, aid)
                     if agent is not None:
-                        names.append(agent.name)
-                if names:
-                    data["agents"] = sorted(names)
+                        id_to_name[aid] = agent.name
+                if id_to_name:
+                    data["agents"] = sorted(id_to_name.values())
+                alias_map = await self._room_store.list_aliases(session, room.id)
+                if alias_map:
+                    data["aliases"] = {
+                        id_to_name[aid]: alias
+                        for aid, alias in alias_map.items()
+                        if aid in id_to_name
+                    }
 
             if users and room.bridge_id:
                 client_ids = await self._room_store.get_client_ids(session, room.id)

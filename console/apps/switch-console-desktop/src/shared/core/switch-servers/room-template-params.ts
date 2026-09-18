@@ -9,7 +9,18 @@
 export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
 export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
 
-export type ParamType = 'string' | 'number' | 'boolean' | 'enum' | EntityParamType;
+/** Param types the Console answers itself and leaves out of the request to the server.
+ * `provider` chooses the coding agent that runs the agents a template creates. */
+export const CONSOLE_PARAM_TYPES = ['provider'] as const;
+export type ConsoleParamType = (typeof CONSOLE_PARAM_TYPES)[number];
+
+export type ParamType =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | EntityParamType
+  | ConsoleParamType;
 
 export const PARAM_TYPES: readonly ParamType[] = [
   'string',
@@ -17,8 +28,17 @@ export const PARAM_TYPES: readonly ParamType[] = [
   'boolean',
   'enum',
   ...ENTITY_PARAM_TYPES,
+  ...CONSOLE_PARAM_TYPES,
 ];
+
+export function isConsoleParamType(type: ParamType): type is ConsoleParamType {
+  return (CONSOLE_PARAM_TYPES as readonly string[]).includes(type);
+}
 
 export function isEntityParamType(type: ParamType): type is EntityParamType {
   return (ENTITY_PARAM_TYPES as readonly string[]).includes(type);
 }
+
+/** Param types that accept `prefill: first`. A `user` param has no first:
+ * `{$creator}` already names the deployer. */
+export const PREFILL_PARAM_TYPES: readonly ParamType[] = ['agent', 'bridge', 'room'];

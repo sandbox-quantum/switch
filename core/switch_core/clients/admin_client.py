@@ -152,6 +152,11 @@ class AdminClient(ClientBase[ClientConfig]):
             marker_value["on_behalf_of"] = {
                 "user_id": on_behalf_of.user_id,
                 "name": on_behalf_of.name,
+                **(
+                    {"agent_id": on_behalf_of.agent_id}
+                    if on_behalf_of.agent_id is not None
+                    else {}
+                ),
             }
         if reply_in_channel:
             # Only meaningful for a threaded message: the agents it addresses
