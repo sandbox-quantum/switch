@@ -59,7 +59,7 @@ class FakeWebClient:
         self.appended: list[dict[str, Any]] = []
         self.stopped: list[dict[str, Any]] = []
         self.start_error: str | None = None
-        self.append_error: str | None = None
+        self.append_error: str | FakeResponse | None = None
         self.stop_error: str | FakeResponse | None = None
         self._ts = 0
 
@@ -112,8 +112,8 @@ class FakeWebClient:
         return FakeResponse({"ts": f"{self._ts}.0"})
 
     async def chat_appendStream(self, **kwargs: Any) -> FakeResponse:
-        if self.append_error:
-            raise SlackApiError("no", FakeResponse({"error": self.append_error}))
+        if self.append_error is not None:
+            raise SlackApiError("no", _refusal(self.append_error))
         self.appended.append(kwargs)
         return FakeResponse({"ok": True})
 

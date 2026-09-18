@@ -197,13 +197,24 @@ _STREAM_CLOSED_ERRORS = frozenset(
 )
 
 # Slack is still holding this message open as a stream and refuses an ordinary
-# edit until something closes it. The open-stream registry lives on the adapter
-# and nowhere else, so a restart strands every stream that was open at the
-# time: Slack keeps the streaming state, this process no longer knows the
-# message was ever a stream, and the turn it belonged to has already ended, so
-# no append is coming to notice. Without closing it here the message is refused
-# every edit for the rest of its life.
+# edit until something takes it back or closes it. The open-stream registry
+# lives on the adapter and nowhere else, so a restart strands every stream that
+# was open at the time: Slack keeps the streaming state and this process no
+# longer knows the message was ever a stream. Nothing else would notice — if the
+# turn has ended there is no append coming — so the message is refused every
+# edit for the rest of its life unless this is answered where it is raised.
 _STREAMING_CONFLICT = "streaming_state_conflict"
+
+# What a stream adopted after a restart is told Slack already holds. Empty of
+# the turn itself on purpose: every section is then treated as moved and resent,
+# which is what repairs the message. The stop control is the one thing that has
+# to be remembered, because a stream keeps a block it is no longer sent and a
+# turn that ended while this process was away renders no control at all — so
+# without this nothing would ever write over the one on screen and the message
+# would keep a live-looking button for good. The value is a block no renderer
+# produces, so a turn that *is* still running has its control resent rather than
+# mistaken for one already drawn.
+_STRANDED_BLOCKS: dict[str, dict[str, Any]] = {INTERRUPT_BLOCK_ID: {}}
 
 
 @dataclass
@@ -703,21 +714,89 @@ class SlackAdapter(CollaborationAdapter):
             if throttled is not None:
                 raise throttled from error
             if error.response.get("error") == _STREAMING_CONFLICT:
-                await self._redraw_stranded_stream(channel_id, message_ref, message)
+                await self._recover_stranded_stream(
+                    channel_id, message_ref, content, message
+                )
                 return
             raise RichContentFailed(
                 f"Slack could not update the message in channel {channel_id}: {error}",
                 text=message.text,
             ) from error
 
+    async def _recover_stranded_stream(
+        self,
+        channel_id: str,
+        message_ref: str,
+        content: RichContent,
+        message: SlackMessage,
+    ) -> None:
+        """Take back a stream this process forgot, or close it if it will not come.
+
+        Reached when Slack refuses an edit because the message is still open as
+        a stream nothing here remembers opening — see `_STREAMING_CONFLICT`.
+        Slack has just said the message is streaming, and it is still this
+        app's own message, so the append it would accept is worth more than the
+        edit it refused. An append can rewrite a section; a message a stream
+        drew in two of them is one `chat.update` can never replace at all, so
+        adopting the stream is the only thing that repairs those rather than
+        settling for leaving them alone. It also puts a turn that was still
+        running when the process died back on the stream it belongs on, to
+        carry on where it stopped instead of finishing as a series of edits.
+
+        The adopted record starts with no memory of what Slack is holding, so
+        the next append treats every block as moved and resends the lot — which
+        is the repair. The one thing it must not forget is `_STRANDED_BLOCKS`.
+
+        Closing the stream and editing the message is the fallback rather than
+        the plan. It is reached when Slack will not take the append after all,
+        it ends the retry loop on its own, and it is what this did before it
+        could reattach — so a refusal here costs the two-section repair and
+        nothing else. A throttle is not a refusal and is left to propagate: the
+        adopted record stays, and the next publication appends to it directly
+        without going back through a conflict.
+        """
+        if not isinstance(content, TurnActivity):
+            await self._redraw_stranded_stream(channel_id, message_ref, message)
+            return
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot recover an activity stream: invalid message ref {message_ref}."
+            )
+        stream = _ActivityStream(
+            channel_id=channel_id, ts=ts, blocks=dict(_STRANDED_BLOCKS)
+        )
+        self._register_stream(message_ref, stream)
+        try:
+            await self._extend_stream(stream, message_ref, content)
+        except RichContentThrottled:
+            raise
+        except RichContentFailed as refused:
+            self._streams.pop(message_ref, None)
+            logger.warning(
+                "The activity stream %s would not take an append after this "
+                "process lost its record of it (%s); closing it and drawing the "
+                "turn as an ordinary message instead.",
+                message_ref,
+                refused,
+            )
+            await self._redraw_stranded_stream(channel_id, message_ref, message)
+            return
+        logger.warning(
+            "Took back the activity stream %s, which Slack still held open after "
+            "this process lost its record of it; the turn is drawn on the stream "
+            "again rather than edited into the message.",
+            message_ref,
+        )
+
     async def _redraw_stranded_stream(
         self, channel_id: str, message_ref: str, message: SlackMessage
     ) -> None:
         """Close a stream this process has forgotten, then draw the turn again.
 
-        Reached when Slack refuses an edit because the message is still open as
-        a stream that nothing here remembers opening — see `_STREAMING_CONFLICT`.
-        Closing it is what makes this terminate: the message can only be
+        The fallback under `_recover_stranded_stream`, for a stream Slack will
+        not take an append on after all, and the whole of what that method used
+        to do. Closing it is what makes this terminate: the message can only be
         stranded once, so a publication that arrives after this one is an
         ordinary edit whatever happens below.
 
@@ -943,7 +1022,19 @@ class SlackAdapter(CollaborationAdapter):
             return None
         ref = f"{channel_id}:{ts}"
         stream = _ActivityStream(channel_id=channel_id, ts=str(ts))
-        self._streams[ref] = stream
+        self._register_stream(ref, stream)
+        await self._extend_stream(stream, ref, content)
+        return ref
+
+    def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
+        """Hold an open stream, forgetting the oldest if there is no room.
+
+        Shared by a stream this process opened and one it adopted after a
+        restart, because the registry is the same in both cases: the only
+        record that the message is a stream, and the thing whose loss strands
+        it.
+        """
+        self._streams[message_ref] = stream
         while len(self._streams) > _MAX_OPEN_STREAMS:
             abandoned, _ = self._streams.popitem(last=False)
             logger.warning(
@@ -951,8 +1042,6 @@ class SlackAdapter(CollaborationAdapter):
                 "ended, so the message is left in its streaming state.",
                 abandoned,
             )
-        await self._extend_stream(stream, ref, content)
-        return ref
 
     def _settle_stream(self, message_ref: str) -> None:
         """Drop a finished stream, and note whether its message can be redrawn.
@@ -1097,10 +1186,9 @@ class SlackAdapter(CollaborationAdapter):
             raise RichContentFailed(
                 f"Slack closed the activity stream {message_ref}: {code}", text=text
             ) from error
-        if code == "ratelimited" or getattr(error.response, "status_code", None) == 429:
-            delay = self._retry_after(error)
-            self._rich_update_after = time.monotonic() + delay
-            raise RichContentThrottled(retry_after=delay, text=text) from error
+        throttled = self._throttled(error, text)
+        if throttled is not None:
+            raise throttled from error
         raise RichContentFailed(
             f"Slack could not extend the activity stream {message_ref}: {error}",
             text=text,
