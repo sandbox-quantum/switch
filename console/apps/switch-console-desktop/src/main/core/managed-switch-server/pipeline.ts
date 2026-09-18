@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import { ensureManagedServer, setActiveServerId } from '@main/core/switch-servers/servers-store';
@@ -269,6 +271,9 @@ export async function stopStack(host: ServerHost): Promise<void> {
  * irreversible clean-slate reset. */
 export async function resetStack(host: ServerHost): Promise<void> {
   await composeDown(host, true);
+  // A reset must not bootstrap a new volume from the old credentials during
+  // upgrade preparation. Remove version evidence before clearing stored secrets.
+  if (host.kind === 'local') await rm(join(host.workingDir, ENV_FILE_NAME), { force: true });
   await host.teardownNetworking();
   await clearSecrets(host);
   await clearPorts(host);

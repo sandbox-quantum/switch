@@ -26,6 +26,7 @@ export async function prepareLocalUpgrade(
   onMessage: (message: string) => void
 ): Promise<void> {
   if (host.kind !== 'local') throw new Error('Local upgrade called for a remote server.');
+  await mkdir(host.workingDir, { recursive: true, mode: 0o700 });
   const pending = await host.readFile(JOURNAL);
   if (pending) {
     const journal = journalSchema.parse(JSON.parse(pending));

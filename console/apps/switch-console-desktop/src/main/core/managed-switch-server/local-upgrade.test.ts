@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as DeployedVersion from './deployed-version';
 import type { ServerHost } from './host/types';
@@ -86,4 +88,17 @@ it('refuses missing, malformed and uncomparable evidence without mutating the de
     await expect(prepareLocalUpgrade(host, null, vi.fn())).rejects.toThrow();
   }
   expect(exec).not.toHaveBeenCalled();
+});
+
+it('prepares a truly absent working directory before probing the installation', async () => {
+  await rm(directory, { recursive: true, force: true });
+  const actual = await vi.importActual<typeof DeployedVersion>('./deployed-version');
+  deployed.mockImplementation(actual.readDeployedVersion);
+  exec.mockImplementation(async () =>
+    promisify(execFile)(process.execPath, ['-e', 'process.stdout.write("")'], { cwd: directory })
+  );
+  await prepareLocalUpgrade(host, null, vi.fn());
+  expect(exec).toHaveBeenCalled();
+  expect(await hasPendingLocalUpgrade(host)).toBe(false);
+  expect(await host.readFile('.env')).toBeNull();
 });

@@ -8,9 +8,17 @@ import { expect, it, vi } from 'vitest';
 import type { ServerHost } from './host/types';
 
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), info: vi.fn() } }));
+vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
+vi.mock('@main/core/switch-servers/auth', () => ({ passwordLogin: vi.fn() }));
+vi.mock('@main/core/switch-servers/servers-store', () => ({
+  ensureManagedServer: vi.fn(),
+  setActiveServerId: vi.fn(),
+}));
+vi.mock('./secrets', () => ({ clearSecrets: vi.fn(), loadOrCreateSecrets: vi.fn() }));
 vi.mock('./host/local-host', () => ({ restrictWindowsFileToOwner: vi.fn() }));
 const { prepareLocalUpgrade, hasPendingLocalUpgrade, finishLocalUpgrade } =
   await import('./local-upgrade');
+const { resetStack } = await import('./pipeline');
 const { buildEnvFile } = await import('./env-file');
 const { generateSecrets } = await import('./secret-values');
 const { COMPATIBLE_SWITCH_VERSION } = await import('@shared/app-identity');
@@ -21,7 +29,8 @@ it.skipIf(process.env.SWITCH_UPGRADE_DOCKER_TEST !== '1')(
   'preserves an old room through backup, interrupted upgrade, migration and authenticated reconnect',
   async () => {
     const root = resolve(__dirname, '../../../../../../..');
-    const directory = await mkdtemp(join(tmpdir(), 'switch-upgrade-docker-'));
+    const scratch = await mkdtemp(join(tmpdir(), 'switch-upgrade-docker-'));
+    const directory = join(scratch, 'not-created-yet');
     const project = `switch-upgrade-test-${randomUUID().slice(0, 8)}`;
     const image = process.env.SWITCH_UPGRADE_TEST_IMAGE ?? 'switch-upgrade-test:0.27.0';
     const secrets = generateSecrets();
@@ -39,6 +48,8 @@ it.skipIf(process.env.SWITCH_UPGRADE_DOCKER_TEST !== '1')(
       kind: 'local',
       label: 'isolated Docker test',
       workingDir: directory,
+      stateDir: directory,
+      teardownNetworking: async () => {},
       composeProjectName: project,
       dockerBin: 'docker',
       ctx: { exec: run },
@@ -97,7 +108,8 @@ ${action}
       return api('print(json.dumps(user))');
     };
     try {
-      await run('docker', ['image', 'inspect', image]);
+      await exec('docker', ['image', 'inspect', image]);
+      await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
       await prepareLocalUpgrade(host, null, () => {});
       expect(await hasPendingLocalUpgrade(host)).toBe(false);
       const old = await exec(
@@ -163,12 +175,56 @@ ${action}
       await finishLocalUpgrade(host);
       expect(await hasPendingLocalUpgrade(host)).toBe(false);
       expect(await readFile(dump, 'utf8')).toContain('upgrade-preserved-room');
+
+      // Reset an older, stopped stack, then bootstrap with fresh credentials.
+      await compose('down', '--volumes', '--remove-orphans');
+      await host.writeFile(composeFile, old.stdout);
+      await host.writeFile('.env', oldEnv, 0o600);
+      await compose('up', '-d', '--wait', 'postgres');
+      await compose('stop');
+      await resetStack(host);
+      expect(await host.readFile('.env')).toBeNull();
+      await prepareLocalUpgrade(host, null, () => {});
+      expect(await hasPendingLocalUpgrade(host)).toBe(false);
+      const freshSecrets = generateSecrets();
+      expect(freshSecrets.dbPassword).not.toBe(secrets.dbPassword);
+      await host.writeFile(
+        composeFile,
+        await readFile(join(root, 'deploy/local/standalone-docker-compose.yml'), 'utf8')
+      );
+      await host.writeFile(
+        '.env',
+        buildEnvFile({
+          version: COMPATIBLE_SWITCH_VERSION,
+          registry: 'ghcr.io',
+          namespace: 'sandbox-quantum',
+          ports: { api: 0, gateway: 0, postgres: 0, mattermost: 0 },
+          secrets: freshSecrets,
+        }),
+        0o600
+      );
+      await run('docker', [
+        'compose',
+        '-p',
+        project,
+        '-f',
+        composeFile,
+        '-f',
+        'candidate.yml',
+        '--env-file',
+        '.env',
+        'up',
+        '-d',
+        'switch',
+      ]);
+      expect((await waitForLogin()).server.version).toBe(COMPATIBLE_SWITCH_VERSION);
+      expect(await readFile(dump, 'utf8')).toContain('upgrade-preserved-room');
     } finally {
       // Only this random project's disposable volumes are removed.
       try {
         await compose('down', '--volumes', '--remove-orphans');
       } finally {
-        await rm(directory, { recursive: true, force: true });
+        await rm(scratch, { recursive: true, force: true });
       }
     }
   },

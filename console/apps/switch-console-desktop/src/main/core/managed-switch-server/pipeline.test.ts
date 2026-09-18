@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as AppIdentity from '@shared/app-identity';
 import type * as DeployedVersion from './deployed-version';
@@ -55,7 +58,7 @@ vi.mock('@main/core/switch-servers/auth', () => ({
 }));
 vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
 
-const { startStack } = await import('./pipeline');
+const { startStack, resetStack } = await import('./pipeline');
 const { ENV_FILE_NAME } = await import('./constants');
 
 function options() {
@@ -240,4 +243,44 @@ describe('startStack checkout build', () => {
     ).toBe(false);
     expect(composeUpMock).toHaveBeenCalledWith(expect.anything(), expect.any(Function), false);
   });
+});
+
+describe('local reset configuration', () => {
+  it.each([false, true])(
+    'clears old credentials only after volumes are removed (failure=%s)',
+    async (failure) => {
+      const directory = await mkdtemp(join(tmpdir(), 'switch-reset-test-'));
+      const { composeDown } = await import('./compose');
+      const { clearSecrets } = await import('./secrets');
+      const host = {
+        kind: 'local',
+        workingDir: directory,
+        teardownNetworking: vi.fn(),
+      } as unknown as ServerHost;
+      await writeFile(join(directory, ENV_FILE_NAME), 'SWITCH_VERSION=0.25.0');
+      vi.mocked(clearSecrets).mockClear();
+      vi.mocked(clearSecrets).mockImplementationOnce(async () => {
+        await expect(readFile(join(directory, ENV_FILE_NAME))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      });
+      if (failure) vi.mocked(composeDown).mockRejectedValueOnce(new Error('volume removal failed'));
+      try {
+        if (failure) {
+          await expect(resetStack(host)).rejects.toThrow('volume removal failed');
+          expect(await readFile(join(directory, ENV_FILE_NAME), 'utf8')).toContain('0.25.0');
+          expect(clearSecrets).not.toHaveBeenCalled();
+        } else {
+          await resetStack(host);
+          expect(clearSecrets).toHaveBeenCalledOnce();
+          await expect(readFile(join(directory, ENV_FILE_NAME))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+        }
+      } finally {
+        vi.mocked(clearSecrets).mockReset();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 });
