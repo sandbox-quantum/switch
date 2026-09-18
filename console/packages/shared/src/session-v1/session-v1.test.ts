@@ -488,3 +488,12 @@ it('keeps a model notice anchored before messages that arrive later', () => {
   replica.apply(event(sequence + 4, { type: 'item.upsert', item: item(2, 'Updated reply') }));
   expect(replica.notices[0].afterItemId).toBe('assistant');
 });
+
+it.each(['gemini', 'antigravity', 'future-provider'])(
+  'preserves %s provider names in stored snapshots',
+  (provider) => {
+    const snapshot = structuredClone(examples.initialSnapshot);
+    snapshot.session.provider = provider;
+    expect(snapshotSchema.parse(snapshot).session.provider).toBe(provider);
+  }
+);

@@ -189,3 +189,34 @@ it('names a newly adopted room session after its room', async () => {
   expect(mocks.room).toHaveBeenCalledTimes(1);
   expect(mocks.create).toHaveBeenCalledTimes(1);
 });
+
+it('reports incompatible rows once while discovering healthy sessions and ignoring other agents', async () => {
+  mocks.list.mockResolvedValue([
+    { sessionId: 'other-bad', agentId: 'other', discoveryError: 'Other agent error' },
+    { sessionId: 'broken', agentId: 'agent', discoveryError: 'Stored session needs repair.' },
+    { ...session, sessionId: 'healthy', roomIds: [] },
+  ]);
+  await tick();
+  expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ id: 'healthy' }));
+  expect(remoteSessionReconciler.errors()[0].message).toContain('1 SDK session(s)');
+  expect(remoteSessionReconciler.errors()[0].message).toContain('Stored session needs repair.');
+  mocks.rows = [{ id: 'healthy' }];
+  await tick();
+  expect(mocks.error).toHaveBeenCalledTimes(1);
+  mocks.list.mockResolvedValue([{ ...session, sessionId: 'healthy', roomIds: [] }]);
+  await tick();
+  expect(remoteSessionReconciler.errors()).toEqual([]);
+});
+
+it.each(['gemini', 'future-provider'])(
+  'reports unsupported %s sessions without trying to launch or adopt them',
+  async (provider) => {
+    mocks.list.mockResolvedValue([{ ...session, provider, roomIds: [] }]);
+    await tick();
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.snapshot).not.toHaveBeenCalled();
+    expect(remoteSessionReconciler.errors()[0].message).toContain(
+      `unsupported provider "${provider}"`
+    );
+  }
+);

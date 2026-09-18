@@ -8,7 +8,7 @@ export type Surface =
   | 'discord'
   | 'teams'
   | 'telegram';
-export type Provider = 'claude' | 'codex' | 'opencode' | 'antigravity' | 'cursor';
+export type Provider = string;
 export type Origin = {
   surface: Surface;
   actorId: Id;

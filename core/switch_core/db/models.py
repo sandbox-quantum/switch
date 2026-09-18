@@ -1724,6 +1724,7 @@ class SdkSession(TenantScoped, Base):
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
             name="fk_sdk_sessions_agent",
+            ondelete="CASCADE",
         ),
     )
 
