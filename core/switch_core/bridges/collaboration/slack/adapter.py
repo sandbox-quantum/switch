@@ -1296,11 +1296,8 @@ class SlackAdapter(CollaborationAdapter):
             )
             message = with_session_context(
                 message,
-                session_url=content.session_url
-                if content.status_only and not content.error_summary
-                else None,
+                session_url=content.session_url if content.status_only else None,
                 notify_external_id=content.notify_external_id,
-                inline_link=content.status_only and not content.error_summary,
             )
             if content.publication_token and message.blocks:
                 message.blocks[0]["block_id"] = (

@@ -303,19 +303,23 @@ def turn_status(
 
     `error_summary` is the attention slot rather than the status: a distinct
     problem somebody has to act on, said in one sentence with the mention that
-    makes it reach them. When it is set, that is the whole message — the state
-    line under it would only be reporting a turn that is, by definition, not
-    getting anywhere.
+    makes it reach them. It stands in for the state line, which under it would
+    only be reporting a turn that is, by definition, not getting anywhere — but
+    not for the Console link. The message asking somebody to act is the one they
+    most need to be able to ask what happened from, and a reader sent to look at
+    a turn with no way to see what it did is being asked to act on a sentence.
 
     `mention` is already in the platform's own syntax and is not escaped: it is
     the adapter's, resolved from an id Switch holds, never host text.
     """
-    if error_summary:
-        return _mentioned(
-            mention, _truncate(f"⚠️ {error_summary}", _room(limit, mention))
-        )
-
     budget = _room(limit, mention)
+    if error_summary:
+        warning = _truncate(f"⚠️ {error_summary}", budget)
+        link = _link(_CONSOLE, session_url, markup)
+        if link and len(warning) + 3 + len(link) <= budget:
+            warning = f"{warning} · {link}"
+        return _mentioned(mention, warning)
+
     state = turn_state(
         items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
     )

@@ -1297,13 +1297,14 @@ class DiscordAdapter(CollaborationAdapter):
         are not published — would be drawing a button onto a question nobody
         can answer.
 
-        Nothing about tool calls is offered beside the attention slot: that
-        message is one sentence saying somebody has to act, and a control
-        under it about the log is an invitation away from the thing it is
-        asking for. Stop is offered there, because a session that needs
-        attention is often a session somebody wants to stop, and because the
-        control's presence is settled across platforms by whether there is a
-        turn to end rather than by what each one puts beside it.
+        The attention slot gets both. It is one sentence saying somebody has to
+        act, drawn from no items of its own, and the first thing a reader of it
+        wants is what the session was doing when it went wrong — so it is the
+        message that needs the log most, not the one to keep it off. Stop is
+        there for the reason it is anywhere: a session that needs attention is
+        often a session somebody wants to stop, and the control's presence is
+        settled across platforms by whether there is a turn to end rather than
+        by what each one puts beside it.
 
         Every redraw builds this again, so the buttons come off at the moment
         they stop being pressable and the stop control re-points itself when a
@@ -1311,7 +1312,7 @@ class DiscordAdapter(CollaborationAdapter):
         remember what the message last carried.
         """
         view = discord.ui.View(timeout=None)
-        if self._resolve_activity is not None and not content.error_summary:
+        if self._resolve_activity is not None:
             view.add_item(
                 discord.ui.Button(
                     label=_ACTIVITY_LABEL,

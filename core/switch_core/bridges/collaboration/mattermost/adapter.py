@@ -1123,10 +1123,12 @@ class MattermostAdapter(CollaborationAdapter):
         a card at the moment it stops being pressable, without anything having
         to remember that it once had them.
 
-        A turn's status earns the button into its log whatever state it is in.
-        The log is read when the press arrives rather than drawn into the post,
-        so a running turn's is as current as an ended turn's and neither goes
-        stale on the channel.
+        A turn's status earns the button into its log whatever state it is in,
+        the attention slot included. The log is read when the press arrives
+        rather than drawn into the post, so a running turn's is as current as
+        an ended turn's and neither goes stale on the channel — and a message
+        saying somebody has to act is the one a reader most needs to be able
+        to ask what happened from.
 
         The stop control beside it is the one button here that does go stale,
         because what it offers depends on there being work to stop. It comes
@@ -1146,7 +1148,7 @@ class MattermostAdapter(CollaborationAdapter):
         url, key = address
         if isinstance(content, TurnActivity):
             actions = []
-            if self._resolve_activity is not None and not content.error_summary:
+            if self._resolve_activity is not None:
                 actions.append(activity_action(key, url, channel_id))
             turn_id = content.interrupt_turn_id
             if turn_id is not None and self._offers_interrupt(content):

@@ -18,15 +18,19 @@ URL = (
 
 
 def test_waiting_link_is_visible_in_the_compact_status_without_expanding():
+    """A row under the state, not a plan to open and not a plan's first card.
+
+    This post draws no plan — there is nothing done to put in one — so the link
+    has nowhere to hide and nothing to expand: it is read where it is written.
+    """
     adapter, _ = _adapter()
     message = adapter._render_rich(
         TurnActivity([], _turn("queued"), status_only=True, session_url=URL)
     )
-    assert len(message.blocks) == 1
-    block = message.blocks[0]
-    assert block["type"] == "context"
-    assert f"<{URL}|Console app>" in block["elements"][0]["text"]
-    assert "details" not in block
+    assert [block["type"] for block in message.blocks] == ["task_card", "context"]
+    note = message.blocks[1]
+    assert f"<{URL}|Open in Console app>" in note["elements"][0]["text"]
+    assert "details" not in note
 
 
 async def test_plan_keeps_tool_details_but_fallback_is_compact():
@@ -132,6 +136,36 @@ async def test_attention_post_mentions_once_and_edit_removes_mention():
     assert not client.posted[0].get("reply_broadcast")
     await adapter.update_rich("C1", "Agent", ref, content, None)
     assert "<@UOWNER>" not in client.updated[0]["text"]
+
+
+async def test_the_attention_post_says_where_to_read_what_went_wrong():
+    """The warning stays the message; the link and the mention share a row under it.
+
+    Driven through `publish` rather than the renderer because the rendering was
+    never what was missing: the attention slot is built here, and it was built
+    with no session url for the renderer to draw.
+    """
+    adapter, client = _adapter()
+    activity = SessionTurnActivity(adapter)
+    await activity.publish(
+        [],
+        _turn("running"),
+        error_summary="The host is offline.",
+        session_id="session",
+        channel_id="C1",
+        thread_root_id="C1:root",
+        asked_on=None,
+        agent_name="Agent",
+        elapsed_seconds=1,
+        session_url=URL,
+        notify_external_id="UOWNER",
+    )
+    alert = client.posted[1]
+    assert [block["type"] for block in alert["blocks"]] == ["task_card", "context"]
+    assert alert["blocks"][0]["title"] == "The host is offline."
+    assert alert["blocks"][1]["elements"][0]["text"] == (
+        f"Needs attention: <@UOWNER> · <{URL}|Open in Console app>"
+    )
 
 
 async def test_attention_retries_do_not_create_extra_posts_and_recovery_clears_warning():

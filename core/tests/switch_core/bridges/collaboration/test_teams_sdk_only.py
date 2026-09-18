@@ -57,6 +57,7 @@ CHAT = "a:1chat"
 ROOT = "post-root-1"
 AGENT = "my-agent"
 SERVICE_URL = "https://smba.example/amer/"
+SESSION_URL = "https://console.example/sessions/session-demo"
 RUNNING_LINE = "Reading the adapter"
 ENDED_LINE = "Turn complete."
 
@@ -504,6 +505,28 @@ def test_a_status_still_reporting_a_problem_outlives_its_turn() -> None:
 
     assert connector.deletes == []
     assert "Disk full." in _card_text(connector.updates[0]["activity"])
+
+
+def test_the_message_a_problem_gets_says_where_to_read_about_it() -> None:
+    """It draws no activity of its own, so the link is the way to the turn.
+
+    There is no "Show activity" to open on this card — it is built from no
+    items — and a card asking somebody to act with no way to find out what
+    happened is asking them to act on a sentence.
+    """
+    adapter, connector = _teams("chat")
+
+    _run(
+        adapter.update_rich(
+            CHANNEL,
+            AGENT,
+            "MSG1",
+            _ended(error_summary="Disk full.", session_url=SESSION_URL),
+            ROOT,
+        )
+    )
+
+    assert "Open in Switch Console" in _card_text(connector.updates[0]["activity"])
 
 
 def test_a_finished_status_is_still_redrawn_when_the_turn_says_more() -> None:

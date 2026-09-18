@@ -392,6 +392,7 @@ class SessionTurnActivity:
                     notify_external_id,
                     notify_unreachable,
                     error_summary,
+                    session_url,
                 )
             except ActivityAbandoned:
                 # An attention message whose own delivery can never be
@@ -513,8 +514,16 @@ class SessionTurnActivity:
         notify_external_id: str | None,
         notify_unreachable: bool,
         error_summary: str | None,
+        session_url: str | None,
     ) -> None:
-        """One attention reply per command; update it when the problem clears."""
+        """One attention reply per command; update it when the problem clears.
+
+        Carries the session's url for the same reason the status beside it
+        does. This message holds no activity of its own — it is one sentence
+        about a problem, drawn from no items — so the link is the only way from
+        the message a reader is asked to act on to what the turn was doing when
+        it went wrong.
+        """
         key = (session_id, turn.command_id or turn.turn_id)
         record = self._record.get()
         saved = record.data.get("attention", {}) if record else {}
@@ -538,6 +547,7 @@ class SessionTurnActivity:
             status_only=True,
             notify_unreachable=notify_unreachable,
             error_summary=error_summary,
+            session_url=session_url,
         )
         if ref is None:
             # A post can notify followers; an edit cannot. The durable slot

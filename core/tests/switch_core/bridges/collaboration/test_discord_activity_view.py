@@ -364,9 +364,10 @@ async def test_no_button_where_nothing_can_answer_the_press() -> None:
     assert _buttons(webhook.sent[0]) == []
 
 
-async def test_the_attention_slot_offers_nothing_but_the_thing_it_asks_for() -> None:
-    """That message is one sentence saying somebody has to act. A control under
-    it about tool calls is an invitation away from it."""
+async def test_the_attention_slot_is_the_one_that_most_needs_the_log() -> None:
+    """The sentence says something needs attention; it does not say what the
+    session was doing when it did. Without this button, the one message a
+    reader is asked to act on is the one they cannot ask a question from."""
     adapter, _channel, _thread, webhook = _guild_setup()
     _resolving(adapter, _snapshot())
 
@@ -377,7 +378,7 @@ async def test_the_attention_slot_offers_nothing_but_the_thing_it_asks_for() -> 
         f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
     )
 
-    assert _buttons(webhook.sent[0]) == []
+    assert _buttons(webhook.sent[0]) == [(_ACTIVITY_LABEL, _ACTIVITY_VIEW_ID, None)]
 
 
 async def test_the_button_survives_a_redraw_without_being_remembered() -> None:

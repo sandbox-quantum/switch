@@ -953,31 +953,39 @@ def with_session_context(
     *,
     session_url: str | None = None,
     notify_external_id: str | None = None,
-    inline_link: bool = False,
 ) -> SlackMessage:
-    """Add compact status navigation and mentions on attention posts only."""
+    """Add the Console link and the mention a status post carries beside it.
+
+    Both go under the message rather than into it, and in one row rather than
+    one each. What they sit under is a card — a warning, or where the turn got
+    to — and the card is what is being read; a link and a mention are notes
+    beside it, and two rows of furniture under one sentence is one too many.
+
+    The link is here at all because a post drawn this way holds no activity of
+    its own: it is one line about a turn, and the turn itself is elsewhere. A
+    post asking somebody to act is the one they most need to be able to ask
+    what happened from, so it is the one that has to say where to ask.
+    """
     text = message.text
-    if session_url and urlsplit(session_url).scheme in {"https", "http", "switchdash"}:
-        if inline_link:
-            text = f"{text} · <{session_url}|Console app>"
-            return SlackMessage(
-                text=text,
-                blocks=[
-                    {
-                        "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": text}],
-                    }
-                ],
-            )
+    linked = session_url is not None and urlsplit(session_url).scheme in {
+        "https",
+        "http",
+        "switchdash",
+    }
+    note = []
     if notify_external_id and re.fullmatch(r"[UW][A-Z0-9]+", notify_external_id):
         mention = f"<@{notify_external_id}>"
+        note.append(f"Needs attention: {mention}")
+        text = f"{mention} {text}"
+    if linked:
+        note.append(f"<{session_url}|Open in Console app>")
+    if note:
         message.blocks.append(
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Needs attention: {mention}"}],
+                "elements": [{"type": "mrkdwn", "text": " · ".join(note)}],
             }
         )
-        text = f"{mention} {text}"
     return SlackMessage(text=text, blocks=message.blocks)
 
 

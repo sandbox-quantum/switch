@@ -15,6 +15,8 @@ from switch_core.sessions.contract import Item
 
 from .test_session_activity import _item, _turn
 
+_URL = "https://console.example/session/s"
+
 
 def _identity(text: str) -> str:
     return text
@@ -89,3 +91,38 @@ def test_a_call_that_failed_is_reported_even_there() -> None:
     lines = _status(items, "running", tool_detail=False)
 
     assert lines == ["**Working…**", "✗ 1 failed · ⊘ 1 declined"]
+
+
+# ── The message a problem gets of its own ─────────────────────────────────────
+
+
+def _attention(summary: str, *, limit: int) -> list[str]:
+    return turn_status(
+        [],
+        _turn("error"),
+        escape=_identity,
+        limit=limit,
+        markup=MARKDOWN,
+        session_url=_URL,
+        error_summary=summary,
+        tool_detail=True,
+    ).splitlines()
+
+
+def test_the_warning_carries_the_link_to_what_the_turn_was_doing() -> None:
+    """The one message a reader is asked to act on says where to look.
+
+    It is drawn from no items, so there is no log on it and nothing to expand:
+    the link is the whole of the answer to what the session was doing when it
+    went wrong, and a warning without it asks somebody to act on a sentence.
+    """
+    lines = _attention("The host is offline.", limit=10_000)
+
+    assert lines == [f"⚠️ The host is offline. · [Open in Switch Console]({_URL})"]
+
+
+def test_a_warning_with_no_room_beside_it_keeps_the_warning() -> None:
+    """What went wrong outranks where to read about it when only one fits."""
+    lines = _attention("The host is offline.", limit=30)
+
+    assert lines == ["⚠️ The host is offline."]

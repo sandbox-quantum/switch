@@ -194,16 +194,17 @@ async def test_no_control_where_a_press_has_nowhere_to_land() -> None:
     assert _labels(webhook.sent[0]) == [_ACTIVITY_LABEL]
 
 
-async def test_the_attention_slot_keeps_the_stop_and_drops_the_log() -> None:
+async def test_the_attention_slot_carries_both_the_stop_and_the_log() -> None:
     """A session that needs attention is often one somebody wants to stop, and
     what the control's presence turns on is whether there is a turn to end —
-    the same rule every platform applies. The log button is the one that goes:
-    that message is one sentence asking somebody to act."""
+    the same rule every platform applies. The log is beside it because the two
+    questions that message raises are "what happened" and "should this keep
+    going", and it should be able to answer both."""
     adapter, webhook, _seen = _stopper()
 
     await _post(adapter, replace(_activity(), error_summary="Needs attention."))
 
-    assert _labels(webhook.sent[0]) == [INTERRUPT_LABEL]
+    assert _labels(webhook.sent[0]) == [_ACTIVITY_LABEL, INTERRUPT_LABEL]
 
 
 async def test_a_turn_id_too_long_to_carry_is_not_offered_as_a_button(

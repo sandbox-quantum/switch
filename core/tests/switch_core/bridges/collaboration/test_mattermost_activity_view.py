@@ -188,16 +188,19 @@ async def test_a_running_turn_is_offered_it_as_readily_as_a_finished_one() -> No
     assert all(_buttons(post) for post in _posts(adapter).created)
 
 
-async def test_the_attention_message_is_left_to_say_its_one_thing() -> None:
-    """A message whose whole job is "somebody has to act" does not want a
-    control under it inviting the reader somewhere else."""
+async def test_the_attention_message_is_the_one_that_most_needs_the_log() -> None:
+    """The sentence says only that something needs attention. The next question
+    anybody has is what the session was doing when it did, and without this
+    button that is the one question this message cannot answer."""
     adapter, _ = _viewer()
 
     await adapter.post_rich(
         CHANNEL, "worker", _activity(error_summary="The session stopped."), "root-1"
     )
 
-    assert _buttons(_posts(adapter).created[0]) == []
+    assert [b["id"] for b in _buttons(_posts(adapter).created[0])] == [
+        ACTIVITY_ACTION_ID
+    ]
 
 
 async def test_a_bridge_that_cannot_answer_the_question_does_not_ask_it() -> None:

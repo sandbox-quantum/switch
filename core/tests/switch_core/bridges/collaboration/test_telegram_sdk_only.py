@@ -784,6 +784,25 @@ async def test_a_finished_turn_that_still_has_a_problem_to_report_says_so() -> N
     assert "went away" in _edited(adapter)["text"]
 
 
+async def test_the_message_a_problem_gets_says_where_to_read_about_it() -> None:
+    """It draws no log of its own, so the link is the only way to the turn.
+
+    A message asking somebody to act is the one they most need to be able to
+    ask what happened from, and this one has nothing on it to expand.
+    """
+    adapter = _adapter()
+
+    await adapter.post_rich(
+        CHANNEL,
+        "my-agent",
+        _ended(error_summary="The host went away.", session_url=SESSION_URL),
+        None,
+    )
+
+    text = _posted(adapter)["text"]
+    assert f'<a href="{SESSION_URL}">Open in Switch Console</a>' in text
+
+
 async def test_a_redraw_never_takes_a_publication_down() -> None:
     """A status and a card are both the record of something that happened, and
     each says on its face what became of it. An answered card is taken back,
