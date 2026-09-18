@@ -11,8 +11,11 @@ import {
   TextField,
 } from "@mui/material";
 import { useRef, useState } from "react";
+import { AccessSelect } from "../../components/AccessControls";
 import { createTemplate } from "../../data/api";
+import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
 import TemplateFindings from "./TemplateFindings";
+import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import { MAX_DOCUMENT_BYTES, formatBytes } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
@@ -30,6 +33,9 @@ export default function CreateTemplateDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState("room");
+  // Read-only is what every template had before access existed: the
+  // workspace can use it, the owner changes it.
+  const [access, setAccess] = useState<AccessLevel>("read_only");
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +48,7 @@ export default function CreateTemplateDialog({
     setName("");
     setDescription("");
     setKind("room");
+    setAccess("read_only");
     setContent("");
     setError(null);
   };
@@ -83,6 +90,7 @@ export default function CreateTemplateDialog({
         description,
         kind: kind.trim(),
         content,
+        ...fromAccessLevel(access),
       });
       reset();
       onCreated(created.id);
@@ -130,6 +138,12 @@ export default function CreateTemplateDialog({
             onChange={(e) => setKind(e.target.value)}
             disabled={submitting}
             helperText="What this template provisions — room, group, agent."
+          />
+          <AccessSelect
+            value={access}
+            onChange={setAccess}
+            disabled={submitting}
+            helpers={TEMPLATE_ACCESS_HELPERS}
           />
           <Stack direction="row" spacing={1} alignItems="center">
             <Button

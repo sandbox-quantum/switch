@@ -337,6 +337,7 @@ export function usePackageDocuments(
   return useQuery(fetcher);
 }
 
-export function useTemplates(): UseQueryResult<TemplateSummary[]> {
-  return useQuery(fetchTemplates);
+export function useTemplates(search?: string): UseQueryResult<TemplateSummary[]> {
+  const fetcher = useCallback(() => fetchTemplates(search), [search]);
+  return useQuery(fetcher);
 }

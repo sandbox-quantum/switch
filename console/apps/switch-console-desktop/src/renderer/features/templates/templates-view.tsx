@@ -660,7 +660,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
             <Section
               title="On this workspace"
-              subtitle="Saved here. Everyone on this workspace can see and use them; only the owner can change one."
+              subtitle="Saved here. Each one says who can use it and who can change it."
             >
               {onWorkspace.length > 0 ? (
                 <div className={grid}>{onWorkspace.map(card)}</div>
