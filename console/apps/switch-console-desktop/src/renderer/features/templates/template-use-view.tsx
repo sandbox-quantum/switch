@@ -75,6 +75,7 @@ import {
   isEmpty,
   missingParams,
   paramLabel,
+  placeholdersIn,
   resolveChain,
   sectionOf,
   serverInputs,
@@ -288,6 +289,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         setOpened(new Set());
         setRoomOn(false);
         setPickingRoom(false);
+        nameStepped.current = false;
         setPickedProvider(null);
         setSlots(result.agents.map(newSlot));
         // The editable member list holds the room's fixed agents that the template
@@ -576,6 +578,41 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 
   // ── Names: taken, invalid, or still unresolved ──────────────────────────
   const takenNames = useMemo(() => new Set((agents.data ?? []).map((a) => a.name)), [agents.data]);
+  // The param an agent entry takes its name from, when it takes it from one.
+  const nameParamOf = useCallback(
+    (entry: ParsedAgentEntry): ParamSpec | null => {
+      const source = entry.name ?? entry.displayName ?? '';
+      const key = placeholdersIn(source)[0];
+      return key ? (templateParams.find((p) => p.name === key) ?? null) : null;
+    },
+    [templateParams]
+  );
+  // The template's default name steps to the first free one, "Switch expert
+  // 2", before the deployer sees it, so a second agent from the same
+  // template does not start out clashing. Decided once per load, and only
+  // while the field still holds the template's default.
+  const nameStepped = useRef(false);
+  useEffect(() => {
+    if (!loaded || !agents.data || nameStepped.current) return;
+    nameStepped.current = true;
+    const used = new Set(takenNames);
+    const next: Values = {};
+    for (const entry of loaded.agents) {
+      const param = nameParamOf(entry);
+      if (!param || typeof param.default !== 'string') continue;
+      const current = String(values[param.name] ?? '');
+      if (current !== param.default) continue;
+      const identifierFor = (text: string) =>
+        entry.name
+          ? interpolate(entry.name, { ...values, [param.name]: text })
+          : slugifyAgentNamePart(text);
+      let candidate = param.default;
+      for (let n = 2; used.has(identifierFor(candidate)); n++) candidate = `${param.default} ${n}`;
+      used.add(identifierFor(candidate));
+      if (candidate !== current) next[param.name] = candidate;
+    }
+    if (Object.keys(next).length > 0) setValues((prev) => ({ ...prev, ...next }));
+  }, [loaded, agents.data, takenNames, nameParamOf, values]);
 
   // ── Why Create is disabled ──────────────────────────────────────────────
   // A room's own params matter only when the room is made.
@@ -588,6 +625,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     .map((p) => ({ p, problem: valueProblem(p, values[p.name] ?? '') }))
     .filter((x) => x.problem !== null);
   const slotProblems: string[] = [];
+  // A clash on a name the deployer can edit is shown in red under its field.
+  const clashErrors: Record<string, string> = {};
   const seenNames = new Set<string>();
   slots.forEach((slot, i) => {
     const setup = setups[i];
@@ -607,7 +646,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         `${name} is not a valid agent name: lowercase letters, digits, . - _, starting with a letter or digit.`
       );
     } else if (slot.createdName === null && (takenNames.has(name) || seenNames.has(name))) {
-      slotProblems.push(`An agent called ${name} already exists on this server. Change the name.`);
+      const message = `An agent called ${name} already exists on this server. Change the name.`;
+      slotProblems.push(message);
+      const param = nameParamOf(slot.entry);
+      if (param) clashErrors[param.name] = message;
     }
     seenNames.add(name);
     if (!setup.provider) slotProblems.push(`Choose which coding agent runs ${name}.`);
@@ -1107,7 +1149,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
    * Inside the Advanced fold an `advanced` param is a plain field: the fold does the folding. */
   const paramRow = (param: ParamSpec, sshHost: string | null, inFold = false) => {
     const value = values[param.name] ?? '';
-    const error = fieldErrors[param.name] ?? valueProblem(param, value);
+    const error = fieldErrors[param.name] ?? clashErrors[param.name] ?? valueProblem(param, value);
     const summary =
       param.type === 'provider'
         ? (providerDisplayName(String(value)) ?? String(value))
