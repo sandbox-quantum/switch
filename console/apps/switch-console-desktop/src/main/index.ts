@@ -30,6 +30,7 @@ import {
   reconcileResourceSampler,
   stopResourceSampler,
 } from './core/resource-monitor/resource-sampler';
+import { reapDetachedLocalWatchers } from './core/sdk-host/reap-local-hosts';
 import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
@@ -227,6 +228,14 @@ void app.whenReady().then(async () => {
       await restoreSwitchRoomSessions();
     } catch (e) {
       log.error('Failed to restore Switch room sessions at startup:', e);
+    }
+    // Must precede the watchers: an earlier build left detached watchers behind
+    // for local agents, and one still holding a root would block the in-process
+    // watcher that replaces it.
+    try {
+      await reapDetachedLocalWatchers();
+    } catch (e) {
+      log.error('Failed to reap detached local watchers at startup:', e);
     }
     try {
       await autoSessionWatcher.initialize();

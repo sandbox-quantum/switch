@@ -27,7 +27,7 @@ export function localStateBase(kind: 'sdk-sessions' | 'sdk-watchers'): string {
   return join(homedir(), '.local', 'state', 'switch', kind);
 }
 
-function savedAgentId(root: string): string | null {
+export function savedAgentId(root: string): string | null {
   try {
     return JSON.parse(readFileSync(join(root, 'config.json'), 'utf8')).session.agentId;
   } catch (error) {
@@ -49,7 +49,7 @@ export function localWatcherRoot(identity: string): string {
   return matches[0] ? join(base, matches[0]) : keyed;
 }
 
-async function writeWatchEnabled(root: string, enabled: boolean): Promise<void> {
+export async function writeWatchEnabled(root: string, enabled: boolean): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const destination = join(root, 'watch.json');
   const temporary = `${destination}.${randomUUID()}`;
