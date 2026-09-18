@@ -52,7 +52,13 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
-from switch_core.rooms_yaml import ProvisionResult, RoomYamlService, TemplateDocument
+from switch_core.rooms_yaml import (
+    GroupProvisionResult,
+    GroupSpec,
+    ProvisionResult,
+    RoomYamlService,
+    template_json_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,8 +387,12 @@ async def create_room_from_yaml(
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> ProvisionResult:
-    """Provision a single room and its attachments from a YAML spec.
+) -> ProvisionResult | GroupProvisionResult:
+    """Provision a room, or a group of rooms, from a YAML spec.
+
+    The document shape picks the result: a ``room:`` document makes one room
+    (``ProvisionResult``); a ``group:`` + ``rooms:`` document makes a room
+    group with its rooms and links (``GroupProvisionResult``).
 
     Two content types are accepted:
 
@@ -406,11 +416,19 @@ async def create_room_from_yaml(
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
+        inputs = await rooms_yaml.prefill_inputs(text, inputs)
         builtins = await rooms_yaml.builtins_for(
-            user_id=user.id, name=user.name, email=user.email, text=text
+            user_id=user.id, name=user.name, email=user.email, text=text, inputs=inputs
         )
         parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
         await rooms_yaml.check_entity_params(parsed)
+        if isinstance(parsed.spec, GroupSpec):
+            return await rooms_yaml.provision_group(
+                parsed.spec,
+                user_id=user.id,
+                is_admin=is_admin,
+                creator_name=builtins["$creator"],
+            )
         return await rooms_yaml.provision(
             parsed.spec,
             kickoff=parsed.kickoff,
@@ -430,8 +448,9 @@ async def create_room_from_yaml(
 async def get_template_schema(
     _user: Annotated[User, Depends(get_current_user)],
 ) -> dict:
-    """Return the JSON Schema describing a valid room template document."""
-    return TemplateDocument.model_json_schema()
+    """Return the JSON Schema describing a valid template document, either
+    the single-room or the group shape."""
+    return template_json_schema()
 
 
 @router.get("/{room_id}/yaml")

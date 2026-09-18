@@ -27,6 +27,9 @@ interface AccessSelectProps {
   onChange: (level: AccessLevel) => void;
   disabled?: boolean;
   label?: string;
+  /** Helper text per level, where the shared wording does not fit the
+   * resource (a template is used, not attached). */
+  helpers?: Partial<Record<AccessLevel, string>>;
   sx?: SxProps<Theme>;
 }
 
@@ -37,6 +40,7 @@ export function AccessSelect({
   onChange,
   disabled,
   label = "Access",
+  helpers,
   sx,
 }: AccessSelectProps) {
   return (
@@ -46,7 +50,7 @@ export function AccessSelect({
       value={value}
       onChange={(e) => onChange(e.target.value as AccessLevel)}
       disabled={disabled}
-      helperText={ACCESS_META[value].helper}
+      helperText={helpers?.[value] ?? ACCESS_META[value].helper}
       sx={sx}
     >
       {ACCESS_LEVELS.map((lvl) => (

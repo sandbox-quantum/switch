@@ -61,6 +61,10 @@ export default defineConfig({
       // Per-instance so two dev builds from different worktrees can run at
       // once; the main process follows through ELECTRON_RENDERER_URL.
       port: Number(process.env.SWITCH_CONSOLE_RENDERER_PORT) || 3000,
+      // The bundled Switch expert template is read from `switch-expert/` at
+      // the repository root, outside this app's directory, so the dev server
+      // has to be allowed to serve it; the production build inlines it.
+      fs: { allow: [resolve('../../..')] },
     },
   },
 });

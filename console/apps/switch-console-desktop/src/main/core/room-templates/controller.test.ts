@@ -255,3 +255,23 @@ describe('roomTemplatesController.parse: multiline params', () => {
     expect(result.params[0].multiline).toBe(false);
   });
 });
+
+describe('roomTemplatesController.params: prefill', () => {
+  it('reads prefill on a param whose type has a list, and nowhere else', () => {
+    const params = roomTemplatesController.params({
+      yamlText: [
+        'params:',
+        '  bridge:',
+        '    type: bridge',
+        '    prefill: first',
+        '  topic:',
+        '    type: string',
+        '    prefill: first',
+        '  reviewer:',
+        '    type: agent',
+      ].join('\n'),
+    });
+    const byName = Object.fromEntries(params.map((p) => [p.name, p.prefill]));
+    expect(byName).toEqual({ bridge: 'first', topic: null, reviewer: null });
+  });
+});

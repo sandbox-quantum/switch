@@ -1092,6 +1092,13 @@ class TemplateSummary(BaseModel):
     name: str
     description: str
     kind: str
+    read_visibility: str
+    write_visibility: str
+    # What the caller may do with it, so a client shows Edit and Remove only
+    # where the server would say yes. Admin here means the tenant's, which a
+    # client cannot tell from the user's global role.
+    can_edit: bool
+    can_manage: bool
     version: int
     size_bytes: int
     created_at: str
@@ -1120,6 +1127,9 @@ class TemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
+    # Shared with the workspace and changed by the owner or an admin, unless said otherwise.
+    read_visibility: str = "public"
+    write_visibility: str = "private"
     content: str = Field(min_length=1)
 
 
@@ -1130,6 +1140,8 @@ class TemplateUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str | None = Field(default=None, min_length=1)
+    read_visibility: str | None = None
+    write_visibility: str | None = None
 
 
 class TemplateDeleteResponse(BaseModel):

@@ -17,10 +17,16 @@ export const ServerSectionTitlebar = observer(function ServerSectionTitlebar({
   serverId,
   icon: SectionIcon,
   label,
+  item,
+  onSectionClick,
 }: {
   serverId: string;
   icon: LucideIcon;
   label: string;
+  /** A third breadcrumb for a page inside the section, such as one template's page. */
+  item?: { label: string; icon?: React.ReactNode };
+  /** Navigates back to the section's list. Used when `item` is shown, so the section crumb is clickable. */
+  onSectionClick?: () => void;
 }) {
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   return (
@@ -38,7 +44,11 @@ export const ServerSectionTitlebar = observer(function ServerSectionTitlebar({
               key: 'section',
               icon: <SectionIcon className="size-3.5 shrink-0" />,
               label,
+              ...(item && onSectionClick ? { onClick: onSectionClick } : {}),
             },
+            ...(item
+              ? [{ key: 'item', icon: item.icon, label: item.label, maxWidthClassName: 'max-w-64' }]
+              : []),
           ]}
         />
       }

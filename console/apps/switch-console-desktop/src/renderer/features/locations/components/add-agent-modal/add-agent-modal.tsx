@@ -22,6 +22,7 @@ import {
   useShowModal,
   type BaseModalProps,
 } from '@renderer/lib/modal/modal-provider';
+import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -95,6 +96,7 @@ export const AddAgentModal = observer(function AddAgentModal({
   // Typed directly, with no commit step: it used to need one because committing
   // fired the directory scans, and there are none left to fire.
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
+
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
@@ -129,6 +131,15 @@ export const AddAgentModal = observer(function AddAgentModal({
       setServerId(targetServerId);
     }
   }, [targetServerId, pickedServerId, setServerId]);
+
+  // Names already taken on the server, so a clash is refused before anything
+  // is created rather than reported by the server afterwards.
+  const remoteAgents = useRemoteAgents(pickState.serverId);
+  const takenNames = useMemo(
+    () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
+    [remoteAgents.data]
+  );
+  const nameTaken = form.nameIsValid && takenNames.has(form.agentName);
 
   // A managed server is only reachable from certain run locations, so constrain
   // the picker to them: a remote-managed server from this computer or its own
@@ -220,6 +231,7 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   const canSubmit =
     form.isValid &&
+    !nameTaken &&
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
@@ -238,23 +250,25 @@ export const AddAgentModal = observer(function AddAgentModal({
           ? 'Enter a name for the agent.'
           : !form.nameIsValid
             ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-            : form.description.trim().length === 0
-              ? 'Add a description so people and agents know what this agent is for.'
-              : !runHostReachable
-                ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                : hostReadiness.checking
-                  ? `Checking what ${runLocationLabel} has installed…`
-                  : hostReadiness.blocked
-                    ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                    : !pickState.providerId
-                      ? 'Choose an agent type.'
-                      : dir.trim().length === 0
-                        ? isRemoteRun
-                          ? 'Enter the agent’s working directory on the host.'
-                          : 'Choose the agent’s working directory.'
-                        : policyHasDeadRule(form.addressingPolicy)
-                          ? 'One addressing rule can never match — fix it under Settings.'
-                          : null;
+            : nameTaken
+              ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
+              : form.description.trim().length === 0
+                ? 'Add a description so people and agents know what this agent is for.'
+                : !runHostReachable
+                  ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                  : hostReadiness.checking
+                    ? `Checking what ${runLocationLabel} has installed…`
+                    : hostReadiness.blocked
+                      ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                      : !pickState.providerId
+                        ? 'Choose an agent type.'
+                        : dir.trim().length === 0
+                          ? isRemoteRun
+                            ? 'Enter the agent’s working directory on the host.'
+                            : 'Choose the agent’s working directory.'
+                          : policyHasDeadRule(form.addressingPolicy)
+                            ? 'One addressing rule can never match — fix it under Settings.'
+                            : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -324,9 +338,9 @@ export const AddAgentModal = observer(function AddAgentModal({
    * per-agent credentials, and create the row — all via `addAgent`. */
   const createNewAgent = async () => {
     if (!pickState.serverId || !pickState.providerId) return;
-    setSubmitState('creating');
     setCloseGuard(true);
     try {
+      setSubmitState('creating');
       const result = await getLocationManagerStore().addAgentAndOpen({
         sshHost: isRemoteRun ? runHost : null,
         dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
@@ -377,6 +391,19 @@ export const AddAgentModal = observer(function AddAgentModal({
       header={
         <DialogHeader showCloseButton={submitState === 'idle'}>
           <DialogTitle>New agent</DialogTitle>
+          {targetServerId && (
+            <button
+              type="button"
+              disabled={submitState !== 'idle'}
+              onClick={() => {
+                onClose();
+                navigate('templates', { serverId: targetServerId, kind: 'agent' });
+              }}
+              className="w-fit cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-default disabled:opacity-50"
+            >
+              Or start from a template
+            </button>
+          )}
         </DialogHeader>
       }
       footer={

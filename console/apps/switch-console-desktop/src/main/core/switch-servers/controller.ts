@@ -103,13 +103,22 @@ import {
   fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
+  createTemplate,
+  deleteTemplate,
+  updateTemplate,
+  fetchTemplateDetail,
+  fetchTemplates,
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
   createRoomFromTemplate,
+  exportRoomYaml,
   fetchTemplateSchema,
   removeRoomAgent,
-  type TemplateProvisionResult,
+  type StoredTemplateDetail,
+  type StoredTemplateSummary,
+  type TemplateVisibility,
+  type ProvisionFromTemplateResult,
   updateAddressingPolicy,
   updateAgentIcon,
   updateRoom,
@@ -555,11 +564,57 @@ export const switchServersController = createRPCController({
     serverId: string,
     yamlText: string,
     inputs: Record<string, string | number | boolean>
-  ): Promise<TemplateProvisionResult> =>
+  ): Promise<ProvisionFromTemplateResult> =>
     createRoomFromTemplate(await requireServer(serverId), yamlText, inputs),
+
+  listTemplates: async (params: {
+    serverId: string;
+    kind?: string;
+    /** Narrows to templates whose name or description contains it. */
+    q?: string;
+  }): Promise<StoredTemplateSummary[]> =>
+    fetchTemplates(await requireServer(params.serverId), { kind: params.kind, q: params.q }),
+
+  getTemplateDetail: async (params: {
+    serverId: string;
+    templateId: string;
+  }): Promise<StoredTemplateDetail> =>
+    fetchTemplateDetail(await requireServer(params.serverId), params.templateId),
+
+  deleteTemplate: async (params: { serverId: string; templateId: string }): Promise<void> =>
+    deleteTemplate(await requireServer(params.serverId), params.templateId),
+
+  updateTemplate: async (params: {
+    serverId: string;
+    templateId: string;
+    name?: string;
+    description?: string;
+    content?: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }): Promise<StoredTemplateDetail> => {
+    const { serverId, templateId, ...changes } = params;
+    return updateTemplate(await requireServer(serverId), templateId, changes);
+  },
+
+  saveTemplate: async (params: {
+    serverId: string;
+    name: string;
+    description: string;
+    kind: string;
+    content: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }): Promise<StoredTemplateDetail> => {
+    const { serverId, ...template } = params;
+    return createTemplate(await requireServer(serverId), template);
+  },
 
   fetchTemplateSchema: async (serverId: string): Promise<Record<string, unknown> | null> =>
     fetchTemplateSchema(await requireServer(serverId)),
+
+  exportRoomYaml: async (params: { serverId: string; roomId: string }): Promise<string> =>
+    exportRoomYaml(await requireServer(params.serverId), params.roomId),
 
   listAgentRooms: async (params: {
     serverId: string;
