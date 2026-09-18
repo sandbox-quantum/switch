@@ -17,7 +17,9 @@ const { prepareLocalUpgrade, hasPendingLocalUpgrade, finishLocalUpgrade } =
   await import('./local-upgrade');
 const { COMPATIBLE_SWITCH_VERSION: expected } = await import('@shared/app-identity');
 let directory: string;
-let exec: ReturnType<typeof vi.fn>;
+let exec: ReturnType<
+  typeof vi.fn<(command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>>
+>;
 let host: ServerHost;
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'switch-upgrade-test-'));
