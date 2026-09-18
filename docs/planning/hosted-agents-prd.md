@@ -119,6 +119,10 @@ Operators need provisioning status, worker health, restart/recovery diagnostics,
 
 ## 7. Architecture direction
 
+See the [M0 execution-backend proposal](hosted-execution-backend-proposal.md) for
+the candidate backend and bounded proof-of-concept gates. It remains unvalidated
+in the target cloud environment.
+
 Target clarified on 2026-09-18: run the Switch service and hosted controller on the
 existing Kubernetes cluster. The controller creates an isolated VM or sandbox per
 hosted agent, attaches persistent workspace/session storage and delivers that
