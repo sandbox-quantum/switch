@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, func, or_, select
@@ -151,8 +152,14 @@ class TemplateStore:
         content: str | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
+        guard: Callable[[Template], None] | None = None,
     ) -> Template:
         """Change a stored template. Replacing the content bumps ``version``.
+
+        ``guard`` is called on the row once it is locked and may raise to
+        refuse the change. Authorization belongs here rather than on a row
+        read earlier: an owner closing an open template must beat an edit
+        that was checked against the row while it was still open.
 
         Metadata-only edits leave the revision alone: the document someone
         fetched is still the document they would fetch now.
@@ -174,6 +181,8 @@ class TemplateStore:
         )
         if template is None:
             raise ValueError(f"Template not found: {template_id}")
+        if guard is not None:
+            guard(template)
 
         if name is not None and name != template.name:
             # Asked before anything is mutated: a flush that fails the unique

@@ -1164,6 +1164,13 @@ export type StoredTemplateSummary = {
   readVisibility: TemplateVisibility;
   /** `public` lets anyone who can read it change it. */
   writeVisibility: TemplateVisibility;
+  /** Whether the signed-in user may change the document, as the server judges
+   * it. Null from a server that predates the answer. */
+  canEdit: boolean | null;
+  /** Whether the signed-in user may remove it or change who uses it: the
+   * owner, or an admin of the workspace. Null from a server that predates
+   * the answer. */
+  canManage: boolean | null;
 };
 
 export type TemplateVisibility = 'public' | 'private';
@@ -1182,6 +1189,8 @@ type RegistryTemplateSummary = {
   version?: number;
   read_visibility?: TemplateVisibility;
   write_visibility?: TemplateVisibility;
+  can_edit?: boolean;
+  can_manage?: boolean;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -1196,6 +1205,8 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     // A server that predates visibility has the one behaviour the defaults describe.
     readVisibility: t.read_visibility ?? 'public',
     writeVisibility: t.write_visibility ?? 'private',
+    canEdit: t.can_edit ?? null,
+    canManage: t.can_manage ?? null,
   };
 }
 

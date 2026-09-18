@@ -86,6 +86,7 @@ async def _create(
         _USER_STORE,
         config or _config(),
         user,  # type: ignore[arg-type]
+        await _is_admin(session, user),  # type: ignore[arg-type]
     )
 
 
@@ -562,6 +563,7 @@ class TestVisibility:
                 _USER_STORE,
                 _config(),
                 alice,
+                await _is_admin(session, alice),
             )
             for who, expected in ((alice, {"mine"}), (bob, set())):
                 listed = await list_templates(
@@ -599,6 +601,7 @@ class TestVisibility:
                 _USER_STORE,
                 _config(),
                 alice,
+                await _is_admin(session, alice),
             )
             edited = await patch_template(
                 created.id,  # type: ignore[attr-defined]
@@ -643,5 +646,61 @@ class TestVisibility:
                     _USER_STORE,
                     _config(),
                     alice,
+                    await _is_admin(session, alice),
                 )
             assert exc.value.status_code == 422
+
+    async def test_an_empty_visibility_is_refused_not_ignored(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            await session.commit()
+            created = await _create(session, alice, name="t")
+            with pytest.raises(HTTPException) as exc:
+                await patch_template(
+                    created.id,  # type: ignore[attr-defined]
+                    TemplateUpdateRequest(read_visibility=""),
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    _config(),
+                    alice,
+                    await _is_admin(session, alice),
+                )
+            assert exc.value.status_code == 422
+
+    async def test_each_row_says_what_the_caller_may_do(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            bob = await add_user(session, name="bob")
+            await session.commit()
+            await create_template(
+                TemplateCreateRequest(
+                    name="open", content="room:\n  name: n\n", write_visibility="public"
+                ),
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                _config(),
+                alice,
+                await _is_admin(session, alice),
+            )
+            (row,) = await list_templates(
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                bob,
+                await _is_admin(session, bob),
+            )
+            assert (row.can_edit, row.can_manage) == (True, False)
+            (own,) = await list_templates(
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                alice,
+                await _is_admin(session, alice),
+            )
+            assert (own.can_edit, own.can_manage) == (True, True)

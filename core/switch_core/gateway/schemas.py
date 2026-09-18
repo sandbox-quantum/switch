@@ -1094,6 +1094,11 @@ class TemplateSummary(BaseModel):
     kind: str
     read_visibility: str
     write_visibility: str
+    # What the caller may do with it, so a client shows Edit and Remove only
+    # where the server would say yes. Admin here means the tenant's, which a
+    # client cannot tell from the user's global role.
+    can_edit: bool
+    can_manage: bool
     version: int
     size_bytes: int
     created_at: str

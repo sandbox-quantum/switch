@@ -444,3 +444,32 @@ class TestTemplateStoreDelete:
         async with session_factory() as session:
             with pytest.raises(ValueError, match="Template not found"):
                 await _STORE.delete(session, "nope")
+
+
+class TestGuard:
+    async def test_a_guard_that_refuses_leaves_the_row_as_it_was(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The guard runs on the locked row, so a change of mind that lands
+        between the caller's check and the write still wins."""
+        async with session_factory() as session:
+            alice = await _make_user(session, "alice")
+            created = await _make_template(
+                session, owner_id=alice.id, name="t", content="a"
+            )
+            await session.commit()
+            template_id = created.id
+
+            def refuse(_row: Template) -> None:
+                raise PermissionError("closed since")
+
+            with pytest.raises(PermissionError):
+                await _STORE.update_fields(
+                    session, template_id, content="b", guard=refuse
+                )
+            await session.rollback()
+
+        async with session_factory() as session:
+            reloaded = await _STORE.get(session, template_id)
+            assert reloaded is not None
+            assert (reloaded.content, reloaded.version) == ("a", 1)
