@@ -17,7 +17,7 @@ interface Props {
 export default function TemplatesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
-    // The server searches name and description. The request waits until
+  // The server searches name and description. The request waits until
   // typing has paused for a moment.
   const [searchSent, setSearchSent] = useState("");
   useEffect(() => {
