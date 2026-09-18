@@ -25,6 +25,8 @@ from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from switch_core.clients.admin_client import AdminClient
     from switch_core.clients.agent_client import AgentClient
     from switch_core.clients.room_meta import RoomMeta
@@ -123,6 +125,27 @@ async def _first_token_is_me(client: AgentClient, first: str, room_id: str) -> b
         if await client._text_tags_my_alias(session, f"@{first}", room_id):
             return True
         return await client._text_tags_my_role(session, f"@{first}", room_id)
+
+
+async def resolve_command_target(
+    host: AdminClient, session: AsyncSession, room_id: str, args: str
+) -> Agent | None:
+    """The agent a `targets_agent` command acts on, or None when its first
+    `@token` names nothing.
+
+    Resolution mirrors how the handlers themselves read that token: a room
+    alias first, then an agent name case-insensitively across the registry —
+    registry-wide because `!invite-agent` names an agent that is, by
+    definition, not in the room yet.
+    """
+    tokens = _mention_tokens(args)
+    if not tokens:
+        return None
+    token = tokens[0]
+    agent_id = await host._room_store.get_agent_id_by_alias(session, room_id, token)
+    if agent_id is not None:
+        return await host._agent_store.get(session, agent_id)
+    return await host._agent_store.get_by_name_insensitive(session, token)
 
 
 async def _check_control_target(
@@ -228,6 +251,12 @@ class Command:
     # it. If False, the command is handled by the agents themselves (e.g.
     # `!run-cmd`, `!reset`, `!agents-greet`), which answer in their own voice.
     admin_owned: bool = False
+    # If True, the command's first `@token` names the agent it acts ON, so the
+    # caller must be allowed to address that agent. Agent-owned commands gate
+    # themselves as they run (AgentClient._gate_command); this declares the
+    # same requirement for the admin-owned ones, which the admin client runs on
+    # an agent's behalf and which would otherwise bypass the policy entirely.
+    targets_agent: bool = False
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -1149,6 +1178,7 @@ COMMANDS: list[Command] = [
             CommandArg("alias", "The alias to use for it in this room", required=True),
         ),
         admin_owned=True,
+        targets_agent=True,
     ),
     Command(
         "remove-alias",
@@ -1160,6 +1190,7 @@ COMMANDS: list[Command] = [
             ),
         ),
         admin_owned=True,
+        targets_agent=True,
     ),
     Command(
         "invite-agent",
@@ -1171,6 +1202,7 @@ COMMANDS: list[Command] = [
             ),
         ),
         admin_owned=True,
+        targets_agent=True,
     ),
     Command(
         "room-url",
@@ -1254,15 +1286,23 @@ async def dispatch_admin_command(
     if cmd is None:
         await _reply(host, room, event, f"Unknown command: `{event.command}`")
         return
+    meta = (
+        await host._resolve_room_meta(room.room_id)
+        if cmd.admin_check is not None or cmd.targets_agent
+        else None
+    )
     # Admin-side usage feedback (e.g. control commands with a bad/missing
     # target) runs even for agent-owned commands — the admin is the room's
     # front-door and gives the misuse notice the agents can't.
-    if cmd.admin_check is not None:
-        meta = await host._resolve_room_meta(room.room_id)
-        if meta is not None:
-            await cmd.admin_check(host, room, event, meta)
+    if cmd.admin_check is not None and meta is not None:
+        await cmd.admin_check(host, room, event, meta)
     if not cmd.admin_owned or cmd.handler is None:
         return
+    if cmd.targets_agent and meta is not None:
+        refusal = await host.command_refusal(event, meta.room_id)
+        if refusal is not None:
+            await _reply(host, room, event, refusal)
+            return
     is_direct = await host._is_direct_room(room.room_id)
     # Admin-owned handlers use only the store/reply surface both clients share
     # (never `.agent`), so the admin host satisfies the handler's contract.
