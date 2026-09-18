@@ -1496,6 +1496,65 @@ async def test_a_reattached_turn_whose_close_is_refused_does_not_run_the_fallbac
     assert ref in adapter._streams
 
 
+async def test_a_reattached_turn_slack_had_already_closed_needs_nothing_further() -> (
+    None
+):
+    """Adopting a stream someone else already stopped still finishes the turn.
+
+    The repair append lands, so the message is right; the stop then says the
+    stream was never open. Nothing is owed and nothing is edited — the same
+    settle an ordinary already-closed stream gets, reached the long way round.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    client.stop_error = "message_not_in_streaming_state"
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+    )
+
+    assert adapter._streams == {}
+    assert client.updated == []
+
+
+async def test_a_reattached_close_that_was_refused_is_asked_again_and_no_more() -> None:
+    """The retry after a refused close, on a stream that was adopted.
+
+    The record was kept, so the second attempt goes straight to the stream
+    rather than meeting the conflict again: no further `chat.update`, no repeat
+    of the repair append, and one more stop — which closes it.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+    ended = TurnActivity([tool], _turn("completed"), 9.0)
+
+    client.update_errors = ["streaming_state_conflict"]
+    client.stop_error = "internal_error"
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(CHANNEL, "Agent", ref, ended, THREAD)
+    repaired = len(client.appended)
+    attempted = len(client.update_attempts)
+
+    client.stop_error = None
+    await adapter.update_rich(CHANNEL, "Agent", ref, ended, THREAD)
+
+    assert client.stopped == [{"channel": CHANNEL, "ts": "1.0"}]
+    assert len(client.appended) == repaired
+    assert len(client.update_attempts) == attempted
+    assert adapter._streams == {}
+
+
 # ── Closing it instead, when the append is refused ───────────────────────
 
 
