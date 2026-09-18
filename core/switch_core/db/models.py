@@ -975,9 +975,8 @@ class Template(TenantScoped, Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     # Who may see and who may change it, as for references and packages
-    # (see ``authz.can``). Existing templates are shared with the workspace
-    # and changed only by their owner, which was the one behaviour before
-    # the pair existed.
+    # (see ``authz.can``). The defaults are a template shared with the
+    # workspace and changed only by its owner.
     read_visibility: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="public"
     )

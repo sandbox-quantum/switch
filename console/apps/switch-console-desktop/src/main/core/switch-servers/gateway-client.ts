@@ -1164,11 +1164,10 @@ export type StoredTemplateSummary = {
   /** `public` lets anyone who can read it change it. */
   writeVisibility: TemplateVisibility;
   /** Whether the signed-in user may change the document, as the server judges
-   * it. Null from a server that predates the answer. */
+   * it. Null when the server does not say. */
   canEdit: boolean | null;
   /** Whether the signed-in user may remove it or change who uses it: the
-   * owner, or an admin of the workspace. Null from a server that predates
-   * the answer. */
+   * owner, or an admin of the workspace. Null when the server does not say. */
   canManage: boolean | null;
 };
 
@@ -1201,7 +1200,8 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     creator: t.owner_name ?? t.owner_id,
     ownerId: t.owner_id,
     version: t.version ?? 1,
-    // A server that predates visibility has the one behaviour the defaults describe.
+    // A server without visibility fields shares every template and lets only
+    // its owner change it, which is what these defaults say.
     readVisibility: t.read_visibility ?? 'public',
     writeVisibility: t.write_visibility ?? 'private',
     canEdit: t.can_edit ?? null,
@@ -1244,7 +1244,7 @@ export async function createTemplate(
     method: 'POST',
     body: {
       ...rest,
-      // Left out when unset, so a server that predates visibility accepts the body.
+      // Left out when unset: a server without visibility refuses unknown fields.
       ...(readVisibility ? { read_visibility: readVisibility } : {}),
       ...(writeVisibility ? { write_visibility: writeVisibility } : {}),
     },
@@ -1254,9 +1254,9 @@ export async function createTemplate(
 }
 
 /** Remove a template from the server's registry (`DELETE /templates/{id}`). */
-/** Change a stored template (`PATCH /templates/{id}`). Only the owner or an
- * admin may; the server answers 403 for anyone else and 409 when the owner
- * already has a template by the new name. */
+/** Change a stored template (`PATCH /templates/{id}`). The server answers
+ * 403 to a caller it does not let edit it, and 409 when the owner already
+ * has a template by the new name. */
 export async function updateTemplate(
   server: SwitchServer,
   templateId: string,

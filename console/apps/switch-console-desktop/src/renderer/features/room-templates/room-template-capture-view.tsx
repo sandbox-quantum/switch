@@ -279,7 +279,8 @@ const CapturePanel = observer(function CapturePanel() {
       serverName: switchServersStore.servers.find((sv) => sv.id === serverId)?.name ?? null,
       content: parameterizedYaml,
       ...prefill,
-      // A room name with a placeholder in it makes a poor listing name.
+      // The save dialog falls back to a generic name when the document's room
+      // name holds a placeholder. The room's own name reads better.
       name: prefill.name === 'Room template' && roomName ? roomName : prefill.name,
       onSuccess: ({ id }) => navigate('templateDetail', { serverId, templateId: id }),
     });
