@@ -1448,7 +1448,7 @@ class BridgeCore:
         await self._submit_session_command(
             command,
             interaction,
-            thread_ref=None,
+            thread_ref=target.thread_ref,
             refusal="The agent was not stopped",
             accepted=(
                 "Switch has asked the agent to stop its current work. The "
@@ -1615,9 +1615,13 @@ class BridgeCore:
         the one a stale control produces, so a receipt that is not read is a
         press that answers nothing.
 
-        `thread_ref` is None for a press: the reply to a press is addressed by
-        the press itself, and the channel root would be a wider audience than
-        the card's own thread rather than a narrower one.
+        `thread_ref` is the thread the answered message sits in, and a press
+        supplies it from the journal entry behind the pressed message. Most
+        platforms never read it for a press, because an interaction is answered
+        through itself and lands where it was made. Slack has no such reply: it
+        posts an ephemeral, which goes to the channel root unless it is told a
+        thread, so a notice about a control in a thread would otherwise surface
+        in front of everyone — the opposite of the privacy it is chosen for.
 
         `refusal` opens that sentence, because not every control is an answer:
         a stop button turned down has to say the agent is still running, not

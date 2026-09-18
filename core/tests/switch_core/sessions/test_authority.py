@@ -150,7 +150,16 @@ def host_event(epoch, sequence, body):
     )
 
 
-def command(epoch, command_id, body, *, actor="owner", surface="console"):
+def command(
+    epoch,
+    command_id,
+    body,
+    *,
+    actor="owner",
+    surface="console",
+    thread_id=None,
+    message_id=None,
+):
     return Command(
         contract_version=1,
         command_id=command_id,
@@ -160,14 +169,14 @@ def command(epoch, command_id, body, *, actor="owner", surface="console"):
             "surface": surface,
             "actorId": actor,
             "roomId": "room-demo",
-            "threadId": None,
-            "messageId": None,
+            "threadId": thread_id,
+            "messageId": message_id,
         },
         body=body,
     )
 
 
-async def opened(service, epoch):
+async def opened(service, epoch, *, thread_id=None):
     message = command(
         epoch,
         "message-demo",
@@ -177,6 +186,7 @@ async def opened(service, epoch):
             "attachments": [],
             "delivery": "queue",
         },
+        thread_id=thread_id,
     )
     await service.submit(message, user_id="owner", bridge_id=None)
     await service.ingest(

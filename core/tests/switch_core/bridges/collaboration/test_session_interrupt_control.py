@@ -29,6 +29,7 @@ surviving its own omission.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -519,6 +520,7 @@ TARGET = ActivityControlTarget(
     epoch="epoch-demo",
     room_id="room-demo",
     thread_id="thread-demo",
+    thread_ref="C1:1.0",
 )
 
 
@@ -707,6 +709,43 @@ def test_an_accepted_press_says_switch_took_it_and_not_that_work_stopped() -> No
     told = bridge._adapter.told[0][4]
     assert "Switch has asked the agent to stop" in told
     assert "has stopped" not in told
+
+
+def test_the_answer_to_a_press_goes_to_the_thread_the_control_was_in() -> None:
+    """A notice about a press is private, and a thread is part of being private.
+
+    Slack answers one of these with an ephemeral, which has no idea where the
+    press happened: told no thread it posts at the channel root, so a reply
+    meant for one person in a thread surfaces in front of the whole channel
+    instead. The platforms that answer the interaction itself never read this,
+    but it costs them nothing and it is the only thing Slack has.
+    """
+    bridge = _bridge()
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told[0][3] == TARGET.thread_ref
+
+
+def test_a_refusal_lands_in_the_thread_as_well_as_an_acceptance() -> None:
+    """The notice that matters most to place correctly is the one that says the
+    press did nothing — it is the one the reader is waiting on."""
+    submit = AsyncMock(return_value=_receipt("rejected", "TURN_NOT_ACTIVE", "Gone."))
+    bridge = _bridge(submit=submit)
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told[0][3] == TARGET.thread_ref
+
+
+def test_a_press_on_a_turn_never_threaded_is_answered_at_the_root() -> None:
+    """Not every turn is in a thread. One drawn at the channel root has no
+    thread to be put back into, and None is how the adapters are told so."""
+    bridge = _bridge(target=replace(TARGET, thread_ref=None))
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told[0][3] is None
 
 
 def test_a_stale_press_is_told_so_even_though_nothing_was_raised() -> None:
