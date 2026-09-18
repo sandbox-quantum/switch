@@ -1,7 +1,6 @@
 import React, { useCallback } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
-  TELEMETRY_ANONYMITY,
   TELEMETRY_DETAILS_LABEL,
   TELEMETRY_DETAILS_URL,
   TELEMETRY_SUMMARY,
@@ -35,7 +34,6 @@ const TelemetrySettingsCard: React.FC = () => {
       description={
         <>
           <p>{TELEMETRY_SUMMARY}</p>
-          <p className="mt-1">{TELEMETRY_ANONYMITY}</p>
           <button
             type="button"
             className="mt-1 cursor-pointer text-foreground-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"

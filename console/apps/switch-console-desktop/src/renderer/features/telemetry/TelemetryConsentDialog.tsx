@@ -7,10 +7,8 @@ import { Shortcut } from '@renderer/lib/ui/shortcut';
 import { Switch } from '@renderer/lib/ui/switch';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import {
-  TELEMETRY_ANONYMITY,
   TELEMETRY_DETAILS_LABEL,
   TELEMETRY_DETAILS_URL,
-  TELEMETRY_REVERSIBLE,
   TELEMETRY_SUMMARY,
 } from './telemetry-copy';
 
@@ -73,18 +71,7 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
           <p className="text-sm text-foreground-muted">{TELEMETRY_SUMMARY}</p>
         </div>
         <DialogContentArea className="gap-4">
-          <p className="text-sm text-foreground-muted">{TELEMETRY_ANONYMITY}</p>
-          <button
-            type="button"
-            className="inline-flex w-fit cursor-pointer items-center gap-1.5 text-sm text-foreground-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
-            onClick={() => {
-              void openExternalUrl(TELEMETRY_DETAILS_URL, 'Could not open the telemetry document');
-            }}
-          >
-            {TELEMETRY_DETAILS_LABEL}
-            <ExternalLink aria-hidden className="size-3.5" />
-          </button>
-          <div className="mt-1 flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
             <label htmlFor="telemetry-consent-switch" className="text-sm text-foreground">
               Share usage data
             </label>
@@ -96,7 +83,16 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
               className="data-checked:bg-foreground-success [&[data-checked]:not([data-disabled]):hover]:bg-foreground-success/85"
             />
           </div>
-          <p className="text-xs text-foreground-tertiary-passive">{TELEMETRY_REVERSIBLE}</p>
+          <button
+            type="button"
+            className="inline-flex w-fit cursor-pointer items-center gap-1.5 text-xs text-foreground-tertiary-passive underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            onClick={() => {
+              void openExternalUrl(TELEMETRY_DETAILS_URL, 'Could not open the telemetry document');
+            }}
+          >
+            {TELEMETRY_DETAILS_LABEL}
+            <ExternalLink aria-hidden className="size-3" />
+          </button>
         </DialogContentArea>
         <DialogFooter>
           <Button disabled={saving} onClick={confirm}>

@@ -7,17 +7,13 @@
  * `src/main/core/telemetry/events.ts`. Widening what is sent is a consent
  * decision, not a copy edit.
  *
- * The detail lives in `docs/TELEMETRY.md` rather than in the dialog: a wall of
- * bullet points is not read, and anyone who does want the specifics wants all
- * of them — every event, every field — which no dialog can hold.
+ * The detail lives in `docs/TELEMETRY.md`, behind the link, rather than in the
+ * dialog: anyone who wants the specifics wants all of them — every event, every
+ * field — which no dialog can hold, and a wall of bullet points in front of the
+ * toggle gets skimmed rather than read.
  */
 export const TELEMETRY_SUMMARY =
-  'Switch Console shares anonymous usage data to show which features get used and where the app runs into trouble. It is on by default, and you can turn it off here.';
-
-export const TELEMETRY_ANONYMITY =
-  'The data is anonymous. It carries a random id for this install and nothing that identifies you — not your name, machine, IP address, prompts, code, file paths, or any agent, room, project or server names.';
-
-export const TELEMETRY_REVERSIBLE = 'You can change this at any time in Settings, under General.';
+  'Switch Console shares anonymous usage data to show which features get used and where the app runs into trouble.';
 
 export const TELEMETRY_DETAILS_LABEL = 'Read what is collected';
 
