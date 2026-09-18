@@ -947,6 +947,13 @@ class SlackAdapter(CollaborationAdapter):
         retry posts the turn a second time. An ordinary post has no close to
         refuse, which is the whole reason this is a question of whether to
         open the stream rather than of how to fail once it is open.
+
+        It costs history on a long one: a post carries a single plan block
+        where a stream carries three, so a turn past the section limit keeps
+        its newest section instead of its newest three. The header says how
+        many lines that dropped, and the alternative is a turn Slack holds
+        while the caller is told it was never posted — a published turn drawn
+        short beats a turn published twice.
         """
         if not isinstance(content, TurnActivity):
             return False
