@@ -1607,18 +1607,30 @@ export interface TemplateDeleteResult {
   deleted_id: string;
 }
 
-/** The templates the signed-in user may see. `q` is matched by the server
- * against name and description. */
-export async function fetchTemplates(
-  q?: string,
-): Promise<TemplateSummary[] | null> {
-  const query = q?.trim();
-  const qs = query ? `?q=${encodeURIComponent(query)}` : "";
-  return fetchJson<TemplateSummary[]>(`/templates${qs}`);
+export interface TemplateFilter {
+  /** Matched by the server against name and description. */
+  q?: string;
+  kind?: string;
+  owner_id?: string;
 }
 
-export async function fetchTemplate(id: string): Promise<TemplateDetail | null> {
-  return fetchJson<TemplateDetail>(`/templates/${id}`);
+/** The templates the signed-in user may see, narrowed on the server. */
+export async function fetchTemplates(
+  filter: TemplateFilter = {},
+): Promise<TemplateSummary[] | null> {
+  const params = new URLSearchParams();
+  const q = filter.q?.trim();
+  if (q) params.set("q", q);
+  if (filter.kind) params.set("kind", filter.kind);
+  if (filter.owner_id) params.set("owner_id", filter.owner_id);
+  const qs = params.toString();
+  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+}
+
+/** One template, or an error carrying the server's reason (403, 404, or the
+ * network), which the page shows as it is. */
+export async function fetchTemplate(id: string): Promise<TemplateDetail> {
+  return jsonRequest<TemplateDetail>(`/templates/${id}`, "GET");
 }
 
 export async function createTemplate(
