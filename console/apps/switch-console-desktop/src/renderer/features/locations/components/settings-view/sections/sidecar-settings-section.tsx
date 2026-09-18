@@ -85,11 +85,14 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
             {watcher?.buildHash && (
               <span className="font-mono">{watcher.buildHash.slice(0, 12)}</span>
             )}
-            {watcher?.pid && (
+            {/* A local watcher reports Console's own PID, which reads as a
+                separate process that does not exist. Only a deployed host has
+                a PID worth naming. */}
+            {deployed && watcher?.pid && (
               <span className="font-mono text-foreground-muted">pid {watcher.pid}</span>
             )}
             <span className="ml-auto text-foreground-muted">
-              {data.transport === 'ssh' ? 'SSH host' : 'This computer'}
+              {deployed ? 'SSH host' : 'Inside Console'}
             </span>
           </div>
           <dl className="divide-y divide-border rounded-md border border-border text-sm">
