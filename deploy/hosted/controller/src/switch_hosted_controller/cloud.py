@@ -236,17 +236,24 @@ class Ec2Cloud:
             raise CloudResourceError("data volume has no KMS key identity")
 
     def _validate_instance(self, instance: dict[str, Any], agent: Agent) -> None:
+        instance_id = instance.get("InstanceId")
+        if not instance_id:
+            raise CloudResourceError("instance has no identity")
+        if agent.instance_id is not None and instance_id != agent.instance_id:
+            raise CloudResourceError("instance identity differs from recorded instance")
         self._validate_tags(instance, agent, "worker")
         if instance.get("ImageId") != agent.image_id:
             raise CloudResourceError("instance image differs from immutable spec")
         if instance.get("InstanceType") != agent.instance_type:
             raise CloudResourceError("instance type differs from immutable spec")
-        profile = instance.get("IamInstanceProfile") or {}
-        if profile.get("Arn") != agent.instance_profile_arn:
-            raise CloudResourceError("instance profile differs from immutable spec")
         placement = instance.get("Placement") or {}
         if placement.get("AvailabilityZone") != self._config.availability_zone:
             raise CloudResourceError("instance is in the wrong availability zone")
+        if instance.get("State", {}).get("Name") == "terminated":
+            return
+        profile = instance.get("IamInstanceProfile") or {}
+        if profile.get("Arn") != agent.instance_profile_arn:
+            raise CloudResourceError("instance profile differs from immutable spec")
         if instance.get("SubnetId") != self._config.subnet_id:
             raise CloudResourceError("instance is in the wrong subnet")
         actual_groups = {group["GroupId"] for group in instance.get("SecurityGroups", [])}

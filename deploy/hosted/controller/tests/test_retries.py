@@ -36,7 +36,7 @@ def test_create_volume_error_is_recovered_by_tag_discovery(tmp_path: Path):
 def test_stop_cancels_queued_launch_before_any_api_write(tmp_path: Path):
     cfg = config(tmp_path)
     store, agent = store_and_agent(cfg)
-    store.mark_instance_launch_intent(agent.agent_id)
+    store.mark_instance_launch_intent(agent)
     store.set_desired(agent.agent_id, DesiredState.STOPPED)
 
     client = ec2_client()

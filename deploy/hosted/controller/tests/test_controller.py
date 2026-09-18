@@ -114,9 +114,9 @@ def instance(cfg: ControllerConfig, agent, state: str):
 
 def test_store_persists_intent_and_rejects_changed_deployment(tmp_path: Path):
     cfg = config(tmp_path)
-    store, _ = store_and_agent(cfg)
-    store.mark_volume_create_intent("agent-1")
-    store.mark_instance_launch_intent("agent-1")
+    store, agent = store_and_agent(cfg)
+    agent = store.mark_volume_create_intent(agent)
+    store.mark_instance_launch_intent(agent)
     store.close()
 
     restarted = AgentStore(cfg.state_db_path, cfg.fingerprint())
@@ -156,10 +156,10 @@ def test_capacity_and_immutable_spec_are_enforced(tmp_path: Path):
 def test_uncertain_launch_then_stop_waits_for_late_instance(tmp_path: Path):
     cfg = config(tmp_path)
     store, agent = store_and_agent(cfg)
-    store.mark_volume_create_intent(agent.agent_id)
+    agent = store.mark_volume_create_intent(agent)
     agent = store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
-    store.mark_instance_launch_intent(agent.agent_id)
-    store.mark_instance_launch_issued(agent.agent_id)
+    agent = store.mark_instance_launch_intent(agent)
+    store.mark_instance_launch_issued(agent)
     store.set_desired(agent.agent_id, DesiredState.STOPPED)
 
     client = ec2_client()
