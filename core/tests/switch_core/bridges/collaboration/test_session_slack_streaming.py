@@ -895,6 +895,55 @@ async def test_a_turn_that_cannot_stream_is_posted_and_the_reason_logged(
     assert missing in caplog.text
 
 
+async def test_a_turn_that_has_already_ended_is_posted_rather_than_streamed() -> None:
+    """Nothing is ever appended to a turn that is over, so it is not streamed.
+
+    A stream would have to be opened and closed inside the one post, and the
+    whole turn drawn in between.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+
+    ref = await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool("t1", "Read")], _turn("completed"), 9.0),
+        THREAD,
+    )
+
+    assert client.started == []
+    assert len(client.posted) == 1
+    assert client.posted[0]["blocks"][0]["type"] == "plan"
+    assert ref == f"{CHANNEL}:1.0"
+
+
+async def test_a_finished_turn_is_not_reported_unposted_over_a_refused_stop() -> None:
+    """The reason the check above is about opening rather than about failing.
+
+    A post that raises is a post the caller treats as definitely refused: it
+    drops the delivery reservation and a retry draws the turn again. So a stop
+    Slack would not take must not be able to fail a *post*, or Slack ends up
+    holding the message and the turn is published twice.
+
+    There is no stream to close here, so the refusal is never reached.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    client.stop_error = "internal_error"
+
+    ref = await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool("t1", "Read")], _turn("completed"), 9.0),
+        THREAD,
+    )
+
+    assert ref == f"{CHANNEL}:1.0"
+    assert client.started == []
+    assert client.stop_attempts == []
+    assert adapter._streams == {}
+
+
 async def test_a_turn_outside_a_thread_is_posted_rather_than_streamed() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)

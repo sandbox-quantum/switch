@@ -937,10 +937,22 @@ class SlackAdapter(CollaborationAdapter):
         turn still appears, and its plan still collapses on every redraw. That
         is worth a line in the log, so the second group of checks says which
         piece was absent where the first only says this was never a stream.
+
+        A turn that has already ended by the time it is first published does
+        not stream either. There is nothing left to append to it, so a stream
+        would buy none of what a stream is for — and opening one means closing
+        it in the same call, where a close Slack refuses would report a post
+        that Slack has already created and populated as one that never
+        happened. The caller deletes its delivery reservation on that, and the
+        retry posts the turn a second time. An ordinary post has no close to
+        refuse, which is the whole reason this is a question of whether to
+        open the stream rather than of how to fail once it is open.
         """
         if not isinstance(content, TurnActivity):
             return False
         if content.status_only or content.error_summary:
+            return False
+        if content.turn.status in TURN_ENDED:
             return False
         missing = (
             "no thread to open it in"
