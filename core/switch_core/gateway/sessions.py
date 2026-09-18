@@ -23,6 +23,7 @@ from switch_core.sessions.contract import (
     ServerEvent,
     Session,
     Snapshot,
+    UnavailableSession,
 )
 from switch_core.sessions.service import SessionAuthority, SessionError
 
@@ -56,7 +57,9 @@ async def retire(
 
 
 @router.get("")
-async def list_sessions(user: CurrentUser, factory: Factory) -> list[Session]:
+async def list_sessions(
+    user: CurrentUser, factory: Factory
+) -> list[Session | UnavailableSession]:
     return await SessionAuthority(factory).list_sessions(user.id)
 
 

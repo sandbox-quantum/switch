@@ -52,6 +52,7 @@ from switch_core.db.models import (
     Client,
     CollaborationBridge,
     Invitation,
+    MessagingInstall,
     Room,
     ServerConnector,
     Tenant,
@@ -69,6 +70,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_api_key,
     tenant_of_collaboration_bridge,
     tenant_of_invitation,
+    tenant_of_messaging_install,
     tenant_of_room,
     tenant_of_server_connector,
     tenants_of_user,
@@ -92,11 +94,23 @@ _DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
 # The same bookkeeping in the other direction: a lookup the live module names
 # that `9c41a7b0e5d8` never created, and the revision that did create it. The
 # frozen-copy comparison below has to know about both to stay exact — without
-# this entry the only way to keep it green would be to loosen it to a subset
+# these entries the only way to keep it green would be to loosen it to a subset
 # check, and a subset check passes for a lookup that exists in the module and
-# in no migration at all, which is a deployment whose invitation acceptance
-# cannot resolve a tenant with the whole suite green.
-_ADDED_SINCE = {"tenant_of_invitation": "5daaea6b674d"}
+# in no migration at all, which is a deployment whose invitation acceptance —
+# or whose inbound webhook — cannot resolve a tenant with the whole suite green.
+_ADDED_SINCE = {
+    "tenant_of_invitation": "5daaea6b674d",
+    "tenant_of_messaging_install": "c8a4e21f6d30",
+}
+
+# A third kind of change, and the quietest: a lookup whose body a later
+# revision replaced. Creation and removal both show up as a function that is
+# there or is not; a redefinition leaves a function of the right name and
+# signature answering a different question, which nothing about the shape of
+# the schema reveals. So the revision that last wrote the body is named here
+# and compared against the module, while the creating revision above goes on
+# owning the drop.
+_REDEFINED_SINCE = {"tenant_of_messaging_install": "a7f2c3e9b481"}
 
 
 def _revision_module(revision: str) -> ModuleType:
@@ -128,6 +142,8 @@ class _Fixture:
         self.bridge_a: str = ""
         self.connector_a: str = ""
         self.key_hash_a: str = ""
+        self.workspace_a: str = ""
+        self.workspace_b: str = ""
         self.oauth_client_a: str = ""
         self.user_a: str = ""
         self.user_in_both: str = ""
@@ -151,6 +167,8 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
     fixture.tenant_b = f"tenant-b-{suffix}"
     fixture.oauth_client_a = f"oauth-{suffix}"
     fixture.key_hash_a = f"hash-a-{suffix}"
+    fixture.workspace_a = f"T-a-{suffix}"
+    fixture.workspace_b = f"T-b-{suffix}"
 
     async with harness.owner() as session:
         for tenant_id in (fixture.tenant_a, fixture.tenant_b):
@@ -226,6 +244,17 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                 created_by=user_both.id,
             )
             session.add(invitation)
+            session.add(
+                MessagingInstall(
+                    tenant_id=tenant_id,
+                    platform="slack",
+                    external_workspace_id=f"T-{tag}-{suffix}",
+                    encrypted_bot_token="x",
+                    scopes="chat:write",
+                    status="active",
+                    installed_by_user_id=user_both.id,
+                )
+            )
             session.add(
                 Agent(
                     tenant_id=tenant_id,
@@ -453,6 +482,57 @@ class TestWhatTheyAnswer:
             await tenant_of_invitation(rls_harness.restricted, "no-such-hash") is None
         )
 
+    async def test_an_installed_workspace_resolves_to_the_tenant_that_installed_it(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The whole of what routes an inbound webhook.
+
+        Both tenants have installed the same platform, so a lookup that
+        ignored its arguments, or matched on the platform alone, answers twice
+        and is refused rather than passing.
+        """
+        fixture = await _two_populated_tenants(rls_harness)
+        restricted = rls_harness.restricted
+        assert (
+            await tenant_of_messaging_install(restricted, "slack", fixture.workspace_a)
+            == fixture.tenant_a
+        )
+        assert (
+            await tenant_of_messaging_install(restricted, "slack", fixture.workspace_b)
+            == fixture.tenant_b
+        )
+
+    async def test_a_workspace_on_another_platform_resolves_to_nothing(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The pair is the key, not either half of it.
+
+        A workspace id that exists under `slack` must not answer for `teams`;
+        the two arguments being applied to the columns they name is the
+        difference between routing an event and delivering it to whoever
+        happened to mint the same string first.
+        """
+        fixture = await _two_populated_tenants(rls_harness)
+        assert (
+            await tenant_of_messaging_install(
+                rls_harness.restricted, "teams", fixture.workspace_a
+            )
+            is None
+        )
+
+    async def test_an_uninstalled_workspace_resolves_to_nothing_rather_than_raising(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A webhook for a workspace we are not installed in is a request to
+        reject, not a fault. Same shape as an unknown bearer token."""
+        await _two_populated_tenants(rls_harness)
+        assert (
+            await tenant_of_messaging_install(
+                rls_harness.restricted, "slack", "T-never-installed"
+            )
+            is None
+        )
+
     async def test_an_ambiguous_answer_is_refused_rather_than_picked(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -614,7 +694,7 @@ class TestTheMigrationInstallsTheSameThing:
         live = {
             (
                 lookup.name,
-                "" if lookup.parameter is None else f"{lookup.parameter} text",
+                lookup.parameter_declaration,
                 lookup.signature,
                 lookup.query,
             )
@@ -640,24 +720,37 @@ class TestTheMigrationInstallsTheSameThing:
         A lookup added to `db/tenant_lookup.py` is built by `create_all`, so
         every test in this file exercises it and passes. A deployment's schema
         is built by Alembic, which knows nothing about it: the function is
-        absent, and the first call — an invitation acceptance trying to
-        resolve a tenant — fails at runtime in production and nowhere else.
+        absent, and the first call — an invitation acceptance or an inbound
+        webhook trying to resolve a tenant — fails at runtime in production and
+        nowhere else.
 
         Comparing the rendered statement rather than the pieces, for the same
         reason the test below does: a revision that created the function
         `SECURITY INVOKER`, or without the `search_path`, would install
         something that cannot read across tenants at all.
+
+        Driven by `_ADDED_SINCE` rather than naming one lookup, so the next
+        entry is covered by adding it there and nowhere else.
+
+        The body is compared against `_REDEFINED_SINCE` where there is an
+        entry, because the revision that creates a function is not always the
+        one that last says what it does. The drop is still the creating
+        revision's: a redefinition replaces a body and leaves the function it
+        replaced nothing to undo.
         """
-        revision = _ADDED_SINCE["tenant_of_invitation"]
-        lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_invitation"]
-        module = _revision_module(revision)
-        assert module.CREATE_TENANT_OF_INVITATION == create_lookup_ddl(lookup), (
-            f"revision {revision} would install tenant_of_invitation with "
-            "different DDL from the one db/tenant_lookup.py builds."
-        )
-        assert module.DROP_TENANT_OF_INVITATION == (
-            f"DROP FUNCTION IF EXISTS {lookup.signature}"
-        )
+        for name, revision in _ADDED_SINCE.items():
+            lookup = TENANT_LOOKUPS_BY_NAME[name]
+            defining = _REDEFINED_SINCE.get(name, revision)
+            module = _revision_module(defining)
+            assert getattr(module, f"CREATE_{name.upper()}") == create_lookup_ddl(
+                lookup
+            ), (
+                f"revision {defining} would install {name} with different DDL "
+                "from the one db/tenant_lookup.py builds."
+            )
+            assert getattr(_revision_module(revision), f"DROP_{name.upper()}") == (
+                f"DROP FUNCTION IF EXISTS {lookup.signature}"
+            )
 
     def test_the_dropped_lookup_is_dropped_by_a_revision_and_not_only_here(
         self,
@@ -713,9 +806,8 @@ class TestTheMigrationInstallsTheSameThing:
         for lookup in TENANT_LOOKUPS:
             if lookup.name in _ADDED_SINCE:
                 continue
-            parameters = "" if lookup.parameter is None else f"{lookup.parameter} text"
             assert module.create_lookup_ddl(
-                lookup.name, parameters, lookup.query
+                lookup.name, lookup.parameter_declaration, lookup.query
             ) == create_lookup_ddl(lookup), (
                 f"migration 9c41a7b0e5d8 would install {lookup.name} with "
                 "different DDL from the one db/tenant_lookup.py builds."

@@ -13,6 +13,7 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
+import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
@@ -79,7 +80,20 @@ class RemoteSessionReconciler {
       );
       for (const value of remote) {
         try {
+          if (
+            value &&
+            typeof value === 'object' &&
+            'agentId' in value &&
+            value.agentId !== agent.switchAgentId
+          )
+            continue;
+          if (value && typeof value === 'object' && 'discoveryError' in value)
+            throw new Error(String(value.discoveryError));
           const session = sessionSchema.parse(value);
+          if (!AGENT_PROVIDER_IDS.some((provider) => provider === session.provider))
+            throw new Error(
+              `Session ${session.sessionId} uses unsupported provider "${session.provider}". Update Console to open it.`
+            );
           if (session.agentId !== agent.switchAgentId || this.deleted.has(session.sessionId))
             continue;
           if (local.has(session.sessionId)) await syncSdkSessionActivity(session);
@@ -159,11 +173,14 @@ class RemoteSessionReconciler {
         );
       this.failures.delete(agentId);
     } catch (error) {
-      this.failures.set(agentId, `Session discovery failed: ${String(error)}`);
-      log.error('Shared SDK session discovery failed; existing sessions are retained', {
-        agentId,
-        error: String(error),
-      });
+      const message = `Session discovery failed: ${String(error)}`;
+      const changed = this.failures.get(agentId) !== message;
+      this.failures.set(agentId, message);
+      if (changed)
+        log.error('Shared SDK session discovery failed; existing sessions are retained', {
+          agentId,
+          error: String(error),
+        });
     } finally {
       this.inFlight.delete(agentId);
     }

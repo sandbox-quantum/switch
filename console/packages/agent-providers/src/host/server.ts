@@ -60,6 +60,8 @@ export function adapterFor(provider: Session['provider'], binaryPath?: string): 
       return createAntigravityAdapter({ binaryPath });
     case 'cursor':
       return createCursorAdapter({ binaryPath });
+    default:
+      throw new Error(`Unsupported execution provider: ${provider}`);
   }
 }
 

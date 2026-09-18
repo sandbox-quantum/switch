@@ -10,6 +10,7 @@ import {
   type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
+  type InstalledApp,
   type KnownAgentType,
   type LinkedRoomDetail,
   type RoomGraphData,
@@ -35,6 +36,8 @@ import {
   fetchDocumentRooms,
   fetchDocuments,
   fetchInboundLinkedRooms,
+  fetchInstallablePlatforms,
+  fetchInstalledApps,
   fetchKnownAgentTypes,
   fetchLinkedRooms,
   fetchRoomGraph,
@@ -153,6 +156,17 @@ export function useBridgeUsers(
 
 export function useAllExternalUsers(): UseQueryResult<ExternalUserSummary[]> {
   return useQuery(fetchAllExternalUsers);
+}
+
+// Empty on every deployment that registered no app of its own, which is most
+// of them — the page reads that as "there is nothing to install here", not as
+// a failure.
+export function useInstallablePlatforms(): UseQueryResult<string[]> {
+  return useQuery(fetchInstallablePlatforms);
+}
+
+export function useInstalledApps(): UseQueryResult<InstalledApp[]> {
+  return useQuery(fetchInstalledApps);
 }
 
 export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {

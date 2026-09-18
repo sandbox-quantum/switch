@@ -62,7 +62,7 @@ Surface = Literal[
     "teams",
     "telegram",
 ]
-Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
+Provider = Annotated[str, StringConstraints(min_length=1)]
 
 
 class _Model(BaseModel):
@@ -223,6 +223,12 @@ class Session(_Model):
 
 
 # ── Event bodies ─────────────────────────────────────────────────────────────
+
+
+class UnavailableSession(_Model):
+    session_id: Id
+    agent_id: Id
+    discovery_error: str
 
 
 class SessionUpsert(_Model):
