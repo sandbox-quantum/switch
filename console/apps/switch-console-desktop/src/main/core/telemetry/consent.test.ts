@@ -19,9 +19,9 @@ describe('isTelemetryAllowed', () => {
     await expect(isTelemetryAllowed()).resolves.toBe(true);
   });
 
-  it('refuses on a fresh install that has not reached the prompt yet', async () => {
+  it('allows sending on a fresh install that has not reached the notice yet', async () => {
     vi.mocked(appSettingsService.get).mockResolvedValue({ enabled: true, askedAt: null });
-    await expect(isTelemetryAllowed()).resolves.toBe(false);
+    await expect(isTelemetryAllowed()).resolves.toBe(true);
   });
 
   it('refuses once the user has turned it off', async () => {
@@ -29,7 +29,7 @@ describe('isTelemetryAllowed', () => {
     await expect(isTelemetryAllowed()).resolves.toBe(false);
   });
 
-  it('refuses when the toggle is off and the prompt was never answered', async () => {
+  it('refuses when the toggle is off and the notice was never answered', async () => {
     vi.mocked(appSettingsService.get).mockResolvedValue({ enabled: false, askedAt: null });
     await expect(isTelemetryAllowed()).resolves.toBe(false);
   });

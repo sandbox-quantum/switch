@@ -10,6 +10,9 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
+from switch_core.bridges.collaboration.install_service import (
+    MessagingInstallService,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -21,6 +24,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
@@ -52,6 +56,7 @@ def init_dependencies(
     template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
+    install_service: MessagingInstallService | None,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -72,6 +77,7 @@ def init_dependencies(
     _state["template_store"] = template_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
+    _state["install_service"] = install_service
     _state["config"] = config
 
 
@@ -213,6 +219,31 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
+
+
+def get_install_store() -> MessagingInstallStore:
+    """Built here rather than threaded through `init_dependencies`.
+
+    It is stateless — no connection, no configuration, nothing for a shared
+    instance to own — and `get_room_yaml_service` above already constructs
+    rather than reads.
+
+    Deliberately not reached through `get_install_service`, which is `None` on
+    a deployment that registered no app of its own. Install rows outlive those
+    credentials: a bridge built by an install has to stay protected after the
+    credentials are taken away, which is exactly when the service is gone.
+    """
+    return MessagingInstallStore()
+
+
+def get_install_service() -> MessagingInstallService | None:
+    """None when this deployment registered no messaging app of its own.
+
+    Nullable rather than absent because that is the ordinary case, and the
+    endpoints have to answer it with a refusal that says so rather than with a
+    KeyError.
+    """
+    return _state["install_service"]  # type: ignore[no-any-return]
 
 
 def get_resource_service() -> ResourceService:
