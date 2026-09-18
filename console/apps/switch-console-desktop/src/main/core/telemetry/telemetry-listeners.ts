@@ -158,11 +158,4 @@ export function registerTelemetryListeners(): void {
   // from another client — arrive on the other bus. Subscribing to only one
   // leaves those sessions reporting a start and never an end.
   sessionHooks.on('session:deleted', (sessionId) => endSession(sessionId, 'normal'));
-
-  // Only a decision of `failed` is an ending: the supervisor's other unexpected
-  // exits are followed by a respawn, and the session goes on.
-  sessionHooks.on('session:agent-exited', ({ sessionId, decision }) => {
-    if (decision !== 'failed') return;
-    endSession(sessionId, 'failed');
-  });
 }

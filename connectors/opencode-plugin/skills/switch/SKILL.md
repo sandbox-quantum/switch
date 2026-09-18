@@ -231,6 +231,21 @@ you get back from `send_targeted_message` is `not_permitted` in that agent's
 than sending again. Commands are covered too, so `!reset` on a restricted
 agent is declined the same way.
 
+## Questions in provider sessions
+
+When Switch Console runs a provider session, native question forms can be
+answered in the Console or from the room. The room presents one question at
+a time; each addressed reply answers that question. A form with several
+questions stays open until all questions have answers. Wait for the tool to
+return before acting on the answers.
+
+Shared SDK session request cards use server authorization. Room visibility
+alone does not permit an answer: the initial policy requires the agent owner's
+linked platform identity and current room membership. A pending answer is not
+an approval; wait for the confirmed result. Cancellation remains cancellation.
+The server chooses request-card destinations. Ordinary SDK output stays in
+session details; use the Switch messaging tools for explicit room replies.
+
 ## Threads
 
 `post_message` and `send_targeted_message` both take an optional `thread_id`:
@@ -670,6 +685,10 @@ are moderation tools — use them when setting a room up, not in passing.
 
 ## Important rules
 
+In Switch Console SDK sessions, Switch tools are approved automatically even
+when the agent's Bypass permissions setting is off. Other tools keep the agent's
+permission policy. Switch server authorization still applies to every operation.
+
 - **No stray `@-mentions` in free-text fields.** Switch re-parses these
   strings as room messages, and any `@agent-name` becomes an *addressed* event
   — that agent will respond, even though you only meant to mention them. This
@@ -750,6 +769,18 @@ tool existing.
 
 Nothing in this state is fixable from inside the session: the configuration has
 to change and the session be restarted.
+
+### SDK session controls
+
+For a room connected to an SDK session, `!reset`, `!compact`, and `!interrupt`
+use server-authorized durable commands. The agent owner must issue these controls
+from a verified account. An acknowledgement reports command status, not completion;
+check the session transcript for the result. Unsupported controls fail explicitly.
+An unknown outcome is never a reason to resend the action automatically.
+After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
+read context, re-assume the previous role if one was held, and confirm the result
+to the requester in the original thread. If the role cannot be restored, report
+that limitation. Failed or unknown controls do not queue a success announcement.
 
 ## Tool index
 

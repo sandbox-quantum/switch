@@ -2,17 +2,8 @@ import z from 'zod';
 import { BROWSER_ISOLATED_PROFILE_ID } from '@shared/browser';
 import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import type { AppSettingsKeyName } from '@shared/core/settings/setting-keys';
-import {
-  TERMINAL_FONT_SIZE_MAX,
-  TERMINAL_FONT_SIZE_MIN,
-  TERMINAL_SHELL_IDS,
-} from '@shared/core/terminals/terminal-settings';
 import { openInAppIdSchema } from '@shared/openInApps';
 import { DEFAULT_AGENT_ID } from './settings-registry';
-
-export const locationSettingsSchema = z.object({
-  tmuxByDefault: z.boolean(),
-});
 
 export const localLocationSettingsSchema = z.object({
   defaultLocationsDirectory: z.string(),
@@ -31,14 +22,6 @@ export const sessionSettingsSchema = z.object({
   autoGenerateName: z.boolean(),
   autoTrustWorktrees: z.boolean(),
   preserveNameCapitalization: z.boolean(),
-});
-
-export const terminalSettingsSchema = z.object({
-  fontFamily: z.string().optional(),
-  fontSize: z.number().min(TERMINAL_FONT_SIZE_MIN).max(TERMINAL_FONT_SIZE_MAX).optional(),
-  autoCopyOnSelection: z.boolean(),
-  macOptionIsMeta: z.boolean(),
-  defaultShell: z.enum(TERMINAL_SHELL_IDS),
 });
 
 export const themeSchema = z
@@ -120,20 +103,6 @@ export const telemetrySettingsSchema = z.object({
   askedAt: z.number().nullable(),
 });
 
-/**
- * How many sessions on one remote host keep a live terminal at once.
- *
- * Every session on a host shares a single SSH transport, and an attached
- * terminal holds a channel on it for as long as it is attached. Past a handful,
- * a slow tunnel (an IAP or SSM ProxyCommand) stops answering channel opens and
- * the transport is torn down and rebuilt in a loop. Detaching costs nothing
- * real: the agent keeps running in its tmux pane on the VM and keeps reporting
- * status, so this bounds a display concern, not the work.
- */
-export const remoteSettingsSchema = z.object({
-  maxAttachedSessionsPerHost: z.number().int().min(1).max(64),
-});
-
 export const openInSettingsSchema = z.object({
   default: openInAppIdSchema,
 });
@@ -152,18 +121,15 @@ export const onboardingSettingsSchema = z.object({
 
 export const APP_SETTINGS_SCHEMA_MAP = {
   localLocation: localLocationSettingsSchema,
-  location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   defaultAgent: defaultAgentSchema,
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
   interface: interfaceSettingsSchema,
-  terminal: terminalSettingsSchema,
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
   changesViewMode: changesViewModeSchema,
-  remote: remoteSettingsSchema,
   onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 } as const;
@@ -186,18 +152,15 @@ void _settingKeysAreComplete;
 
 export const appSettingsSchema = z.object({
   localLocation: localLocationSettingsSchema,
-  location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   defaultAgent: defaultAgentSchema,
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
   interface: interfaceSettingsSchema,
-  terminal: terminalSettingsSchema,
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
   changesViewMode: changesViewModeSchema,
-  remote: remoteSettingsSchema,
   onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 });

@@ -123,10 +123,9 @@ describe('a room the server refuses', () => {
       }
       return {
         ok: false,
-        status: 403,
+        status: 404,
         body: null,
-        text: async (): Promise<string> =>
-          JSON.stringify({ detail: 'Agent is not a member of this room' }),
+        text: async (): Promise<string> => JSON.stringify({ detail: 'No such connection' }),
       };
     });
     const rejected: string[] = [];
@@ -139,6 +138,157 @@ describe('a room the server refuses', () => {
     // One open, then the backoff — not an immediate retry, and nothing dropped.
     expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
     expect(rejected).toEqual([]);
+    abort.abort();
+  });
+});
+
+describe('credentials the server rejects', () => {
+  function refusal(status: number, detail: string) {
+    return {
+      ok: false,
+      status,
+      body: null,
+      text: async (): Promise<string> => JSON.stringify({ detail }),
+    };
+  }
+
+  /** Open once, be refused, and let a long while pass. */
+  async function afterRefusal(status: number, detail: string) {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? refusal(status, detail)
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const evicted: string[] = [];
+    const { abort, log } = makeStream(fetchMock, {
+      rooms: ['room-live'],
+      onEvicted: (reason) => evicted.push(reason),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const settled = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    abort.abort();
+    return { fetchMock, evicted, log, settled };
+  }
+
+  it('ends the stream and the heartbeat on a 401, and says so once', async () => {
+    const { fetchMock, evicted, log, settled } = await afterRefusal(401, 'Invalid agent token');
+
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    // Nothing beyond the beat already in flight when the refusal landed.
+    expect(fetchMock.mock.calls).toHaveLength(settled);
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0]).toContain('credentials');
+    expect(evicted[0]).toContain('401');
+    expect(log.error).toHaveBeenCalled();
+  });
+
+  it('ends the stream on a 403 that names no declared room', async () => {
+    const { fetchMock, evicted, settled } = await afterRefusal(
+      403,
+      'Agent is not a member of this room'
+    );
+
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(fetchMock.mock.calls).toHaveLength(settled);
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0]).toContain('credentials');
+    expect(evicted[0]).toContain('403');
+  });
+
+  it('ends the stream and the heartbeat on a 401 heartbeat, and says so once', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' }
+        : refusal(401, 'Invalid agent token')
+    );
+    const evicted: string[] = [];
+    const { abort, log } = makeStream(fetchMock, {
+      rooms: ['room-live'],
+      onEvicted: (reason) => evicted.push(reason),
+    });
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS + 1);
+    const settled = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    abort.abort();
+
+    expect(urlsFor(fetchMock, 'connection/beat')).toHaveLength(1);
+    expect(fetchMock.mock.calls).toHaveLength(settled);
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0]).toContain('credentials');
+    expect(evicted[0]).toContain('401');
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the owner once when the stream and the heartbeat are refused together', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) {
+        await new Promise((r) => setTimeout(r, BEAT_INTERVAL_MS));
+        return refusal(401, 'Invalid agent token');
+      }
+      return refusal(401, 'Invalid agent token');
+    });
+    const evicted: string[] = [];
+    const { abort, log } = makeStream(fetchMock, {
+      rooms: ['room-live'],
+      onEvicted: (reason) => evicted.push(reason),
+    });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    abort.abort();
+
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(urlsFor(fetchMock, 'connection/beat')).toHaveLength(1);
+    expect(evicted).toHaveLength(1);
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([503, 429])('keeps reconnecting after HTTP %i', async (status) => {
+    vi.useFakeTimers();
+    let opens = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!String(url).includes('/events'))
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      opens += 1;
+      return opens === 1
+        ? { ok: false, status, body: null, text: async (): Promise<string> => 'try later' }
+        : { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' };
+    });
+    const evicted: string[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      onEvicted: (reason) => evicted.push(reason),
+    });
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(2);
+    expect(evicted).toEqual([]);
+    abort.abort();
+  });
+
+  it('keeps reconnecting after a network error', async () => {
+    vi.useFakeTimers();
+    let opens = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!String(url).includes('/events'))
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      opens += 1;
+      if (opens === 1) throw new TypeError('fetch failed');
+      return { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' };
+    });
+    const evicted: string[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      onEvicted: (reason) => evicted.push(reason),
+    });
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(2);
+    expect(evicted).toEqual([]);
     abort.abort();
   });
 });
@@ -202,4 +352,112 @@ describe('the heartbeat', () => {
     expect(urlsFor(fetchMock, 'connection/beat').length - recovered).toBeGreaterThanOrEqual(9);
     abort.abort();
   });
+});
+
+it('does not acknowledge a delivery before the consumer has saved it', async () => {
+  let finish: () => void = () => {};
+  const saved = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const onEvent = vi.fn(() => saved);
+  const fetchMock = vi.fn(async (url: string) => {
+    if (!url.includes('/events')) return Response.json({});
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'id: 7\nevent: message\ndata: {"type":"message","room_id":"room","sequence":7}\n\n'
+            )
+          );
+        },
+      })
+    );
+  });
+  const { stream, abort } = makeStream(fetchMock, { rooms: ['room'], startCursor: 6, onEvent });
+  await vi.waitFor(() => expect(onEvent).toHaveBeenCalledOnce());
+  expect(stream.position).toBe(6);
+  finish();
+  await vi.waitFor(() => expect(stream.position).toBe(7));
+  abort.abort();
+});
+
+it('replays from an explicitly saved zero cursor instead of starting at head', async () => {
+  const fetchMock = vi
+    .fn()
+    .mockImplementation(async (url: string) =>
+      url.includes('/events?')
+        ? { ok: true, body: openForever() }
+        : { ok: true, json: async () => ({ rooms: [] }) }
+    );
+  const { abort } = makeStream(fetchMock, { rooms: [], startCursor: 0 });
+  try {
+    await flush();
+    expect(new URL(urlsFor(fetchMock, '/events?')[0]).searchParams.get('start_from')).toBe('0');
+  } finally {
+    abort.abort();
+  }
+});
+
+function resetFrames(url: string): Response {
+  if (!url.includes('/events')) return Response.json({});
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'event: gap\ndata: {"from_sequence":0,"resumed_at":0,"reason":"buffer reset"}\n\n' +
+              'id: 1\nevent: message\ndata: {"type":"message","room_id":"room","sequence":1}\n\n'
+          )
+        );
+      },
+    })
+  );
+}
+
+it('waits for durable reset checkpoint before advancing the cursor or delivering', async () => {
+  let finish!: () => void;
+  const saved = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const onGap = vi.fn(() => saved);
+  const onEvent = vi.fn();
+  const { stream, abort } = makeStream(
+    vi.fn(async (url: string) => resetFrames(url)),
+    { rooms: ['room'], startCursor: 4, onGap, onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onGap).toHaveBeenCalledOnce());
+    expect(onGap).toHaveBeenCalledWith({
+      fromSequence: 0,
+      resumedAt: 0,
+      cursorReset: true,
+      reason: 'buffer reset',
+    });
+    expect(stream.position).toBe(4);
+    expect(onEvent).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(stream.position).toBe(1));
+    expect(onEvent).toHaveBeenCalledOnce();
+  } finally {
+    abort.abort();
+  }
+});
+
+it('does not advance or deliver when persisting the reset checkpoint fails', async () => {
+  const onGap = vi.fn(async () => {
+    throw new Error('journal unavailable');
+  });
+  const onEvent = vi.fn();
+  const { stream, abort } = makeStream(
+    vi.fn(async (url: string) => resetFrames(url)),
+    { rooms: ['room'], startCursor: 4, onGap, onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onGap).toHaveBeenCalledOnce());
+    expect(stream.position).toBe(4);
+    expect(onEvent).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+  }
 });

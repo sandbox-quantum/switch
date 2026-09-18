@@ -36,9 +36,9 @@ afterEach(async () => {
 
 function step(patch: Partial<HostSetupStep>): HostSetupStep {
   return {
-    id: 'tmux',
+    id: 'node',
     kind: 'core-dependency',
-    name: 'tmux',
+    name: 'node',
     state: 'pending',
     outcome: 'missing',
     version: null,

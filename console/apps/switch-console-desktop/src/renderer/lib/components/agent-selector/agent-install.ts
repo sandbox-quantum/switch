@@ -14,7 +14,7 @@ export function getAgentInstallErrorMessage(error: AgentInstallError): string {
       return error.message;
     case 'command-failed':
       return error.output ? `${error.message} ${error.output}` : error.message;
-    case 'pty-open-failed':
+    case 'process-open-failed':
       return error.message;
     case 'unknown-dependency':
       return `Unknown dependency: ${error.id}`;
@@ -60,7 +60,7 @@ export function getAgentUpdateErrorMessage(error: AgentUpdateError): string {
       return error.message;
     case 'command-failed':
       return error.output ? `${error.message} ${error.output}` : error.message;
-    case 'pty-open-failed':
+    case 'process-open-failed':
       return error.message;
     case 'unknown-dependency':
       return `Unknown dependency: ${error.id}`;

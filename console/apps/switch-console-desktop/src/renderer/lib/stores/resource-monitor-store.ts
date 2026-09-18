@@ -1,7 +1,7 @@
 import { computed, makeObservable, observable, runInAction } from 'mobx';
 import { events, rpc } from '@renderer/lib/ipc';
 import { resourceSnapshotChannel } from '@shared/events/resourceEvents';
-import type { ResourcePtyEntry, ResourceSnapshot } from '@shared/resource-monitor';
+import type { ResourceSnapshot } from '@shared/resource-monitor';
 
 export class ResourceMonitorStore {
   snapshot: ResourceSnapshot | null = null;
@@ -17,8 +17,6 @@ export class ResourceMonitorStore {
       totalCpuPercent: computed,
       totalMemoryBytes: computed,
       appMemoryBytes: computed,
-      agentMemoryBytes: computed,
-      entryCount: computed,
     });
   }
 
@@ -30,28 +28,15 @@ export class ResourceMonitorStore {
   get totalCpuPercent(): number {
     const snap = this.snapshot;
     if (!snap || snap.cpuCount === 0) return 0;
-    let sum = snap.app?.cpuPercent ?? 0;
-    for (const e of snap.entries) sum += e.cpu;
-    return sum / snap.cpuCount;
+    return (snap.app?.cpuPercent ?? 0) / snap.cpuCount;
   }
 
   get totalMemoryBytes(): number {
-    return this.appMemoryBytes + this.agentMemoryBytes;
+    return this.appMemoryBytes;
   }
 
   get appMemoryBytes(): number {
     return this.snapshot?.app?.memoryBytes ?? 0;
-  }
-
-  get agentMemoryBytes(): number {
-    if (!this.snapshot) return 0;
-    let sum = 0;
-    for (const e of this.snapshot.entries) sum += e.memory;
-    return sum;
-  }
-
-  get entryCount(): number {
-    return this.snapshot?.entries.length ?? 0;
   }
 
   start(): void {
@@ -99,11 +84,5 @@ export class ResourceMonitorStore {
   private applyFetchedSnapshot(snap: ResourceSnapshot | null): void {
     if (snap && this.snapshot && this.snapshot.timestamp > snap.timestamp) return;
     this.snapshot = snap;
-  }
-
-  /** Normalized CPU% (relative to all cores) for a single entry. */
-  normalizedCpu(entry: ResourcePtyEntry): number {
-    if (!this.snapshot || this.snapshot.cpuCount === 0) return 0;
-    return entry.cpu / this.snapshot.cpuCount;
   }
 }

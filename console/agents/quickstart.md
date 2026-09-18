@@ -34,5 +34,5 @@ pnpm run test
 
 ## Important Notes
 
-- After native dependency changes (`better-sqlite3`, `node-pty`), run `pnpm run rebuild`.
+- After native dependency changes (`better-sqlite3`), run `pnpm run rebuild`.
 - There are no pre-commit hooks; run the validation commands before opening or merging a PR.

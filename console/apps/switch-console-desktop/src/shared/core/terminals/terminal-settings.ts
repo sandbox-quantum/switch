@@ -1,7 +1,3 @@
-export const TERMINAL_FONT_SIZE_DEFAULT = 13;
-export const TERMINAL_FONT_SIZE_MIN = 8;
-export const TERMINAL_FONT_SIZE_MAX = 32;
-
 export const TERMINAL_SHELL_IDS = [
   'system',
   'bash',
@@ -33,14 +29,6 @@ export type ExplicitTerminalShellId = Exclude<TerminalShellId, 'system'>;
 export type RuntimeTerminalShellId = (typeof RUNTIME_TERMINAL_SHELL_IDS)[number];
 export type TerminalShellFamily = 'posix' | 'csh' | 'windows-cmd' | 'powershell' | 'wsl';
 
-export type TerminalShellAvailability = {
-  id: TerminalShellId;
-  label: string;
-  isSystemDefault: boolean;
-  available: boolean;
-  reason?: string;
-};
-
 const CSH_SHELLS = new Set<string>(['csh', 'tcsh']);
 const BASIC_INTERACTIVE_SHELLS = new Set<string>(['csh', 'dash', 'sh', 'tcsh']);
 
@@ -68,12 +56,6 @@ export function terminalShellFamily(shell: string): TerminalShellFamily {
   if (base === 'wsl' || base === 'wsl.exe') return 'wsl';
   if (CSH_SHELLS.has(base)) return 'csh';
   return 'posix';
-}
-
-export function terminalInteractiveShellArgs(shell: string): string[] {
-  const family = terminalShellFamily(shell);
-  if (family === 'windows-cmd' || family === 'powershell' || family === 'wsl') return [];
-  return BASIC_INTERACTIVE_SHELLS.has(terminalShellBasename(shell)) ? ['-i'] : ['-il'];
 }
 
 export function terminalCommandArgs(shell: string): string[] {

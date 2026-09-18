@@ -12,13 +12,24 @@ from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.events import CommandEvent
 
 
+@pytest.fixture(autouse=True)
+def legacy_control_path(monkeypatch):
+    async def no_sdk_session(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        commands.SessionAuthority, "submit_room_control", no_sdk_session
+    )
+
+
 def _event() -> CommandEvent:
     return CommandEvent(
         command="reset",
         args="",
         user_id="@u:server",
         user_name="louisa",
-        thread_id=None,
+        message_id="$reset-command",
+        thread_id="$reset-command",
     )
 
 

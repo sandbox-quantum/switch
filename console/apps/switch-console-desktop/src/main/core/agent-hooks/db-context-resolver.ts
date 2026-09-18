@@ -1,5 +1,5 @@
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
-import { parsePtyId } from '@shared/core/pty/ptyId';
+import { parseHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { ContextResolver } from './event-enricher';
 
 /**
@@ -8,7 +8,7 @@ import type { ContextResolver } from './event-enricher';
  * database.
  */
 export const dbContextResolver: ContextResolver = async (ptyId) => {
-  const parsed = parsePtyId(ptyId);
+  const parsed = parseHookSessionId(ptyId);
   if (!parsed) return null;
 
   const loaded = await loadSessionWithAgent(parsed.sessionId);

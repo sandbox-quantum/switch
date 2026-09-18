@@ -27,7 +27,7 @@ function aptInstall(packages: string): string {
 
 /**
  * Core host tools a remote host needs to run Switch Console agent sessions: the
- * same binaries the remote-session preflight verifies (tmux, node, git). Unlike
+ * same binaries the remote-session preflight verifies (node, git). Unlike
  * agent dependencies (built from the plugin registry), these are static — the
  * plugin system has no notion of host tooling.
  *
@@ -57,32 +57,13 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
     },
   },
   {
-    id: 'tmux',
-    name: 'tmux',
-    category: 'core',
-    commands: ['tmux'],
-    versionArgs: ['-V'],
-    docUrl: 'https://github.com/tmux/tmux/wiki/Installing',
-    installCommands: {
-      macos: [{ method: 'homebrew', command: 'brew install tmux', recommended: true }],
-      linux: [
-        {
-          method: 'apt',
-          command: aptInstall('tmux'),
-          recommended: true,
-        },
-      ],
-    },
-  },
-  {
     id: 'node',
     name: 'Node.js',
     category: 'core',
     commands: ['node'],
     versionArgs: ['--version'],
-    // The sidecar bundle and the remote-session reachability probe rely on global
-    // `fetch` / `AbortSignal.timeout` / optional chaining, stable only from Node 18.
-    minVersion: '18.0.0',
+    // Persistent SDK hosts require AbortSignal.any.
+    minVersion: '20.3.0',
     docUrl: 'https://nodejs.org/en/download',
     installCommands: {
       macos: [{ method: 'homebrew', command: 'brew install node', recommended: true }],

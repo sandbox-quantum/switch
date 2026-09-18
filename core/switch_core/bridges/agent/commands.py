@@ -22,6 +22,7 @@ from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.sessions.service import SessionAuthority, SessionError
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -293,6 +294,30 @@ async def _dispatch_control_command(
     """
     async with client.session_factory() as session:
         agent = await client._fresh_agent(session)
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        return
+    try:
+        receipt = await SessionAuthority(client.session_factory).submit_room_control(
+            agent.id,
+            meta.room_id,
+            command,
+            event.user_id,
+            event.message_id,
+            event.thread_id,
+            client._connections,
+        )
+    except SessionError as exc:
+        await _reply(client, room, event, f"Could not queue {command}: {exc}")
+        return
+    if receipt is not None:
+        await _reply(
+            client,
+            room,
+            event,
+            f"{command.capitalize()} command: {receipt.status}. Check the session for its outcome.",
+        )
+        return
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
 

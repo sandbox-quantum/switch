@@ -129,8 +129,7 @@ describe('resolveUserEnv (AppImage env scrub)', () => {
       expect(probeEnv[key] ?? '').not.toContain('/tmp/.mount_');
     }
     expect(process.env.PATH ?? '').not.toContain('/tmp/.mount_');
-    // Helper hint vars must still be set so oh-my-zsh / tmux plugins stay quiet.
+    // Helper hint vars must still be set so oh-my-zsh plugins stay quiet.
     expect(probeEnv.DISABLE_AUTO_UPDATE).toBe('true');
-    expect(probeEnv.ZSH_TMUX_AUTOSTART).toBe('false');
   });
 });

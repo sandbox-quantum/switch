@@ -333,17 +333,12 @@ def _revision_module(revision: str) -> ModuleType:
 
     Alembic's own loader, rather than an `importlib` call on a path, so this
     finds the file the same way a deployment would and fails the same way if
-    the revision were renamed or removed.
+    the revision disappears.
     """
     core = Path(switch_core.__file__).resolve().parents[1]
     config = Config(str(core / "alembic.ini"))
     config.set_main_option("script_location", str(core / "switch_core" / "migrations"))
     return ScriptDirectory.from_config(config).get_revision(revision).module
-
-
-def _migration_module() -> ModuleType:
-    """The revision that installed the policies."""
-    return _revision_module(_RLS_REVISION)
 
 
 class TestCatalogueCoverage:
@@ -437,7 +432,10 @@ class TestCatalogueCoverage:
         statement, and it sees every later revision.
         """
         from_models = scoped_tables(Base.metadata)
-        from_migration = dict(_migration_module().SCOPED_TABLES)
+        from_migration = dict(_revision_module(_RLS_REVISION).SCOPED_TABLES)
+        from_migration.update(
+            {table: "tenant_id" for table in _revision_module("c83f6e0a4129").TABLES}
+        )
 
         stale = {
             table: column
@@ -445,8 +443,8 @@ class TestCatalogueCoverage:
             if table not in from_models
         }
         assert stale == {}, (
-            "the frozen SCOPED_TABLES in migration 265ed188ad6f names tables "
-            f"the models no longer have: {sorted(stale)}"
+            "the frozen table inventories in the scoping migrations name "
+            f"tables the models no longer have: {sorted(stale)}"
         )
         disagreeing = {
             table: (column, from_models[table])
@@ -454,7 +452,7 @@ class TestCatalogueCoverage:
             if table in from_models and from_models[table] != column
         }
         assert disagreeing == {}, (
-            "the frozen SCOPED_TABLES in migration 265ed188ad6f policies a "
+            "the frozen table inventories in the scoping migrations policy a "
             "different column than the models scope by (migration, models): "
             f"{disagreeing}"
         )

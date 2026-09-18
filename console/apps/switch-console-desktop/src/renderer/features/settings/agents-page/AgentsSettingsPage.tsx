@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
 import React, { useCallback, useState } from 'react';
 import { PageHeader } from '@renderer/lib/components/page-header';
@@ -8,6 +9,7 @@ import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
 import { CliAgentsList, type AgentFilter } from './CliAgentsList';
 
 export function AgentsSettingsPage() {
+  const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<AgentFilter>('all');
   const [refreshing, setRefreshing] = useState(false);
@@ -16,9 +18,13 @@ export function AgentsSettingsPage() {
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
     probeAll(undefined, {
-      onSettled: () => setRefreshing(false),
+      onSettled: () => {
+        void queryClient
+          .invalidateQueries({ queryKey: ['provider-readiness'] })
+          .finally(() => setRefreshing(false));
+      },
     });
-  }, [probeAll]);
+  }, [probeAll, queryClient]);
 
   return (
     <>

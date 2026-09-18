@@ -100,12 +100,7 @@ const config: Configuration = {
   // agent's VM, not loaded into the Electron process — ship it as an unpacked
   // resource so resolveSidecarBundlePath() finds it under process.resourcesPath.
   extraResources: [{ from: 'dist-sidecar', to: 'dist-sidecar' }],
-  asarUnpack: [
-    'node_modules/better-sqlite3/**',
-    'node_modules/node-pty/**',
-    'node_modules/@parcel/watcher/**',
-    '**/*.node',
-  ],
+  asarUnpack: ['node_modules/better-sqlite3/**', 'node_modules/@parcel/watcher/**', '**/*.node'],
   mac: {
     category: 'public.app-category.developer-tools',
     hardenedRuntime: true,
@@ -145,7 +140,7 @@ const config: Configuration = {
     // or whichever `--x64` / `--arm64` the caller passes. Naming both arches
     // in the target entries instead makes every invocation build both and
     // ignore the flag — which is not merely slow. `npmRebuild: false` means
-    // the native modules (better-sqlite3, node-pty, @parcel/watcher) are
+    // the native modules (better-sqlite3, @parcel/watcher) are
     // whatever the earlier `pnpm rebuild` produced for the host, copied into
     // every package unchanged, so the non-host arch comes out installable,
     // launchable, and dead on the first require of a wrong-arch `.node`. The

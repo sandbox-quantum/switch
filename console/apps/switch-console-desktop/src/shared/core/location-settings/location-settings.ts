@@ -36,7 +36,6 @@ export type ShareableLocationSettings = z.infer<typeof shareableLocationSettings
 export const baseLocationSettingsSchema = z.object({
   worktreeDirectory: z.string().trim().optional(),
   githubAccountId: z.string().trim().min(1).nullable().optional(),
-  tmux: z.boolean().optional(),
   autoRunSetupScriptOnSessionCreation: z.boolean().optional(),
   autoRunRunScriptOnSessionCreation: z.boolean().optional(),
   locationProvider: z

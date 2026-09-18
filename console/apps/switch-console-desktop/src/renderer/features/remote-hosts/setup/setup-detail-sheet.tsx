@@ -1,3 +1,5 @@
+import { Check, ChevronRight, Loader2, X } from 'lucide-react';
+import { useState } from 'react';
 /**
  * One thing on a host, in detail (CHOO-1809).
  *
@@ -10,16 +12,15 @@
  * The row says what state something is in; this says what was actually
  * observed and what you can do about it.
  */
-
-import { Check, ChevronRight, Loader2, X } from 'lucide-react';
-import { useState } from 'react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { Button } from '@renderer/lib/ui/button';
 import { Field } from '@renderer/lib/ui/field';
 import { Label } from '@renderer/lib/ui/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
+import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { isStepInFlight, type HostSetupStep } from '@shared/core/remote-hosts/setup';
 import {
   agentTypeBadge,
@@ -360,6 +361,12 @@ function AgentTypeDetail({
           }
         />
       </Field>
+
+      <ProviderConnectionStatus
+        providerId={asAgentProviderId(row.agentId)}
+        sshHost={sshHost}
+        dir=""
+      />
 
       {row.plugin && (
         <Field>

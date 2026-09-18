@@ -134,7 +134,7 @@ describe('buildAgentGroups', () => {
     const notInstalledItems =
       buildAgentGroups(['codex']).find((group) => group.value === 'not-installed')?.items ?? [];
     const claude = notInstalledItems.find((option) => option.agentId === 'claude')!;
-    const qwen = notInstalledItems.find((option) => option.agentId === 'qwen')!;
+    const opencode = notInstalledItems.find((option) => option.agentId === 'opencode')!;
 
     expect(getInstallButtonState(claude, true, new Set(['claude']))).toEqual({
       render: true,
@@ -142,11 +142,11 @@ describe('buildAgentGroups', () => {
       installing: true,
       label: 'Install Claude Code',
     });
-    expect(getInstallButtonState(qwen, true, new Set(['claude']))).toEqual({
+    expect(getInstallButtonState(opencode, true, new Set(['claude']))).toEqual({
       render: true,
       disabled: false,
       installing: false,
-      label: 'Install Qwen Code',
+      label: 'Install OpenCode',
     });
   });
 
@@ -154,19 +154,19 @@ describe('buildAgentGroups', () => {
     const notInstalledItems =
       buildAgentGroups(['codex']).find((group) => group.value === 'not-installed')?.items ?? [];
     const claude = notInstalledItems.find((option) => option.agentId === 'claude')!;
-    const qwen = notInstalledItems.find((option) => option.agentId === 'qwen')!;
+    const opencode = notInstalledItems.find((option) => option.agentId === 'opencode')!;
 
-    expect(getInstallButtonState(claude, true, new Set(['claude', 'qwen']))).toEqual({
+    expect(getInstallButtonState(claude, true, new Set(['claude', 'opencode']))).toEqual({
       render: true,
       disabled: true,
       installing: true,
       label: 'Install Claude Code',
     });
-    expect(getInstallButtonState(qwen, true, new Set(['claude', 'qwen']))).toEqual({
+    expect(getInstallButtonState(opencode, true, new Set(['claude', 'opencode']))).toEqual({
       render: true,
       disabled: true,
       installing: true,
-      label: 'Install Qwen Code',
+      label: 'Install OpenCode',
     });
   });
 });

@@ -1,6 +1,5 @@
 import { err, ok, type Result } from '@switch-console/shared';
 import type { FileSystemProvider } from '@main/core/fs/types';
-import { appSettingsService } from '@main/core/settings/settings-service';
 import { log } from '@main/lib/logger';
 import {
   baseLocationSettingsSchema,
@@ -50,10 +49,7 @@ export abstract class DbLocationSettingsProvider implements LocationSettingsProv
   ): Promise<Result<string, UpdateLocationSettingsError>>;
 
   protected async initialBaseLocationSettings(): Promise<BaseLocationSettings> {
-    const locationDefaults = await appSettingsService.get('location');
-    return {
-      tmux: locationDefaults.tmuxByDefault,
-    };
+    return {};
   }
 
   private async hasSharedPreservePatterns(): Promise<boolean> {

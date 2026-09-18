@@ -1,0 +1,17 @@
+{
+  "name": "@switch-console/tooling-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end harness that drives real messages through a Switch server and a Mattermost bridge to exercise Switch Console's provider-backed sessions.",
+  "scripts": {
+    "test": "vitest run",
+    "test:e2e": "vitest run",
+    "cleanup": "node --experimental-strip-types src/cleanup.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

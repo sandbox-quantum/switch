@@ -23,6 +23,9 @@ const advancedSurface = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
     agents: {
+      providerReadiness: vi.fn(() =>
+        Promise.resolve({ status: 'unknown', message: 'Not checked in this test.', models: [] })
+      ),
       definitionFields,
       advancedFields,
       advancedSurface,
@@ -72,7 +75,12 @@ async function sectionCount(): Promise<number> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <AgentAdvancedConfig providerId={'claude' as never} onChange={() => {}} />
+        <AgentAdvancedConfig
+          sshHost={null}
+          dir=""
+          providerId={'claude' as never}
+          onChange={() => {}}
+        />
         <LaunchProfileConfig
           providerId={'claude' as never}
           sshHost={null}
