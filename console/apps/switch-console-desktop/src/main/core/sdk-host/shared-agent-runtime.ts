@@ -1,12 +1,17 @@
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
 import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
+import { readLocalHostFailure, startLocalSession } from './local-host';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { sharedConfigSchema, type SharedHostConfig } from '@switch-console/agent-providers';
+import {
+  sharedConfigSchema,
+  sharedSessionRoot,
+  type SharedHostConfig,
+} from '@switch-console/agent-providers';
 import { ANTIGRAVITY_SKILL_CONTENT } from '@switch-console/plugins/agents/antigravity/skill';
 import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
 import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
@@ -130,22 +135,40 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     const previousEpoch = restart
       ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
       : null;
-    const { ctx, root, entrypoint } = await deploySharedHost(
-      this.transport,
-      this.params.sessionPath,
-      session.id,
-      false
-    );
+    let root: string;
+    let readFailure: () => Promise<unknown>;
     this.startupStage = restart
       ? 'Stopping the previous process and starting its replacement…'
       : 'Starting the session process…';
-    await runSharedHostCommand(
-      this.transport,
-      { ctx, root, entrypoint },
-      config,
-      restart ? '--restart' : '--ensure',
-      isResuming
-    );
+    if (this.transport.kind === 'ssh') {
+      const deployed = await deploySharedHost(
+        this.transport,
+        this.params.sessionPath,
+        session.id,
+        false
+      );
+      root = deployed.root;
+      readFailure = async () => {
+        const result = await deployed.ctx.exec('node', [
+          '-e',
+          "const fs=require('node:fs');try{console.log(fs.readFileSync(process.argv[1],'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;console.log('null')}",
+          posix.join(deployed.root, 'supervisor', 'failure.json'),
+        ]);
+        return JSON.parse(result.stdout);
+      };
+      await runSharedHostCommand(
+        this.transport,
+        deployed,
+        config,
+        restart ? '--restart' : '--ensure',
+        isResuming
+      );
+    } else {
+      // A local session is supervised by Console, so it ends when Console does.
+      root = sharedSessionRoot(session.id);
+      readFailure = () => readLocalHostFailure(root);
+      await startLocalSession(root, config, { resuming: isResuming, restart });
+    }
     this.startupStage = 'Connecting to the session host…';
     let roomBound = false;
     const bindRoom = async () => {
@@ -166,12 +189,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     let nextFailureCheck = 0;
     while (Date.now() < deadline) {
       if (Date.now() >= nextFailureCheck) {
-        const result = await ctx.exec('node', [
-          '-e',
-          "const fs=require('node:fs');try{console.log(fs.readFileSync(process.argv[1],'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;console.log('null')}",
-          posix.join(root, 'supervisor', 'failure.json'),
-        ]);
-        const failure: unknown = JSON.parse(result.stdout);
+        const failure = await readFailure();
         if (failure && typeof failure === 'object' && 'message' in failure)
           throw new Error(`Shared SDK host failed: ${String(failure.message)}`);
         nextFailureCheck = Date.now() + 2000;

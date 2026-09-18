@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { ensureSharedProcess } from './launch';
+import { detachedSupervision, ensureSharedProcess } from './launch';
 import type { SharedHostConfig } from './shared-config';
 
 const roots: string[] = [];
@@ -46,13 +46,15 @@ async function fixture() {
       },
     },
   };
+  const entrypoint = join(root, 'worker.cjs');
   return {
     root,
     config,
-    entrypoint: join(root, 'worker.cjs'),
+    entrypoint,
     resuming: true,
     watcher: false,
     restart: true,
+    supervision: detachedSupervision(entrypoint),
   };
 }
 it('refuses to replace missing conversation state with a fresh session', async () => {

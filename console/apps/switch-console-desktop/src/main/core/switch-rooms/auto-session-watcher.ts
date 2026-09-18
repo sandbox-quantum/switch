@@ -1,4 +1,5 @@
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { disposeLocalHosts } from '@main/core/sdk-host/local-host';
 import { configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
 import { log } from '@main/lib/logger';
 import {
@@ -55,6 +56,9 @@ class AutoSessionWatcher {
   reconcileSubagent(agentId: string, name: string, enabled: boolean): Promise<void> {
     return configureSharedWatcher(agentId, enabled, name);
   }
-  dispose(): void {}
+  /** Stops every locally hosted watcher and session, so none outlives Console. */
+  dispose(): Promise<void> {
+    return disposeLocalHosts();
+  }
 }
 export const autoSessionWatcher = new AutoSessionWatcher();

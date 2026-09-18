@@ -1,12 +1,32 @@
+import { readFile } from 'node:fs/promises';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
-import { locationTransport } from '@main/core/locations/location-transport';
+import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
 import { adoptSubagent } from './adopt-subagent';
+import { startLocalWatcher, stopLocalWatcher } from './local-host';
 import { buildSharedHostConfig } from './shared-agent-runtime';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 import { waitForWatcherStop } from './watcher-inspection';
+
+const READ_SWITCH_AGENT_ID =
+  "console.log(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).env.SWITCH_AGENT_ID)";
+
+async function readSubagentSwitchId(
+  transport: LocationTransport,
+  dir: string,
+  identity: string,
+  credentialsPath: string
+): Promise<string> {
+  if (transport.kind !== 'ssh') {
+    const credentials = JSON.parse(await readFile(credentialsPath, 'utf8'));
+    return String(credentials.env?.SWITCH_AGENT_ID ?? '');
+  }
+  const { ctx } = await deploySharedHost(transport, dir, identity, true);
+  const { stdout } = await ctx.exec('node', ['-e', READ_SWITCH_AGENT_ID, credentialsPath]);
+  return stdout.trim();
+}
 
 export async function configureSharedWatcher(
   agentId: string,
@@ -42,17 +62,23 @@ export async function configureSharedWatcher(
     { rooms: [], startCursor: 0 }
   );
   if (name && name !== agent.name) {
-    const { ctx } = await deploySharedHost(transport, location.dir, identity, true);
-    const { stdout } = await ctx.exec('node', [
-      '-e',
-      "console.log(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).env.SWITCH_AGENT_ID)",
-      config.execution!.credentialsPath,
-    ]);
-    const remoteId = stdout.trim();
+    const remoteId = await readSubagentSwitchId(
+      transport,
+      location.dir,
+      identity,
+      config.execution!.credentialsPath
+    );
     if (!remoteId || remoteId === 'undefined')
       throw new Error('Subagent Switch identity is missing.');
     config.session.agentId = remoteId;
     await adoptSubagent(agent, name, remoteId);
+  }
+  // A local agent is watched from inside Console so it stops answering when
+  // Console does. Only an SSH host gets a detached shared host of its own.
+  if (transport.kind !== 'ssh') {
+    if (enabled) await startLocalWatcher(config);
+    else await stopLocalWatcher(config.session.agentId);
+    return;
   }
   const { ctx, root, entrypoint } = await deploySharedHost(
     transport,

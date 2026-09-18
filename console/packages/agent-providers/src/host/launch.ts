@@ -19,14 +19,55 @@ export function sharedSessionRoot(sessionId: string): string {
   );
 }
 
+/**
+ * How a prepared state root is brought up and torn down. A host deployed to an
+ * SSH machine detaches its supervisor so it outlives the deploying process;
+ * Console supervises a local host itself so the tree ends when Console does.
+ */
+export type Supervision = {
+  start: (input: { root: string; configPath: string; watcher: boolean }) => Promise<void>;
+  /** Stops whatever currently owns this root, so a replacement can take it. */
+  stop: (root: string) => Promise<void>;
+};
+
 type LaunchInput = {
   root: string;
-  entrypoint: string;
   config: SharedHostConfig;
   resuming: boolean;
   watcher: boolean;
   restart: boolean;
+  supervision: Supervision;
 };
+
+export function detachedSupervision(entrypoint: string): Supervision {
+  return {
+    start: async ({ root, configPath, watcher }) => {
+      const log = await open(join(root, 'supervisor.log'), 'a', 0o600);
+      try {
+        const child = spawn(
+          process.execPath,
+          [entrypoint, root, configPath, watcher ? '--watch-supervise' : '--supervise'],
+          {
+            detached: true,
+            stdio: ['ignore', log.fd, log.fd],
+            env: process.env,
+          }
+        );
+        await new Promise<void>((resolve, reject) => {
+          child.once('spawn', resolve);
+          child.once('error', reject);
+        });
+        child.unref();
+      } finally {
+        await log.close();
+      }
+    },
+    stop: async (root) => {
+      await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
+      await stopOwnedProcess(root, join(root, 'shared-owner.lock'));
+    },
+  };
+}
 
 export async function ensureSharedProcess(input: LaunchInput): Promise<{ created: boolean }> {
   return withOwnershipLock(join(input.root, 'launch'), () => launch(input));
@@ -79,10 +120,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
     throw new Error(
       'The saved SDK host identity or working directory differs from the requested session.'
     );
-  if (input.restart) {
-    await stopOwnedProcess(input.root, join(input.root, 'supervisor', 'owner.json'));
-    await stopOwnedProcess(input.root, join(input.root, 'shared-owner.lock'));
-  }
+  if (input.restart) await input.supervision.stop(input.root);
   {
     await replaceOwner(path, {
       ...input.config,
@@ -105,25 +143,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
       if (error.code !== 'ENOENT') throw error;
     }
   );
-  const log = await open(join(input.root, 'supervisor.log'), 'a', 0o600);
-  try {
-    const child = spawn(
-      process.execPath,
-      [input.entrypoint, input.root, path, input.watcher ? '--watch-supervise' : '--supervise'],
-      {
-        detached: true,
-        stdio: ['ignore', log.fd, log.fd],
-        env: process.env,
-      }
-    );
-    await new Promise<void>((resolve, reject) => {
-      child.once('spawn', resolve);
-      child.once('error', reject);
-    });
-    child.unref();
-  } finally {
-    await log.close();
-  }
+  await input.supervision.start({ root: input.root, configPath: path, watcher: input.watcher });
   return { created };
 }
 

@@ -47,6 +47,10 @@ export type { HostEndpoint, HostStartRequest } from './host/server';
 export { connectHost } from './host/launcher';
 export { runSharedHost } from './host/shared-host';
 export type { SharedHostOptions } from './host/shared-host';
+export { detachedSupervision, ensureSharedProcess, sharedSessionRoot } from './host/launch';
+export type { Supervision } from './host/launch';
+export { runSharedWatcher } from './host/shared-watcher';
+export { superviseSharedHost } from './host/supervisor';
 
 export { prepareCodexSessionHome } from './codex/home';
 export { sharedConfigSchema } from './host/shared-config';

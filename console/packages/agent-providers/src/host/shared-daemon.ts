@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
-import { ensureSharedProcess } from './launch';
+import { detachedSupervision, ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
@@ -80,11 +80,11 @@ async function main(): Promise<void> {
       JSON.stringify(
         await ensureSharedProcess({
           root,
-          entrypoint: process.argv[1],
           config,
           resuming: process.argv[5] === 'true',
           watcher: mode === '--ensure-watch',
           restart: mode === '--restart',
+          supervision: detachedSupervision(process.argv[1]!),
         })
       )
     );
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    await runSharedWatcher(root, process.argv[1], config, stop.signal);
+    await runSharedWatcher(root, config, stop.signal, detachedSupervision(process.argv[1]!));
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,

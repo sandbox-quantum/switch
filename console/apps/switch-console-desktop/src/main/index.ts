@@ -1,5 +1,6 @@
 import './app/configure-app-identity';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
@@ -56,6 +57,8 @@ import { resolveUserEnv } from './utils/userEnv';
 if (import.meta.env.DEV) {
   dotenvConfig({ path: '.env.local', override: false });
 }
+
+const LOCAL_HOST_SHUTDOWN_MS = 5000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -274,8 +277,20 @@ app.on('before-quit', (event) => {
   localServerService.dispose();
   remoteServerService.dispose();
   updateService.dispose();
-  void locationManager.dispose().catch((e) => {
-    log.error('Failed to shutdown location manager:', e);
-  });
-  app.exit(0);
+  void (async () => {
+    // Locally hosted watchers and sessions are Console's own children. Stop them
+    // before exiting, bounded so a stuck host cannot keep Console from quitting.
+    await Promise.race([
+      autoSessionWatcher.dispose(),
+      delay(LOCAL_HOST_SHUTDOWN_MS).then(() =>
+        log.warn('Local SDK hosts did not stop in time; they may outlive Console.')
+      ),
+    ]).catch((e) => {
+      log.error('Failed to stop local SDK hosts:', e);
+    });
+    await locationManager.dispose().catch((e) => {
+      log.error('Failed to shutdown location manager:', e);
+    });
+    app.exit(0);
+  })();
 });

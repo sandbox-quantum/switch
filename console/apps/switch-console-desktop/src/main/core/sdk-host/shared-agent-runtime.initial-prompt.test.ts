@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   persist: vi.fn(),
   loadSession: vi.fn(),
   runHost: vi.fn(),
+  readFailure: vi.fn(),
   exec: vi.fn(),
   specialization: vi.fn(),
 }));
@@ -48,7 +49,11 @@ vi.mock('./shared-host-deployment', () => ({
     root: '/tmp/host',
     entrypoint: 'run.mjs',
   })),
-  runSharedHostCommand: mocks.runHost,
+  runSharedHostCommand: vi.fn(),
+}));
+vi.mock('./local-host', () => ({
+  startLocalSession: mocks.runHost,
+  readLocalHostFailure: mocks.readFailure,
 }));
 vi.mock('./stop-shared-session', () => ({ stopSharedSession: vi.fn() }));
 vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
@@ -103,6 +108,7 @@ beforeEach(() => {
   });
   mocks.server.mockResolvedValue({ id: 'server-1' });
   mocks.exec.mockResolvedValue({ stdout: 'null' });
+  mocks.readFailure.mockResolvedValue(null);
   // The launch reports an existing host, which is what a retry after a failed
   // first `open()` sees.
   mocks.runHost.mockResolvedValue({ stdout: JSON.stringify({ created: false }) });
@@ -281,9 +287,9 @@ it('keeps a background authentication failure visible without sending the first 
     turns: [],
     items: [],
   });
-  mocks.exec
-    .mockResolvedValueOnce({ stdout: 'null' })
-    .mockResolvedValue({ stdout: JSON.stringify({ message: 'Sign in to the provider.' }) });
+  mocks.readFailure
+    .mockResolvedValueOnce(null)
+    .mockResolvedValue({ message: 'Sign in to the provider.' });
   const agent = runtime();
   await agent.start(session, false, 'Say hello');
   await vi.waitFor(

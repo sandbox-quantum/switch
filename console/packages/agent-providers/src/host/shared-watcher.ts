@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
-import { ensureSharedProcess, sharedSessionRoot } from './launch';
+import { ensureSharedProcess, sharedSessionRoot, type Supervision } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
@@ -110,9 +110,9 @@ export class SharedWatchAssignments {
 
 export async function runSharedWatcher(
   root: string,
-  entrypoint: string,
   template: SharedHostConfig,
-  signal: AbortSignal
+  signal: AbortSignal,
+  supervision: Supervision
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
@@ -152,11 +152,11 @@ export async function runSharedWatcher(
       if (!(await enabled()) || (await stopped(config.session.sessionId))) return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
-        entrypoint,
         config,
         resuming: false,
         watcher: false,
         restart: false,
+        supervision,
       });
     };
     for (const config of assignments.sessions()) await launch(config);
