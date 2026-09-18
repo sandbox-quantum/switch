@@ -217,10 +217,8 @@ function DocumentSection({
     setSaving(true);
     setError(null);
     try {
-      // Only what changed is sent. A document someone else saved meanwhile
-      // must not be put back by an edit to the name or the access, and a
-      // stored document the validator now refuses can still have its
-      // metadata changed.
+            // Only what changed is sent, so an edit to the name or the access
+      // cannot put back a document someone else saved meanwhile.
       const updated = await updateTemplate(template.id, {
         ...(name !== template.name ? { name } : {}),
         ...(description !== template.description ? { description } : {}),
@@ -301,10 +299,8 @@ function DocumentSection({
       {exportError && <Alert severity="error">{exportError}</Alert>}
       {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
       {!canMutate && (
-        // Said outright rather than left to the greyed-out fields: reading
-        // someone else's shared template is the ordinary case here, and a
-        // disabled field on its own only tells you something is wrong once
-        // you have already tried to type in it.
+                // Reading someone else's shared template is the ordinary case here,
+        // and a disabled field alone reads as a page that failed to load.
         <Alert severity="info">
           This template belongs to {template.owner_name ?? "another user"}. You
           can copy or download it; only its owner or an admin can change it.

@@ -18,7 +18,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # The defaults keep every existing template as it behaved: seen by the
+    # The defaults give an existing template the access it had: seen by the
     # whole workspace, changed by its owner or an admin.
     op.add_column(
         "templates",

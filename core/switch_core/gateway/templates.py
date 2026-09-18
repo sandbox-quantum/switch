@@ -182,7 +182,7 @@ async def _load_for(
     user: User,
     is_admin: bool,
 ) -> Template:
-    """Fetch a template the caller may ``action``, or fail saying why.
+    """Fetch a template, refusing unless the caller may ``action`` it.
 
     A private template the caller may not read is reported as not found,
     so the listing and the detail route agree on what exists for them.
@@ -374,9 +374,9 @@ async def patch_template(
     principal = Principal(user.id, is_admin)
     changes_access = req.read_visibility is not None or req.write_visibility is not None
     if changes_access:
-        # Who may see or change a template is the owner's to decide, not an
-        # editor's: an open template must not be closed, or opened wider, by
-        # anyone the owner let edit its document.
+        # Who may see or change a template is decided by its owner or an
+        # admin, not by an editor: an open template must not be closed, or
+        # opened wider, by someone who may only edit its document.
         try:
             require_manage(principal, current.owner_id)
         except PermissionError as e:

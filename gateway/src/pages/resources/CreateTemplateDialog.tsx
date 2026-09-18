@@ -33,8 +33,8 @@ export default function CreateTemplateDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState("room");
-    // Read-only, the registry's own default: the workspace can use it, the
-  // owner changes it.
+      // Read-only, the registry's own default: the workspace can use it, the
+  // owner or an admin changes it.
   const [access, setAccess] = useState<AccessLevel>("read_only");
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);

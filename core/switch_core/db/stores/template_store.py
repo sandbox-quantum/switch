@@ -156,10 +156,10 @@ class TemplateStore:
     ) -> Template:
         """Change a stored template. Replacing the content bumps ``version``.
 
-        ``guard`` is called on the row once it is locked and may raise to
+                ``guard`` is called on the row once it is locked and may raise to
         refuse the change. Authorization belongs here rather than on a row
-        read earlier: an owner closing an open template must beat an edit
-        that was checked against the row while it was still open.
+        read earlier: an access change committed before the lock is taken
+        is seen here and not by an earlier read.
 
         Metadata-only edits leave the revision alone: the document someone
         fetched is still the document they would fetch now.
