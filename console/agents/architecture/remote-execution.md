@@ -81,10 +81,13 @@ Two properties worth preserving:
 
 ## Persistent execution
 
-The same SDK host implementation serves local and SSH sessions. SSH carries
+The same SDK host implementation serves local and SSH sessions, hosted
+differently: an SSH session's host is deployed to the remote machine and runs
+detached, while a local session's host is supervised by Console. SSH carries
 bundle deployment and management commands; it does not own provider process
-lifetime. Closing Console leaves SDK execution running. A reconnect reads the
-saved transcript and never repeats an uncertain command.
+lifetime. Closing Console leaves SSH execution running and stops local
+execution. A reconnect reads the saved transcript and never repeats an
+uncertain command.
 
 The execution machine needs Node 20.3 or newer, Git, the selected provider,
 its own authentication and network access. Setup plans list only supported

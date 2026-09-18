@@ -1,3 +1,5 @@
+import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
+import { getAgentById } from '@main/core/agents/getAgentById';
 import { setAgentAutoSession } from '@main/core/agents/setAgentAutoSession';
 import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { configureSharedWatcher } from './shared-watcher';
@@ -9,6 +11,14 @@ export async function manageAgentSidecar(
   if (action === 'stop' || action === 'start') {
     await setAgentAutoSession({ agentId, enabled: action === 'start' });
     return;
+  }
+  if (action === 'update') {
+    const agent = await getAgentById(agentId);
+    if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
+    if (!(await getRemoteAgentLocation(agent)))
+      throw new Error(
+        'A local agent has no deployed sidecar to update; it is watched by this Console build already.'
+      );
   }
   if (!(await listAutoSessionAgentIds()).includes(agentId))
     throw new Error(

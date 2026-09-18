@@ -1,17 +1,21 @@
 # SDK sessions
 
-Console uses a persistent shared SDK host for Claude Code, Codex, OpenCode,
-Antigravity ACP and Cursor. Local sessions and sessions reached through SSH use the
-same host. SSH, ProxyCommand and ProxyJump carry deployment and management
-requests. They do not carry the lifetime of the provider process.
+Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
+Antigravity ACP and Cursor. Local sessions and sessions reached through SSH run
+the same host code, but not in the same process tree: an SSH session's host is
+deployed to the remote machine and detached from Console, while a local
+session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
+carry deployment and management requests. They do not carry the lifetime of the
+provider process.
 
 Configured subagents receive their own Console agent row before their room
 watcher starts, so their sessions can be discovered and controlled under the
 child identity. Existing credentials and provider definitions remain on the
 execution machine.
 
-Closing Console leaves the host running. Reopen a session to read its saved
-transcript. **Interrupt** ends the active turn. **Stop session** stops execution
+Closing Console leaves an SSH host running; it stops a local one, along with the
+room watcher that started it, because a local agent must not answer when Console
+is off. Reopen a session to read its saved transcript. **Interrupt** ends the active turn. **Stop session** stops execution
 and preserves the conversation. **Resume session** explicitly reopens its saved
 native conversation after process cleanup and server lease recovery. Interrupted
 or uncertain work is not repeated. An ordinary reconnect keeps a stopped session

@@ -34,7 +34,11 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
   const watcher = data?.watchers[0];
   const running = watcher?.running ?? false;
   const enabled = watcher?.enabled ?? false;
-  const differentBuild = !!watcher?.buildHash && watcher.buildHash !== data?.availableBuildHash;
+  // A local agent has no sidecar: Console watches its rooms itself, so there is
+  // no deployed build to compare and nothing to update, restart or stop here.
+  const deployed = data?.transport === 'ssh';
+  const differentBuild =
+    deployed && !!watcher?.buildHash && watcher.buildHash !== data?.availableBuildHash;
   const status = running
     ? differentBuild
       ? 'Different build'
@@ -47,18 +51,28 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-sm text-foreground-muted">
-        The sidecar is a background service that watches this agent’s rooms and starts sessions
-        while Console is closed. Manage conversations in Sessions below. Update and Restart reload
-        the service. Stop turns off automatic sessions; existing sessions continue running.
-      </p>
-      {query.isPending && <p className="text-sm">Checking sidecar…</p>}
+      {data &&
+        (deployed ? (
+          <p className="text-sm text-foreground-muted">
+            The sidecar is a background service on the SSH host that watches this agent’s rooms and
+            starts sessions while Console is closed. Manage conversations in Sessions below. Update
+            and Restart reload the service. Stop turns off automatic sessions; existing sessions
+            continue running.
+          </p>
+        ) : (
+          <p className="text-sm text-foreground-muted">
+            Console watches this agent’s rooms itself and starts a session when the agent is
+            addressed with none running. It runs inside Console, so quitting Console stops the
+            watcher and the sessions it started. Turn it off with Automatic sessions above.
+          </p>
+        ))}
+      {query.isPending && <p className="text-sm">Checking the watcher…</p>}
       {query.error && (
         <div
           role="alert"
           className="flex items-center justify-between gap-2 text-sm text-destructive"
         >
-          <span>Could not check the sidecar: {String(query.error)}</span>
+          <span>Could not check the watcher: {String(query.error)}</span>
           <Button variant="outline" size="sm" onClick={() => void query.refetch()}>
             Retry
           </Button>
@@ -79,17 +93,21 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
             </span>
           </div>
           <dl className="divide-y divide-border rounded-md border border-border text-sm">
-            <div className="grid grid-cols-[150px_1fr] gap-3 px-4 py-3">
-              <dt className="text-foreground-muted">Running build</dt>
-              <dd className="font-mono break-all">
-                {watcher?.buildHash?.slice(0, 12) ??
-                  (running ? 'Not reported by this host' : 'Not running')}
-              </dd>
-            </div>
-            <div className="grid grid-cols-[150px_1fr] gap-3 px-4 py-3">
-              <dt className="text-foreground-muted">Console build</dt>
-              <dd className="font-mono">{data.availableBuildHash.slice(0, 12)}</dd>
-            </div>
+            {deployed && (
+              <>
+                <div className="grid grid-cols-[150px_1fr] gap-3 px-4 py-3">
+                  <dt className="text-foreground-muted">Running build</dt>
+                  <dd className="font-mono break-all">
+                    {watcher?.buildHash?.slice(0, 12) ??
+                      (running ? 'Not reported by this host' : 'Not running')}
+                  </dd>
+                </div>
+                <div className="grid grid-cols-[150px_1fr] gap-3 px-4 py-3">
+                  <dt className="text-foreground-muted">Console build</dt>
+                  <dd className="font-mono">{data.availableBuildHash.slice(0, 12)}</dd>
+                </div>
+              </>
+            )}
             <div className="grid grid-cols-[150px_1fr] gap-3 px-4 py-3">
               <dt className="text-foreground-muted">Working dir</dt>
               <dd className="flex min-w-0 items-center gap-2">
@@ -106,8 +124,10 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
           )}
           {enabled && !running && (
             <p role="alert" className="text-sm text-destructive">
-              New room messages cannot automatically start this agent. Inspect the log before
-              restarting.
+              New room messages cannot automatically start this agent.{' '}
+              {deployed
+                ? 'Inspect the log before restarting.'
+                : 'Inspect the log below; reopening Console starts it again.'}
             </p>
           )}
           {watcher?.failure && (
@@ -115,34 +135,38 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               {watcher.failure}
             </p>
           )}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              disabled={
-                action.isPending || !enabled || (running && !differentBuild && !!watcher?.buildHash)
-              }
-              onClick={() => action.mutate('update')}
-            >
-              <RefreshCw className="size-3.5" /> Update
-            </Button>
-            <Button
-              variant="outline"
-              disabled={action.isPending}
-              onClick={() => action.mutate(enabled ? 'restart' : 'start')}
-            >
-              <RefreshCw className="size-3.5" /> {enabled ? 'Restart' : 'Start'}
-            </Button>
-            {action.isPending && (
-              <Loader2 aria-label="Managing sidecar" className="size-3.5 animate-spin" />
-            )}
-            <Button
-              variant="outline"
-              className="ml-auto text-destructive hover:text-destructive"
-              disabled={action.isPending || (!running && !enabled)}
-              onClick={() => action.mutate('stop')}
-            >
-              <Power className="size-3.5" /> Stop
-            </Button>
-          </div>
+          {deployed && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                disabled={
+                  action.isPending ||
+                  !enabled ||
+                  (running && !differentBuild && !!watcher?.buildHash)
+                }
+                onClick={() => action.mutate('update')}
+              >
+                <RefreshCw className="size-3.5" /> Update
+              </Button>
+              <Button
+                variant="outline"
+                disabled={action.isPending}
+                onClick={() => action.mutate(enabled ? 'restart' : 'start')}
+              >
+                <RefreshCw className="size-3.5" /> {enabled ? 'Restart' : 'Start'}
+              </Button>
+              {action.isPending && (
+                <Loader2 aria-label="Managing sidecar" className="size-3.5 animate-spin" />
+              )}
+              <Button
+                variant="outline"
+                className="ml-auto text-destructive hover:text-destructive"
+                disabled={action.isPending || (!running && !enabled)}
+                onClick={() => action.mutate('stop')}
+              >
+                <Power className="size-3.5" /> Stop
+              </Button>
+            </div>
+          )}
         </>
       )}
       {action.error && (
