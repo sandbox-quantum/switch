@@ -236,6 +236,44 @@ class _StreamNotClosed(RichContentFailed):
     """
 
 
+class _Cooldown:
+    """A rate limit Slack put on a whole kind of call, and the log of it.
+
+    A 429 answers for the workspace rather than for the message that earned it,
+    so the wait it asks for holds back every call of that kind. Kept here so
+    each of those reads the same answer, and so that both edges are said out
+    loud: a silent cooldown and a bridge that has stopped working look exactly
+    the same from the outside, and this one can be minutes long.
+
+    The lift is noticed by the first caller to ask after it passes rather than
+    on a timer, so the line lands next to the work it let through.
+    """
+
+    def __init__(self, kind: str) -> None:
+        self._kind = kind
+        self._until = 0.0
+
+    def remaining(self) -> float:
+        """Seconds left to wait, zero once Slack is taking these again."""
+        left = self._until - time.monotonic()
+        if left > 0:
+            return left
+        if self._until:
+            self._until = 0.0
+            logger.warning("Slack is taking %s again after a rate limit.", self._kind)
+        return 0.0
+
+    def start(self, delay: float) -> None:
+        """Hold every call of this kind back for what Slack asked for."""
+        self._until = time.monotonic() + delay
+        logger.warning(
+            "Slack is rate limiting %s for the whole workspace; holding them all "
+            "back for %.0fs. Anything that redraws is frozen until then.",
+            self._kind,
+            delay,
+        )
+
+
 @dataclass
 class _ActivityStream:
     """An open `chat.startStream` message, and what it has been told so far.
@@ -348,10 +386,10 @@ class SlackAdapter(CollaborationAdapter):
         # a warning a second for as long as the agent worked.
         self._unmarkable: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._unmarkable_max = 500
-        # Monotonic time before which Slack has asked for no more reaction
-        # calls. The publisher redraws every few seconds and keeps asking until
-        # a mark lands, so without this the retries hold the limit open.
-        self._reaction_after = 0.0
+        # The publisher redraws every few seconds and keeps asking until a mark
+        # lands, so without these the retries hold the limit open.
+        self._reactions_cooldown = _Cooldown("reactions")
+        self._rich_update_cooldown = _Cooldown("message updates")
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -695,7 +733,7 @@ class SlackAdapter(CollaborationAdapter):
         through raw, so a caller that no longer imports this module still
         has one thing to catch.
         """
-        remaining = getattr(self, "_rich_update_after", 0.0) - time.monotonic()
+        remaining = self._rich_update_cooldown.remaining()
         if remaining > 0:
             raise RichContentThrottled(
                 retry_after=remaining, text="Waiting for Slack to allow updates."
@@ -820,9 +858,20 @@ class SlackAdapter(CollaborationAdapter):
 
         The fallback under `_recover_stranded_stream`, for a stream Slack will
         not take an append on after all, and the whole of what that method used
-        to do. Closing it is what makes this terminate: the message can only be
-        stranded once, so a publication that arrives after this one is an
-        ordinary edit whatever happens below.
+        to do. Closing it is what makes this terminate where there is a stream
+        left to close: the message can only be stranded once, so a publication
+        that arrives after this one is an ordinary edit whatever happens below.
+
+        Slack also leaves a message in a state where that is not true, and it is
+        the common one in practice: the message stays flagged as streaming while
+        the stream it refers to is gone, so an edit is refused as streaming and
+        both stream calls are refused as `message_not_found`. No call clears it,
+        and a message nothing can change is not worth asking about again — so it
+        is recorded as unredrawable, which is what ends the retry. It keeps
+        whatever the stream last wrote. That is a stale card rather than a lost
+        turn, and the alternative is the same two refusals every few seconds for
+        as long as the process lives, spending the workspace's rate budget on a
+        message that cannot move.
 
         Either call here can be rate limited instead, and in the one situation
         this exists for that is likely: a restart strands every stream that was
@@ -855,18 +904,27 @@ class SlackAdapter(CollaborationAdapter):
             throttled = self._throttled(error, message.text)
             if throttled is not None:
                 raise throttled from error
-            raise RichContentFailed(
-                f"Slack refused an edit to {message_ref} because it is still "
-                f"streaming, and would not close the stream either: "
-                f"{error.response.get('error')}",
-                text=message.text,
-            ) from error
-        logger.warning(
-            "Closed the activity stream %s, which Slack still held open after "
-            "this process lost its record of it; the turn it belonged to has "
-            "already ended.",
-            message_ref,
-        )
+            code = error.response.get("error")
+            if code not in _STREAM_CLOSED_ERRORS:
+                raise RichContentFailed(
+                    f"Slack refused an edit to {message_ref} because it is still "
+                    f"streaming, and would not close the stream either: {code}",
+                    text=message.text,
+                ) from error
+            logger.warning(
+                "There is no stream left to close on %s (%s), though Slack still "
+                "refuses an edit to it as one that is streaming; redrawing the "
+                "message is all that is left to try.",
+                message_ref,
+                code,
+            )
+        else:
+            logger.warning(
+                "Closed the activity stream %s, which Slack still held open after "
+                "this process lost its record of it; the turn it belonged to has "
+                "already ended.",
+                message_ref,
+            )
         try:
             await self._write_blocks(
                 channel_id,
@@ -879,7 +937,19 @@ class SlackAdapter(CollaborationAdapter):
             throttled = self._throttled(error, message.text)
             if throttled is not None:
                 raise throttled from error
-            if error.response.get("error") not in _BLOCK_FORMAT_ERRORS:
+            code = error.response.get("error")
+            if code == _STREAMING_CONFLICT:
+                self._remember_unredrawable(message_ref, warned=True)
+                logger.error(
+                    "The activity message %s is wedged: Slack refuses an edit to "
+                    "it as a message that is streaming, and refuses both stream "
+                    "calls because the stream is gone. Nothing can be sent that "
+                    "changes it, so it keeps whatever it last showed and is not "
+                    "asked again. The turn itself is unaffected.",
+                    message_ref,
+                )
+                return
+            if code not in _BLOCK_FORMAT_ERRORS:
                 raise RichContentFailed(
                     f"Slack could not update the message in channel {channel_id} "
                     f"after closing its stream: {error}",
@@ -917,7 +987,7 @@ class SlackAdapter(CollaborationAdapter):
         ):
             return None
         delay = self._retry_after(error)
-        self._rich_update_after = time.monotonic() + delay
+        self._rich_update_cooldown.start(delay)
         return RichContentThrottled(retry_after=delay, text=text)
 
     @staticmethod
@@ -1796,7 +1866,7 @@ class SlackAdapter(CollaborationAdapter):
                     channel_id,
                 )
             return
-        waiting = self._reaction_after - time.monotonic()
+        waiting = self._reactions_cooldown.remaining()
         if waiting > 0:
             raise SlackReactionsRateLimited(
                 f"Slack is rate limiting reactions; not asking for {waiting:.0f}s."
@@ -1840,7 +1910,7 @@ class SlackAdapter(CollaborationAdapter):
                 or getattr(e.response, "status_code", None) == 429
             ):
                 delay = _retry_after_seconds(e)
-                self._reaction_after = time.monotonic() + delay
+                self._reactions_cooldown.start(delay)
                 raise SlackReactionsRateLimited(
                     f"Slack is rate limiting reactions; not asking for {delay}s."
                 ) from e

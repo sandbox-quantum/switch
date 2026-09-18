@@ -47,6 +47,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     _MAX_OPEN_STREAMS,
     SlackAdapter,
     SlackConnectionConfig,
+    _Cooldown,
 )
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import Item, TurnUpsert
@@ -1770,14 +1771,130 @@ async def test_a_stream_slack_will_neither_extend_nor_close_is_reported() -> Non
 
     client.update_errors = ["streaming_state_conflict"]
     client.append_error = "message_not_owned_by_app"
-    client.stop_error = "message_not_found"
+    client.stop_error = "internal_error"
     with pytest.raises(RichContentFailed) as refused:
         await adapter.update_rich(
             CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
         )
 
     assert "would not close the stream" in str(refused.value)
-    assert "message_not_found" in str(refused.value)
+    assert "internal_error" in str(refused.value)
+
+
+async def test_a_stream_slack_has_already_dropped_is_redrawn_rather_than_reported() -> (
+    None
+):
+    """The state Slack actually leaves a wedged card in, measured in the wild.
+
+    Slack refuses the edit as a message that is streaming and answers both
+    stream calls with `message_not_found`: the message is still flagged, and
+    the stream that flag refers to is gone. Every other caller reads that as
+    the stream being over, so the fallback does too and spends its one
+    remaining move on the message instead of reporting a failure nothing can
+    act on.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    client.append_error = "message_not_found"
+    client.stop_error = "message_not_found"
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+    )
+
+    assert client.updated, "the turn should have been redrawn into the message"
+
+
+async def test_a_wedged_message_is_given_up_on_rather_than_asked_about_forever() -> (
+    None
+):
+    """The whole of the deadlock, and the thing that has to stop asking.
+
+    Slack keeps the streaming flag and has dropped the stream, so the edit is
+    refused as streaming and both stream calls are refused as gone. Nothing
+    sendable changes the message, and the cost of not noticing is two calls
+    against the workspace's rate budget every few seconds, for the life of the
+    process, per wedged card.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_error = "streaming_state_conflict"
+    client.append_error = "message_not_found"
+    client.stop_error = "message_not_found"
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+    )
+    spent = len(client.update_attempts) + len(client.stop_attempts)
+
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 14.0), THREAD
+    )
+
+    assert len(client.update_attempts) + len(client.stop_attempts) == spent, (
+        "a message nothing can change should not be asked about again"
+    )
+
+
+async def test_a_rate_limit_that_freezes_every_card_says_so(caplog: Any) -> None:
+    """The cooldown is adapter-wide and was silent, which is the hard part.
+
+    One refused call holds back every message the bridge draws, for as long as
+    Slack asked. Without a line saying so, a reader sees every card in the
+    workspace stop moving at once and nothing anywhere explaining why.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_error = "ratelimited"
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(RichContentThrottled):
+            await adapter.update_rich(
+                CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 9.0), THREAD
+            )
+
+    assert "rate limiting message updates for the whole workspace" in caplog.text
+
+
+def test_a_cooldown_says_when_slack_is_taking_calls_again(
+    caplog: Any, monkeypatch: Any
+) -> None:
+    """The other edge, which is the one that says the bridge is alive again."""
+    clock = [0.0]
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.slack.adapter.time.monotonic",
+        lambda: clock[0],
+    )
+    cooldown = _Cooldown("reactions")
+
+    cooldown.start(30.0)
+    assert cooldown.remaining() == 30.0
+
+    clock[0] = 31.0
+    with caplog.at_level(logging.WARNING):
+        assert cooldown.remaining() == 0.0
+
+    assert "taking reactions again" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert cooldown.remaining() == 0.0
+    assert caplog.text == "", "the lift is worth saying once, not on every call"
 
 
 async def test_a_stranded_stream_slack_is_too_busy_to_close_is_waited_out() -> None:
