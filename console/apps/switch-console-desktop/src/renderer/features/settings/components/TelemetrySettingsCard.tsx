@@ -1,16 +1,14 @@
 import React, { useCallback } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
-  TELEMETRY_NEVER_SHARED,
-  TELEMETRY_SHARED,
+  TELEMETRY_ANONYMITY,
+  TELEMETRY_DETAILS_LABEL,
+  TELEMETRY_DETAILS_URL,
   TELEMETRY_SUMMARY,
 } from '@renderer/features/telemetry/telemetry-copy';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Switch } from '@renderer/lib/ui/switch';
 import { SettingRow } from './SettingRow';
-
-function joinAsSentence(items: string[]): string {
-  return items.map((item, index) => (index === 0 ? item : item.toLowerCase())).join('; ');
-}
 
 const TelemetrySettingsCard: React.FC = () => {
   const {
@@ -37,14 +35,16 @@ const TelemetrySettingsCard: React.FC = () => {
       description={
         <>
           <p>{TELEMETRY_SUMMARY}</p>
-          <p className="mt-1">
-            <span className="text-foreground-muted">Shared:</span>{' '}
-            {joinAsSentence(TELEMETRY_SHARED)}.
-          </p>
-          <p>
-            <span className="text-foreground-muted">Never shared:</span>{' '}
-            {joinAsSentence(TELEMETRY_NEVER_SHARED)}.
-          </p>
+          <p className="mt-1">{TELEMETRY_ANONYMITY}</p>
+          <button
+            type="button"
+            className="mt-1 cursor-pointer text-foreground-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            onClick={() => {
+              void openExternalUrl(TELEMETRY_DETAILS_URL, 'Could not open the telemetry document');
+            }}
+          >
+            {TELEMETRY_DETAILS_LABEL}
+          </button>
         </>
       }
       control={<Switch checked={enabled} disabled={loading || saving} onCheckedChange={toggle} />}
