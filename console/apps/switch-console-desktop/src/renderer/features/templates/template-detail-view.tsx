@@ -26,6 +26,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
+import { accessLine, accessOf } from './template-visibility';
 import { isRequired, typeLabel } from './use/use-template-model';
 
 function useViewParams() {
@@ -215,6 +216,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
 
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
   const canManage = loaded.server !== null && (mine || me?.role === 'admin');
+  // An open template is edited by anyone who can read it; only its owner or
+  // an admin removes it or changes who may use it.
+  const canEdit = canManage || loaded.server?.writeVisibility === 'public';
   const singleAgent = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
   // In a single-agent document the room refers to the agent as `{agent}`. The
   // Console fills that in with the agent's name, so it is not an input to list.
@@ -289,7 +293,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     : mine
       ? 'Yours'
       : `Uploaded by ${loaded.server?.creator ?? 'someone'}`;
-  const visibilityLine = loaded.server ? 'Shared with the workspace' : 'Shared with everyone';
+  const visibilityLine = loaded.server
+    ? accessLine(accessOf(loaded.server))
+    : 'Shared with everyone';
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
@@ -354,7 +360,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 {busy === 'save' ? 'Saving…' : 'Save to workspace'}
               </Button>
             )}
-            {canManage && loaded.server && (
+            {canEdit && loaded.server && (
               <Button
                 type="button"
                 variant="outline"
@@ -369,6 +375,8 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                       id: loaded.server!.id,
                       name: loaded.name,
                       description: loaded.description,
+                      access: accessOf(loaded.server!),
+                      canChangeAccess: canManage,
                     },
                   })
                 }

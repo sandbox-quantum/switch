@@ -400,6 +400,33 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+  // The server searches name and description. The full listing stays loaded
+  // for the recents and for marking a built-in as saved, so a search that
+  // matches nothing empties the workspace section and nothing else.
+  const [searchHits, setSearchHits] = useState<StoredTemplateSummary[] | null>(null);
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length === 0) {
+      setSearchHits(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      rpc.switchServers
+        .listTemplates({ serverId, q })
+        .then((hits) => {
+          if (!cancelled) setSearchHits(hits);
+        })
+        .catch(() => {
+          // The client-side match below still applies to what is loaded.
+          if (!cancelled) setSearchHits(null);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [serverId, query, reloadKey]);
 
   // An agent template needs a coding agent where its agents will run, and
   // this computer is the default run location. Say at the top of the listing
@@ -447,7 +474,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       server: byName.get(b.name) ?? null,
       content: b.yamlText,
     }));
-    const onWorkspace: TemplateListEntry[] = templates.map((t) => ({
+    const onWorkspace: TemplateListEntry[] = (searchHits ?? templates).map((t) => ({
       id: t.id,
       kind: kindOf(t.kind),
       name: t.name,
@@ -468,7 +495,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       builtIn: onlyMine ? [] : builtIn.filter(matches),
       onWorkspace: onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t))),
     };
-  }, [templates, query, kind, onlyMine, meId]);
+  }, [templates, searchHits, query, kind, onlyMine, meId]);
 
   const handleUse = (item: TemplateListEntry) =>
     navigate('templateUse', { serverId, templateId: item.id });

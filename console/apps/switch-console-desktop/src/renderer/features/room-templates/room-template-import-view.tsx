@@ -7,6 +7,11 @@ import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { prefillForSave } from '@renderer/features/templates/agent-template-data';
+import {
+  TEMPLATE_ACCESS_OPTIONS,
+  type TemplateAccess,
+  visibilityOf,
+} from '@renderer/features/templates/template-visibility';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -17,6 +22,7 @@ import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 
 // ── Source step ─────────────────────────────────────────────────────────────
 
@@ -180,7 +186,14 @@ function SourceStep({
 
 // ── Main view ──────────────────────────────────────────────────────────────
 
-type EditingTemplate = { id: string; name: string; description: string };
+type EditingTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  access: TemplateAccess;
+  /** Only the owner or an admin decides who may see or change a template. */
+  canChangeAccess: boolean;
+};
 
 function useServerId(): string {
   return useParams('templateImport').params.serverId;
@@ -215,6 +228,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [sourceName, setSourceName] = useState<string | null>(initialName ?? null);
   const [name, setName] = useState(editingTemplate?.name ?? '');
   const [description, setDescription] = useState(editingTemplate?.description ?? '');
+  const [access, setAccess] = useState<TemplateAccess>(editingTemplate?.access ?? 'shared');
 
   // Parse before navigating so a syntax error is shown next to the editor,
   // where it can be fixed, rather than on the Use page.
@@ -276,6 +290,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         description: description.trim(),
         // Sent only when changed, so editing the name alone keeps the version.
         ...(yamlText !== initialYaml ? { content: yamlText } : {}),
+        ...(access !== editingTemplate.access ? visibilityOf(access) : {}),
       });
       toast({ title: `"${saved.name}" saved`, description: `Version ${saved.version}.` });
       appState.navigation.navigate('templateDetail', { serverId, templateId: saved.id });
@@ -284,7 +299,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     } finally {
       setSaving(false);
     }
-  }, [editingTemplate, yamlText, initialYaml, name, description, serverId]);
+  }, [editingTemplate, yamlText, initialYaml, name, description, access, serverId]);
 
   // When this page is opened with a document already chosen (a dropped file,
   // a recent, a template id), there is nothing to edit here: go on to the
@@ -309,11 +324,12 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     const nothingChanged =
       yamlText === initialYaml &&
       name.trim() === editingTemplate.name &&
-      description.trim() === editingTemplate.description;
+      description.trim() === editingTemplate.description &&
+      access === editingTemplate.access;
     return (
       <ServerPage
         title={`Edit ${editingTemplate.name}`}
-        description="Everyone on this workspace sees the change as soon as it is saved."
+        description="The change reaches the workspace as soon as it is saved."
       >
         <div className="flex flex-col gap-4">
           <FieldGroup>
@@ -332,6 +348,21 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
                 placeholder="What it is for, in a line"
               />
             </Field>
+            {editingTemplate.canChangeAccess && (
+              <Field>
+                <FieldLabel>Who can use it</FieldLabel>
+                <SegmentedControl
+                  value={access}
+                  onChange={setAccess}
+                  options={TEMPLATE_ACCESS_OPTIONS}
+                  ariaLabel="Who can use it"
+                  className="w-max"
+                />
+                <p className="text-xs text-foreground-muted">
+                  {TEMPLATE_ACCESS_OPTIONS.find((o) => o.value === access)?.hint}
+                </p>
+              </Field>
+            )}
           </FieldGroup>
           <SourceStep
             yamlText={yamlText}

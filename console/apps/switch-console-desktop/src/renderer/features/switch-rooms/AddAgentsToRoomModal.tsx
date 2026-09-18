@@ -76,6 +76,8 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
         creator,
         ownerId: null,
         version: 1,
+        readVisibility: 'public' as const,
+        writeVisibility: 'private' as const,
       })),
     ...onWorkspace,
   ];
