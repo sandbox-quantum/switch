@@ -90,11 +90,13 @@ export const browserSettingsSchema = z
  * Whether the user lets the app send anonymous usage data, and when they were
  * asked.
  *
- * `askedAt` is null until the user has answered the first-run prompt, and is
- * what distinguishes "hasn't been asked yet" from "was asked and left it on".
- * Nothing may be sent while it is null, however `enabled` reads — see
+ * `enabled` defaults to on, and is the whole of the answer: see
  * `isTelemetryAllowed` in `@main/core/telemetry/consent`, which is the only
  * supported way to read this setting before emitting.
+ *
+ * `askedAt` is null until the user has acknowledged the first-run notice, and
+ * decides only whether that notice still needs showing. It does not gate
+ * sending.
  */
 export const telemetrySettingsSchema = z.object({
   enabled: z.boolean(),

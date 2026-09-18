@@ -103,7 +103,7 @@ export const sessionSchema = z.object({
   retired: z.boolean().optional(),
   sessionId: id,
   agentId: id,
-  provider: z.enum(['claude', 'codex', 'opencode', 'antigravity', 'cursor']),
+  provider: id,
   hostId: id,
   epoch: id,
   status: z.enum(['starting', 'ready', 'running', 'stopped', 'error']),
