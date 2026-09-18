@@ -2414,6 +2414,44 @@ async def test_a_notice_the_platform_refused_is_not_written_down_as_sent(
     assert len(platform.notices) == 1
 
 
+async def test_a_refused_notice_still_leaves_the_wedge_known_across_a_restart(
+    session_factory,
+):
+    """The two facts are written at different moments, so prove both survive.
+
+    This is the sequence that broke twice. The card being beyond repair is
+    settled the moment the platform refuses the edit, and nothing about a
+    notice that failed to send makes it writable again — so the wedge is
+    recorded at discovery, before the notice is attempted, and a restart
+    must not go back and ask the dead card anything.
+
+    The notice is the other fact and is still owed, because the platform
+    refused it. Tying the two together in one flag loses whichever is written
+    second: record at discovery and the notice is never retried; record on
+    delivery and every restart probes the card again.
+    """
+    await setup(session_factory)
+    first = WedgedPlatform()
+    first.wedged = False
+    assert await publish(activity(session_factory, first))
+
+    first.wedged = True
+    first.refuse_notices = True
+    assert not await publish(activity(session_factory, first), tools=False), (
+        "the refused notice keeps the turn owed"
+    )
+
+    record = await _activity_record(session_factory)
+    assert record["wedged"] == "channel-demo:1", "the wedge is settled at discovery"
+    assert "wedge_notice" not in record, "the notice is not, having been refused"
+
+    restarted = WedgedPlatform()
+    assert await publish(activity(session_factory, restarted), tools=False)
+
+    assert restarted.probes == 0, "a refused notice does not forget the dead card"
+    assert len(restarted.notices) == 1, "and the notice it never sent is still owed"
+
+
 async def test_a_turn_that_ends_on_the_wedge_is_not_completed_over_a_refused_notice(
     session_factory,
 ):
