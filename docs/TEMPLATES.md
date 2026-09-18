@@ -166,11 +166,12 @@ blocks creation, and the message names the candidates that were tried.
 
 **`required`**. Data type: boolean. Default: `true` when there is no default
 or the default is a chain, `false` when there is a single default value.
-Whether the value may be empty when the template is used. Only a `string`
-or a `bridge` param may be optional without a default: an empty string is
-substituted, and a room whose `bridge:` reads an empty bridge param is
-created on the server's default messaging app. Every other type needs a
-default to be optional.
+Whether the value may be empty when the template is used. Only a `string`,
+a `bridge` or a `room` param may be optional without a default: an empty
+string is substituted, a room whose `bridge:` reads an empty bridge param
+is created on the server's default messaging app, and an empty room param
+drops out of the list it was written in, which for an agent's `join` means
+no room. Every other type needs a default to be optional.
 
 **`input`**. Data type: `ask`, `advanced` or `fixed`. Default: `ask`. How the
 form shows the param.
@@ -396,15 +397,16 @@ creates the agent and stops.
 On the form, a `room` param an agent joins is a switch with the param's
 label, on when its chain resolved to a room and off otherwise. The room
 choice and the room's own params (its messaging app, its members) sit
-under the switch and only while it is on. With `required: false` the
-deployer may leave it off; the Switch expert ships that way:
+under the switch and only while it is on. With `required: false` and no
+default the switch starts off, and turning it on offers the template's
+room first; the Switch expert ships that way. With `default: [$new]` it
+starts on.
 
 ```yaml
 params:
   where:
     type: room
     label: Start it in a room
-    default: [$new]
     required: false
 ```
 

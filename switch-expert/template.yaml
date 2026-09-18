@@ -50,9 +50,9 @@
 #
 # The form for this template shows the agent's name, filled in, an Advanced
 # fold with the provider, where it runs and its directory, and one switch,
-# "Start it in a room", on by default with the room below as the choice and
-# Slack as the messaging app when it is set up. One click creates the agent
-# and the room; switch the room off and it creates the agent alone.
+# "Start it in a room", off by default. One click creates the agent alone;
+# switched on, the room below is the choice, with Slack as the messaging
+# app when it is set up, and the agent starts there.
 version: 1
 params:
   name:
@@ -67,7 +67,6 @@ params:
     description: >-
       Off, the agent is created on its own and you add it to rooms later. On,
       it starts in a new room made for it, or in one you pick.
-    default: [$new]
     required: false
   bridge:
     type: bridge

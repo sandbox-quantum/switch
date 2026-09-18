@@ -98,9 +98,11 @@ FIRST = "$first"
 # room and joining a chosen one; it never reaches the server.
 NEW = "$new"
 # The types whose param may be left without a value when the template marks
-# it ``required: false`` and gives no default: a string is empty, and a room
-# with no bridge lands on the server's default messaging app.
-OPTIONAL_WITHOUT_DEFAULT_TYPES = ("string", "bridge")
+# it ``required: false`` and gives no default: a string is empty, a room
+# with no bridge lands on the server's default messaging app, and an unset
+# room drops out of the list it was written in (an agent's ``join``, where
+# it means "no room").
+OPTIONAL_WITHOUT_DEFAULT_TYPES = ("string", "bridge", "room")
 
 ParamType = Literal[
     "string",

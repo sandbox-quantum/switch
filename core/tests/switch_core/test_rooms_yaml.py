@@ -1628,6 +1628,7 @@ def test_required_and_input_default_from_the_default(env):
         ParamSpec(type="string", input="fixed")
     with pytest.raises(ValueError, match="cannot be optional"):
         ParamSpec(type="agent", required=False)
+    assert not ParamSpec(type="room", required=False).is_required
 
 
 def test_an_optional_string_left_empty_is_empty(env):
