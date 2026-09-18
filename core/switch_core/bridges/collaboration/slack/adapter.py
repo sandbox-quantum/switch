@@ -404,10 +404,6 @@ class SlackAdapter(CollaborationAdapter):
             )
             await self._socket_client.connect()
             logger.info("Slack Socket Mode connected")
-        logger.debug(
-            _TRACE + "build carries agent sessions; config agent_sessions=%s",
-            self._config.agent_sessions,
-        )
 
     async def stop(self) -> None:
         if self._socket_client:
