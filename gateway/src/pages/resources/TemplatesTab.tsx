@@ -2,6 +2,7 @@ import { Alert, Box, Chip, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { AccessChip } from "../../components/AccessControls";
 import DataTable from "../../components/DataTable";
 import type { TemplateSummary } from "../../data/api";
 import { useTemplates } from "../../data/hooks";
@@ -15,8 +16,15 @@ interface Props {
 
 export default function TemplatesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { data: templates, loading, error, refetch } = useTemplates();
   const [search, setSearch] = useState("");
+  // The server searches name and description; the box is debounced so a
+  // keystroke does not become a request.
+  const [searchSent, setSearchSent] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchSent(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  const { data: templates, loading, error, refetch } = useTemplates(searchSent);
   const [ownerId, setOwnerId] = useState<string>("");
   const [kind, setKind] = useState<string>("");
 
@@ -40,21 +48,13 @@ export default function TemplatesTab({ refreshKey }: Props) {
     return [...seen].sort().map((k) => ({ value: k, label: k }));
   }, [templates]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (templates ?? []).filter((t) => {
-      if (ownerId && t.owner_id !== ownerId) return false;
-      if (kind && t.kind !== kind) return false;
-      if (
-        q &&
-        !t.name.toLowerCase().includes(q) &&
-        !t.description.toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [templates, search, ownerId, kind]);
+  const filtered = useMemo(
+    () =>
+      (templates ?? []).filter(
+        (t) => (!ownerId || t.owner_id === ownerId) && (!kind || t.kind === kind),
+      ),
+    [templates, ownerId, kind],
+  );
 
   const columns = useMemo<GridColDef<TemplateSummary>[]>(
     () => [
@@ -72,6 +72,12 @@ export default function TemplatesTab({ refreshKey }: Props) {
         renderCell: ({ value }) => (
           <Chip size="small" variant="outlined" label={value as string} />
         ),
+      },
+      {
+        field: "read_visibility",
+        headerName: "Access",
+        width: 110,
+        renderCell: ({ row }) => <AccessChip pair={row} />,
       },
       {
         field: "owner_name",
@@ -110,6 +116,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
         onTypeChange={setKind}
         types={kinds}
         typeLabel="Kind"
+        searchPlaceholder="Search by name or description…"
       />
 
       {error && (

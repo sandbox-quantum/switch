@@ -22,9 +22,15 @@ import {
   fetchTemplateContent,
   updateTemplate,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
+import { AccessChip, AccessSelect } from "../../components/AccessControls";
+import {
+  type AccessLevel,
+  fromAccessLevel,
+  toAccessLevel,
+} from "../../data/visibility";
 import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
 import DeleteTemplateDialog from "./DeleteTemplateDialog";
+import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
@@ -34,7 +40,6 @@ const LIST_URL = "/resources?tab=templates";
 export default function TemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
   const [template, setTemplate] = useState<TemplateDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -76,8 +81,11 @@ export default function TemplateDetailPage() {
     );
   }
 
-  const canMutate =
-    !!user && (user.id === template.owner_id || user.role === "admin");
+  // The server says what this user may do. The user's global role would not:
+  // a workspace admin whose global role is plain "user" may still manage
+  // every template here, and an open template is edited by anyone.
+  const canMutate = template.can_edit;
+  const canManage = template.can_manage;
 
   return (
     <Box>
@@ -97,9 +105,10 @@ export default function TemplateDetailPage() {
         <DocumentSection
           template={template}
           canMutate={canMutate}
+          canManage={canManage}
           onSaved={setTemplate}
         />
-        {canMutate && (
+        {canManage && (
           <>
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
@@ -132,6 +141,9 @@ function InfoSection({ template }: { template: TemplateDetail }) {
         value={template.owner_name ?? template.owner_id}
         mono={!template.owner_name}
       />
+      <Typography variant="body2" color="text.secondary">
+        <strong>Access:</strong> <AccessChip pair={template} />
+      </Typography>
       <InfoLine label="Revision" value={String(template.version)} />
       <InfoLine label="Size" value={formatBytes(template.size_bytes)} />
       <InfoLine label="Created" value={formatDateTime(template.created_at)} />
@@ -168,15 +180,19 @@ function InfoLine({
 function DocumentSection({
   template,
   canMutate,
+  canManage,
   onSaved,
 }: {
   template: TemplateDetail;
   canMutate: boolean;
+  /** Only the owner or an admin changes who may see or edit it. */
+  canManage: boolean;
   onSaved: (updated: TemplateDetail) => void;
 }) {
   const [name, setName] = useState(template.name);
   const [description, setDescription] = useState(template.description);
   const [kind, setKind] = useState(template.kind);
+  const [access, setAccess] = useState<AccessLevel>(toAccessLevel(template));
   const [content, setContent] = useState(template.content);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,22 +208,33 @@ function DocumentSection({
       name !== template.name ||
       description !== template.description ||
       kind !== template.kind ||
-      content !== template.content,
-    [name, description, kind, content, template],
+      content !== template.content ||
+      access !== toAccessLevel(template),
+    [name, description, kind, content, access, template],
   );
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
+      // Only what changed is sent. A document someone else saved meanwhile
+      // must not be put back by an edit to the name or the access, and a
+      // stored document the validator now refuses can still have its
+      // metadata changed.
       const updated = await updateTemplate(template.id, {
-        name,
-        description,
-        kind,
-        content,
+        ...(name !== template.name ? { name } : {}),
+        ...(description !== template.description ? { description } : {}),
+        ...(kind !== template.kind ? { kind } : {}),
+        ...(content !== template.content ? { content } : {}),
+        // Sent only by someone allowed to change it; the server refuses it otherwise.
+        ...(canManage && access !== toAccessLevel(template) ? fromAccessLevel(access) : {}),
       });
       onSaved(updated);
+      setName(updated.name);
+      setDescription(updated.description);
+      setKind(updated.kind);
       setContent(updated.content);
+      setAccess(toAccessLevel(updated));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save");
     } finally {
@@ -274,11 +301,10 @@ function DocumentSection({
       {exportError && <Alert severity="error">{exportError}</Alert>}
       {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
       {!canMutate && (
-        // Said outright rather than left to the greyed-out fields. Every
-        // template on the server is visible to everyone, so reading someone
-        // else's is the ordinary case here, not the exception it is for the
-        // resources next door — and a disabled field on its own only tells you
-        // something is wrong once you have already tried to type in it.
+        // Said outright rather than left to the greyed-out fields: reading
+        // someone else's shared template is the ordinary case here, and a
+        // disabled field on its own only tells you something is wrong once
+        // you have already tried to type in it.
         <Alert severity="info">
           This template belongs to {template.owner_name ?? "another user"}. You
           can copy or download it; only its owner or an admin can change it.
@@ -304,6 +330,13 @@ function DocumentSection({
         value={kind}
         onChange={(e) => setKind(e.target.value)}
         disabled={!canMutate || saving}
+        sx={{ maxWidth: 320 }}
+      />
+      <AccessSelect
+        value={access}
+        onChange={setAccess}
+        disabled={!canManage || saving}
+        helpers={TEMPLATE_ACCESS_HELPERS}
         sx={{ maxWidth: 320 }}
       />
       <TextField

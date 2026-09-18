@@ -1513,6 +1513,11 @@ export interface TemplateSummary {
   name: string;
   description: string;
   kind: string;
+  read_visibility: "public" | "private";
+  write_visibility: "public" | "private";
+  /** What the signed-in user may do with it, as the server judges it. */
+  can_edit: boolean;
+  can_manage: boolean;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -1528,6 +1533,8 @@ export interface TemplateCreateInput {
   description: string;
   kind: string;
   content: string;
+  read_visibility?: "public" | "private";
+  write_visibility?: "public" | "private";
 }
 
 export interface TemplateUpdateInput {
@@ -1535,14 +1542,22 @@ export interface TemplateUpdateInput {
   description?: string;
   kind?: string;
   content?: string;
+  read_visibility?: "public" | "private";
+  write_visibility?: "public" | "private";
 }
 
 export interface TemplateDeleteResult {
   deleted_id: string;
 }
 
-export async function fetchTemplates(): Promise<TemplateSummary[] | null> {
-  return fetchJson<TemplateSummary[]>("/templates");
+/** The templates the signed-in user may see. `q` is matched by the server
+ * against name and description. */
+export async function fetchTemplates(
+  q?: string,
+): Promise<TemplateSummary[] | null> {
+  const query = q?.trim();
+  const qs = query ? `?q=${encodeURIComponent(query)}` : "";
+  return fetchJson<TemplateSummary[]>(`/templates${qs}`);
 }
 
 export async function fetchTemplate(id: string): Promise<TemplateDetail | null> {
@@ -1575,7 +1590,11 @@ export async function fetchTemplateContent(id: string): Promise<string> {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
   }
-  return res.text();
+  // Decoded without BOM stripping: `text()` drops a leading byte order mark,
+  // and the download promises the stored bytes.
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(
+    await res.arrayBuffer(),
+  );
 }
 
 export interface TemplateFinding {
