@@ -23,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.authz import (
     Action,
     Principal,
+    can,
+    can_manage,
     require,
     require_manage,
     validate_visibility_pair,
@@ -80,7 +82,9 @@ def _content_disposition(name: str) -> str:
     return f"attachment; filename=\"{stem}.yaml\"; filename*=UTF-8''{encoded}"
 
 
-def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
+def _summary(
+    row: TemplateListing, owner_name: str | None, principal: Principal
+) -> TemplateSummary:
     return TemplateSummary(
         id=row.id,
         owner_id=row.owner_id,
@@ -90,6 +94,8 @@ def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
         kind=row.kind,
         read_visibility=row.read_visibility,
         write_visibility=row.write_visibility,
+        can_edit=can(principal, "write", row),
+        can_manage=can_manage(principal, row.owner_id),
         version=row.version,
         size_bytes=row.size_bytes,
         created_at=str(row.created_at),
@@ -97,7 +103,9 @@ def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
     )
 
 
-def _detail(template: Template, owner_name: str | None) -> TemplateDetail:
+def _detail(
+    template: Template, owner_name: str | None, principal: Principal
+) -> TemplateDetail:
     return TemplateDetail(
         id=template.id,
         owner_id=template.owner_id,
@@ -107,6 +115,8 @@ def _detail(template: Template, owner_name: str | None) -> TemplateDetail:
         kind=template.kind,
         read_visibility=template.read_visibility,
         write_visibility=template.write_visibility,
+        can_edit=can(principal, "write", template),
+        can_manage=can_manage(principal, template.owner_id),
         version=template.version,
         size_bytes=_size_bytes(template.content),
         created_at=str(template.created_at),
@@ -225,7 +235,8 @@ async def list_templates(
         owner_id=owner_id,
     )
     names = await _owner_names(session, user_store, {r.owner_id for r in rows})
-    return [_summary(r, names.get(r.owner_id)) for r in rows]
+    principal = Principal(user.id, is_admin)
+    return [_summary(r, names.get(r.owner_id), principal) for r in rows]
 
 
 @router.post("/templates", status_code=201)
@@ -236,6 +247,7 @@ async def create_template(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDetail:
     _require_within_size_limit(req.content, config)
     _require_storable(req.content)
@@ -256,7 +268,11 @@ async def create_template(
     except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     await session.commit()
-    return _detail(template, await _owner_name(session, user_store, user.id))
+    return _detail(
+        template,
+        await _owner_name(session, user_store, user.id),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.post("/templates/validate")
@@ -310,7 +326,11 @@ async def get_template(
     template = await _load_for(
         "read", session, template_store, template_id, user, is_admin
     )
-    return _detail(template, await _owner_name(session, user_store, template.owner_id))
+    return _detail(
+        template,
+        await _owner_name(session, user_store, template.owner_id),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.get("/templates/{template_id}/content", response_model=None)
@@ -351,18 +371,32 @@ async def patch_template(
     current = await _load_for(
         "write", session, template_store, template_id, user, is_admin
     )
-    if req.read_visibility is not None or req.write_visibility is not None:
+    principal = Principal(user.id, is_admin)
+    changes_access = req.read_visibility is not None or req.write_visibility is not None
+    if changes_access:
         # Who may see or change a template is the owner's to decide, not an
         # editor's: an open template must not be closed, or opened wider, by
         # anyone the owner let edit its document.
         try:
-            require_manage(Principal(user.id, is_admin), current.owner_id)
+            require_manage(principal, current.owner_id)
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
         _require_visibility(
-            req.read_visibility or current.read_visibility,
-            req.write_visibility or current.write_visibility,
+            current.read_visibility
+            if req.read_visibility is None
+            else req.read_visibility,
+            current.write_visibility
+            if req.write_visibility is None
+            else req.write_visibility,
         )
+
+    def still_allowed(locked: Template) -> None:
+        # Checked again on the locked row: the owner may have closed the
+        # template since the check above.
+        require(principal, "write", locked)
+        if changes_access:
+            require_manage(principal, locked.owner_id)
+
     if req.content is not None:
         _require_within_size_limit(req.content, config)
         _require_storable(req.content)
@@ -376,7 +410,10 @@ async def patch_template(
             content=req.content,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
+            guard=still_allowed,
         )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
@@ -384,7 +421,11 @@ async def patch_template(
         # delete that landed in between — gone, not in conflict.
         raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
-    return _detail(template, await _owner_name(session, user_store, template.owner_id))
+    return _detail(
+        template,
+        await _owner_name(session, user_store, template.owner_id),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.delete("/templates/{template_id}")

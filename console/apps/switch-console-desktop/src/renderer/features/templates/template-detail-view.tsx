@@ -215,10 +215,14 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   }
 
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
-  const canManage = loaded.server !== null && (mine || me?.role === 'admin');
-  // An open template is edited by anyone who can read it; only its owner or
-  // an admin removes it or changes who may use it.
-  const canEdit = canManage || loaded.server?.writeVisibility === 'public';
+  // The server says what this user may do: it knows who administers the
+  // workspace, which the user's global role does not tell. An older server
+  // leaves the answer out, and the owner-or-admin guess stands in.
+  const canManage =
+    loaded.server !== null && (loaded.server.canManage ?? (mine || me?.role === 'admin'));
+  const canEdit =
+    loaded.server !== null &&
+    (loaded.server.canEdit ?? (canManage || loaded.server.writeVisibility === 'public'));
   const singleAgent = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
   // In a single-agent document the room refers to the agent as `{agent}`. The
   // Console fills that in with the agent's name, so it is not an input to list.
