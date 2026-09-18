@@ -2,6 +2,7 @@ import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import {
   composeTemplateDocument,
+  formOptions,
   serverDocument,
   parseTemplateAgents,
   substituteAgentSlots,
@@ -187,5 +188,16 @@ describe('composeTemplateDocument', () => {
       composeTemplateDocument('agents:\n  - name: a\n  - name: b\n    instructions: own\n', 'P')
     ) as { agents: { instructions: string }[] };
     expect(out.agents.map((a) => a.instructions)).toEqual(['P', 'own']);
+  });
+});
+
+describe('formOptions', () => {
+  it('reads the advanced fold settings and falls back to a folded "Advanced"', () => {
+    expect(
+      formOptions('form:\n  advanced:\n    label: More\n    open: true\nroom:\n  name: r\n')
+    ).toEqual({ advanced: { label: 'More', open: true } });
+    expect(formOptions('room:\n  name: r\n')).toEqual({
+      advanced: { label: 'Advanced', open: false },
+    });
   });
 });

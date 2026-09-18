@@ -22,8 +22,9 @@ root is the worked example, and `examples/` holds more.
 7. [Groups](#groups)
 8. [Kickoff](#kickoff)
 9. [Where an agent works](#where-an-agent-works)
-10. [Validation](#validation)
-11. [Versioning](#versioning)
+10. [The form block](#the-form-block)
+11. [Validation](#validation)
+12. [Versioning](#versioning)
 
 ## A first template
 
@@ -76,6 +77,7 @@ describe at least one thing to create.
 | `room` | One room to create. | The server |
 | `group`, `rooms`, `links` | A room group, its rooms, and links between them. | The server |
 | `kickoff` | A message posted into the room once it exists. | The server |
+| `form` | How the form folds things away. | Switch Console |
 
 There is only one kind of template. A listing shows a document as an agent,
 room or group template by looking at which keys it has, so a saved document
@@ -390,6 +392,37 @@ room: { name: "Ask {agent}", agents: ["{agent}"] }
 When a `join` param exists, the template's room is created only when the
 param resolves to `$new`. A document with neither `room:` nor `join:`
 creates the agent and stops.
+
+On the form, a `room` param an agent joins is a switch with the param's
+label, on when its chain resolved to a room and off otherwise. The room
+choice and the room's own params (its messaging app, its members) sit
+under the switch and only while it is on. With `required: false` the
+deployer may leave it off; the Switch expert ships that way:
+
+```yaml
+params:
+  where:
+    type: room
+    label: Start it in a room
+    default: [$new]
+    required: false
+```
+
+## The form block
+
+```yaml
+form:
+  advanced:
+    label: Advanced
+    open: false
+```
+
+Every `input: advanced` and `input: fixed` param of an agent, and the
+agent's directory when the template names none, sit together in one fold
+under the agent's asked inputs. `label` names the fold; `open` says whether
+it starts open. Folded, it shows its values on one line with a Change
+button, and it opens by itself when something inside it is empty or wrong.
+The block is the Console's; the server ignores it.
 
 ## Validation
 

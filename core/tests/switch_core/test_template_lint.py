@@ -485,6 +485,11 @@ def test_new_in_a_room_chain_needs_a_room_to_create():
     assert "new_without_room" not in {e.code for e in lint_template(with_room).errors}
 
 
+def test_form_is_a_known_top_level_key():
+    result = lint_template("form:\n  advanced:\n    open: true\nroom:\n  name: r\n")
+    assert "unknown_top_level_key" not in {w.code for w in result.warnings}
+
+
 def test_the_policy_fields_are_known_param_fields():
     text = (
         "params:\n  name:\n    type: string\n    label: Agent name\n"

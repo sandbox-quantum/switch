@@ -20,6 +20,8 @@ import {
   type ParsedAgentTemplate,
 } from './agent-template-format';
 import {
+  type FormOptions,
+  formOptions,
   serverDocument,
   parseTemplateAgents,
   substituteAgentSlots,
@@ -30,7 +32,12 @@ import {
 import { summarizeTemplate, type TemplateSummary } from './template-summary';
 
 export type { AgentTemplateSource, ParsedAgentTemplate } from './agent-template-format';
-export type { ParsedAgentEntry, TemplateAgents, TemplateKind } from './template-document';
+export type {
+  FormOptions,
+  ParsedAgentEntry,
+  TemplateAgents,
+  TemplateKind,
+} from './template-document';
 export type { TemplateEntity, TemplateSummary } from './template-summary';
 
 const execFileAsync = promisify(execFile);
@@ -135,6 +142,9 @@ export const agentTemplatesController = createRPCController({
   /** The agents a document creates. Empty for a room template. */
   parseAgents: (params: { yamlText: string; instructions?: string | null }): TemplateAgents =>
     parseTemplateAgents(params.yamlText, params.instructions ?? null),
+
+  /** The layout choices the document's `form:` block makes for the Use page. */
+  form: (params: { yamlText: string }): FormOptions => formOptions(params.yamlText),
 
   /** The room part of a document as the server receives it, or null when the document has no rooms. */
   serverDocument: (params: { yamlText: string; keepConsoleParams?: boolean }): string | null =>

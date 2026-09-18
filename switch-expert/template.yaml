@@ -44,9 +44,15 @@
 #                 addresses it, so mention the agent here or it will sit in
 #                 the room without answering.
 #
-# The form for this template shows the agent's name and the messaging app,
-# both filled in, and an Advanced fold with the provider, where it runs and
-# its directory. One click creates the agent and the room.
+#   form:         How the form folds things away: `advanced.label` names the
+#                 fold that holds the `input: advanced` and `input: fixed`
+#                 params, `advanced.open` says whether it starts open.
+#
+# The form for this template shows the agent's name, filled in, an Advanced
+# fold with the provider, where it runs and its directory, and one switch,
+# "Start it in a room", on by default with the room below as the choice and
+# Slack as the messaging app when it is set up. One click creates the agent
+# and the room; switch the room off and it creates the agent alone.
 version: 1
 params:
   name:
@@ -54,10 +60,21 @@ params:
     label: Agent name
     description: How the agent is shown to people. It is addressed by a short form of this.
     default: Switch expert
+    required: true
+  where:
+    type: room
+    label: Start it in a room
+    description: >-
+      Off, the agent is created on its own and you add it to rooms later. On,
+      it starts in a new room made for it, or in one you pick.
+    default: [$new]
+    required: false
   bridge:
     type: bridge
-    description: The messaging app the room is created in.
-    default: [$first]
+    label: Messaging app
+    description: Where the new room is created. Slack when it is set up, else the server's default app.
+    default: [Slack, $first]
+    required: false
   provider:
     type: provider
     description: The coding agent that runs it. The first one installed where it runs is chosen.
@@ -73,6 +90,10 @@ params:
     description: Its working directory. The repository is cloned inside it.
     default: "{$agents_dir}/{agent}"
     input: advanced
+form:
+  advanced:
+    label: Advanced
+    open: false
 agent:
   display_name: "{name}"
   description: >-
@@ -82,6 +103,7 @@ agent:
   provider: "{provider}"
   location: "{location}"
   directory: "{directory}"
+  join: ["{where}"]
   repo: https://github.com/sandbox-quantum/switch
   addressing: anyone
   sources:

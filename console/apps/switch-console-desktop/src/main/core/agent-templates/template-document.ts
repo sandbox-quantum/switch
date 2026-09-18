@@ -174,6 +174,27 @@ export function parseTemplateAgents(
   return { agents, singular: !Array.isArray(doc.agents) && agents.length === 1, warnings };
 }
 
+/** How the Use page lays out what the template folds away. From the document's `form:` block. */
+export type FormOptions = {
+  advanced: {
+    /** The heading of the fold that holds the `input: advanced` and `input: fixed` params. */
+    label: string;
+    /** Whether the fold starts open. */
+    open: boolean;
+  };
+};
+
+export function formOptions(yamlText: string): FormOptions {
+  const form = asRecord(parseYaml(yamlText).form);
+  const advanced = asRecord(form?.advanced);
+  return {
+    advanced: {
+      label: optionalString(advanced?.label) ?? 'Advanced',
+      open: advanced?.open === true,
+    },
+  };
+}
+
 function isConsoleParam(spec: unknown): boolean {
   const record = asRecord(spec);
   return record !== null && CONSOLE_PARAM_TYPES.includes(record.type as ConsoleParamType);

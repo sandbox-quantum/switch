@@ -43,6 +43,7 @@ _KNOWN_TOP_LEVEL = frozenset(
         "kickoff",
         "agent",
         "agents",
+        "form",
     }
 )
 

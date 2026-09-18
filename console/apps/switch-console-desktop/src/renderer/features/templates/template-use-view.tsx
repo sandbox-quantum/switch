@@ -2,7 +2,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ParsedAgentEntry, TemplateKind } from '@main/core/agent-templates/controller';
+import type {
+  FormOptions,
+  ParsedAgentEntry,
+  TemplateKind,
+} from '@main/core/agent-templates/controller';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -33,6 +37,7 @@ import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
+import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import {
@@ -56,6 +61,7 @@ import {
 } from './use/creates-rail';
 import { CreatingScreen } from './use/creating-screen';
 import { ParamField } from './use/param-field';
+import { RoomChoiceField } from './use/room-pick-field';
 import { LOCAL_RUN_LOCATION, runLocationLabel, useAllowedHosts } from './use/run-location-select';
 import {
   agentCreateSteps,
@@ -105,6 +111,7 @@ type UsePageTemplate = {
   params: ParamSpec[];
   /** The names of the params the server document keeps. */
   serverParamNames: Set<string>;
+  form: FormOptions;
   parsed: ParsedTemplate | null;
   coreYaml: string | null;
   warnings: string[];
@@ -156,6 +163,7 @@ async function loadUsePageTemplate(serverId: string, params: Params): Promise<Us
   // A document without rooms can still declare params, used in agent names.
   const declaredParams = parsed?.params ?? (await rpc.roomTemplates.params({ yamlText }));
   const serverParams = coreYaml ? await rpc.roomTemplates.params({ yamlText: coreYaml }) : [];
+  const form = await rpc.agentTemplates.form({ yamlText });
   return {
     name,
     yamlText,
@@ -166,6 +174,7 @@ async function loadUsePageTemplate(serverId: string, params: Params): Promise<Us
     singular,
     params: declaredParams,
     serverParamNames: new Set(serverParams.map((p) => p.name)),
+    form,
     parsed,
     coreYaml,
     warnings: [...warnings, ...(parsed?.warnings ?? [])],
@@ -250,6 +259,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const [createError, setCreateError] = useState<string | null>(null);
   // Advanced inputs the deployer opened, by param name or row key.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  // For a template whose agent joins a `room` param: whether the deployer
+  // wants a room at all, and whether they are choosing one right now.
+  const [roomOn, setRoomOn] = useState(false);
+  const [pickingRoom, setPickingRoom] = useState(false);
   const open = (key: string) => setOpened((prev) => new Set(prev).add(key));
   // Chains decided once their candidates are known, so a value the deployer
   // clears is not filled in again.
@@ -273,6 +286,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         chainDecided.current = new Set();
         createdRoom.current = null;
         setOpened(new Set());
+        setRoomOn(false);
+        setPickingRoom(false);
         setPickedProvider(null);
         setSlots(result.agents.map(newSlot));
         // The editable member list holds the room's fixed agents that the template
@@ -325,6 +340,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       return s?.section === 'agent' && s.index === i;
     });
   const roomParams = templateParams.filter((p) => sections.get(p.name)?.section === 'room');
+  // The `room` param an agent joins, when the template leaves the room to the deployer.
+  const joinParam =
+    templateParams.find(
+      (p) => p.type === 'room' && (loaded?.agents ?? []).some((a) => a.join.includes(`{${p.name}}`))
+    ) ?? null;
+  const joinValue = joinParam ? String(values[joinParam.name] ?? '') : '';
+  // A chain that resolved to a room switches the room on.
+  useEffect(() => {
+    if (joinValue !== '' && !roomOn) setRoomOn(true);
+  }, [joinValue, roomOn]);
   // A Console-type param no agent entry binds applies to every agent.
   const unboundOfType = (type: ParamSpec['type']) =>
     templateParams.find(
@@ -553,8 +578,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const takenNames = useMemo(() => new Set((agents.data ?? []).map((a) => a.name)), [agents.data]);
 
   // ── Why Create is disabled ──────────────────────────────────────────────
-  const missing = missingParams(templateParams, values);
-  const invalid = templateParams
+  // A room's own params matter only when the room is made.
+  const liveParams = templateParams.filter(
+    (p) =>
+      makesRoom || joinParam === null || p === joinParam || sections.get(p.name)?.section !== 'room'
+  );
+  const missing = missingParams(liveParams, values);
+  const invalid = liveParams
     .map((p) => ({ p, problem: valueProblem(p, values[p.name] ?? '') }))
     .filter((x) => x.problem !== null);
   const slotProblems: string[] = [];
@@ -587,6 +617,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         slotProblems.push(`There is no room called ${room} on this server.`);
     }
   });
+  if (joinParam && roomOn && joinValue === '')
+    slotProblems.push('Pick the room, or switch it off.');
   const newSlots = slots.filter((s) => s.mode === 'new');
   const remoteLabel = firstRemote ? runLocationLabel(firstRemote, allowedHosts) : '';
   const blockedReason: string | null =
@@ -1071,8 +1103,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         }
       : null;
 
-  /** One param as the template says to show it: asked, folded, or fixed. */
-  const paramRow = (param: ParamSpec, sshHost: string | null) => {
+  /** One param as the template says to show it: asked, folded, or fixed.
+   * Inside the Advanced fold an `advanced` param is a plain field: the fold does the folding. */
+  const paramRow = (param: ParamSpec, sshHost: string | null, inFold = false) => {
     const value = values[param.name] ?? '';
     const error = fieldErrors[param.name] ?? valueProblem(param, value);
     const summary =
@@ -1110,7 +1143,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         }
       />
     );
-    if (param.input === 'advanced') {
+    if (param.input === 'advanced' && !inFold) {
       const settled = !isEmpty(value) && error === null;
       return (
         <CollapsibleInput
@@ -1128,16 +1161,49 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     return field;
   };
 
-  /** The section for one agent entry: its params, then what the template left open. */
+  /** A summary line for the fold: each folded value, in order. */
+  const foldSummary = (rows: ParamSpec[], directory: string, asksDirectory: boolean) =>
+    [
+      ...rows.map((p) => {
+        const v = values[p.name] ?? '';
+        return p.type === 'provider'
+          ? (providerDisplayName(String(v)) ?? String(v))
+          : p.type === 'location'
+            ? runLocationLabel(String(v) || LOCAL_RUN_LOCATION, allowedHosts)
+            : p.type === 'directory'
+              ? (directory || String(v)).replace(/^\/(?:Users|home)\/[^/]+/, '~')
+              : String(v);
+      }),
+      ...(asksDirectory ? [directory.replace(/^\/(?:Users|home)\/[^/]+/, '~')] : []),
+    ]
+      .filter((v) => v !== '')
+      .join('  ·  ');
+
+  /** The section for one agent entry: what it asks, then one fold with what the template settled. */
   const agentSection = (slot: AgentSlot, i: number) => {
     const setup = setups[i];
     const sshHost = setup.location === LOCAL_RUN_LOCATION ? null : setup.location;
     const own = paramsOfAgent(i);
     const shared = i === 0 ? [providerParam, locationParam, directoryParam] : [];
     const rows = [...own, ...shared.filter((p): p is ParamSpec => p !== null && !own.includes(p))];
+    const asked = rows.filter((p) => p.input === 'ask');
+    const folded = rows.filter((p) => p.input !== 'ask');
     const asksProvider = !slot.entry.provider && !providerParam && slot.mode === 'new';
     const asksDirectory = !slot.entry.directory && !directoryParam && slot.mode === 'new';
     const isRemote = sshHost !== null;
+    const foldKey = `fold:${i}`;
+    const foldSettled =
+      folded.every(
+        (p) =>
+          p.input === 'fixed' ||
+          (!isEmpty(values[p.name]) &&
+            (fieldErrors[p.name] ?? valueProblem(p, values[p.name] ?? '')) === null)
+      ) &&
+      (!asksDirectory || (setup.directory !== '' && !slot.dirPicked)) &&
+      hostReachable &&
+      hostReady;
+    const hasFold = folded.length > 0 || asksDirectory;
+    const foldLabel = loaded?.form.advanced.label ?? 'Advanced';
     return (
       <div key={i} className="flex flex-col gap-4">
         {slots.length > 1 && (
@@ -1146,7 +1212,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             hint={slot.entry.description || undefined}
           />
         )}
-        {rows.filter((p) => p.input !== 'advanced').map((p) => paramRow(p, sshHost))}
+        {asked.map((p) => paramRow(p, sshHost))}
         {asksProvider && (
           <div className="flex flex-col gap-2">
             <div className="flex items-baseline gap-2">
@@ -1170,42 +1236,53 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             )}
           </div>
         )}
-        {rows.filter((p) => p.input === 'advanced').map((p) => paramRow(p, sshHost))}
-        {asksDirectory && (
+        {hasFold && (
           <CollapsibleInput
-            label="Directory"
-            summary={setup.directory.replace(/^\/(?:Users|home)\/[^/]+/, '~')}
+            label={foldLabel}
+            summary={foldSummary(folded, setup.directory, asksDirectory)}
             collapsed={
-              setup.directory !== '' &&
-              !slot.dirPicked &&
-              !opened.has(`dir:${i}`) &&
-              phase === 'form'
+              phase === 'form' &&
+              !(loaded?.form.advanced.open ?? false) &&
+              !opened.has(foldKey) &&
+              foldSettled
             }
-            onOpen={() => open(`dir:${i}`)}
+            onOpen={() => open(foldKey)}
             disabled={busy}
+            wrap
           >
-            <div className="flex flex-col gap-2">
-              <span className="text-[12.5px] font-medium">Directory</span>
-              <p className="text-xs text-foreground-muted">
-                The template names no directory, so the agent gets a folder of its own under the one
-                this Console keeps agents in.
-              </p>
-              <SlotDirectoryField
-                slot={{ ...slot, dir: setup.directory }}
-                onChange={(next) => setSlots((prev) => prev.map((x, j) => (j === i ? next : x)))}
-                sshHost={sshHost}
-                busy={busy}
-              />
+            <div className="flex flex-col gap-5 rounded-[10px] border border-border px-4 py-4">
+              <span className="text-[12.5px] font-medium">{foldLabel}</span>
+              {folded.map((p) => paramRow(p, sshHost, true))}
+              {asksDirectory && (
+                <div className="flex flex-col gap-2">
+                  <span className="text-[12.5px] font-medium">Directory</span>
+                  <p className="text-xs text-foreground-muted">
+                    The template names no directory, so the agent gets a folder of its own under the
+                    one this Console keeps agents in.
+                  </p>
+                  <SlotDirectoryField
+                    slot={{ ...slot, dir: setup.directory }}
+                    onChange={(next) =>
+                      setSlots((prev) => prev.map((x, j) => (j === i ? next : x)))
+                    }
+                    sshHost={sshHost}
+                    busy={busy}
+                  />
+                </div>
+              )}
+              {isRemote && <HostReachabilityNotice sshHost={setup.location} />}
+              {isRemote &&
+                hostReachable &&
+                firstRemote === setup.location &&
+                !hostReadiness.checking && (
+                  <HostReadinessNotice
+                    sshHost={setup.location}
+                    readiness={hostReadiness}
+                    onNavigateAway={() => navigate('remoteHosts')}
+                  />
+                )}
             </div>
           </CollapsibleInput>
-        )}
-        {isRemote && <HostReachabilityNotice sshHost={setup.location} />}
-        {isRemote && hostReachable && firstRemote === setup.location && !hostReadiness.checking && (
-          <HostReadinessNotice
-            sshHost={setup.location}
-            readiness={hostReadiness}
-            onNavigateAway={() => navigate('remoteHosts')}
-          />
         )}
       </div>
     );
@@ -1241,7 +1318,75 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     </>
   );
 
-  const roomSection = (hasRoomPart || roomParams.length > 0 || intoRoomId) && (
+  const otherRoomParams = roomParams.filter((p) => p !== joinParam);
+  const roomDetails = (
+    <>
+      {otherRoomParams.filter((p) => p.input !== 'advanced').map((p) => paramRow(p, null))}
+      {makesRoom && memberLists}
+      {otherRoomParams.filter((p) => p.input === 'advanced').map((p) => paramRow(p, null))}
+    </>
+  );
+  const roomSummary =
+    joinValue === NEW
+      ? `New room: ${newRoomForPick?.name ?? 'from the template'}`
+      : joinValue || 'Pick a room';
+  const roomSection = joinParam ? (
+    // The template leaves the room to the deployer: one switch, and the
+    // details only once it is on. Off, the agent is created on its own.
+    <div className="flex flex-col gap-4">
+      <label className="flex cursor-pointer items-start gap-3">
+        <Switch
+          checked={roomOn}
+          disabled={busy}
+          onCheckedChange={(on) => {
+            setRoomOn(on);
+            const next = on && hasRoomPart ? NEW : '';
+            setValues((prev) => ({ ...prev, [joinParam.name]: next }));
+            setPickingRoom(on && next === '');
+          }}
+          className="mt-0.5"
+        />
+        <span className="flex flex-col gap-0.5">
+          <span className="text-sm font-semibold text-foreground">{paramLabel(joinParam)}</span>
+          {joinParam.description && (
+            <span className="text-[12.5px] leading-relaxed text-foreground-muted">
+              {joinParam.description}
+            </span>
+          )}
+        </span>
+      </label>
+      {roomOn && (
+        <div className="flex flex-col gap-4 border-l-2 border-border pl-4">
+          {pickingRoom ? (
+            <div className="flex flex-col gap-2">
+              <span className="text-[12.5px] font-medium">Room</span>
+              <RoomChoiceField
+                rooms={lists.rooms}
+                loading={lists.roomsLoading}
+                newRoom={newRoomForPick}
+                value=""
+                onChange={(v) => {
+                  setValues((prev) => ({ ...prev, [joinParam.name]: v }));
+                  setPickingRoom(false);
+                }}
+              />
+            </div>
+          ) : (
+            <CollapsibleInput
+              label="Room"
+              summary={roomSummary}
+              collapsed
+              onOpen={() => setPickingRoom(true)}
+              disabled={busy}
+            >
+              {null}
+            </CollapsibleInput>
+          )}
+          {roomDetails}
+        </div>
+      )}
+    </div>
+  ) : hasRoomPart || roomParams.length > 0 || intoRoomId ? (
     <div className="flex flex-col gap-4">
       <SectionTitle
         title={roomCount > 1 ? 'Rooms' : 'Room'}
@@ -1253,11 +1398,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               : undefined
         }
       />
-      {roomParams.filter((p) => p.input !== 'advanced').map((p) => paramRow(p, null))}
-      {makesRoom && memberLists}
-      {roomParams.filter((p) => p.input === 'advanced').map((p) => paramRow(p, null))}
+      {roomDetails}
     </div>
-  );
+  ) : null;
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
