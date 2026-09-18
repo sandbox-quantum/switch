@@ -273,7 +273,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   }, [yamlText, sourceName, serverId, showModal]);
 
   // Editing a stored template: the name, the description and the document go
-  // to the server in one change, and everyone on the workspace gets them.
+  // to the server in one change.
   const handleSaveChanges = useCallback(async () => {
     if (!editingTemplate) return;
     setSaving(true);
