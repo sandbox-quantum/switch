@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
-import { ownProcessGroup } from './process-fence';
+import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
@@ -103,6 +103,11 @@ async function main(): Promise<void> {
       ],
       env: process.env,
       signal: stop.signal,
+      existingWorker: 'adopt',
+      fenceDeadWorker: fenceDeadOwner,
+      logRedactions: [],
+      shutdownTimeoutMs: null,
+      clearFailureOnStart: false,
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -175,8 +180,14 @@ try {
     mode !== '--watch-supervise'
   ) {
     await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+    const message =
+      process.env.SWITCH_HOSTED_BOOTSTRAP === '1'
+        ? 'Hosted SDK worker failed. Inspect the redacted worker log.'
+        : error instanceof Error
+          ? error.message
+          : String(error);
     await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-      message: error instanceof Error ? error.message : String(error),
+      message,
     });
   }
   console.error(error);
