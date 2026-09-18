@@ -40,7 +40,7 @@ params:
     description: The task brief (paste the full text)
 room:
   name: "Switch work: {task_name}"
-  description: "Workroom for {task_name}: coder/reviewer loop, human-gated."
+  description: "A coder implements the task and a reviewer drives the acceptance loop; you gate the merge."
   channel_type: channel_private
   agents: ["{coder_agent}", "{reviewer_agent}"]
   users: ["{$creator}"]

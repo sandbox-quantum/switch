@@ -47,7 +47,30 @@ export type AgentConfigFile = {
    * read back in.
    */
   rendered?: Record<string, string>;
+  /**
+   * The template this agent was created from. Absent for an agent created
+   * without one. Holds what is needed to load the template again later, so
+   * the agent's settings page can offer the template's current instructions:
+   * a bundled template is found by id in this Console, a server one on its
+   * server.
+   */
+  template?: AgentTemplateOrigin;
 };
+
+export type AgentTemplateOrigin = {
+  id: string;
+  name: string;
+  source: 'bundled' | 'server';
+  serverId?: string;
+};
+
+function parseTemplateOrigin(value: unknown): AgentTemplateOrigin | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const { id, name, source, serverId } = value;
+  if (typeof id !== 'string' || typeof name !== 'string') return undefined;
+  if (source !== 'bundled' && source !== 'server') return undefined;
+  return { id, name, source, ...(typeof serverId === 'string' ? { serverId } : {}) };
+}
 
 /**
  * Parse an agent config file's text.
@@ -72,6 +95,8 @@ export function parseAgentConfigFile(raw: string): AgentConfigFile {
   const config: AgentConfigFile = {};
   if (typeof record.instructions === 'string') config.instructions = record.instructions;
   if (isPlainObject(record.settings)) config.settings = record.settings as RepoAgentAttributes;
+  const template = parseTemplateOrigin(record.template);
+  if (template) config.template = template;
   if (isPlainObject(record.rendered)) {
     const rendered: Record<string, string> = {};
     for (const [path, digest] of Object.entries(record.rendered)) {
@@ -101,6 +126,7 @@ export function serialiseAgentConfigFile(
   delete out.instructions;
   delete out.settings;
   delete out.rendered;
+  delete out.template;
 
   // Blank is how the owner says "none", and none is the absent state — the
   // value itself is written exactly as given, never trimmed, because trimming
@@ -113,6 +139,7 @@ export function serialiseAgentConfigFile(
   if (Object.keys(settings).length > 0) out.settings = settings;
 
   if (config.rendered && Object.keys(config.rendered).length > 0) out.rendered = config.rendered;
+  if (config.template) out.template = config.template;
 
   return `${JSON.stringify(out, null, 2)}\n`;
 }

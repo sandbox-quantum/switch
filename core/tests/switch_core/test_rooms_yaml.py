@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+import yaml
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -32,6 +33,8 @@ from switch_core.db.models import (
     Reference,
     ReferenceType,
     Room,
+    RoomGroup,
+    RoomLink,
     RoomRole,
     User,
     room_agents,
@@ -44,12 +47,14 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
+from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     ExistingReferenceById,
+    GroupSpec,
     ParamSpec,
     RoomYamlService,
     interpolate,
@@ -115,6 +120,7 @@ class FakeRoomService:
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
+                group_id=config.group_id,
             )
             session.add(room)
             await session.flush()
@@ -190,6 +196,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         external_user_store=ExternalUserStore(),
         room_role_store=RoomRoleStore(),
         session_factory=session_factory,
+        room_group_store=RoomGroupStore(),
     )
 
     async with session_factory() as session:
@@ -1514,6 +1521,163 @@ async def test_builtins_creator_resolves_named_bridge(env):
     assert builtins["$creator"] == "abel.slack"
 
 
+@pytest.mark.asyncio
+async def test_builtins_creator_resolves_a_bridge_param_from_inputs(env):
+    """A `bridge:` written as `{bridge}` is filled from the inputs before the
+    claim is looked up, so the creator is found on the app they picked."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Mattermost",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.mm",
+    )
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=False,
+        claimed_by=env["user_id"],
+        external_username="abel.slack",
+    )
+    text = (
+        "params:\n  bridge:\n    type: bridge\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+        '  users: ["{$creator}"]\n'
+    )
+    svc = _svc(env)
+    picked = await svc.builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text=text,
+        inputs={"bridge": "Slack"},
+    )
+    assert picked["$creator"] == "abel.slack"
+    # No input for it and no default: the app is unknown, so the gateway
+    # name stands in rather than a guess at one bridge's claim.
+    unset = await svc.builtins_for(
+        user_id=env["user_id"], name="alice", email="alice@example.com", text=text
+    )
+    assert unset["$creator"] == "alice"
+
+
+CHAIN_TEXT = (
+    "params:\n  bridge:\n    type: bridge\n    default: [Teams, $first]\n"
+    "  helper:\n    type: agent\n    default: [nobody, $first]\n"
+    'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    '  agents: ["{helper}"]\n'
+)
+
+
+async def test_resolve_defaults_walks_each_chain_in_order(env):
+    """The first candidate the server has wins: Teams is not set up, so the
+    bridge falls through to the default app; no agent is called nobody, so the
+    first agent by name stands in. An input the caller did send is kept."""
+    for name, is_default in (("Mattermost", False), ("Slack", True)):
+        await _seed_bridge_with_claim(
+            env["session_factory"],
+            display_name=name,
+            is_default=is_default,
+            claimed_by=env["user_id"],
+            external_username=f"abel.{name.lower()}",
+        )
+    svc = _svc(env)
+
+    filled = await svc.resolve_defaults(CHAIN_TEXT, None)
+    assert filled == {"bridge": "Slack", "helper": "claude-code.alice"}
+
+    kept = await svc.resolve_defaults(CHAIN_TEXT, {"bridge": "Mattermost"})
+    assert kept == {"bridge": "Mattermost", "helper": "claude-code.alice"}
+
+    named = CHAIN_TEXT.replace("[Teams, $first]", "[Mattermost, $first]")
+    assert (await svc.resolve_defaults(named, None))["bridge"] == "Mattermost"
+
+
+async def test_a_chain_with_no_hit_is_reported_as_missing(env):
+    text = (
+        "params:\n  bridge:\n    type: bridge\n    default: [Teams, $first]\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    )
+    svc = _svc(env)
+    assert await svc.resolve_defaults(text, None) is None
+    with pytest.raises(ValueError, match="none of the candidates listed for bridge"):
+        svc.parse_template(text)
+
+
+def test_a_list_default_is_refused_on_a_param_with_no_list(env):
+    text = (
+        "params:\n  topic:\n    type: string\n    default: [a, b]\n"
+        "room:\n  name: n\n  description: d\n"
+    )
+    with pytest.raises(ValueError, match="a list default applies to params of type"):
+        _svc(env).parse_template(text, inputs={"topic": "x"})
+
+
+def test_new_is_only_for_room_params(env):
+    with pytest.raises(ValueError, match="'\\$new' applies to params of type room"):
+        ParamSpec(type="bridge", default=["$new"])
+    assert ParamSpec(type="room", default=["$new"]).default == ["$new"]
+
+
+def test_required_and_input_default_from_the_default(env):
+    assert ParamSpec(type="string").is_required
+    assert not ParamSpec(type="string", default="x").is_required
+    assert ParamSpec(type="string", default="x", required=True).is_required
+    assert ParamSpec(type="string").input == "ask"
+    with pytest.raises(ValueError, match="a fixed param needs a default"):
+        ParamSpec(type="string", input="fixed")
+    with pytest.raises(ValueError, match="cannot be optional"):
+        ParamSpec(type="agent", required=False)
+    assert not ParamSpec(type="room", required=False).is_required
+
+
+def test_an_optional_string_left_empty_is_empty(env):
+    spec, _ = _svc(env).parse(
+        "params:\n  suffix:\n    type: string\n    required: false\n"
+        'room:\n  name: "n{suffix}"\n  description: d\n'
+    )
+    assert spec.name == "n"
+
+
+def test_an_optional_bridge_left_empty_lands_on_the_default_app(env):
+    """The room's bridge field written as `{bridge}` is cleared rather than
+    left as a placeholder, so provisioning picks the default messaging app."""
+    spec, _ = _svc(env).parse(
+        "params:\n  bridge:\n    type: bridge\n    required: false\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    )
+    assert spec.bridge is None
+
+
+def test_pattern_and_bounds_are_enforced(env):
+    svc = _svc(env)
+    text = (
+        "params:\n  team:\n    type: string\n    pattern: '[a-z]+'\n"
+        "  size:\n    type: number\n    min: 1\n    max: 5\n"
+        'room:\n  name: "{team}"\n  description: "size {size}"\n'
+    )
+    spec, _ = svc.parse(text, inputs={"team": "alpha", "size": 3})
+    assert spec.name == "alpha"
+    assert spec.description == "size 3"
+    with pytest.raises(ValueError, match="does not match the pattern"):
+        svc.parse(text, inputs={"team": "Alpha1", "size": 3})
+    with pytest.raises(ValueError, match="above the maximum 5"):
+        svc.parse(text, inputs={"team": "alpha", "size": 9})
+    with pytest.raises(ValueError, match="'pattern' applies to params of type string"):
+        ParamSpec(type="number", pattern="x")
+    with pytest.raises(ValueError, match="not a valid regular expression"):
+        ParamSpec(type="string", pattern="(")
+
+
+def test_label_and_the_new_fields_ride_into_the_schema(env):
+    from switch_core.rooms_yaml import template_json_schema
+
+    props = template_json_schema()["$defs"]["ParamSpec"]["properties"]
+    for key in ("label", "required", "input", "pattern", "min", "max"):
+        assert key in props
+    assert "prefill" not in props
+
+
 def test_parse_multiline_param_option(env):
     """`multiline: true` is a valid param option and rides into the schema."""
     spec, _ = _svc(env).parse(
@@ -1530,9 +1694,9 @@ def test_parse_multiline_param_option(env):
     )
     assert spec.instructions == "line one\nline two\n## Acceptance\n- item\n"
 
-    from switch_core.rooms_yaml import TemplateDocument
+    from switch_core.rooms_yaml import template_json_schema
 
-    schema = TemplateDocument.model_json_schema()
+    schema = template_json_schema()
     assert "multiline" in schema["$defs"]["ParamSpec"]["properties"]
 
 
@@ -1567,9 +1731,9 @@ def test_resolve_params_entity_types_coerce_to_string():
 def test_template_schema_advertises_entity_types():
     """The Console reads the allowed types off the schema, so the new ones
     must be in it or every typed template is rejected client-side."""
-    from switch_core.rooms_yaml import TemplateDocument
+    from switch_core.rooms_yaml import template_json_schema
 
-    schema = TemplateDocument.model_json_schema()
+    schema = template_json_schema()
     allowed = schema["$defs"]["ParamSpec"]["properties"]["type"]["enum"]
     assert {"agent", "bridge", "room", "user"} <= set(allowed)
 
@@ -1684,3 +1848,364 @@ async def test_check_entity_params_ignores_plain_params(env):
         inputs={"label": "anything"},
     )
     await svc.check_entity_params(parsed)
+
+
+# ── group parse ─────────────────────────────────────────────────────────────
+
+
+GROUP_TEMPLATE = """\
+version: 0
+params:
+  newcomer:
+    type: string
+group:
+  name: "Onboarding"
+  description: "Lobby + per-person workroom"
+  color: "#3b82f6"
+rooms:
+  - name: "{newcomer} lobby"
+    description: "Welcome room for {newcomer}"
+    agents: ["claude-code.alice"]
+    aliases:
+      claude-code.alice: greeter
+  - name: "{newcomer} workroom"
+    description: "Work room for {newcomer}"
+    agents: ["claude-code.bob"]
+links:
+  - from: "{newcomer} lobby"
+    to: "{newcomer} workroom"
+    label: workroom
+"""
+
+
+def _group(env, text: str, inputs: dict | None = None) -> GroupSpec:
+    spec = _svc(env).parse_template(text, inputs=inputs).spec
+    assert isinstance(spec, GroupSpec)
+    return spec
+
+
+def test_parse_group_returns_group_spec(env):
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+    assert spec.group.name == "Onboarding"
+    assert spec.group.color == "#3b82f6"
+    assert [r.name for r in spec.rooms] == ["dana lobby", "dana workroom"]
+    assert spec.rooms[0].aliases == {"claude-code.alice": "greeter"}
+    assert len(spec.links) == 1
+    assert (spec.links[0].from_, spec.links[0].to) == ("dana lobby", "dana workroom")
+
+
+def test_parse_group_params_interpolate_alias_keys(env):
+    spec = _group(
+        env,
+        """\
+params:
+  bot:
+    type: string
+group:
+  name: "G"
+rooms:
+  - name: "R"
+    description: "d"
+    agents: ["{bot}"]
+    aliases:
+      "{bot}": helper
+""",
+        {"bot": "claude-code.alice"},
+    )
+    assert spec.rooms[0].agents == ["claude-code.alice"]
+    assert spec.rooms[0].aliases == {"claude-code.alice": "helper"}
+
+
+def test_parse_group_builtins_resolve_in_rooms(env):
+    parsed = _svc(env).parse_template(
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "{$creator}'s room"
+    description: "d"
+""",
+        builtins={"$creator": "dana"},
+    )
+    assert isinstance(parsed.spec, GroupSpec)
+    assert parsed.spec.rooms[0].name == "dana's room"
+
+
+def test_parse_group_room_kickoffs_stay_on_their_rooms(env):
+    spec = _group(
+        env,
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+    kickoff: "hello A"
+  - name: "B"
+    description: "d"
+""",
+    )
+    assert [r.kickoff for r in spec.rooms] == ["hello A", None]
+
+
+def test_parse_group_rejects_top_level_kickoff(env):
+    with pytest.raises(ValueError, match="inside each entry of 'rooms:'"):
+        _svc(env).parse_template(
+            """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+kickoff: "hello"
+"""
+        )
+
+
+def test_parse_room_rejects_nested_kickoff(env):
+    with pytest.raises(ValueError, match="top level"):
+        _svc(env).parse_template(
+            """\
+room:
+  name: "A"
+  description: "d"
+  kickoff: "hello"
+"""
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('group:\n  name: "G"\n', "'rooms:'"),
+        ('group:\n  name: "G"\nrooms: []\n', "non-empty"),
+        (
+            'group:\n  name: "G"\nrooms:\n  - name: lobby\n    description: d\n'
+            "  - name: lobby\n    description: d2\n",
+            "Duplicate room name",
+        ),
+        (
+            'group:\n  name: "G"\nrooms:\n  - name: A\n    description: d\n'
+            "links:\n  - from: A\n    to: B\n    label: x\n",
+            "does not match",
+        ),
+        (
+            'group:\n  name: "G"\nrooms:\n  - name: A\n    description: d\nextra: bad\n',
+            "Unknown top-level",
+        ),
+        ("name: oops\ndescription: d\n", "'room:' or 'group:'"),
+    ],
+)
+def test_parse_group_shape_errors(env, text, message):
+    with pytest.raises(ValueError, match=message):
+        _svc(env).parse_template(text)
+
+
+def test_parse_short_form_refuses_a_group(env):
+    with pytest.raises(ValueError, match="group template"):
+        _svc(env).parse(
+            'group:\n  name: "G"\nrooms:\n  - name: A\n    description: d\n'
+        )
+
+
+def test_template_schema_covers_both_shapes():
+    from switch_core.rooms_yaml import template_json_schema
+
+    schema = template_json_schema()
+    branches = schema["oneOf"] if "oneOf" in schema else schema["anyOf"]
+    titles = {b["$ref"].rsplit("/", 1)[-1] for b in branches}
+    assert titles == {"RoomTemplateDocument", "GroupTemplateDocument"}
+    assert "aliases" in schema["$defs"]["RoomSpec"]["properties"]
+
+
+# ── group provision ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_provision_group_two_rooms_linked(env):
+    """The onboarder-shaped template imports in one call: both rooms exist,
+    grouped together, linked to each other."""
+    svc = _svc(env)
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+
+    assert result.group_name == "Onboarding"
+    assert [r.room_name for r in result.rooms] == ["dana lobby", "dana workroom"]
+    assert result.errors == []
+
+    async with env["session_factory"]() as session:
+        group = await session.get(RoomGroup, result.group_id)
+        assert group is not None
+        assert (group.name, group.color) == ("Onboarding", "#3b82f6")
+        for rr in result.rooms:
+            room = await session.get(Room, rr.room_id)
+            assert room is not None
+            assert room.group_id == result.group_id
+        link = await session.get(
+            RoomLink, (result.rooms[0].room_id, result.rooms[1].room_id)
+        )
+        assert link is not None
+        assert link.label == "workroom"
+
+
+@pytest.mark.asyncio
+async def test_provision_group_reports_a_failed_room_and_keeps_the_rest(env):
+    svc = _svc(env)
+    spec = _group(
+        env,
+        """\
+group:
+  name: "Collider"
+rooms:
+  - name: "safe room"
+    description: "d"
+    agents: ["claude-code.alice"]
+  - name: "boom room"
+    description: "d"
+    agents: ["does-not-exist"]
+links:
+  - from: "safe room"
+    to: "boom room"
+    label: next
+""",
+    )
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+
+    assert [r.room_name for r in result.rooms] == ["safe room"]
+    assert result.errors[0]["room_name"] == "boom room"
+    assert "does-not-exist" in result.errors[0]["error"]
+    # The link could not be made either, and says so rather than vanishing.
+    assert result.errors[1]["kind"] == "link"
+    async with env["session_factory"]() as session:
+        assert await session.get(RoomGroup, result.group_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_provision_group_posts_each_rooms_kickoff(env, monkeypatch):
+    svc = _svc(env)
+    posted: list[tuple[str, str]] = []
+
+    async def fake_send(room, kickoff, **kwargs):
+        posted.append((room.name, kickoff))
+
+    monkeypatch.setattr(svc, "_send_kickoff", fake_send)
+    spec = _group(
+        env,
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+    kickoff: "start A"
+  - name: "B"
+    description: "d"
+""",
+    )
+    await svc.provision_group(
+        spec, user_id=env["user_id"], is_admin=False, creator_name="alice"
+    )
+    assert posted == [("A", "start A")]
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_covers_every_room_of_a_group(env):
+    svc = _svc(env)
+    parsed = svc.parse_template(
+        """\
+params:
+  pick:
+    type: agent
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+  - name: "B"
+    description: "uses {pick}"
+""",
+        inputs={"pick": "nobody"},
+    )
+    with pytest.raises(ValueError, match="param 'pick': no agent named 'nobody'"):
+        await svc.check_entity_params(parsed)
+
+
+@pytest.mark.asyncio
+async def test_endpoint_json_body_group(env):
+    """The /from-yaml endpoint provisions a group document."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from switch_core.gateway.rooms import create_room_from_yaml
+
+    svc = _svc(env)
+    user = User(name="alice", email="alice@example.com", role="member")
+    object.__setattr__(user, "id", env["user_id"])
+    request = AsyncMock()
+    request.headers = {"content-type": "application/json"}
+    request.body.return_value = json.dumps(
+        {"yaml": GROUP_TEMPLATE, "inputs": {"newcomer": "frank"}}
+    ).encode()
+
+    async with env["session_factory"]() as session:
+        result = await create_room_from_yaml(request, session, svc, user, False)
+    assert result.group_name == "Onboarding"
+    assert [r.room_name for r in result.rooms] == ["frank lobby", "frank workroom"]
+
+
+@pytest.mark.asyncio
+async def test_export_emits_aliases(env):
+    svc = _svc(env)
+    spec = _group(
+        env,
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+    agents: ["claude-code.alice"]
+    aliases:
+      claude-code.alice: greeter
+""",
+    )
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    room_id = result.rooms[0].room_id
+    # FakeRoomService does not seed aliases; write the row the real one would.
+    async with env["session_factory"]() as session:
+        agent = (await AgentStore().get_by_names(session, ["claude-code.alice"]))[0]
+        await session.execute(
+            room_agents.update()
+            .where(room_agents.c.room_id == room_id)
+            .where(room_agents.c.agent_id == agent.id)
+            .values(alias="greeter")
+        )
+        await session.commit()
+    exported = yaml.safe_load(await svc.export(room_id))
+    assert exported["room"]["aliases"] == {"claude-code.alice": "greeter"}
+
+
+def test_parse_rejects_non_string_kickoff(env):
+    with pytest.raises(ValueError, match="'kickoff' must be a string"):
+        _svc(env).parse_template(
+            "room:\n  name: r\n  description: d\nkickoff: [hello]\n"
+        )
+
+
+@pytest.mark.asyncio
+async def test_provision_reports_a_kickoff_that_raises(env, monkeypatch):
+    svc = _svc(env)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("admin client is gone")
+
+    monkeypatch.setattr(svc, "_send_kickoff", boom)
+    parsed = svc.parse_template("room:\n  name: r\n  description: d\nkickoff: hi\n")
+    result = await svc.provision(
+        parsed.spec, kickoff=parsed.kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert result.room_name == "r"
+    assert result.failed_attachments == [
+        {"kind": "kickoff", "id": "kickoff", "error": "admin client is gone"}
+    ]
