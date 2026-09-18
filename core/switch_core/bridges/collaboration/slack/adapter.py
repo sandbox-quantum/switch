@@ -4,7 +4,6 @@ import asyncio
 import logging
 import math
 import re
-import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -28,8 +27,10 @@ from switch_core.bridges.collaboration.adapter import (
     RichContent,
     RichContentFailed,
     RichContentThrottled,
+    RichContentWedged,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -183,6 +184,15 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 # once is a bridge holding turns nobody is waiting on, so the oldest goes.
 _MAX_OPEN_STREAMS = 100
 
+# Far above the open-stream bound on purpose. An entry here is what stops a
+# message nothing can change from being asked about again, so evicting one
+# resumes that asking for as long as the process lives. Only turns still being
+# drawn can reach it — an ended one is stopped by its completion receipt before
+# the adapter is consulted — so this is a guard against unbounded growth rather
+# than a working limit, and it is set where no plausible number of live turns
+# reaches it.
+_MAX_WEDGED_MESSAGES = 10_000
+
 # Slack has stopped taking appends for this message and always will have: the
 # stream was closed, the reader stopped it, or it belongs to another app. The
 # message itself is still there, so the turn is redrawn as an ordinary post.
@@ -234,46 +244,6 @@ class _StreamNotClosed(RichContentFailed):
     To every other caller it is the `RichContentFailed` it inherits from: the
     publication did not finish, so the turn is still owed.
     """
-
-
-class _Cooldown:
-    """A rate limit Slack put on a whole kind of call, and the log of it.
-
-    A 429 answers for the workspace rather than for the message that earned it,
-    so the wait it asks for holds back every call of that kind. Kept here so
-    each of those reads the same answer, and so that both edges are said out
-    loud: a silent cooldown and a bridge that has stopped working look exactly
-    the same from the outside, and this one can be minutes long.
-
-    The lift is noticed by the first caller to ask after it passes rather than
-    on a timer, so the line lands next to the work it let through.
-    """
-
-    def __init__(self, kind: str, consequence: str) -> None:
-        self._kind = kind
-        self._consequence = consequence
-        self._until = 0.0
-
-    def remaining(self) -> float:
-        """Seconds left to wait, zero once Slack is taking these again."""
-        left = self._until - time.monotonic()
-        if left > 0:
-            return left
-        if self._until:
-            self._until = 0.0
-            logger.warning("Slack is taking %s again after a rate limit.", self._kind)
-        return 0.0
-
-    def start(self, delay: float) -> None:
-        """Hold every call of this kind back for what Slack asked for."""
-        self._until = time.monotonic() + delay
-        logger.warning(
-            "Slack is rate limiting %s for the whole workspace; holding them all "
-            "back for %.0fs. %s",
-            self._kind,
-            delay,
-            self._consequence,
-        )
 
 
 @dataclass
@@ -390,11 +360,17 @@ class SlackAdapter(CollaborationAdapter):
         self._unmarkable_max = 500
         # The publisher redraws every few seconds and keeps asking until a mark
         # lands, so without these the retries hold the limit open.
-        self._reactions_cooldown = _Cooldown(
-            "reactions", "Marks on messages stop changing until then."
+        self._reactions_cooldown = Cooldown(
+            "Slack",
+            "reactions",
+            "workspace",
+            "Marks on messages stop changing until then.",
         )
-        self._rich_update_cooldown = _Cooldown(
-            "message updates", "Every card the bridge draws is frozen until then."
+        self._rich_update_cooldown = Cooldown(
+            "Slack",
+            "message updates",
+            "workspace",
+            "Every card the bridge draws is frozen until then.",
         )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -871,13 +847,15 @@ class SlackAdapter(CollaborationAdapter):
         Slack also leaves a message in a state where that is not true, and it is
         the common one in practice: the message stays flagged as streaming while
         the stream it refers to is gone, so an edit is refused as streaming and
-        both stream calls are refused as `message_not_found`. No call clears it,
-        and a message nothing can change is not worth asking about again — so it
-        is recorded as unredrawable, which is what ends the retry. It keeps
-        whatever the stream last wrote. That is a stale card rather than a lost
-        turn, and the alternative is the same two refusals every few seconds for
-        as long as the process lives, spending the workspace's rate budget on a
-        message that cannot move.
+        both stream calls are refused as `message_not_found`. A delete is
+        refused too, so no call clears it, and a message nothing can change is
+        not worth asking about again — it is recorded as unredrawable, which is
+        what ends the retry, and the attempt that discovered it raises
+        `RichContentWedged` so the caller can say so beside the message. It
+        keeps whatever the stream last wrote. That is a stale card rather than a
+        lost turn, and the alternative is the same two refusals every few
+        seconds for as long as the process lives, spending the workspace's rate
+        budget on a message that cannot move.
 
         Either call here can be rate limited instead, and in the one situation
         this exists for that is likely: a restart strands every stream that was
@@ -946,15 +924,14 @@ class SlackAdapter(CollaborationAdapter):
             code = error.response.get("error")
             if code == _STREAMING_CONFLICT:
                 self._remember_unredrawable(message_ref, warned=True)
-                logger.error(
-                    "The activity message %s is wedged: Slack refuses an edit to "
-                    "it as a message that is streaming, and refuses both stream "
-                    "calls because the stream is gone. Nothing can be sent that "
-                    "changes it, so it keeps whatever it last showed and is not "
-                    "asked again. The turn itself is unaffected.",
-                    message_ref,
-                )
-                return
+                raise RichContentWedged(
+                    f"The activity message {message_ref} is wedged: Slack refuses "
+                    "an edit to it as a message that is streaming, and refuses "
+                    "both stream calls because the stream is gone. Nothing can be "
+                    "sent that changes it, so it keeps whatever it last showed "
+                    "and is not asked again. The turn itself is unaffected.",
+                    text=message.text,
+                ) from error
             if code not in _BLOCK_FORMAT_ERRORS:
                 raise RichContentFailed(
                     f"Slack could not update the message in channel {channel_id} "
@@ -1200,7 +1177,7 @@ class SlackAdapter(CollaborationAdapter):
         """
         self._unredrawable[message_ref] = warned
         self._unredrawable.move_to_end(message_ref)
-        while len(self._unredrawable) > _MAX_OPEN_STREAMS:
+        while len(self._unredrawable) > _MAX_WEDGED_MESSAGES:
             self._unredrawable.popitem(last=False)
 
     async def _extend_stream(

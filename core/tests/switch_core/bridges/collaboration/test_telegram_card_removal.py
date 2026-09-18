@@ -13,7 +13,6 @@ is not `delete_message`, which logs and returns either way.
 from __future__ import annotations
 
 import logging
-import time
 
 import pytest
 from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut
@@ -111,7 +110,7 @@ async def test_a_rate_limit_is_charged_to_the_bot_and_remembered() -> None:
     with pytest.raises(RichContentThrottled):
         await adapter.remove_publication(CHANNEL, CARD)
 
-    assert adapter._rich_update_after - time.monotonic() > 25
+    assert adapter._rich_update_cooldown.remaining() > 25
 
 
 async def test_a_wait_already_running_is_not_walked_into_again() -> None:
@@ -119,7 +118,7 @@ async def test_a_wait_already_running_is_not_walked_into_again() -> None:
     is not sent, and the caller is told how long is left rather than that the
     card could not be removed."""
     adapter = _adapter()
-    adapter._rich_update_after = time.monotonic() + 20
+    adapter._rich_update_cooldown.start(20)
 
     with pytest.raises(RichContentThrottled) as raised:
         await adapter.remove_publication(CHANNEL, CARD)

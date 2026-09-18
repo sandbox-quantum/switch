@@ -40,6 +40,7 @@ from slack_sdk.errors import SlackApiError
 from switch_core.bridges.collaboration.adapter import (
     RichContentFailed,
     RichContentThrottled,
+    RichContentWedged,
     TurnActivity,
 )
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
@@ -47,7 +48,6 @@ from switch_core.bridges.collaboration.slack.adapter import (
     _MAX_OPEN_STREAMS,
     SlackAdapter,
     SlackConnectionConfig,
-    _Cooldown,
 )
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import Item, TurnUpsert
@@ -1821,6 +1821,11 @@ async def test_a_wedged_message_is_given_up_on_rather_than_asked_about_forever()
     sendable changes the message, and the cost of not noticing is two calls
     against the workspace's rate budget every few seconds, for the life of the
     process, per wedged card.
+
+    The discovery raises, so the caller can say beside the message what the
+    message can no longer say for itself. Every attempt after it returns
+    quietly: the point of raising was to stop being asked, and raising again
+    would report the same permanent condition on every cycle.
     """
     client = FakeWebClient()
     adapter = _adapter(client)
@@ -1833,9 +1838,10 @@ async def test_a_wedged_message_is_given_up_on_rather_than_asked_about_forever()
     client.update_error = "streaming_state_conflict"
     client.append_error = "message_not_found"
     client.stop_error = "message_not_found"
-    await adapter.update_rich(
-        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
-    )
+    with pytest.raises(RichContentWedged):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
     spent = len(client.update_attempts) + len(client.stop_attempts)
 
     await adapter.update_rich(
@@ -1874,31 +1880,6 @@ async def test_a_rate_limit_that_freezes_every_card_says_so(caplog: Any) -> None
         "the consequence has to be this limit's own: a reaction limit stops "
         "marks changing and leaves the cards redrawing"
     )
-
-
-def test_a_cooldown_says_when_slack_is_taking_calls_again(
-    caplog: Any, monkeypatch: Any
-) -> None:
-    """The other edge, which is the one that says the bridge is alive again."""
-    clock = [0.0]
-    monkeypatch.setattr(
-        "switch_core.bridges.collaboration.slack.adapter.time.monotonic",
-        lambda: clock[0],
-    )
-    cooldown = _Cooldown("reactions", "Marks on messages stop changing until then.")
-
-    cooldown.start(30.0)
-    assert cooldown.remaining() == 30.0
-
-    clock[0] = 31.0
-    with caplog.at_level(logging.WARNING):
-        assert cooldown.remaining() == 0.0
-
-    assert "taking reactions again" in caplog.text
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        assert cooldown.remaining() == 0.0
-    assert caplog.text == "", "the lift is worth saying once, not on every call"
 
 
 async def test_a_stranded_stream_slack_is_too_busy_to_close_is_waited_out() -> None:

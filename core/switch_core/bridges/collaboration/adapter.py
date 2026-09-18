@@ -219,6 +219,28 @@ class RichContentThrottled(RichContentFailed):
         self.retry_after = retry_after
 
 
+class RichContentWedged(RichContentFailed):
+    """The platform will not change this message, and never will again.
+
+    Slack leaves a message flagged as streaming while dropping the stream that
+    flag refers to. An edit is then refused as an edit to something streaming,
+    both stream calls are refused because the stream is gone, and a delete is
+    refused as well — measured, not assumed. Nothing sendable moves it, so it
+    keeps whatever it last showed, which for a turn that has since ended is a
+    card still drawn as running.
+
+    Separate from `RichContentFailed` because the two want opposite things. An
+    ordinary failure is worth another attempt; this one is worth none, and
+    retrying spends the workspace's rate budget on a message that cannot move.
+    What it does deserve is for the reader to be told, since what they are
+    looking at is untrue and nothing about the message itself can say so.
+
+    Raised on the attempt that discovers the state. Later attempts on the same
+    message return quietly: the caller has already been told, and the point of
+    telling it was to stop.
+    """
+
+
 class ThreadUnavailable(RichContentFailed):
     """No thread exists under the root message, and none could be made.
 

@@ -12,6 +12,7 @@ from sqlalchemy import select, text, update
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     RichContentThrottled,
+    RichContentWedged,
 )
 from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
 from switch_core.bridges.collaboration.session.outbound import (
@@ -2144,3 +2145,141 @@ async def test_a_late_receipt_does_not_put_back_a_mark_another_turn_took_off(
     later = activity(session_factory, refusing)
     assert await publish(later, command="third")
     assert await publish(later, "completed", command="third")
+
+
+class WedgedPlatform(ActivitySlack):
+    """A platform holding a card it will never accept another write to.
+
+    Slack's real behaviour, reduced to the part that matters here: the message
+    is still in the channel, and every call that would change, finish or remove
+    it is refused. The card is beyond repair, so the only thing left is to say
+    so beside it.
+
+    Raises on every attempt rather than only the first, deliberately. The
+    adapter quietens itself after the discovery, but a restart clears that and
+    a second process rediscovers the same wedge from scratch. Refusing every
+    time is what makes these tests prove the notice is sent once because the
+    journal says it already was, and not because the adapter went quiet.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.notices = []
+        self.wedged = True
+
+    async def update_rich(self, channel, agent, ref, content, thread):
+        if not self.wedged:
+            await super().update_rich(channel, agent, ref, content, thread)
+            return
+        raise RichContentWedged(f"The activity message {ref} is wedged.", text="frozen")
+
+    async def send_message(self, channel_id, sender_name, content, thread_root_id=None):
+        self.notices.append((channel_id, content, thread_root_id))
+        return f"{channel_id}:notice"
+
+
+async def _age_the_card(session_factory, minutes):
+    """Backdate when the card was posted, as the journal recorded it."""
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        posted_at = datetime.now(UTC) - timedelta(minutes=minutes)
+        status = row.data["status"] | {"created_at": posted_at.isoformat()}
+        await db.execute(
+            update(SessionActivityPost)
+            .where(
+                SessionActivityPost.tenant_id == row.tenant_id,
+                SessionActivityPost.bridge_id == row.bridge_id,
+                SessionActivityPost.session_id == row.session_id,
+                SessionActivityPost.command_id == row.command_id,
+            )
+            .values(data=row.data | {"status": status})
+        )
+        await db.commit()
+
+
+async def test_a_frozen_card_is_explained_once_in_the_channel(session_factory):
+    """The card cannot say it is broken, so something beside it has to.
+
+    A card frozen mid-turn keeps showing an agent at work. Left unexplained
+    that is not a cosmetic fault: it is the channel asserting something untrue
+    about what is running, and the reader has no way to tell it from a turn
+    that really is still going.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    assert await publish(activity(session_factory, platform))
+
+    assert len(platform.notices) == 1
+    channel, notice, thread = platform.notices[0]
+    assert channel == "channel-demo"
+    assert thread == "channel-demo:root", "the notice belongs beside the card"
+    assert "frozen" in notice
+
+
+async def test_a_frozen_card_is_not_explained_twice(session_factory):
+    """Once is telling the reader; every few seconds is the same defect again.
+
+    The card is wedged for good, so every later publication finds it wedged
+    too. A notice per discovery would fill the thread with copies of one
+    sentence and spend the rate budget the giving-up was meant to save.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    assert await publish(activity(session_factory, platform))
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert len(platform.notices) == 1
+
+
+async def test_a_restart_does_not_explain_the_same_frozen_card_again(session_factory):
+    """The record of having said it has to outlive the process that said it.
+
+    Each `activity(...)` here is a new renderer over the same journal, which is
+    what a restart is. Nothing in memory survives it, so if the notice were
+    remembered only in the adapter or the renderer, every restart would put
+    another copy under the same frozen card — and a restart is exactly when a
+    batch of cards is found wedged at once.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    assert await publish(activity(session_factory, platform))
+    assert len(platform.notices) == 1
+
+    assert await publish(activity(session_factory, platform))
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert len(platform.notices) == 1
+
+
+async def test_a_frozen_card_nobody_is_looking_at_is_left_alone(session_factory):
+    """A notice earns its place by reaching someone. Under old scrollback it does not.
+
+    Wedged cards are discovered in batches when a process starts and sweeps
+    every session it has. Without an age test that sweep would post a notice
+    under every frozen card in the workspace's history at once, which is a
+    worse thing to do to a channel than the frozen cards were.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    platform.wedged = False
+    assert await publish(activity(session_factory, platform))
+    await _age_the_card(session_factory, minutes=180)
+
+    platform.wedged = True
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert platform.notices == []
+
+
+async def test_a_frozen_card_still_on_screen_is_explained(session_factory):
+    """The other side of the age test, so it is a window and not a switch off."""
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    platform.wedged = False
+    assert await publish(activity(session_factory, platform))
+    await _age_the_card(session_factory, minutes=5)
+
+    platform.wedged = True
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert len(platform.notices) == 1

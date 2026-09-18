@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from slack_sdk.socket_mode.request import SocketModeRequest
 
-from switch_core.bridges.collaboration.slack import adapter as slack_adapter
+from switch_core.bridges.collaboration import cooldown as cooldown_module
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -114,7 +114,7 @@ async def test_a_rate_limited_reaction_stops_the_asking_until_slack_says_when(
     """
     slack, client = adapter()
     now = 1000.0
-    monkeypatch.setattr(slack_adapter.time, "monotonic", lambda: now)
+    monkeypatch.setattr(cooldown_module, "time", SimpleNamespace(monotonic=lambda: now))
     client.reaction_error = "ratelimited"
     client.reaction_error_headers = {"Retry-After": "7"}
 

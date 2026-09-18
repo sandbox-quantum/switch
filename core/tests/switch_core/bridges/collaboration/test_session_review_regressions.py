@@ -7,12 +7,12 @@ import pytest
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.slack_response import SlackResponse
 
+from switch_core.bridges.collaboration import cooldown as cooldown_module
 from switch_core.bridges.collaboration.adapter import RichContentThrottled, TurnActivity
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_activity_plan,
     render_request,
 )
-from switch_core.bridges.collaboration.slack import adapter as slack_module
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -126,7 +126,7 @@ def test_resolved_details_have_a_combined_budget_and_keep_the_answer(kind):
 async def test_slack_update_cooldown_honors_retry_after_across_messages(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(
-        slack_module, "time", SimpleNamespace(monotonic=lambda: clock[0])
+        cooldown_module, "time", SimpleNamespace(monotonic=lambda: clock[0])
     )
     adapter = SlackAdapter(
         config=SlackConnectionConfig(

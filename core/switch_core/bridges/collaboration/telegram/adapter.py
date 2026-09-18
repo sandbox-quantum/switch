@@ -46,6 +46,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -537,10 +538,16 @@ class TelegramAdapter(CollaborationAdapter):
         # chat id -> whether it is a forum. What a thread root means depends on
         # the answer, and nothing in a message ref says which kind it is.
         self._forum_chats: dict[str, bool] = {}
-        # When Telegram will next accept an update, from the last 429 it sent.
         # A 429 is charged to the chat, not the message, so one throttled
-        # redraw pauses every publication rather than only its own.
-        self._rich_update_after = 0.0
+        # redraw pauses every publication rather than only its own. Said out
+        # loud at both edges: without that, every card in the chat stops at
+        # once and nothing anywhere explains it.
+        self._rich_update_cooldown = Cooldown(
+            "Telegram",
+            "message updates",
+            "chat",
+            "Every card the bridge draws there is frozen until then.",
+        )
         # chat id -> when a publication was last sent or edited in it. Telegram
         # charges its limits to the chat, and several agents publish into one
         # chat, so intermediate progress is paced against the chat's budget
@@ -1707,7 +1714,7 @@ class TelegramAdapter(CollaborationAdapter):
         """
         failure = _as_rich_failure(error, description=description, text=text)
         if isinstance(failure, RichContentThrottled):
-            self._rich_update_after = time.monotonic() + failure.retry_after
+            self._rich_update_cooldown.start(failure.retry_after)
         return failure or error
 
     async def remove_publication(self, channel_id: str, message_ref: str) -> None:
@@ -1798,7 +1805,7 @@ class TelegramAdapter(CollaborationAdapter):
         that knows what it is holding and can come back, and sleeping here
         would hold up every other chat this bridge serves.
         """
-        remaining = self._rich_update_after - time.monotonic()
+        remaining = self._rich_update_cooldown.remaining()
         if remaining > 0:
             raise RichContentThrottled(retry_after=remaining, text=text)
 

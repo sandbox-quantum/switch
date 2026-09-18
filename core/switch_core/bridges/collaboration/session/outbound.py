@@ -38,7 +38,7 @@ import secrets
 from collections import OrderedDict
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +51,7 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
+    RichContentWedged,
     ThreadUnavailable,
     TurnActivity,
 )
@@ -72,6 +73,22 @@ _HANDLE_PREFIX = "R"
 # Each retry counts one further up, so the loop only needs to outlast the cards
 # posted concurrently into a single channel.
 _MINT_ATTEMPTS = 5
+
+# How recently a card must have been posted for a notice under it to be worth
+# more than the noise it makes. A card wedged in the last hour is plausibly
+# still on someone's screen and actively misleading them; an older one is
+# scrollback, where a reply says nothing to anybody and pushes the channel
+# along for no one's benefit.
+_WEDGE_NOTICE_MAX_AGE = timedelta(hours=1)
+
+# Said to the reader, not to an operator: it has to explain a card that has
+# stopped without implying the work behind it stopped too.
+_WEDGE_NOTICE = (
+    "⚠️ This platform dropped the live stream behind the message above, so that "
+    "card is frozen and cannot be updated, finished, or removed. Whatever it is "
+    "showing is the last thing the stream wrote, not where the turn got to — "
+    "the turn itself was unaffected."
+)
 
 # The two refusals this can provoke, named because they are different mistakes
 # and only one of them is worth retrying.
@@ -402,6 +419,12 @@ class SessionTurnActivity:
                 # trade a lost notice for two of them. Reported when it was
                 # given up on, and not raised past here.
                 pass
+            except RichContentWedged as wedged:
+                # The status beside it gets the reader's explanation, so this
+                # one is said to the log and no further. Failing the turn over
+                # a notice that cannot be rewritten would cost the status too,
+                # and the status is the message carrying the controls.
+                logger.error("%s", wedged)
 
         async def draw() -> bool:
             try:
@@ -980,6 +1003,9 @@ class SessionTurnActivity:
             )
         except RichContentThrottled:
             raise
+        except RichContentWedged as wedged:
+            await self._say_wedged(anchor, session_id, turn, wedged)
+            return True
         except RichContentFailed as error:
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
@@ -997,6 +1023,71 @@ class SessionTurnActivity:
         if not ended:
             anchor.status_state = state
         return True
+
+    async def _say_wedged(
+        self,
+        anchor: _Anchor,
+        session_id: str,
+        turn: TurnUpsert,
+        wedged: RichContentWedged,
+    ) -> None:
+        """Tell the channel that the card above it has stopped for good.
+
+        The card cannot say this itself — that it cannot be written to is the
+        whole of what has gone wrong with it — so the only place left to say it
+        is beside it. Counted as drawn by the caller either way: there is no
+        state of the turn that a further attempt would reach, and treating it
+        as owed holds the turn open forever over a message that will never
+        move.
+
+        Sent once. The note of having sent it is kept on the turn's journal
+        record, so a second discovery of the same wedge — after a restart, say
+        — does not put a second copy under the same card. Without a journal
+        there is nowhere to keep that, and a notice repeated every few seconds
+        is worse than the frozen card it describes, so nothing is sent.
+
+        Old cards are left alone. A notice earns its place by reaching someone
+        who is looking at the card it describes; under a card from yesterday it
+        reaches nobody and pushes the channel along to say so.
+        """
+        logger.error("%s", wedged)
+        record = self._record.get()
+        if record is None or record.data.get("wedged"):
+            return
+        posted_at = (record.data.get("status") or {}).get("created_at")
+        if posted_at is None:
+            return
+        age = datetime.now(UTC) - datetime.fromisoformat(posted_at)
+        if age > _WEDGE_NOTICE_MAX_AGE:
+            logger.warning(
+                "Not saying that the activity message %s is frozen: it was "
+                "posted %.0f minutes ago, so a reply under it now would reach "
+                "nobody still looking at it.",
+                anchor.message_ref,
+                age.total_seconds() / 60,
+            )
+            record.data["wedged"] = True
+            await record.save()
+            return
+        try:
+            await self._adapter.send_message(
+                anchor.channel_id,
+                anchor.agent_name,
+                _WEDGE_NOTICE,
+                anchor.thread_root_id,
+            )
+        except Exception:
+            logger.exception(
+                "Could not say that the activity message %s for turn %s of "
+                "session %s is frozen. The card stays as it is, unexplained, "
+                "and this is tried again on the next change to the turn.",
+                anchor.message_ref,
+                turn.turn_id,
+                session_id,
+            )
+            return
+        record.data["wedged"] = True
+        await record.save()
 
     def _wanted_mark(self, turn: TurnUpsert) -> ActivityMark:
         """Which mark this turn's current state earns.
