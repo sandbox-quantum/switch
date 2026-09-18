@@ -6,7 +6,14 @@ import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 import { ensureSharedProcess, sharedSessionRoot } from './launch';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import {
+  assertCurrentOwnershipMachine,
+  ownerMachineIdentitySchema,
+  ownershipRecord,
+  releaseOwner,
+  replaceOwner,
+  withOwnershipLock,
+} from './ownership-lock';
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
@@ -115,12 +122,13 @@ export async function runSharedWatcher(
   signal: AbortSignal
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
-  const owner = { pid: process.pid, token: randomUUID() };
+  const owner = ownershipRecord({ pid: process.pid, token: randomUUID() });
   await withOwnershipLock(root, async () => {
     try {
-      const { pid } = z
-        .object({ pid: z.number().int().positive() })
+      const { pid, machine } = z
+        .object({ pid: z.number().int().positive(), machine: ownerMachineIdentitySchema() })
         .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
+      assertCurrentOwnershipMachine(machine);
       process.kill(pid, 0);
       throw new Error('The shared SDK watcher is already running.');
     } catch (error) {

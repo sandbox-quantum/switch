@@ -7,7 +7,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { pipeRedactedHostedLogs } from './hosted-log';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import {
+  assertCurrentOwnershipMachine,
+  ownerMachineIdentitySchema,
+  ownershipRecord,
+  releaseOwner,
+  replaceOwner,
+  withOwnershipLock,
+} from './ownership-lock';
 import type { fenceDeadOwner } from './process-fence';
 
 function alive(pid: number): boolean {
@@ -23,8 +30,9 @@ function alive(pid: number): boolean {
 async function ownerPid(path: string): Promise<number | null> {
   try {
     const owner = z
-      .object({ pid: z.number().int().positive() })
+      .object({ pid: z.number().int().positive(), machine: ownerMachineIdentitySchema() })
       .parse(JSON.parse(await readFile(path, 'utf8')));
+    assertCurrentOwnershipMachine(owner.machine);
     return owner.pid;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -70,7 +78,7 @@ export async function superviseSharedHost(input: {
   const directory = join(input.root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const ownerPath = join(directory, 'owner.json');
-  const owner = { pid: process.pid, token: randomUUID() };
+  const owner = ownershipRecord({ pid: process.pid, token: randomUUID() });
   await withOwnershipLock(directory, async () => {
     const pid = await ownerPid(ownerPath);
     if (pid !== null && alive(pid))
@@ -175,6 +183,8 @@ export async function superviseSharedHost(input: {
           const workerPath = join(input.root, 'shared-owner.lock');
           try {
             const owner = JSON.parse(await readFile(workerPath, 'utf8'));
+            const machine = ownerMachineIdentitySchema().parse(owner.machine);
+            assertCurrentOwnershipMachine(machine);
             if (owner.pid === child.pid) await releaseOwner(input.root, workerPath, owner);
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;

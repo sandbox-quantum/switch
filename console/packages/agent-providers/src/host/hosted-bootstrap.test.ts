@@ -129,6 +129,22 @@ it('does not fall back to ambient provider, cloud, Node, or home credentials', a
   );
 });
 
+it('forwards the complete trusted machine identity without persisting it', async () => {
+  const input = await fixture();
+  vi.stubEnv('SWITCH_HOST_INSTANCE_ID', 'i-0123456789abcdef0');
+  vi.stubEnv('SWITCH_HOST_BOOT_ID', '11111111-1111-4111-8111-111111111111');
+  vi.stubEnv('SWITCH_HOST_ASSIGNMENT_GENERATION', '7');
+  const prepared = await prepareHostedDeployment(input.state, input.spec);
+  expect(prepared.providerEnvironment.SWITCH_HOST_INSTANCE_ID).toBe('i-0123456789abcdef0');
+  expect(prepared.providerEnvironment.SWITCH_HOST_BOOT_ID).toBe(
+    '11111111-1111-4111-8111-111111111111'
+  );
+  expect(prepared.providerEnvironment.SWITCH_HOST_ASSIGNMENT_GENERATION).toBe('7');
+  const persisted = await readFile(join(input.state, 'hosted-deployment.json'), 'utf8');
+  expect(persisted).not.toContain('i-0123456789abcdef0');
+  expect(persisted).not.toContain('11111111-1111-4111-8111-111111111111');
+});
+
 it('reloads a replaced provider secret at bootstrap without changing session identity', async () => {
   const input = await fixture();
   const first = await prepareHostedDeployment(input.state, input.spec);

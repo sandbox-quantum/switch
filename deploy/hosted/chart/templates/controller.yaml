@@ -1,0 +1,111 @@
+{{- $config := deepCopy .Values.controllerConfig -}}
+{{- $_ := set $config "state_db_path" "/var/lib/switch-hosted/state.db" -}}
+{{- $_ := set $config "lock_path" "/var/lib/switch-hosted/reconcile.lock" -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name | quote }}
+  annotations:
+    eks.amazonaws.com/role-arn: {{ required "serviceAccount.roleArn is required" .Values.serviceAccount.roleArn | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  controller.json: {{ $config | mustToJson | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-state
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/config: {{ $config | mustToJson | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | quote }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: {{ printf "%s@%s" (required "image.repository is required" .Values.image.repository) (required "image.digest is required" .Values.image.digest) | quote }}
+          command: [switch-hosted-controller]
+          args: [--config, /etc/switch-hosted/controller.json, serve]
+          env:
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          startupProbe:
+            exec:
+              command: [switch-hosted-controller, --config, /etc/switch-hosted/controller.json, health, --max-age, "600"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [switch-hosted-controller, --config, /etc/switch-hosted/controller.json, health, --max-age, "600"]
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [switch-hosted-controller, --config, /etc/switch-hosted/controller.json, health, --max-age, "900"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/switch-hosted
+            - name: config
+              mountPath: /etc/switch-hosted
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-state
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+        - name: tmp
+          emptyDir: {}
