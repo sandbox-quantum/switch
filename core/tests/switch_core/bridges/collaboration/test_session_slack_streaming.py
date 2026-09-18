@@ -46,6 +46,7 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.bridges.collaboration.slack.adapter import (
     _MAX_OPEN_STREAMS,
+    _MAX_WEDGED_MESSAGES,
     SlackAdapter,
     SlackConnectionConfig,
 )
@@ -1850,6 +1851,57 @@ async def test_a_wedged_message_is_given_up_on_rather_than_asked_about_forever()
 
     assert len(client.update_attempts) + len(client.stop_attempts) == spent, (
         "a message nothing can change should not be asked about again"
+    )
+
+
+async def test_a_wedge_is_remembered_past_the_number_of_streams_that_may_be_open() -> (
+    None
+):
+    """The two bounds count different things and must not share a number.
+
+    Open streams are capped because a stream is a live thing worth abandoning
+    when there are too many. A wedge is the opposite: the entry is the only
+    reason a message nothing can change is left alone, so dropping one resumes
+    the asking it was recorded to stop, with no restart and nothing to show a
+    reader why that card started burning calls again.
+
+    Pinned at the open-stream bound specifically, because that is the number
+    this shared until it was given its own, and the fault it caused would be
+    invisible — a card quietly re-probed every few seconds.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+    client.update_error = "streaming_state_conflict"
+    client.append_error = "message_not_found"
+    client.stop_error = "message_not_found"
+    with pytest.raises(RichContentWedged):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+    spent = len(client.update_attempts) + len(client.stop_attempts)
+
+    for index in range(_MAX_OPEN_STREAMS + 50):
+        adapter._remember_unredrawable(f"{CHANNEL}:wedged-{index}", warned=True)
+
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 14.0), THREAD
+    )
+
+    assert len(client.update_attempts) + len(client.stop_attempts) == spent, (
+        "the first wedge is still remembered after more than _MAX_OPEN_STREAMS "
+        "others, so it is not asked about again"
+    )
+
+    for index in range(_MAX_WEDGED_MESSAGES):
+        adapter._remember_unredrawable(f"{CHANNEL}:overflow-{index}", warned=True)
+
+    assert len(adapter._unredrawable) == _MAX_WEDGED_MESSAGES, (
+        "still bounded, so a long-lived process cannot grow this without limit"
     )
 
 
