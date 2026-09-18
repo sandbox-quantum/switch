@@ -1188,6 +1188,84 @@ async def test_a_stream_slack_will_not_close_is_reported_rather_than_looped_on()
     assert "message_not_found" in str(refused.value)
 
 
+async def test_a_stranded_stream_slack_is_too_busy_to_close_is_waited_out() -> None:
+    """A rate limit here is the shape of this fix working, not of it failing.
+
+    A restart strands every stream that was open — twenty-two of them, the time
+    this was found — and they are recovered one after another through a budget
+    that belongs to the workspace. Answering a refusal to wait as an ordinary
+    failure would hand the retry back to the publisher's own cadence, which is
+    the thirty-second loop this exists to end, and spend the window Slack asked
+    for on the same refusal.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = ["streaming_state_conflict"]
+    # Refused by the HTTP layer, which names no error this recognises — Slack
+    # has spelled that one two ways over the years and the status is what holds
+    # across both.
+    client.stop_error = FakeResponse(
+        {"error": "rate_limited"}, headers={"Retry-After": "17"}, status_code=429
+    )
+    with pytest.raises(RichContentThrottled) as waiting:
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert waiting.value.retry_after == 17
+    assert client.stopped == []
+    assert len(client.update_attempts) == 1
+
+    # The cooldown is the workspace's, so the twenty-one behind this one wait
+    # it out too rather than walking into the refusal it was just given.
+    with pytest.raises(RichContentThrottled):
+        await adapter.update_rich(
+            CHANNEL,
+            "Agent",
+            "C1:2.0",
+            TurnActivity([tool], _turn("completed"), 9.0),
+            THREAD,
+        )
+    assert len(client.update_attempts) == 1
+
+
+async def test_a_stranded_stream_closed_but_not_redrawn_in_time_is_waited_out() -> None:
+    """Closed, which is the half that ends the loop; only the redraw was late.
+
+    The message is an ordinary one from here, so the retry is an ordinary edit
+    — but it waits out Slack's window rather than taking the publisher's next
+    tick. And a refusal to wait is not a refusal of the blocks: recording it as
+    unredrawable would leave the turn showing a spinner for good over a message
+    Slack has no objection to editing.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    _strand(adapter, ref)
+
+    client.update_errors = [
+        "streaming_state_conflict",
+        FakeResponse({"error": "ratelimited"}, headers={"Retry-After": "8"}),
+    ]
+    with pytest.raises(RichContentThrottled) as waiting:
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+        )
+
+    assert waiting.value.retry_after == 8
+    assert len(client.stopped) == 1
+    assert ref not in adapter._unredrawable
+
+
 # ── End to end, through the publisher ────────────────────────────────────────
 
 

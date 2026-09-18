@@ -6,9 +6,27 @@ from slack_sdk.errors import SlackApiError
 
 
 class FakeResponse(dict):
-    def __init__(self, *args: Any, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        headers: dict[str, str] | None = None,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(*args)
         self.headers = headers or {}
+        self.status_code = status_code
+
+
+def _refusal(refusal: str | FakeResponse) -> FakeResponse:
+    """A refusal as the response an error carries: named, or given whole.
+
+    A name is all most tests need. One that turns on a header or an HTTP status
+    — a rate limit, which Slack reports in both of those and has spelled its
+    error two ways over the years — passes the response it wants instead.
+    """
+    if isinstance(refusal, FakeResponse):
+        return refusal
+    return FakeResponse({"error": refusal})
 
 
 class FakeWebClient:
@@ -20,11 +38,11 @@ class FakeWebClient:
         # holds only those Slack took, so a test that an edit was never sent in
         # a particular shape has to read the attempts.
         self.update_attempts: list[dict[str, Any]] = []
-        self.update_error: str | None = None
+        self.update_error: str | FakeResponse | None = None
         # Errors for successive chat.update calls, oldest first; a None is a
         # call that succeeds. Emptied as it is used, then `update_error` applies
         # again — which is the sticky form most tests want.
-        self.update_errors: list[str | None] = []
+        self.update_errors: list[str | FakeResponse | None] = []
         self.deleted: list[dict[str, Any]] = []
         self.reactions: list[tuple[str, str, str]] = []
         self.reaction_error: str | None = None
@@ -42,7 +60,7 @@ class FakeWebClient:
         self.stopped: list[dict[str, Any]] = []
         self.start_error: str | None = None
         self.append_error: str | None = None
-        self.stop_error: str | None = None
+        self.stop_error: str | FakeResponse | None = None
         self._ts = 0
 
     async def api_call(self, method: str, **kwargs: Any) -> FakeResponse:
@@ -81,8 +99,8 @@ class FakeWebClient:
     async def chat_update(self, **kwargs: Any) -> FakeResponse:
         self.update_attempts.append(kwargs)
         error = self.update_errors.pop(0) if self.update_errors else self.update_error
-        if error:
-            raise SlackApiError("failed", FakeResponse({"error": error}))
+        if error is not None:
+            raise SlackApiError("failed", _refusal(error))
         self.updated.append(kwargs)
         return FakeResponse({"ok": True})
 
@@ -100,8 +118,8 @@ class FakeWebClient:
         return FakeResponse({"ok": True})
 
     async def chat_stopStream(self, **kwargs: Any) -> FakeResponse:
-        if self.stop_error:
-            raise SlackApiError("no", FakeResponse({"error": self.stop_error}))
+        if self.stop_error is not None:
+            raise SlackApiError("no", _refusal(self.stop_error))
         self.stopped.append(kwargs)
         return FakeResponse({"ok": True})
 

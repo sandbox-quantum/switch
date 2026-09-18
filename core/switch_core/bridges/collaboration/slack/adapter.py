@@ -699,15 +699,9 @@ class SlackAdapter(CollaborationAdapter):
                 channel_id, message_ref, message.text, message.blocks
             )
         except SlackApiError as error:
-            if (
-                error.response.get("error") == "ratelimited"
-                or getattr(error.response, "status_code", None) == 429
-            ):
-                delay = self._retry_after(error)
-                self._rich_update_after = time.monotonic() + delay
-                raise RichContentThrottled(
-                    retry_after=delay, text=message.text
-                ) from error
+            throttled = self._throttled(error, message.text)
+            if throttled is not None:
+                raise throttled from error
             if error.response.get("error") == _STREAMING_CONFLICT:
                 await self._redraw_stranded_stream(channel_id, message_ref, message)
                 return
@@ -726,6 +720,15 @@ class SlackAdapter(CollaborationAdapter):
         Closing it is what makes this terminate: the message can only be
         stranded once, so a publication that arrives after this one is an
         ordinary edit whatever happens below.
+
+        Either call here can be rate limited instead, and in the one situation
+        this exists for that is likely: a restart strands every stream that was
+        open, and they are recovered one after another through a budget that
+        belongs to the workspace rather than to any of them. So both answer a
+        refusal to wait with `RichContentThrottled` and the cooldown behind it,
+        which holds the rest of the batch back as well. The message stays
+        stranded until the publisher comes back for it, which is the same state
+        it was already in.
 
         The redraw is deliberately `_write_blocks` rather than `update_blocks`.
         A message a stream drew in two sections cannot be edited at all, and the
@@ -746,6 +749,9 @@ class SlackAdapter(CollaborationAdapter):
         try:
             await client.chat_stopStream(channel=channel_id, ts=ts)
         except SlackApiError as error:
+            throttled = self._throttled(error, message.text)
+            if throttled is not None:
+                raise throttled from error
             raise RichContentFailed(
                 f"Slack refused an edit to {message_ref} because it is still "
                 f"streaming, and would not close the stream either: "
@@ -767,6 +773,9 @@ class SlackAdapter(CollaborationAdapter):
                 _publication_metadata(message.blocks),
             )
         except SlackApiError as error:
+            throttled = self._throttled(error, message.text)
+            if throttled is not None:
+                raise throttled from error
             if error.response.get("error") not in _BLOCK_FORMAT_ERRORS:
                 raise RichContentFailed(
                     f"Slack could not update the message in channel {channel_id} "
@@ -780,6 +789,33 @@ class SlackAdapter(CollaborationAdapter):
                 "itself is complete and stands as it is.",
                 message_ref,
             )
+
+    def _throttled(
+        self, error: SlackApiError, text: str
+    ) -> RichContentThrottled | None:
+        """Slack asking to be left alone, as the thing a publisher waits out.
+
+        Starts the cooldown as well as reporting it, because the limit being
+        answered is the workspace's and not this message's: the next message
+        redrawn would spend the same budget, and there is no point telling one
+        caller to wait while another walks into the refusal it was warned
+        about.
+
+        Both shapes Slack refuses in. The name comes back on a Web API error
+        body; the status comes back when the refusal is the HTTP layer's and
+        there is no body worth reading.
+
+        None where the refusal is something else, leaving the caller to make of
+        it whatever it was going to.
+        """
+        if (
+            error.response.get("error") != "ratelimited"
+            and getattr(error.response, "status_code", None) != 429
+        ):
+            return None
+        delay = self._retry_after(error)
+        self._rich_update_after = time.monotonic() + delay
+        return RichContentThrottled(retry_after=delay, text=text)
 
     @staticmethod
     def _retry_after(error: SlackApiError) -> float:
