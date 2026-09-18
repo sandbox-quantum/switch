@@ -272,8 +272,6 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     }
   }, [yamlText, sourceName, serverId, showModal]);
 
-  // Editing a stored template: the name, the description and the document go
-  // to the server in one change.
   const handleSaveChanges = useCallback(async () => {
     if (!editingTemplate) return;
     setSaving(true);
@@ -288,7 +286,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         templateId: editingTemplate.id,
         name: name.trim(),
         description: description.trim(),
-        // Sent only when changed, so editing the name alone keeps the version.
+        // Sent only when changed, so a rename cannot put back a document
+        // someone else saved meanwhile.
         ...(yamlText !== initialYaml ? { content: yamlText } : {}),
         ...(access !== editingTemplate.access ? visibilityOf(access) : {}),
       });

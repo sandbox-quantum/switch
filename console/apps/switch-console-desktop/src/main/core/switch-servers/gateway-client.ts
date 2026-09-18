@@ -1200,9 +1200,10 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     kind: t.kind,
     creator: t.owner_name ?? t.owner_id,
     ownerId: t.owner_id,
+    // A server that does not report versions has never bumped one.
     version: t.version ?? 1,
-    // A server without visibility fields shares every template and lets only
-    // its owner change it, which is what these defaults say.
+    // A server without visibility fields shares every template and lets its
+    // owner or an admin change it, which is what these defaults say.
     readVisibility: t.read_visibility ?? 'public',
     writeVisibility: t.write_visibility ?? 'private',
     canEdit: t.can_edit ?? null,
@@ -1254,10 +1255,9 @@ export async function createTemplate(
   return { ...toSummary(t), definition: t.content };
 }
 
-/** Remove a template from the server's registry (`DELETE /templates/{id}`). */
 /** Change a stored template (`PATCH /templates/{id}`). The server answers
- * 403 to a caller it does not let edit it, and 409 when the owner already
- * has a template by the new name. */
+ * 404 for a template the caller may not read, 403 for one they may not
+ * edit, and 409 when the owner already has a template by the new name. */
 export async function updateTemplate(
   server: SwitchServer,
   templateId: string,
@@ -1283,6 +1283,7 @@ export async function updateTemplate(
   return { ...toSummary(t), definition: t.content };
 }
 
+/** Remove a template from the server's registry (`DELETE /templates/{id}`). */
 export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
   await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
     authenticated: true,

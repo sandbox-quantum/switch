@@ -450,8 +450,7 @@ class TestGuard:
     async def test_a_guard_that_refuses_leaves_the_row_as_it_was(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """The guard runs on the locked row, so a change of mind that lands
-        between the caller's check and the write still wins."""
+        """A guard that raises leaves the content and the version as they were."""
         async with session_factory() as session:
             alice = await _make_user(session, "alice")
             created = await _make_template(

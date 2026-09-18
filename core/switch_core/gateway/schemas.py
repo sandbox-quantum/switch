@@ -1127,7 +1127,7 @@ class TemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
-    # Shared with the workspace and changed only by the owner, unless said otherwise.
+    # Shared with the workspace and changed by the owner or an admin, unless said otherwise.
     read_visibility: str = "public"
     write_visibility: str = "private"
     content: str = Field(min_length=1)

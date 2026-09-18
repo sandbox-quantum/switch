@@ -419,8 +419,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
   // The server searches name and description. The full listing stays loaded
-  // for the recents and for marking a built-in as saved, so a search that
-  // matches nothing empties the workspace section and nothing else.
+  // for the recents and for marking a built-in as saved; the search results
+  // replace it only for the workspace cards.
   const [searchHits, setSearchHits] = useState<StoredTemplateSummary[] | null>(null);
   useEffect(() => {
     const q = query.trim();

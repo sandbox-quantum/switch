@@ -268,8 +268,6 @@ const CapturePanel = observer(function CapturePanel() {
     if (result) setSaved(true);
   }, [parameterizedYaml, roomName]);
 
-  // The same dialog the import page uses, so a captured room lands in the
-  // workspace listing like any other template.
   const { showModal } = useModalContext();
   const { navigate } = useNavigate();
   const handleSaveToWorkspace = useCallback(async () => {
@@ -279,8 +277,8 @@ const CapturePanel = observer(function CapturePanel() {
       serverName: switchServersStore.servers.find((sv) => sv.id === serverId)?.name ?? null,
       content: parameterizedYaml,
       ...prefill,
-      // The save dialog falls back to a generic name when the document's room
-      // name holds a placeholder. The room's own name reads better.
+      // `prefillForSave` answers a generic name when the room's name holds a
+      // placeholder; a captured room has a real name to use instead.
       name: prefill.name === 'Room template' && roomName ? roomName : prefill.name,
       onSuccess: ({ id }) => navigate('templateDetail', { serverId, templateId: id }),
     });
