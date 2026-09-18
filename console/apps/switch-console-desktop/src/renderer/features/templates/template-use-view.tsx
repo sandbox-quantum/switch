@@ -236,6 +236,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // derived from it until the deployer edits the identifier directly.
   const [displayName, setDisplayName] = useState('');
   const [displayNameTouched, setDisplayNameTouched] = useState(false);
+  const [identifierOpen, setIdentifierOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   // An input the page filled in is shown as one line until the deployer opens it.
   const [prefilled, setPrefilled] = useState<ReadonlySet<string>>(new Set());
@@ -273,6 +274,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           result.agents[0]?.displayName ?? (result.kind === 'agent' ? result.name : '')
         );
         setDisplayNameTouched(false);
+        setIdentifierOpen(false);
         const firstName = result.agents[0]?.name ?? '';
         setPrefilled(
           new Set([
@@ -1050,27 +1052,22 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // identifier it is addressed by follows from it and is shown underneath.
   const identifier = slotNames[0]?.final ?? '';
   const agentNameField = isAgentTemplate && (
-    <CollapsibleInput
-      label="Name"
-      summary={`${displayName.trim() || identifier}${identifier ? `  ·  @${identifier}` : ''}`}
-      collapsed={isCollapsed('name') && displayName.trim() !== '' && identifier !== ''}
-      onOpen={() => open('name')}
-      wrap
-    >
-      <div className="flex flex-col gap-2">
-        <span className="text-[12.5px] font-medium">Name</span>
-        <Input
-          value={displayName}
-          onChange={(e) => {
-            setDisplayName(e.target.value);
-            setDisplayNameTouched(true);
-          }}
-          disabled={phase === 'creating'}
-        />
+    <div className="flex flex-col gap-2">
+      <span className="text-[12.5px] font-medium">Name</span>
+      <Input
+        value={displayName}
+        onChange={(e) => {
+          setDisplayName(e.target.value);
+          setDisplayNameTouched(true);
+        }}
+        disabled={phase === 'creating'}
+        autoFocus
+      />
+      {identifierOpen ? (
         <div className="flex items-center gap-2 text-xs text-foreground-muted">
-          <span>Addressed as</span>
+          <span>Addressed as @</span>
           <Input
-            className="h-7 max-w-[260px] font-mono text-xs"
+            className="h-7 max-w-[240px] font-mono text-xs"
             value={nameOverride ?? slotNames[0]?.wanted ?? ''}
             onChange={(e) => setNameOverride(e.target.value)}
             disabled={phase === 'creating'}
@@ -1081,8 +1078,19 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             </span>
           )}
         </div>
-      </div>
-    </CollapsibleInput>
+      ) : (
+        <p className="text-xs text-foreground-muted">
+          Addressed as <span className="font-mono">@{identifier || '…'}</span>{' '}
+          <button
+            type="button"
+            onClick={() => setIdentifierOpen(true)}
+            className="cursor-pointer underline underline-offset-2 hover:text-foreground"
+          >
+            Change
+          </button>
+        </p>
+      )}
+    </div>
   );
 
   const paramFields = templateParams.map((param) => (
@@ -1570,31 +1578,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                     <p className="text-xs text-foreground-muted">
                       The new agent joins the room you came from; no room is made.
                     </p>
-                  ) : isAgentTemplate && step === 2 ? (
-                    roomChoice === 'new' && templateRoom ? (
-                      <RoomCard
-                        room={templateRoom}
-                        values={railValues}
-                        renames={railRenames}
-                        bridgeName={templateBridge?.displayName ?? parsed?.bridge ?? null}
-                        creatorIdentity={creatorIdentity}
-                        status={roomStatus}
-                        toggle={null}
-                      />
-                    ) : pickedRoomId ? (
-                      <p className="text-xs text-foreground-muted">
-                        {identifier || 'The agent'} joins{' '}
-                        <span className="font-medium text-foreground">
-                          {switchRoomsStore.roomNameById(pickedRoomId) ?? 'the room'}
-                        </span>
-                        . Mention it there to start it.
-                      </p>
-                    ) : (
-                      <p className="text-xs text-foreground-muted">
-                        No room. The agent is created and can be added to one later.
-                      </p>
-                    )
-                  ) : (
+                  ) : isAgentTemplate ? null : (
                     !isAgentTemplate &&
                     parsed?.rooms.map((room, i) => (
                       <RoomCard
@@ -1609,21 +1593,41 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                       />
                     ))
                   )}
-                  {(!isAgentTemplate || step === 1) &&
-                    slots.map((slot, i) => (
-                      <AgentSlotCard
-                        key={i}
-                        slot={slot}
-                        wantedName={slotNames[i]?.wanted ?? ''}
-                        finalName={slotNames[i]?.final ?? ''}
-                        onChange={(next) =>
-                          setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
-                        }
-                        lists={{ ...lists, agents: agentsAtLocation }}
-                        locationLabel={runLocationLabel(runHost, allowedHosts)}
-                        choice={!isAgentTemplate}
+                  {slots.map((slot, i) => (
+                    <AgentSlotCard
+                      key={i}
+                      slot={slot}
+                      wantedName={slotNames[i]?.wanted ?? ''}
+                      finalName={slotNames[i]?.final ?? ''}
+                      onChange={(next) =>
+                        setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
+                      }
+                      lists={{ ...lists, agents: agentsAtLocation }}
+                      locationLabel={runLocationLabel(runHost, allowedHosts)}
+                      choice={!isAgentTemplate}
+                    />
+                  ))}
+                  {isAgentTemplate &&
+                    step === 2 &&
+                    (roomChoice === 'new' && templateRoom ? (
+                      <RoomCard
+                        room={templateRoom}
+                        values={railValues}
+                        renames={railRenames}
+                        bridgeName={templateBridge?.displayName ?? parsed?.bridge ?? null}
+                        creatorIdentity={creatorIdentity}
+                        status={roomStatus}
+                        toggle={null}
                       />
-                    ))}
+                    ) : pickedRoomId ? (
+                      <p className="px-1 text-xs text-foreground-muted">
+                        Joins{' '}
+                        <span className="font-medium text-foreground">
+                          {switchRoomsStore.roomNameById(pickedRoomId) ?? 'the room'}
+                        </span>
+                        . Mention it there to start it.
+                      </p>
+                    ) : null)}
                 </div>
                 <ResolvedDocument
                   yamlText={loaded.yamlText}
