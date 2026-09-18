@@ -43,7 +43,6 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
     _MAX_POST_BYTES,
-    INTERRUPT_BLOCK_ID,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -105,6 +104,18 @@ def _tool(turn_id: str = RUNNING_TURN) -> Item:
     )
 
 
+def _steps(count: int) -> list[Item]:
+    """Enough activity to push a turn across as many section boundaries as it takes.
+
+    A section holds forty-nine cards, so one step is one section, fifty is two,
+    and ninety-nine is the three a stream draws at most.
+    """
+    return [
+        _tool().model_copy(update={"item_id": f"t{n}", "title": f"Read {n}"})
+        for n in range(count)
+    ]
+
+
 def _activity(
     turn: TurnUpsert,
     *,
@@ -131,10 +142,16 @@ def _streamed(client: FakeWebClient) -> dict[str, dict[str, Any]]:
 
 
 def _control(blocks: list[dict[str, Any]] | dict[str, dict[str, Any]]) -> Any:
-    """The stop control as the message currently holds it, or None."""
-    if isinstance(blocks, dict):
-        return blocks.get(INTERRUPT_BLOCK_ID)
-    return next((b for b in blocks if b.get("block_id") == INTERRUPT_BLOCK_ID), None)
+    """The stop control's own block as the message holds it, live or spent.
+
+    Found by shape rather than by id, because the id is not fixed: the control
+    moves down the message as the turn grows a section. Everything the turn
+    itself draws is a `plan` or the `context` line above the sections, so
+    whatever is neither is the control's block — the button, or the divider
+    left where one used to be.
+    """
+    held = list(blocks.values()) if isinstance(blocks, dict) else blocks
+    return next((b for b in held if b["type"] not in {"plan", "context"}), None)
 
 
 def _button(block: dict[str, Any]) -> dict[str, Any]:
@@ -158,9 +175,9 @@ async def test_a_running_turn_gets_a_stop_button_below_its_steps() -> None:
     drawn = _streamed(client)
     # Slack keeps a block where it was first written, so the order the ids
     # first appeared in is the order down the message.
-    assert list(drawn)[-1] == INTERRUPT_BLOCK_ID
-    assert all(block["type"] == "plan" for block in list(drawn.values())[:-1])
     control = _control(drawn)
+    assert list(drawn)[-1] == control["block_id"]
+    assert all(block["type"] == "plan" for block in list(drawn.values())[:-1])
     assert control["type"] == "actions"
     assert _button(control)["text"]["text"] == INTERRUPT_LABEL
 
@@ -264,6 +281,81 @@ async def test_the_control_survives_a_message_trimmed_to_fit() -> None:
     assert _control(blocks) is not None
 
 
+# ── Where it sits as the turn grows ──────────────────────────────────────────
+
+
+async def test_the_control_moves_down_as_the_turn_grows_a_section() -> None:
+    """Slack fixes a block at the position it was first written, so a control
+    created while the turn had one section can never be got below its second.
+
+    What moves is the content rather than the block. The section the turn has
+    just grown is written over the block the control was in, and a fresh
+    control is created below it — so the control is always the newest block on
+    the message and Slack therefore always draws it last.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client, streaming=True)
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", _activity(_turn(), items=_steps(1)), THREAD
+    )
+    held = _control(_streamed(client))["block_id"]
+
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, _activity(_turn(), items=_steps(50)), THREAD
+    )
+
+    drawn = _streamed(client)
+    assert drawn[held]["type"] == "plan"
+    assert [block["type"] for block in drawn.values()] == ["plan", "plan", "actions"]
+    assert list(drawn)[-1] == _control(drawn)["block_id"]
+
+
+async def test_the_control_is_still_last_on_a_turn_drawn_in_three_blocks() -> None:
+    """The widest a stream gets, and the handoff happening twice: the line
+    saying what is no longer shown, the two sections still kept, and the
+    control under both of them."""
+    client = FakeWebClient()
+    adapter = _adapter(client, streaming=True)
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", _activity(_turn(), items=_steps(1)), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, _activity(_turn(), items=_steps(50)), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, _activity(_turn(), items=_steps(99)), THREAD
+    )
+
+    drawn = _streamed(client)
+    assert [block["type"] for block in drawn.values()] == [
+        "context",
+        "plan",
+        "plan",
+        "actions",
+    ]
+
+
+async def test_no_block_is_drawn_before_the_turn_has_anything_to_put_in_it() -> None:
+    """The first answer to the ordering was to create every section up front so
+    that the control could be made below all of them, and it is out: Slack
+    draws a plan with no cards in it as a visible empty row, so a turn using
+    one section would carry two blank ones for the whole of its life.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client, streaming=True)
+
+    await adapter.post_rich(
+        CHANNEL, "Agent", _activity(_turn(), items=_steps(1)), THREAD
+    )
+
+    assert [block["type"] for block in _streamed(client).values()] == [
+        "plan",
+        "actions",
+    ]
+
+
 # ── Taking it away again ─────────────────────────────────────────────────────
 
 
@@ -279,7 +371,8 @@ async def test_a_finished_turn_overwrites_its_control_rather_than_omitting_it() 
     adapter = _adapter(client, streaming=True)
 
     ref = await adapter.post_rich(CHANNEL, "Agent", _activity(_turn()), THREAD)
-    assert _control(_streamed(client))["type"] == "actions"
+    live = _control(_streamed(client))
+    assert live["type"] == "actions"
 
     await adapter.update_rich(
         CHANNEL,
@@ -289,10 +382,42 @@ async def test_a_finished_turn_overwrites_its_control_rather_than_omitting_it() 
         THREAD,
     )
 
+    # The same block, so the rule is where the button was rather than below it.
     assert _control(_streamed(client)) == {
         "type": "divider",
-        "block_id": INTERRUPT_BLOCK_ID,
+        "block_id": live["block_id"],
     }
+
+
+async def test_a_turn_that_ends_retires_the_control_it_last_drew_and_no_other() -> None:
+    """Which block that is depends on how far the turn got before it ended.
+
+    The block the control started in is a section by now, so a rule sent to the
+    id the message opened with would not retire anything — it would rub out a
+    section of the turn and leave the button live below it.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client, streaming=True)
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", _activity(_turn(), items=_steps(1)), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, _activity(_turn(), items=_steps(50)), THREAD
+    )
+    live = _control(_streamed(client))["block_id"]
+
+    await adapter.update_rich(
+        CHANNEL,
+        "Agent",
+        ref,
+        _activity(_turn(status="completed"), stops=None, items=_steps(50)),
+        THREAD,
+    )
+
+    drawn = _streamed(client)
+    assert drawn[live] == {"type": "divider", "block_id": live}
+    assert [block["type"] for block in drawn.values()] == ["plan", "plan", "divider"]
 
 
 async def test_a_stream_that_never_drew_a_control_is_not_sent_one_to_erase() -> None:

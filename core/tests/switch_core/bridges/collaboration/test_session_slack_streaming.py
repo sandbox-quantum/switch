@@ -279,7 +279,7 @@ async def test_the_clock_moves_the_live_section_and_nothing_above_it() -> None:
     )
 
     assert [c["blocks"][0]["block_id"] for c in _chunks(client)[1]] == [
-        "switch-steps-middle"
+        "switch-steps-1"
     ]
     assert _chunks(client)[1][0]["blocks"][0]["title"] == "Working… 10s · Last: Tool 49"
 
@@ -1284,9 +1284,9 @@ async def test_a_stranded_stream_resends_every_section_it_cannot_account_for() -
     )
 
     assert _appended_ids(client)[-1] == [
-        "switch-steps-top",
-        "switch-steps-middle",
-        "switch-interrupt",
+        "switch-steps-0",
+        "switch-steps-1",
+        "switch-steps-2",
     ]
 
 
@@ -1349,12 +1349,13 @@ async def test_a_stranded_stream_whose_turn_has_ended_loses_its_stop_control() -
         CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
     )
 
+    # One section, so the control was in the slot below it.
     spent = [
         chunk["blocks"][0]
         for chunk in client.appended[-1]["chunks"]
-        if chunk["blocks"][0]["block_id"] == "switch-interrupt"
+        if chunk["blocks"][0]["type"] == "divider"
     ]
-    assert spent == [{"type": "divider", "block_id": "switch-interrupt"}]
+    assert spent == [{"type": "divider", "block_id": "switch-steps-1"}]
 
 
 async def test_a_stranded_turn_still_running_keeps_its_stop_control() -> None:
@@ -1385,7 +1386,7 @@ async def test_a_stranded_turn_still_running_keeps_its_stop_control() -> None:
     control = [
         chunk["blocks"][0]
         for chunk in client.appended[-1]["chunks"]
-        if chunk["blocks"][0]["block_id"] == "switch-interrupt"
+        if chunk["blocks"][0]["block_id"] == "switch-steps-1"
     ]
     assert control and control[0]["type"] == "actions"
 

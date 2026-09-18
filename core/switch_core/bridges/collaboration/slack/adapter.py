@@ -45,7 +45,7 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
-    INTERRUPT_BLOCK_ID,
+    STREAM_SLOTS,
     SlackMessage,
     render_activity,
     render_activity_plan,
@@ -53,7 +53,6 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_attention,
     render_request,
     render_turn_with_request,
-    spent_interrupt_block,
     with_session_context,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
@@ -211,10 +210,16 @@ _STREAMING_CONFLICT = "streaming_state_conflict"
 # to be remembered, because a stream keeps a block it is no longer sent and a
 # turn that ended while this process was away renders no control at all — so
 # without this nothing would ever write over the one on screen and the message
-# would keep a live-looking button for good. The value is a block no renderer
+# would keep a live-looking button for good. The values are blocks no renderer
 # produces, so a turn that *is* still running has its control resent rather than
 # mistaken for one already drawn.
-_STRANDED_BLOCKS: dict[str, dict[str, Any]] = {INTERRUPT_BLOCK_ID: {}}
+#
+# Every slot, because which one the control is in depends on how far the turn
+# had got when the record was lost, and that is the part nothing here knows. A
+# turn only ever gains sections, so the control cannot have been below where the
+# redraw now puts it; claiming a slot the message never reached costs a thin
+# rule under a finished turn, which is what a retired control leaves anyway.
+_STRANDED_BLOCKS: dict[str, dict[str, Any]] = {slot: {} for slot in STREAM_SLOTS}
 
 
 class _StreamNotClosed(RichContentFailed):
@@ -1154,13 +1159,12 @@ class SlackAdapter(CollaborationAdapter):
             interrupt_turn_id=content.interrupt_turn_id,
         )
         blocks = drawn.blocks
-        if INTERRUPT_BLOCK_ID in stream.blocks and not any(
-            block["block_id"] == INTERRUPT_BLOCK_ID for block in blocks
-        ):
+        spent = drawn.spent_control
+        if spent is not None and spent["block_id"] in stream.blocks:
             # A stream keeps a block it is no longer sent — measured — so the
             # turn ending is not enough to take the stop control away. It has to
             # be written over, and only this end knows it was ever there.
-            blocks = [*blocks, spent_interrupt_block()]
+            blocks = [*blocks, spent]
         moved = [
             block for block in blocks if stream.blocks.get(block["block_id"]) != block
         ]

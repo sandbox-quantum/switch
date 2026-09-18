@@ -201,25 +201,36 @@ _MAX_TASK_ID = 64
 # few characters saying so, in language no agent would have written itself.
 _TRUNCATED = " […truncated]"
 
-# The three blocks a stream draws its steps in, top to bottom. Slack fixes a
-# block at the position it was first written and has no call that removes one,
-# so where each one sits is decided by the order they are created in and cannot
-# be changed afterwards. That is the whole reason there are three: the top block
-# has to exist before either of the others to be able to carry the line saying
-# what is no longer shown, so it starts as the first page of steps and becomes
-# that line when there is something to disclose.
-_STEP_BLOCKS = ("switch-steps-top", "switch-steps-middle", "switch-steps-bottom")
+# The blocks a stream draws itself in, top to bottom. Slack fixes a block at the
+# position it was first written and has no call that moves or removes one, so
+# which slot is above which is decided by the order the ids are first used and
+# cannot be changed afterwards. The ids say nothing about what they hold,
+# because two different things hold each of them over a turn's life.
+#
+# Sections fill the slots from the top and the stop control takes the next one
+# down, so a turn growing a section writes that section over the slot the
+# control was in and creates a fresh control below it. The control is then
+# always the newest block and so always the last, which on a message whose
+# blocks cannot move is the only way to keep it under the steps. Nothing has to
+# remember where it got to: the slot is a function of how many section blocks
+# the turn has, which the turn itself says.
+#
+# Four of them, because three section blocks is the most a turn draws and the
+# control sits under the last. Slot 0 is the one that carries the line saying
+# what is no longer shown, which has to be above every section and so has to be
+# created before any of them: it starts as the first page of steps and becomes
+# that line when there is finally something to disclose.
+STREAM_SLOTS = (
+    "switch-steps-0",
+    "switch-steps-1",
+    "switch-steps-2",
+    "switch-steps-3",
+)
 
 # The first card of every section, carrying the Console link. The same id in
 # both sections is deliberate and Slack takes it: a reader opens one section or
 # the other, and the link has to be in whichever one they chose.
 _SESSION_CARD = "switch-session"
-
-# The stop control's own block. Fixed, because a stream addresses a block by id
-# and this one is rewritten every time the turn it stops changes; and created in
-# the same append as the first section so that Slack fixes it below the steps
-# rather than wherever the turn happened to acquire something to stop.
-INTERRUPT_BLOCK_ID = "switch-interrupt"
 
 # Slack's three task states against the contract's four. `declined` is not an
 # error — the call did what it was told, and what it was told was no — but
@@ -1229,7 +1240,7 @@ def render_activity_plan(
     # bytes that must survive whatever trimming the steps need, and a message
     # that dropped its stop button to make room for one more step line would
     # have traded the only thing on it a reader can act on.
-    control = _interrupt_block(interrupt_turn_id, turn)
+    control = _interrupt_block(interrupt_turn_id, turn, STREAM_SLOTS[len(blocks)])
     if control is not None:
         blocks.append(control)
     return SlackMessage(text=title, blocks=blocks)
@@ -1247,10 +1258,17 @@ class StreamedActivity:
     `title` is not one of the blocks and is never sent. It is the one line the
     message amounts to, which is what a failed publication has to report to a
     caller that cannot know how Slack was going to draw it.
+
+    `spent_control` is what to write over a stop control this draw does not
+    replace, and is set whenever the draw carries no control of its own. Only
+    the adapter can say whether to send it, because only the adapter knows
+    whether the message ever had a control to be rid of; what it cannot work
+    out for itself is which block that control is in, and this says.
     """
 
     title: str
     blocks: list[dict[str, Any]]
+    spent_control: dict[str, Any] | None
 
 
 def render_activity_stream(
@@ -1293,13 +1311,17 @@ def render_activity_stream(
     # Read off the last section before the control is appended: the title is the
     # heading of the newest plan block, and the control has no title at all.
     title = blocks[-1]["title"]
-    control = _interrupt_block(interrupt_turn_id, turn)
-    if control is not None:
-        blocks.append(control)
-    return StreamedActivity(title=title, blocks=blocks)
+    slot = STREAM_SLOTS[len(blocks)]
+    control = _interrupt_block(interrupt_turn_id, turn, slot)
+    if control is None:
+        return StreamedActivity(
+            title=title, blocks=blocks, spent_control=_spent_control(slot)
+        )
+    blocks.append(control)
+    return StreamedActivity(title=title, blocks=blocks, spent_control=None)
 
 
-def spent_interrupt_block() -> dict[str, Any]:
+def _spent_control(block_id: str) -> dict[str, Any]:
     """What a stream puts where its stop control was, once there is none.
 
     A stream cannot take a block back. Measured: a block left out of an append
@@ -1313,8 +1335,12 @@ def spent_interrupt_block() -> dict[str, Any]:
     the end of it rather than as a leftover. An ordinary post has no such
     problem and simply stops drawing the control, so this is the streamed path's
     alone.
+
+    Only ever the slot the sections stop at. A control the turn has since grown
+    past is already gone: the section that took its place wrote over it, which
+    is how the control moves down at all.
     """
-    return {"type": "divider", "block_id": INTERRUPT_BLOCK_ID}
+    return {"type": "divider", "block_id": block_id}
 
 
 def _session_card(session_url: str | None, *, live: bool) -> dict[str, Any]:
@@ -1381,7 +1407,7 @@ def _session_card(session_url: str | None, *, live: bool) -> dict[str, Any]:
 
 
 def _interrupt_block(
-    interrupt_turn_id: str | None, turn: TurnUpsert
+    interrupt_turn_id: str | None, turn: TurnUpsert, block_id: str
 ) -> dict[str, Any] | None:
     """The stop control, or None where there is nothing for it to stop.
 
@@ -1392,6 +1418,13 @@ def _interrupt_block(
     past yesterday's turn is not offered a control over today's work, whatever
     is running now. And the caller has to have found the session interruptible
     at all; a session whose provider cannot be interrupted never gets one.
+
+    `block_id` is the slot the control occupies, which its caller works out
+    from how much of the turn is above it. It is passed in rather than fixed
+    because on a stream that slot moves down as the turn grows, and it is the
+    caller that knows what a redraw is going to leave the control sitting
+    under. A press is routed on the `action_id`, so nothing downstream reads
+    it.
 
     `value` carries the turn rather than the `action_id` because Slack hands
     both back unchanged and only one of them is bounded generously enough to
@@ -1422,13 +1455,13 @@ def _interrupt_block(
     if turn.status == "queued":
         return {
             "type": "section",
-            "block_id": INTERRUPT_BLOCK_ID,
+            "block_id": block_id,
             "text": {"type": "plain_text", "text": INTERRUPT_QUEUED_NOTE},
             "accessory": button,
         }
     return {
         "type": "actions",
-        "block_id": INTERRUPT_BLOCK_ID,
+        "block_id": block_id,
         "elements": [button],
     }
 
@@ -1462,7 +1495,7 @@ def _step_blocks(
     disclose — a substitution in place, which keeps its position. There is no
     call that removes a block, and this needs none.
     """
-    top, middle, bottom = _STEP_BLOCKS
+    top, middle, bottom = STREAM_SLOTS[:3]
     last = max(len(steps) - 1, 0) // _MAX_SECTION_ITEMS
     if last < 2:
         pages = (top, middle)
