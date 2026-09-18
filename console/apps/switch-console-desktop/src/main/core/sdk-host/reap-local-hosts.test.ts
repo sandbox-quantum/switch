@@ -77,7 +77,7 @@ it.skipIf(process.platform === 'win32')(
     const child = await detachedWatcher(root);
     try {
       await reapDetachedLocalWatchers();
-      expect(child.exitCode).not.toBeNull();
+      await expect.poll(() => child.exitCode).not.toBeNull();
       expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({
         enabled: false,
       });
@@ -99,6 +99,25 @@ it.skipIf(process.platform === 'win32')('leaves a remote agent’s watcher runni
     child.kill('SIGKILL');
   }
 });
+
+it.skipIf(process.platform === 'win32')(
+  'ignores a saved PID that now belongs to an unrelated process',
+  async () => {
+    const root = await watcherRoot('switch-agent-1');
+    const unrelated = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+      stdio: 'ignore',
+    });
+    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: unrelated.pid }));
+    try {
+      await reapDetachedLocalWatchers();
+      expect(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).toEqual({
+        enabled: true,
+      });
+    } finally {
+      unrelated.kill('SIGKILL');
+    }
+  }
+);
 
 it('leaves a root alone when no agent claims it rather than guessing', async () => {
   const root = await watcherRoot('switch-agent-unknown');

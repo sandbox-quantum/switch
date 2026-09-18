@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -29,11 +30,27 @@ async function ownerPid(path: string): Promise<number | null> {
   }
 }
 
+/**
+ * A saved PID only counts while it still names the host that wrote it. After a
+ * hard shutdown the number can belong to something else entirely, and acting on
+ * that would stall startup waiting for a process that was never a watcher.
+ */
+function ownsRoot(pid: number, root: string): boolean {
+  try {
+    return execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+    }).includes(root);
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return false;
+    throw error;
+  }
+}
+
 /** True while a process other than Console still owns this watcher root. */
 async function detached(root: string): Promise<boolean> {
   for (const path of [join(root, 'shared-owner.lock'), join(root, 'supervisor', 'owner.json')]) {
     const pid = await ownerPid(path);
-    if (pid !== null && pid !== process.pid && alive(pid)) return true;
+    if (pid !== null && pid !== process.pid && alive(pid) && ownsRoot(pid, root)) return true;
   }
   return false;
 }
@@ -66,6 +83,9 @@ async function stopDetachedWatcher(root: string): Promise<void> {
  * guessed at.
  */
 export async function reapDetachedLocalWatchers(): Promise<void> {
+  // A local host requires a POSIX execution machine, so Windows can have no
+  // local watcher root to reap and no `ps` to identify one with.
+  if (process.platform === 'win32') return;
   const base = localStateBase('sdk-watchers');
   let entries: string[];
   try {
