@@ -76,15 +76,32 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # box. The value is the name a template would write: an agent's name, a
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
-# A `user` param has no "first": which account is meant depends on who asks,
-# and `{$creator}` already covers the deployer.
-PREFILL_PARAM_TYPES = ("agent", "bridge", "room")
 
-# A `provider` param chooses the coding agent that runs the agents a template
-# creates. The Console answers it and removes it before provisioning, so the
-# server sees it only in stored documents. It is a known type so such a
-# document passes the lint and can be stored; if one does reach provisioning
-# it is treated as a string.
+# Param types the Console answers and removes before provisioning: the coding
+# agent that runs an agent the template creates, the machine it runs on, and
+# its working directory. The server sees them only in stored documents. They
+# are known types so such a document passes the lint and can be stored; if
+# one does reach provisioning it is treated as a string.
+CONSOLE_PARAM_TYPES = ("provider", "location", "directory")
+
+# Param types whose ``default`` may be a list of candidates, tried in order
+# until one names something the server (or, for the Console's types, the
+# Console) has. ``$first`` in such a list stands for the first thing of the
+# param's type: the default messaging app, the first agent or room by name,
+# the first coding agent available where the agent runs. A `user` param has no "first":
+# which account is meant depends on who asks, and ``{$creator}`` already
+# covers the deployer.
+CHAIN_PARAM_TYPES = ("agent", "bridge", "room", "provider", "location")
+FIRST = "$first"
+# In a `room` param's chain: the room the template's own ``room:`` block
+# describes. Resolved by the Console, which decides between creating that
+# room and joining a chosen one; it never reaches the server.
+NEW = "$new"
+# The types whose param may be left without a value when the template marks
+# it ``required: false`` and gives no default: a string is empty, and a room
+# with no bridge lands on the server's default messaging app.
+OPTIONAL_WITHOUT_DEFAULT_TYPES = ("string", "bridge")
+
 ParamType = Literal[
     "string",
     "number",
@@ -95,50 +112,119 @@ ParamType = Literal[
     "room",
     "user",
     "provider",
+    "location",
+    "directory",
 ]
+
+# How a form presents a param. ``ask`` is a visible input. ``advanced`` is
+# prefilled from the default and folded away for the deployer who wants it.
+# ``fixed`` is the default, shown but not editable: the template author has
+# decided, and wrote it as a param to name and describe the value.
+ParamInput = Literal["ask", "advanced", "fixed"]
 
 
 class ParamSpec(BaseModel):
     model_config = {"extra": "forbid"}
     type: ParamType = "string"
     description: str | None = None
-    default: str | int | float | bool | None = None
+    # The human name of the input on a form, when the key is not one.
+    label: str | None = None
+    # A value, or for a type in CHAIN_PARAM_TYPES a list of candidates tried
+    # in order (see ``resolve_defaults``).
+    default: str | int | float | bool | list[str] | None = None
+    # Whether the value may be empty when the template is used. Unset means
+    # "required unless there is a default"; a chain is not one, since every
+    # candidate can be absent, so a param with a chain stays required unless
+    # the template says otherwise.
+    required: bool | None = None
+    input: ParamInput = "ask"
     enum: list[str] | None = None
     # Rendering hint for string params that carry long text (a task brief,
     # instructions): the form shows a textarea instead of a one-line input,
     # which would strip the pasted text's newlines.
     multiline: bool = False
-    # ``first`` fills a param left without an input or a default with the
-    # first thing of its type the server has: the default messaging app, or
-    # the first agent or room by name. A form shows it as a selection the
-    # deployer can change; ``create_room_from_yaml`` applies it for a caller
-    # that sends no value.
-    prefill: Literal["first"] | None = None
+    # A regular expression the whole value of a string param must match.
+    pattern: str | None = None
+    # Bounds of a number param, inclusive.
+    min: float | None = None
+    max: float | None = None
+
+    @property
+    def is_required(self) -> bool:
+        if self.required is not None:
+            return self.required
+        return self.default is None or isinstance(self.default, list)
 
     @model_validator(mode="after")
-    def _prefill_needs_a_list(self) -> ParamSpec:
-        if self.prefill is not None and self.type not in PREFILL_PARAM_TYPES:
+    def _fields_fit_the_type(self) -> ParamSpec:
+        if isinstance(self.default, list):
+            if self.type not in CHAIN_PARAM_TYPES:
+                raise ValueError(
+                    "a list default applies to params of type "
+                    + ", ".join(CHAIN_PARAM_TYPES)
+                )
+            if not self.default:
+                raise ValueError("a list default must name at least one candidate")
+            if NEW in self.default and self.type != "room":
+                raise ValueError(f"{NEW!r} applies to params of type room")
+        if self.input == "fixed" and self.default is None:
+            raise ValueError("a fixed param needs a default: that is its value")
+        if (
+            self.required is False
+            and self.default is None
+            and self.type not in OPTIONAL_WITHOUT_DEFAULT_TYPES
+        ):
             raise ValueError(
-                "'prefill' applies to params of type " + ", ".join(PREFILL_PARAM_TYPES)
+                f"a {self.type} param without a default cannot be optional; "
+                "give it a default or leave it required"
             )
+        if self.pattern is not None:
+            if self.type != "string":
+                raise ValueError("'pattern' applies to params of type string")
+            try:
+                re.compile(self.pattern)
+            except re.error as e:
+                raise ValueError(
+                    f"'pattern' is not a valid regular expression: {e}"
+                ) from e
+        if (self.min is not None or self.max is not None) and self.type != "number":
+            raise ValueError("'min' and 'max' apply to params of type number")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("'min' must not exceed 'max'")
         return self
 
 
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
-    if t == "string" or t in ENTITY_PARAM_TYPES:
+    if t == "string":
+        s = str(value)
+        if spec.pattern is not None and re.fullmatch(spec.pattern, s) is None:
+            raise ValueError(
+                f"param {name!r}: {s!r} does not match the pattern {spec.pattern!r}"
+            )
+        return s
+    if t in ENTITY_PARAM_TYPES or t in CONSOLE_PARAM_TYPES:
         return str(value)
     if t == "number":
         if isinstance(value, bool):
             raise ValueError(f"param {name!r}: expected a number, got {value!r}")
+        n: int | float
         if isinstance(value, int):
-            return value  # keep int as int; no float roundtrip, no precision loss
-        try:
-            f = float(value)
-            return int(f) if f == int(f) else f
-        except (ValueError, TypeError, OverflowError) as e:
-            raise ValueError(f"param {name!r}: expected a number, got {value!r}") from e
+            n = value  # keep int as int; no float roundtrip, no precision loss
+        else:
+            try:
+                f = float(value)
+                n = int(f) if f == int(f) else f
+            except (ValueError, TypeError, OverflowError) as e:
+                raise ValueError(
+                    f"param {name!r}: expected a number, got {value!r}"
+                ) from e
+        if spec.min is not None and n < spec.min:
+            raise ValueError(f"param {name!r}: {n} is below the minimum {spec.min:g}")
+        if spec.max is not None and n > spec.max:
+            raise ValueError(f"param {name!r}: {n} is above the maximum {spec.max:g}")
+        return n
     if t == "boolean":
         if isinstance(value, bool):
             return value
@@ -160,7 +246,14 @@ def resolve_params(
     declared: dict[str, ParamSpec],
     inputs: dict[str, Any] | None,
 ) -> dict[str, str | int | float | bool]:
-    """Merge inputs over defaults, enforce required, coerce types."""
+    """Merge inputs over defaults, enforce required, coerce types.
+
+    A list default is a chain that ``resolve_defaults`` turns into an input
+    before this runs; one still here has no candidate the server has, and
+    counts as no value. An optional param left without a value is a string
+    left empty, or an entity name left out of the result altogether so that
+    ``drop_unset`` can clear the field it was written into.
+    """
     if inputs is not None and not isinstance(inputs, dict):
         raise ValueError("'inputs' must be a mapping of param name to value")
     inputs = inputs or {}
@@ -170,15 +263,58 @@ def resolve_params(
     resolved: dict[str, str | int | float | bool] = {}
     missing: list[str] = []
     for name, spec in declared.items():
-        if name in inputs:
+        if name in inputs and inputs[name] is not None:
             resolved[name] = _coerce(inputs[name], spec, name)
-        elif spec.default is not None:
+        elif spec.default is not None and not isinstance(spec.default, list):
             resolved[name] = _coerce(spec.default, spec, name)
-        else:
+        elif spec.is_required:
             missing.append(name)
+        elif spec.type == "string":
+            resolved[name] = ""
     if missing:
+        chains = [n for n in missing if isinstance(declared[n].default, list)]
+        if chains:
+            raise ValueError(
+                "Missing required param(s): "
+                + ", ".join(missing)
+                + " (none of the candidates listed for "
+                + ", ".join(chains)
+                + " is set up on this server)"
+            )
         raise ValueError(f"Missing required param(s): {', '.join(missing)}")
     return resolved
+
+
+def unset_params(declared: dict[str, ParamSpec], values: dict[str, Any]) -> set[str]:
+    """The declared params ``resolve_params`` gave no value: optional entity
+    params the caller left empty."""
+    return {name for name in declared if name not in values}
+
+
+def drop_unset(node: Any, names: set[str]) -> Any:
+    """Clear the fields written as exactly ``{name}`` for an unset param.
+
+    A mapping value becomes null (a room's ``bridge: null`` lands on the
+    default messaging app); a list entry is removed. A placeholder inside a
+    longer string is left as written, since there is nothing sensible to put
+    there.
+    """
+    if not names:
+        return node
+
+    def _is_unset(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        m = PLACEHOLDER_RE.fullmatch(value)
+        return m is not None and m.group(1) in names
+
+    if isinstance(node, dict):
+        return {
+            k: (None if _is_unset(v) else drop_unset(v, names)) for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [drop_unset(v, names) for v in node if not _is_unset(v)]
+    return node
 
 
 def interpolate(
@@ -514,6 +650,8 @@ class RoomYamlService:
         body = {k: v for k, v in data.items() if k not in ("params", "version")}
         if values:
             body = interpolate(body, values)
+        if declared:
+            body = drop_unset(body, unset_params(declared, resolved))
 
         if is_group:
             spec: RoomSpec | GroupSpec = self._group_spec(body)
@@ -662,14 +800,19 @@ class RoomYamlService:
                         "room's messaging app"
                     )
 
-    async def prefill_inputs(
+    async def resolve_defaults(
         self, text: str, inputs: dict[str, Any] | None
     ) -> dict[str, Any] | None:
-        """Fill ``prefill: first`` params the caller sent no value for.
+        """Turn each list default into an input, for params sent no value.
 
-        Runs before ``builtins_for``, because a prefilled bridge decides which
-        messaging app ``{$creator}`` is looked up on. A document that does not
-        parse is returned untouched; ``parse_template`` reports the error.
+        The candidates are tried in order and the first one the server has
+        wins: a bridge by display name, an agent or room by name, ``$first``
+        for the default messaging app or the first agent or room by name. A
+        chain with no hit leaves the param as it was, for ``resolve_params``
+        to report. Runs before ``builtins_for``, because the bridge decides
+        which messaging app ``{$creator}`` is looked up on. A document that
+        does not parse is returned untouched; ``parse_template`` reports the
+        error. Chains of the Console's types are the Console's to resolve.
         """
         try:
             data = yaml.safe_load(text)
@@ -680,43 +823,50 @@ class RoomYamlService:
         except (yaml.YAMLError, ValidationError, AttributeError, TypeError):
             return inputs
         given = inputs if isinstance(inputs, dict) else {}
-        open_params = {
+        chains = {
             name: spec
             for name, spec in declared.items()
-            if spec.prefill == "first" and spec.default is None and name not in given
+            if isinstance(spec.default, list)
+            and spec.type in ENTITY_PARAM_TYPES
+            and given.get(name) is None
         }
-        if not open_params:
+        if not chains:
             return inputs
 
         filled = dict(given)
         async with self._session_factory() as session:
-            firsts: dict[str, str | None] = {}
-            for name, spec in open_params.items():
-                if spec.type not in firsts:
-                    firsts[spec.type] = await self._first_of(session, spec.type)
-                value = firsts[spec.type]
-                if value is not None:
-                    filled[name] = value
+            names: dict[str, list[str]] = {}
+            for name, spec in chains.items():
+                if spec.type not in names:
+                    names[spec.type] = await self._names_of(session, spec.type)
+                have = names[spec.type]
+                for candidate in spec.default:  # type: ignore[union-attr]
+                    if candidate == FIRST and have:
+                        filled[name] = have[0]
+                        break
+                    if candidate in have:
+                        filled[name] = candidate
+                        break
         return filled if len(filled) > len(given) else inputs
 
-    async def _first_of(self, session: AsyncSession, param_type: str) -> str | None:
+    async def _names_of(self, session: AsyncSession, param_type: str) -> list[str]:
+        """What the server has of one entity type, the ``$first`` one first."""
         if param_type == "bridge":
             active = [
                 b
                 for b in await self._bridge_store.get_all(session)
                 if b.status == "active"
             ]
-            default = next((b for b in active if b.is_default), None)
-            if default is not None:
-                return default.display_name
-            return min((b.display_name for b in active), default=None)
-        if param_type == "agent":
-            return min(
-                (a.name for a in await self._agent_store.get_all(session)), default=None
+            return sorted(
+                (b.display_name for b in active),
+                key=lambda n: (
+                    not any(b.display_name == n and b.is_default for b in active),
+                    n,
+                ),
             )
-        return min(
-            (r.name for r in await self._room_store.get_all(session)), default=None
-        )
+        if param_type == "agent":
+            return sorted(a.name for a in await self._agent_store.get_all(session))
+        return sorted(r.name for r in await self._room_store.get_all(session))
 
     async def builtins_for(
         self,

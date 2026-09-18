@@ -1561,17 +1561,18 @@ async def test_builtins_creator_resolves_a_bridge_param_from_inputs(env):
     assert unset["$creator"] == "alice"
 
 
-PREFILL_TEXT = (
-    "params:\n  bridge:\n    type: bridge\n    prefill: first\n"
-    "  helper:\n    type: agent\n    prefill: first\n"
+CHAIN_TEXT = (
+    "params:\n  bridge:\n    type: bridge\n    default: [Teams, $first]\n"
+    "  helper:\n    type: agent\n    default: [nobody, $first]\n"
     'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
     '  agents: ["{helper}"]\n'
 )
 
 
-async def test_prefill_first_fills_params_sent_without_a_value(env):
-    """The default messaging app and the first agent by name stand in for
-    inputs the caller left out; an input the caller did send is kept."""
+async def test_resolve_defaults_walks_each_chain_in_order(env):
+    """The first candidate the server has wins: Teams is not set up, so the
+    bridge falls through to the default app; no agent is called nobody, so the
+    first agent by name stands in. An input the caller did send is kept."""
     for name, is_default in (("Mattermost", False), ("Slack", True)):
         await _seed_bridge_with_claim(
             env["session_factory"],
@@ -1582,28 +1583,98 @@ async def test_prefill_first_fills_params_sent_without_a_value(env):
         )
     svc = _svc(env)
 
-    filled = await svc.prefill_inputs(PREFILL_TEXT, None)
+    filled = await svc.resolve_defaults(CHAIN_TEXT, None)
     assert filled == {"bridge": "Slack", "helper": "claude-code.alice"}
 
-    kept = await svc.prefill_inputs(PREFILL_TEXT, {"bridge": "Mattermost"})
+    kept = await svc.resolve_defaults(CHAIN_TEXT, {"bridge": "Mattermost"})
     assert kept == {"bridge": "Mattermost", "helper": "claude-code.alice"}
 
+    named = CHAIN_TEXT.replace("[Teams, $first]", "[Mattermost, $first]")
+    assert (await svc.resolve_defaults(named, None))["bridge"] == "Mattermost"
 
-async def test_prefill_leaves_a_param_empty_when_the_server_has_nothing(env):
+
+async def test_a_chain_with_no_hit_is_reported_as_missing(env):
     text = (
-        "params:\n  bridge:\n    type: bridge\n    prefill: first\n"
+        "params:\n  bridge:\n    type: bridge\n    default: [Teams, $first]\n"
         'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
     )
-    assert await _svc(env).prefill_inputs(text, None) is None
+    svc = _svc(env)
+    assert await svc.resolve_defaults(text, None) is None
+    with pytest.raises(ValueError, match="none of the candidates listed for bridge"):
+        svc.parse_template(text)
 
 
-def test_prefill_is_refused_on_a_param_with_no_list(env):
+def test_a_list_default_is_refused_on_a_param_with_no_list(env):
     text = (
-        "params:\n  topic:\n    type: string\n    prefill: first\n"
+        "params:\n  topic:\n    type: string\n    default: [a, b]\n"
         "room:\n  name: n\n  description: d\n"
     )
-    with pytest.raises(ValueError, match="'prefill' applies to params of type"):
+    with pytest.raises(ValueError, match="a list default applies to params of type"):
         _svc(env).parse_template(text, inputs={"topic": "x"})
+
+
+def test_new_is_only_for_room_params(env):
+    with pytest.raises(ValueError, match="'\\$new' applies to params of type room"):
+        ParamSpec(type="bridge", default=["$new"])
+    assert ParamSpec(type="room", default=["$new"]).default == ["$new"]
+
+
+def test_required_and_input_default_from_the_default(env):
+    assert ParamSpec(type="string").is_required
+    assert not ParamSpec(type="string", default="x").is_required
+    assert ParamSpec(type="string", default="x", required=True).is_required
+    assert ParamSpec(type="string").input == "ask"
+    with pytest.raises(ValueError, match="a fixed param needs a default"):
+        ParamSpec(type="string", input="fixed")
+    with pytest.raises(ValueError, match="cannot be optional"):
+        ParamSpec(type="agent", required=False)
+
+
+def test_an_optional_string_left_empty_is_empty(env):
+    spec, _ = _svc(env).parse(
+        "params:\n  suffix:\n    type: string\n    required: false\n"
+        'room:\n  name: "n{suffix}"\n  description: d\n'
+    )
+    assert spec.name == "n"
+
+
+def test_an_optional_bridge_left_empty_lands_on_the_default_app(env):
+    """The room's bridge field written as `{bridge}` is cleared rather than
+    left as a placeholder, so provisioning picks the default messaging app."""
+    spec, _ = _svc(env).parse(
+        "params:\n  bridge:\n    type: bridge\n    required: false\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    )
+    assert spec.bridge is None
+
+
+def test_pattern_and_bounds_are_enforced(env):
+    svc = _svc(env)
+    text = (
+        "params:\n  team:\n    type: string\n    pattern: '[a-z]+'\n"
+        "  size:\n    type: number\n    min: 1\n    max: 5\n"
+        'room:\n  name: "{team}"\n  description: "size {size}"\n'
+    )
+    spec, _ = svc.parse(text, inputs={"team": "alpha", "size": 3})
+    assert spec.name == "alpha"
+    assert spec.description == "size 3"
+    with pytest.raises(ValueError, match="does not match the pattern"):
+        svc.parse(text, inputs={"team": "Alpha1", "size": 3})
+    with pytest.raises(ValueError, match="above the maximum 5"):
+        svc.parse(text, inputs={"team": "alpha", "size": 9})
+    with pytest.raises(ValueError, match="'pattern' applies to params of type string"):
+        ParamSpec(type="number", pattern="x")
+    with pytest.raises(ValueError, match="not a valid regular expression"):
+        ParamSpec(type="string", pattern="(")
+
+
+def test_label_and_the_new_fields_ride_into_the_schema(env):
+    from switch_core.rooms_yaml import template_json_schema
+
+    props = template_json_schema()["$defs"]["ParamSpec"]["properties"]
+    for key in ("label", "required", "input", "pattern", "min", "max"):
+        assert key in props
+    assert "prefill" not in props
 
 
 def test_parse_multiline_param_option(env):

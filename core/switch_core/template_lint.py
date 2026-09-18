@@ -46,9 +46,13 @@ _KNOWN_TOP_LEVEL = frozenset(
     }
 )
 
-# `{$...}` placeholders the server fills in itself. A template does not declare
-# them and must not be told to.
-_BUILTINS = frozenset({"$creator", "$creator_email", "$date", "$timestamp"})
+# `{$...}` placeholders the server fills in itself, plus `$agents_dir`, which
+# the Console fills in (the directory it keeps agents under, on the machine
+# the agent runs on) before the document reaches the server. A template does
+# not declare them and must not be told to.
+_BUILTINS = frozenset(
+    {"$creator", "$creator_email", "$date", "$timestamp", "$agents_dir"}
+)
 
 # Matched here rather than left to `PLACEHOLDER_RE`, which only learned about
 # the `$` prefix alongside the builtins themselves. Scanning for them directly
@@ -277,6 +281,24 @@ def lint_template(text: str) -> LintResult:
     # declaring it.
     if "agent" in document:
         declared = declared | {"agent"}
+    # `$new` in a room param's chain means the room this document describes,
+    # so a document without one has nothing for it to mean.
+    if (
+        "room" not in document
+        and "rooms" not in document
+        and isinstance(document.get("params"), dict)
+    ):
+        for name, spec in document["params"].items():
+            default = spec.get("default") if isinstance(spec, dict) else None
+            if isinstance(default, list) and "$new" in default:
+                errors.append(
+                    Finding(
+                        "new_without_room",
+                        f"Parameter '{name}' lists '$new' among its defaults, but "
+                        "the document describes no room to create.",
+                        name,
+                    )
+                )
 
     # Placeholders are looked for everywhere except the params block, which
     # declares them rather than using them.

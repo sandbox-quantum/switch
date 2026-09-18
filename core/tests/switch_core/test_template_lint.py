@@ -172,7 +172,7 @@ class TestBuiltins:
         assert "$creator" in warning.message
 
     @pytest.mark.parametrize(
-        "builtin", ["$creator", "$creator_email", "$date", "$timestamp"]
+        "builtin", ["$creator", "$creator_email", "$date", "$timestamp", "$agents_dir"]
     )
     def test_each_known_builtin_passes(self, builtin: str) -> None:
         result = lint_template(f'room:\n  name: "{{{builtin}}}"\n')
@@ -472,3 +472,29 @@ def test_provider_param_type_is_accepted():
         "room:\n  name: r\n  description: d\n"
     )
     assert result.errors == []
+
+
+def test_new_in_a_room_chain_needs_a_room_to_create():
+    text = (
+        "params:\n  where:\n    type: room\n    default: [$new]\n"
+        'agent:\n  name: a\n  join: ["{where}"]\n'
+    )
+    result = lint_template(text)
+    assert "new_without_room" in {e.code for e in result.errors}
+    with_room = text + 'room:\n  name: r\n  agents: ["{agent}"]\n'
+    assert "new_without_room" not in {e.code for e in lint_template(with_room).errors}
+
+
+def test_the_policy_fields_are_known_param_fields():
+    text = (
+        "params:\n  name:\n    type: string\n    label: Agent name\n"
+        "    default: x\n    required: true\n    input: advanced\n"
+        "    pattern: '[a-z]+'\n"
+        "  bridge:\n    type: bridge\n    default: [Slack, $first]\n"
+        "  location:\n    type: location\n    default: local\n    input: fixed\n"
+        'room:\n  name: "{name}"\n  bridge: "{bridge}"\n'
+        'agent:\n  location: "{location}"\n'
+    )
+    result = lint_template(text)
+    assert result.errors == []
+    assert "unknown_param_field" not in {w.code for w in result.warnings}
