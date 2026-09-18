@@ -1870,6 +1870,10 @@ async def test_a_rate_limit_that_freezes_every_card_says_so(caplog: Any) -> None
             )
 
     assert "rate limiting message updates for the whole workspace" in caplog.text
+    assert "Every card the bridge draws is frozen" in caplog.text, (
+        "the consequence has to be this limit's own: a reaction limit stops "
+        "marks changing and leaves the cards redrawing"
+    )
 
 
 def test_a_cooldown_says_when_slack_is_taking_calls_again(
@@ -1881,7 +1885,7 @@ def test_a_cooldown_says_when_slack_is_taking_calls_again(
         "switch_core.bridges.collaboration.slack.adapter.time.monotonic",
         lambda: clock[0],
     )
-    cooldown = _Cooldown("reactions")
+    cooldown = _Cooldown("reactions", "Marks on messages stop changing until then.")
 
     cooldown.start(30.0)
     assert cooldown.remaining() == 30.0

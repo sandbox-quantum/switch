@@ -249,8 +249,9 @@ class _Cooldown:
     on a timer, so the line lands next to the work it let through.
     """
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, consequence: str) -> None:
         self._kind = kind
+        self._consequence = consequence
         self._until = 0.0
 
     def remaining(self) -> float:
@@ -268,9 +269,10 @@ class _Cooldown:
         self._until = time.monotonic() + delay
         logger.warning(
             "Slack is rate limiting %s for the whole workspace; holding them all "
-            "back for %.0fs. Anything that redraws is frozen until then.",
+            "back for %.0fs. %s",
             self._kind,
             delay,
+            self._consequence,
         )
 
 
@@ -388,8 +390,12 @@ class SlackAdapter(CollaborationAdapter):
         self._unmarkable_max = 500
         # The publisher redraws every few seconds and keeps asking until a mark
         # lands, so without these the retries hold the limit open.
-        self._reactions_cooldown = _Cooldown("reactions")
-        self._rich_update_cooldown = _Cooldown("message updates")
+        self._reactions_cooldown = _Cooldown(
+            "reactions", "Marks on messages stop changing until then."
+        )
+        self._rich_update_cooldown = _Cooldown(
+            "message updates", "Every card the bridge draws is frozen until then."
+        )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
