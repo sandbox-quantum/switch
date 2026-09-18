@@ -2166,6 +2166,7 @@ class WedgedPlatform(ActivitySlack):
         super().__init__()
         self.notices = []
         self.wedged = True
+        self.refuse_notices = False
 
     async def update_rich(self, channel, agent, ref, content, thread):
         if not self.wedged:
@@ -2174,6 +2175,11 @@ class WedgedPlatform(ActivitySlack):
         raise RichContentWedged(f"The activity message {ref} is wedged.", text="frozen")
 
     async def send_message(self, channel_id, sender_name, content, thread_root_id=None):
+        # `None` is how every adapter reports a refused send — Slack answers a
+        # `SlackApiError` and a disconnected client that way rather than
+        # raising — so a refusal is modelled as the return value it really is.
+        if self.refuse_notices:
+            return None
         self.notices.append((channel_id, content, thread_root_id))
         return f"{channel_id}:notice"
 
@@ -2280,6 +2286,30 @@ async def test_a_frozen_card_still_on_screen_is_explained(session_factory):
     await _age_the_card(session_factory, minutes=5)
 
     platform.wedged = True
+    assert await publish(activity(session_factory, platform), "completed")
+
+    assert len(platform.notices) == 1
+
+
+async def test_a_notice_the_platform_refused_is_not_written_down_as_sent(
+    session_factory,
+):
+    """A refused send is answered with `None`, not raised, and the two must not
+    be confused.
+
+    Recording one as delivered is worse than never having tried: the flag is
+    durable, so it suppresses every later attempt including after a restart,
+    and the card is then frozen, unexplained, and marked as explained. The next
+    publication has to find the work still owed.
+    """
+    await setup(session_factory)
+    platform = WedgedPlatform()
+    platform.refuse_notices = True
+    assert await publish(activity(session_factory, platform))
+
+    assert platform.notices == []
+
+    platform.refuse_notices = False
     assert await publish(activity(session_factory, platform), "completed")
 
     assert len(platform.notices) == 1

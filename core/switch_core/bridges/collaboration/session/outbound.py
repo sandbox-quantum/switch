@@ -1049,6 +1049,12 @@ class SessionTurnActivity:
         Old cards are left alone. A notice earns its place by reaching someone
         who is looking at the card it describes; under a card from yesterday it
         reaches nobody and pushes the channel along to say so.
+
+        Only a notice the platform accepted is written down. `send_message`
+        answers a refusal with `None` rather than by raising, so a send that
+        never happened looks exactly like one that did unless the reference is
+        read — and writing the flag for it would suppress every later attempt,
+        leaving the card permanently unexplained.
         """
         logger.error("%s", wedged)
         record = self._record.get()
@@ -1070,7 +1076,7 @@ class SessionTurnActivity:
             await record.save()
             return
         try:
-            await self._adapter.send_message(
+            posted = await self._adapter.send_message(
                 anchor.channel_id,
                 anchor.agent_name,
                 _WEDGE_NOTICE,
@@ -1081,6 +1087,17 @@ class SessionTurnActivity:
                 "Could not say that the activity message %s for turn %s of "
                 "session %s is frozen. The card stays as it is, unexplained, "
                 "and this is tried again on the next change to the turn.",
+                anchor.message_ref,
+                turn.turn_id,
+                session_id,
+            )
+            return
+        if posted is None:
+            logger.error(
+                "The platform would not take the message saying that the "
+                "activity message %s for turn %s of session %s is frozen. The "
+                "card stays as it is, unexplained, and this is tried again on "
+                "the next change to the turn.",
                 anchor.message_ref,
                 turn.turn_id,
                 session_id,
