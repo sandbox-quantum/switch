@@ -1160,7 +1160,13 @@ export type StoredTemplateSummary = {
   ownerId: string | null;
   /** Starts at 1 and goes up by one each time the document is changed. */
   version: number;
+  /** `private` is seen by its owner and admins only. */
+  readVisibility: TemplateVisibility;
+  /** `public` lets anyone who can read it change it. */
+  writeVisibility: TemplateVisibility;
 };
+
+export type TemplateVisibility = 'public' | 'private';
 
 export type StoredTemplateDetail = StoredTemplateSummary & {
   definition: string;
@@ -1174,6 +1180,8 @@ type RegistryTemplateSummary = {
   description: string;
   kind: string;
   version?: number;
+  read_visibility?: TemplateVisibility;
+  write_visibility?: TemplateVisibility;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -1185,14 +1193,22 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     creator: t.owner_name ?? t.owner_id,
     ownerId: t.owner_id,
     version: t.version ?? 1,
+    // A server that predates visibility has the one behaviour the defaults describe.
+    readVisibility: t.read_visibility ?? 'public',
+    writeVisibility: t.write_visibility ?? 'private',
   };
 }
 
+/** The templates the signed-in user may see, optionally narrowed by kind or
+ * by a search over name and description. */
 export async function fetchTemplates(
   server: SwitchServer,
-  kind?: string
+  filter: { kind?: string; q?: string } = {}
 ): Promise<StoredTemplateSummary[]> {
-  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const params = new URLSearchParams();
+  if (filter.kind) params.set('kind', filter.kind);
+  if (filter.q) params.set('q', filter.q);
+  const qs = params.size > 0 ? `?${params}` : '';
   const res = await gatewayFetch(server, `/templates${qs}`, {
     authenticated: true,
   });
@@ -1203,12 +1219,25 @@ export async function fetchTemplates(
 /** Store a template document on the server's registry (`POST /templates`). */
 export async function createTemplate(
   server: SwitchServer,
-  params: { name: string; description: string; kind: string; content: string }
+  params: {
+    name: string;
+    description: string;
+    kind: string;
+    content: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }
 ): Promise<StoredTemplateDetail> {
+  const { readVisibility, writeVisibility, ...rest } = params;
   const res = await gatewayFetch(server, '/templates', {
     authenticated: true,
     method: 'POST',
-    body: params,
+    body: {
+      ...rest,
+      // Left out when unset, so a server that predates visibility accepts the body.
+      ...(readVisibility ? { read_visibility: readVisibility } : {}),
+      ...(writeVisibility ? { write_visibility: writeVisibility } : {}),
+    },
   });
   const t = (await res.json()) as RegistryTemplateSummary & { content: string };
   return { ...toSummary(t), definition: t.content };
@@ -1221,12 +1250,23 @@ export async function createTemplate(
 export async function updateTemplate(
   server: SwitchServer,
   templateId: string,
-  changes: { name?: string; description?: string; content?: string }
+  changes: {
+    name?: string;
+    description?: string;
+    content?: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }
 ): Promise<StoredTemplateDetail> {
+  const { readVisibility, writeVisibility, ...rest } = changes;
   const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
     authenticated: true,
     method: 'PATCH',
-    body: changes,
+    body: {
+      ...rest,
+      ...(readVisibility ? { read_visibility: readVisibility } : {}),
+      ...(writeVisibility ? { write_visibility: writeVisibility } : {}),
+    },
   });
   const t = (await res.json()) as RegistryTemplateSummary & { content: string };
   return { ...toSummary(t), definition: t.content };
