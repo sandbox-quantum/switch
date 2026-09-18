@@ -101,8 +101,10 @@ export const sidecarController = createRPCController({
   upgrade: async (agentId: string): Promise<AgentSidecarStatus> => {
     const { agent } = await requireRemoteAgent(agentId);
     const params = await paramsForAgent(agent);
-    await ensureAgentSidecar(params);
+    // Reap stale sidecars BEFORE deploying, so a leftover generation from a
+    // renamed agent does not collide with the new one (CHOO-2653).
     await reapStaleSidecarsForAgent(agent, params.host, params.repoDir);
+    await ensureAgentSidecar(params);
     return readAndBroadcast(agentId);
   },
 
@@ -114,8 +116,8 @@ export const sidecarController = createRPCController({
   restart: async (agentId: string): Promise<AgentSidecarStatus> => {
     const { agent } = await requireRemoteAgent(agentId);
     const params = await paramsForAgent(agent);
-    await restartAgentSidecar(params);
     await reapStaleSidecarsForAgent(agent, params.host, params.repoDir);
+    await restartAgentSidecar(params);
     return readAndBroadcast(agentId);
   },
 
