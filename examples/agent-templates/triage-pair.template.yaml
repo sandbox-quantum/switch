@@ -1,28 +1,38 @@
 # Triage pair: two agents and the room they share.
 #
 # Switch Console creates each entry of `agents:`, in its own working
-# directory and backed by the coding agent chosen on the Use page. The
-# server creates the `room:` with both agents in it. `params:` are asked for
-# on the Use page. A `type: provider` param is answered by the Console and
-# is not sent to the server.
+# directory and backed by the coding agent the `provider` param names. The
+# server creates the `room:` with both agents in it. Every value the form
+# starts with is written under `params:`; the language is documented in
+# docs/TEMPLATES.md.
 version: 1
 
 params:
   team:
     type: string
-    description: Prefix for every name this creates (lowercase, like "alpha")
+    description: Prefix for every name this creates
+    pattern: "[a-z][a-z0-9-]*"
   provider:
     type: provider
-    description: Which coding agent backs both
+    description: Which coding agent backs both. The first one installed is chosen.
+    default: [claude, codex, opencode]
+    input: advanced
+  location:
+    type: location
+    description: The machine both run on.
+    default: local
+    input: advanced
   bridge:
     type: bridge
-    description: Where the room is mirrored
+    description: Where the room is mirrored. The server's default app is chosen.
+    default: [$first]
 
 agents:
   - name: "{team}-triager"
     description: Reads reports, files and routes them
     addressing: anyone
     provider: "{provider}"
+    location: "{location}"
     instructions: |
       You are the triager of a small team. Reports arrive in your room from
       people and from other agents. For each one:
@@ -39,6 +49,7 @@ agents:
     description: Reproduces what the triager routes to it
     addressing: owner-agents
     provider: "{provider}"
+    location: "{location}"
     instructions: |
       You reproduce bugs the triager hands you. For each one, work in your
       directory: write the smallest script or command that shows the
@@ -48,9 +59,8 @@ agents:
       Say what you are about to try before a slow step, so the room is not
       left wondering. Never guess a result you did not run.
 
-# The room is created on the messaging app chosen by the `bridge` input, or
-# on the server's default app when the input is left empty. `{$creator}`
-# puts the deployer in it, so the agents' answers reach them.
+# The room is created on the messaging app the `bridge` input names.
+# `{$creator}` puts the deployer in it, so the agents' answers reach them.
 room:
   name: "{team}-triage"
   description: Both agents and you, the triager routing to the reproducer

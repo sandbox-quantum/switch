@@ -9,13 +9,17 @@ version: 1
 params:
   team:
     type: string
-    description: Prefix for every name this creates (lowercase, like "acme")
+    description: Prefix for every name this creates
+    pattern: "[a-z][a-z0-9-]*"
   provider:
     type: provider
-    description: Which coding agent backs both
+    description: Which coding agent backs both. The first one installed is chosen.
+    default: [claude, codex, opencode]
+    input: advanced
   bridge:
     type: bridge
-    description: Where the rooms are mirrored
+    description: Where the rooms are mirrored. The server's default app is chosen.
+    default: [$first]
 
 agents:
   - name: "{team}-greeter"
