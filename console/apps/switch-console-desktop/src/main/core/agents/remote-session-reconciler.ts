@@ -1,6 +1,7 @@
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
 import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
+import { sessionWasDeleted } from '@main/core/sessions/deleted-sessions';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import {
@@ -22,7 +23,6 @@ import { getAgentById } from './getAgentById';
 class RemoteSessionReconciler {
   private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly inFlight = new Set<string>();
-  private readonly deleted = new Set<string>();
   private readonly failures = new Map<string, string>();
   errors(): { agentId: string; message: string }[] {
     return [...this.failures].map(([agentId, message]) => ({ agentId, message }));
@@ -47,9 +47,6 @@ class RemoteSessionReconciler {
   dispose(): void {
     for (const agentId of this.timers.keys()) this.stop(agentId);
     this.failures.clear();
-  }
-  tombstone(sessionId: string): void {
-    this.deleted.add(sessionId);
   }
 
   private async tick(agentId: string): Promise<void> {
@@ -94,7 +91,7 @@ class RemoteSessionReconciler {
             throw new Error(
               `Session ${session.sessionId} uses unsupported provider "${session.provider}". Update Console to open it.`
             );
-          if (session.agentId !== agent.switchAgentId || this.deleted.has(session.sessionId))
+          if (session.agentId !== agent.switchAgentId || sessionWasDeleted(session.sessionId))
             continue;
           if (local.has(session.sessionId)) await syncSdkSessionActivity(session);
           if (
@@ -116,7 +113,9 @@ class RemoteSessionReconciler {
               events.emit(sessionStatusUpdatedChannel, { sessionId: session.sessionId, status });
             }
           }
-          if (session.status === 'stopped') continue;
+          // A retired session is finished; adopting one puts a row back for
+          // work that will never resume.
+          if (session.status === 'stopped' || session.retired) continue;
           let roomId = session.roomIds?.[0] ?? null;
           if (session.roomIds === undefined && !local.has(session.sessionId)) {
             const snapshot = snapshotSchema.parse(

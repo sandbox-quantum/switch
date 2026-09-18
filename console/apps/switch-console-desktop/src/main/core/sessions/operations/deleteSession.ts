@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { stopSavedSession } from '@main/core/sdk-host/stop-saved-session';
+import { tombstoneSession } from '@main/core/sessions/deleted-sessions';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
@@ -13,6 +14,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
   const teardownResult = await sessionRuntimeManager.teardownSession(sessionId, 'detach');
   if (!teardownResult.success) throw new Error(teardownResult.error.message);
 
+  tombstoneSession(sessionId);
   await db.delete(sessions).where(eq(sessions.id, sessionId));
   void viewStateService.del(`session:${sessionId}`);
 }

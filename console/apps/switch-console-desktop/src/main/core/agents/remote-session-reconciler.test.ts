@@ -227,3 +227,19 @@ it.each(['gemini', 'future-provider'])(
     );
   }
 );
+
+it('does not re-adopt a session the user deleted', async () => {
+  const { tombstoneSession } = await import('@main/core/sessions/deleted-sessions');
+  mocks.list.mockResolvedValue([{ ...session, sessionId: 'deleted-session' }]);
+  tombstoneSession('deleted-session');
+  await tick();
+  expect(mocks.create).not.toHaveBeenCalled();
+});
+
+it('does not adopt a retired session, whose work will never resume', async () => {
+  mocks.list.mockResolvedValue([
+    { ...session, sessionId: 'retired-session', retired: true, roomIds: [] },
+  ]);
+  await tick();
+  expect(mocks.create).not.toHaveBeenCalled();
+});

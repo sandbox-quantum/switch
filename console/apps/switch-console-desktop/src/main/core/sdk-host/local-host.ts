@@ -7,6 +7,7 @@ import {
   ensureSharedProcess,
   runSharedWatcher,
   type SharedHostConfig,
+  sharedSessionRoot,
   superviseSharedHost,
   type Supervision,
 } from '@switch-console/agent-providers';
@@ -168,6 +169,11 @@ export async function startLocalSession(
     restart: options.restart,
     supervision: consoleSupervision,
   });
+}
+
+/** Stops a session Console supervises. Does nothing for one it does not. */
+export function stopLocalSession(sessionId: string): Promise<void> {
+  return consoleSupervision.stop(sharedSessionRoot(sessionId));
 }
 
 /** The failure a local host recorded before giving up, or null if it has not. */

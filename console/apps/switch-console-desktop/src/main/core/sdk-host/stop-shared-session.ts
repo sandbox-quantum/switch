@@ -3,6 +3,7 @@ import { commandStatusSchema, snapshotSchema } from '@switch-console/shared/sess
 import {
   fetchSdkCommandStatus,
   fetchSdkSnapshot,
+  retireSdkSession,
   submitSdkCommand,
 } from '@main/core/switch-servers/gateway-client';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -10,6 +11,15 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 export async function stopSharedSession(server: SwitchServer, sessionId: string): Promise<void> {
   const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(server, sessionId));
   if (snapshot.session.status === 'stopped' || snapshot.session.retired) return;
+  // Only a host applies `session.stop`, so a session whose host is gone — one
+  // discovered from the server and never opened, or one whose host exited —
+  // would wait out the poll below and then refuse to be deleted. Retiring is
+  // the server-side route for exactly that case, and it refuses while a host
+  // still holds the lease, which is what the command path is for.
+  if (snapshot.session.connectivity !== 'online') {
+    await retireSdkSession(server, sessionId, snapshot.session.epoch);
+    return;
+  }
   const commandId = `stop-${snapshot.session.epoch}`;
   await submitSdkCommand(server, {
     contractVersion: 1,
