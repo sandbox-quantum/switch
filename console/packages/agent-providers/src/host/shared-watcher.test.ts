@@ -3,12 +3,16 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { ensureSharedProcess } from './launch';
 import { sharedConfigSchema } from './shared-config';
-import { SharedWatchAssignments } from './shared-watcher';
+import { replaceSupersededSessions, SharedWatchAssignments } from './shared-watcher';
 
 const paths = vi.hoisted(() => ({ root: '' }));
+const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
 vi.mock('./launch', () => ({
   sharedSessionRoot: (id: string) => join(paths.root, id),
+  sharedSessionsBase: () => paths.root,
+  liveSupervisor: (root: string) => Promise.resolve(supervisors.get(root) ?? null),
   ensureSharedProcess: vi.fn(),
 }));
 const roots: string[] = [];
@@ -168,4 +172,39 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
     before.session.sessionId,
     after.session.sessionId,
   ]);
+});
+
+it('restarts only the live sessions of this agent left on a superseded build', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-superseded-'));
+  roots.push(root);
+  paths.root = root;
+  supervisors.clear();
+  vi.mocked(ensureSharedProcess).mockClear();
+  const agentId = randomUUID();
+  const save = async (name: string, sessionId: string, owner: string) => {
+    const config = template(root);
+    config.session = { ...config.session, sessionId, agentId: owner };
+    config.start.input.sessionId = sessionId;
+    await mkdir(join(root, name), { recursive: true });
+    await writeFile(join(root, name, 'config.json'), JSON.stringify(config));
+    return join(root, name);
+  };
+  const superseded = await save('superseded', 'superseded-session', agentId);
+  const current = await save('current', 'current-session', agentId);
+  const other = await save('other', 'other-session', randomUUID());
+  await save('idle', 'idle-session', agentId);
+  supervisors.set(superseded, { build: '/host/shared-host-old.mjs' });
+  supervisors.set(current, { build: '/host/shared-host-new.mjs' });
+  supervisors.set(other, { build: '/host/shared-host-old.mjs' });
+
+  await replaceSupersededSessions(agentId, {
+    build: '/host/shared-host-new.mjs',
+    start: vi.fn(),
+    stop: vi.fn(),
+  });
+
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
+    superseded,
+  ]);
+  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].restart).toBe(false);
 });

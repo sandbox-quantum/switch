@@ -8,15 +8,12 @@ import { promisify } from 'node:util';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
+export function sharedSessionsBase(): string {
+  return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
+}
+
 export function sharedSessionRoot(sessionId: string): string {
-  return join(
-    homedir(),
-    '.local',
-    'state',
-    'switch',
-    'sdk-sessions',
-    createHash('sha256').update(sessionId).digest('hex')
-  );
+  return join(sharedSessionsBase(), createHash('sha256').update(sessionId).digest('hex'));
 }
 
 /**
@@ -160,7 +157,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
  * supervisor from a build predating the record reports no build, which reads
  * as different from whatever is asking — so it is replaced.
  */
-async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
+export async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
   try {
     const owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
     if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)

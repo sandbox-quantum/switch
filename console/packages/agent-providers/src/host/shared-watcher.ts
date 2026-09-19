@@ -1,11 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
-import { ensureSharedProcess, sharedSessionRoot, type Supervision } from './launch';
+import {
+  ensureSharedProcess,
+  liveSupervisor,
+  sharedSessionRoot,
+  sharedSessionsBase,
+  type Supervision,
+} from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
@@ -52,6 +58,55 @@ async function stopped(sessionId: string): Promise<boolean> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
+  }
+}
+
+/**
+ * Replaces this agent's sessions that are still running the build the watcher
+ * has just superseded. A session is supervised independently of the watcher,
+ * so nothing else would: it would go on answering its room with code the
+ * deployment moved past until somebody restarted it by hand. Only a session
+ * with a live supervisor is touched — one that is not running was not left
+ * behind by an upgrade, and starting it here would reopen a session its owner
+ * had closed.
+ */
+export async function replaceSupersededSessions(
+  agentId: string,
+  supervision: Supervision
+): Promise<void> {
+  const base = sharedSessionsBase();
+  let names: string[];
+  try {
+    names = await readdir(base);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  for (const name of names) {
+    const root = join(base, name);
+    let config: SharedHostConfig;
+    try {
+      config = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+      throw error;
+    }
+    if (config.session.agentId !== agentId) continue;
+    const running = await liveSupervisor(root);
+    if (!running || running.build === supervision.build) continue;
+    console.warn(
+      `Session ${config.session.sessionId} is running a superseded build; restarting it from saved state.`
+    );
+    await ensureSharedProcess({
+      root,
+      config,
+      resuming: false,
+      watcher: false,
+      restart: false,
+      supervision,
+    });
   }
 }
 
@@ -189,6 +244,7 @@ export async function runSharedWatcher(
         supervision,
       });
     };
+    await replaceSupersededSessions(template.session.agentId, supervision);
     for (const config of assignments.sessions()) await launch(config);
     const stream = new SwitchEventStream({
       creds: {
