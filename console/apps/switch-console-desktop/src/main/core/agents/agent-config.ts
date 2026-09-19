@@ -3,7 +3,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { providerConfigFromAttributes } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
-import { writeAgentConfigFile } from './agent-config-file';
+import { writeAgentConfigFile, type AgentTemplateOrigin } from './agent-config-file';
 import { syncAgentConfig } from './agent-config-sync';
 import { withAgentWorkspace } from './agent-launch-config';
 import { getAgentById } from './getAgentById';
@@ -50,6 +50,13 @@ export async function writeAgentConfig(params: {
     await writeAgentConfigFile(fs, agent.name, params.config);
     return reconcile(agent, fs);
   });
+}
+
+/** The template the agent was created from, or null for an agent created without one. */
+export async function readAgentTemplateOrigin(
+  agentId: string
+): Promise<AgentTemplateOrigin | null> {
+  return (await readAgentConfig(agentId)).template ?? null;
 }
 
 /** The agent's instructions, or empty when it has none. */

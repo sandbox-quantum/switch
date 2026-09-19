@@ -1,12 +1,16 @@
+import { FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
@@ -35,8 +39,52 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   onClose,
 }: Props) {
   const { setCloseGuard } = useModalContext();
+  const { navigate } = useNavigate();
   const serverId = switchRoomsStore.roomServerId(roomId);
   const roomName = switchRoomsStore.roomNameById(roomId);
+
+  // Templates can create an agent straight into this room. The bundled
+  // templates are listed at once; the workspace's are added when the request
+  // returns.
+  const [serverTemplates, setServerTemplates] = useState<StoredTemplateSummary[]>([]);
+  useEffect(() => {
+    if (!serverId) return;
+    let cancelled = false;
+    rpc.switchServers
+      .listTemplates({ serverId, kind: 'agent' })
+      .then((list) => {
+        if (!cancelled) setServerTemplates(list);
+      })
+      .catch(() => {
+        if (!cancelled) setServerTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverId]);
+  // A built-in template that is also saved on the workspace is listed once,
+  // as the workspace copy.
+  const onWorkspace = serverTemplates.filter((t) => t.kind === 'agent');
+  const templates: StoredTemplateSummary[] = [
+    ...bundledTemplates
+      .filter((b) => b.kind === 'agent' && !onWorkspace.some((t) => t.name === b.name))
+      .map(({ id, name, description, kind, creator }) => ({
+        id,
+        name,
+        description,
+        kind,
+        creator,
+        ownerId: null,
+      })),
+    ...onWorkspace,
+  ];
+  // The Use page creates the agent. With `intoRoomId` it adds the agent to
+  // this room instead of creating the template's own room.
+  const createFromTemplate = (template: StoredTemplateSummary) => {
+    if (!serverId) return;
+    onClose();
+    navigate('templateUse', { serverId, templateId: template.id, intoRoomId: roomId });
+  };
 
   const [selected, setSelected] = useState<Candidate[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -100,6 +148,30 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
             <p className="text-xs text-destructive">
               This room&apos;s server is not known yet, so its members cannot be changed.
             </p>
+          )}
+
+          {serverId && templates.length > 0 && (
+            <Field>
+              <FieldLabel>New agent from a template</FieldLabel>
+              <div className="flex flex-wrap gap-2">
+                {templates.map((t) => (
+                  <Button
+                    key={t.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isSubmitting}
+                    onClick={() => void createFromTemplate(t)}
+                  >
+                    <FileText className="size-3.5" />
+                    {t.name}
+                  </Button>
+                ))}
+              </div>
+              <span className="text-xs text-foreground-muted">
+                Creates the agent and puts it in this room. Mention it here afterwards to start it.
+              </span>
+            </Field>
           )}
 
           <Field>
