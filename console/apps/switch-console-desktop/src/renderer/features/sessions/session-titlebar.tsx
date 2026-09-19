@@ -2,12 +2,15 @@ import { Bot, DoorOpen, MessageSquare, Pin } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { SessionActionsMenu } from '@renderer/features/sessions/components/session-actions-menu';
+import { SessionHeaderOutlet } from '@renderer/features/sessions/session-header-slots';
 import { useSessionViewContext } from '@renderer/features/sessions/session-view-context';
 import {
   getRegisteredSessionData,
   getSessionStore,
   sessionDisplayName,
 } from '@renderer/features/sessions/stores/session-selectors';
+import { useSessionActionProps } from '@renderer/features/sessions/use-session-actions';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
 import { switchRoomsStore as sessionRoomsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -31,6 +34,7 @@ import { cn } from '@renderer/utils/utils';
  */
 export const SessionTitlebar = observer(function SessionTitlebar() {
   const { locationId, sessionId } = useSessionViewContext();
+  const actions = useSessionActionProps(locationId, sessionId);
   const sessionStore = getSessionStore(locationId, sessionId);
   const sessionPayload = getRegisteredSessionData(locationId, sessionId);
   const { navigate } = useNavigate();
@@ -86,10 +90,18 @@ export const SessionTitlebar = observer(function SessionTitlebar() {
       leftSlot={
         <div className="flex min-w-0 items-center">
           <TitlebarBreadcrumb crumbs={crumbs} />
+          {/* The session's state reads against its name rather than across the
+              bar, which leaves the right edge holding only actions. */}
+          <SessionHeaderOutlet slot="left" className="ml-2 flex items-center" />
+        </div>
+      }
+      rightSlot={
+        <div className="flex items-center gap-2 pr-1">
+          <SessionHeaderOutlet slot="right" className="flex items-center gap-2" />
           {sessionStore && sessionPayload && (
             <button
               type="button"
-              className="ml-1 text-foreground-muted"
+              className="text-foreground-muted"
               onClick={() => sessionStore.setPinned(!sessionPayload.isPinned)}
               aria-label={sessionPayload.isPinned ? 'Unpin session' : 'Pin session'}
             >
@@ -98,6 +110,12 @@ export const SessionTitlebar = observer(function SessionTitlebar() {
                 fill={sessionPayload.isPinned ? 'currentColor' : 'none'}
               />
             </button>
+          )}
+          {actions && (
+            <SessionActionsMenu
+              {...actions}
+              sessionName={sessionDisplayName(sessionStore) ?? 'Session'}
+            />
           )}
         </div>
       }

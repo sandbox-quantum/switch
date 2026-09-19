@@ -1,11 +1,14 @@
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
 import { Check, Loader2, Paperclip, RotateCw, Square, Wrench } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { SessionHeaderContent } from '@renderer/features/sessions/session-header-slots';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
+import { sessionStatePill } from './session-state';
+import { SessionStatePill } from './session-state-pill';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
 
@@ -178,118 +181,97 @@ export function SessionV1Chat({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3 text-xs">
-        <span>
-          {session?.provider ?? 'Session'} ·{' '}
-          {busy
-            ? action === 'stop'
-              ? 'Stopping'
-              : action === 'resume'
-                ? 'Resuming'
-                : action === 'restart'
-                  ? 'Restarting'
-                  : 'Starting'
-            : session?.retired
-              ? 'Retired'
-              : (session?.status ?? 'Loading')}
-        </span>
-        <div className="flex flex-wrap items-center gap-2">
-          {restartHost && !session?.retired && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={
-                busy ||
-                !session ||
-                sending ||
-                client.hasPendingCommand() ||
-                Boolean(runningTurn) ||
-                Boolean(view.snapshot?.turns.some((turn) => turn.status === 'queued')) ||
-                Boolean(session?.pendingRequestIds.length)
-              }
-              className={
-                action === 'restart' || action === 'resume' ? 'disabled:opacity-100' : undefined
-              }
-              title={
-                runningTurn || view.snapshot?.turns.some((turn) => turn.status === 'queued')
-                  ? 'Finish or interrupt the current work before restarting.'
-                  : session?.pendingRequestIds.length
-                    ? 'Answer the pending request before restarting.'
-                    : 'Reconnect the provider and keep this conversation.'
-              }
-              onClick={() =>
-                void runAction(session?.status === 'stopped' ? 'resume' : 'restart', restartHost)
-              }
-            >
-              {action === 'restart' || action === 'resume' ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <RotateCw className="size-3.5" />
-              )}
-              {action === 'restart'
-                ? 'Restarting…'
-                : action === 'resume'
-                  ? 'Resuming…'
-                  : session?.status === 'stopped'
-                    ? 'Resume session'
-                    : 'Restart session'}
-            </Button>
-          )}
-          {runningTurn && session?.capabilities.interrupt && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!available || sending || client.hasPendingCommand()}
-              onClick={() => void control({ type: 'turn.interrupt', turnId: runningTurn.turnId })}
-            >
-              Interrupt
-            </Button>
-          )}
-          {session && !session.retired && session.status !== 'stopped' && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={
-                busy ||
-                !view.connected ||
-                session.connectivity !== 'online' ||
-                sending ||
-                client.hasPendingCommand()
-              }
-              className={action === 'stop' ? 'disabled:opacity-100' : undefined}
-              title="Stop the provider. The conversation stays available to resume."
-              onClick={() =>
-                stopHost ? void runAction('stop', stopHost) : void control({ type: 'session.stop' })
-              }
-            >
-              {action === 'stop' ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Square className="size-3.5" />
-              )}
-              {action === 'stop' ? 'Stopping…' : 'Stop session'}
-            </Button>
-          )}
-          <span className="flex items-center gap-1.5 text-foreground-muted">
-            {busy ? (
-              <>
-                <Loader2 className="size-3 animate-spin" />
-                {elapsed}s
-              </>
-            ) : actionError || startup?.status === 'error' ? (
-              'Connection failed'
-            ) : session?.status === 'starting' && session.connectivity === 'online' ? (
-              'Connecting…'
-            ) : available || (view.connected && session?.connectivity === 'online') ? (
-              'Connected'
-            ) : session?.status === 'stopped' ? (
-              'Stopped'
+      <SessionHeaderContent slot="left">
+        <SessionStatePill
+          {...sessionStatePill({
+            action: busy ? (action ?? 'start') : null,
+            elapsedSeconds: elapsed,
+            failed: Boolean(actionError) || startup?.status === 'error',
+            retired: Boolean(session?.retired),
+            status: session?.status ?? null,
+            connectivity: session?.connectivity ?? null,
+            reachable: available || (view.connected && session?.connectivity === 'online'),
+          })}
+        />
+      </SessionHeaderContent>
+      <SessionHeaderContent slot="right">
+        {restartHost && !session?.retired && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={
+              busy ||
+              !session ||
+              sending ||
+              client.hasPendingCommand() ||
+              Boolean(runningTurn) ||
+              Boolean(view.snapshot?.turns.some((turn) => turn.status === 'queued')) ||
+              Boolean(session?.pendingRequestIds.length)
+            }
+            className={
+              action === 'restart' || action === 'resume' ? 'disabled:opacity-100' : undefined
+            }
+            title={
+              runningTurn || view.snapshot?.turns.some((turn) => turn.status === 'queued')
+                ? 'Finish or interrupt the current work before restarting.'
+                : session?.pendingRequestIds.length
+                  ? 'Answer the pending request before restarting.'
+                  : 'Reconnect the provider and keep this conversation.'
+            }
+            onClick={() =>
+              void runAction(session?.status === 'stopped' ? 'resume' : 'restart', restartHost)
+            }
+          >
+            {action === 'restart' || action === 'resume' ? (
+              <Loader2 className="size-3.5 animate-spin" />
             ) : (
-              'Offline'
+              <RotateCw className="size-3.5" />
             )}
-          </span>
-        </div>
-      </div>
+            {action === 'restart'
+              ? 'Restarting…'
+              : action === 'resume'
+                ? 'Resuming…'
+                : session?.status === 'stopped'
+                  ? 'Resume'
+                  : 'Restart'}
+          </Button>
+        )}
+        {runningTurn && session?.capabilities.interrupt && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!available || sending || client.hasPendingCommand()}
+            onClick={() => void control({ type: 'turn.interrupt', turnId: runningTurn.turnId })}
+          >
+            Interrupt
+          </Button>
+        )}
+        {session && !session.retired && session.status !== 'stopped' && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={
+              busy ||
+              !view.connected ||
+              session.connectivity !== 'online' ||
+              sending ||
+              client.hasPendingCommand()
+            }
+            className={action === 'stop' ? 'disabled:opacity-100' : undefined}
+            title="Stop the provider. The conversation stays available to resume."
+            onClick={() =>
+              stopHost ? void runAction('stop', stopHost) : void control({ type: 'session.stop' })
+            }
+          >
+            {action === 'stop' ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Square className="size-3.5" />
+            )}
+            {action === 'stop' ? 'Stopping…' : 'Stop'}
+          </Button>
+        )}
+      </SessionHeaderContent>
       {(busy ||
         (session?.status === 'starting' &&
           session.connectivity === 'online' &&

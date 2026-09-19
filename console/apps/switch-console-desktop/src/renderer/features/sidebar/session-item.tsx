@@ -7,10 +7,10 @@ import {
   getSessionManagerStore,
   getSessionStore,
 } from '@renderer/features/sessions/stores/session-selectors';
+import { useSessionActionProps } from '@renderer/features/sessions/use-session-actions';
 import { SessionSidebarTrailingSlot } from '@renderer/features/sidebar/session-sidebar-agent-status';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { cn } from '@renderer/utils/utils';
 import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent } from './sidebar-store';
@@ -32,8 +32,6 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
   depth = 0,
 }: SidebarSessionItemProps) {
   const { navigate } = useNavigate();
-  const showRename = useShowModal('renameSessionModal');
-  const showDeleteSession = useShowModal('deleteSessionModal');
   const [actionsOpen, setActionsOpen] = useState(false);
 
   const { currentView } = useWorkspaceSlots();
@@ -56,37 +54,7 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
     navigate('session', { locationId, sessionId });
   };
 
-  const handleArchive = () => {
-    if (isActive) navigate('location', { locationId });
-    void sessionManager?.archiveSession(sessionId);
-  };
-
-  const handleRename = () => showRename({ locationId, sessionId, currentName: sessionName });
-
-  const handleDelete = () =>
-    showDeleteSession({
-      locationId,
-      sessions: [{ sessionId, sessionName }],
-      onSuccess: () => {
-        void sessionManager?.deleteSessions([sessionId]);
-        if (isActive) navigate('location', { locationId });
-      },
-    });
-
-  const canPin = session.state !== 'unregistered';
-
-  const actions = {
-    isPinned: session.data.isPinned,
-    canPin,
-    isArchived: false,
-    onPin: () => void session.setPinned(true),
-    onUnpin: () => void session.setPinned(false),
-    onRename: handleRename,
-    onArchive: handleArchive,
-    onReconnect: undefined,
-    onConvertAutomation: undefined,
-    onDelete: handleDelete,
-  };
+  const actions = useSessionActionProps(locationId, sessionId)!;
 
   return (
     <SessionContextMenu {...actions}>
