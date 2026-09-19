@@ -4,6 +4,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
+import { groupDiscoveryFailures } from './group-discovery-failures';
 export const SessionDiscoveryStatus = observer(function SessionDiscoveryStatus() {
   const query = useQuery({
     queryKey: ['sdk-discovery-errors'],
@@ -11,9 +12,16 @@ export const SessionDiscoveryStatus = observer(function SessionDiscoveryStatus()
     refetchInterval: 3000,
   });
   const retry = useMutation({
-    mutationFn: (agentId: string) => rpc.sdkHost.retryDiscovery(agentId),
+    mutationFn: (agentIds: string[]) =>
+      Promise.all(agentIds.map((agentId) => rpc.sdkHost.retryDiscovery(agentId))),
     onSuccess: () => query.refetch(),
   });
+  const grouped = groupDiscoveryFailures(
+    (query.data ?? []).filter(
+      (failure) =>
+        agentsStore.agentById(failure.agentId)?.serverId === switchServersStore.activeServerId
+    )
+  );
   return (
     <>
       {(query.error || retry.error) && (
@@ -21,28 +29,20 @@ export const SessionDiscoveryStatus = observer(function SessionDiscoveryStatus()
           Session discovery unavailable: {String(query.error || retry.error)}
         </div>
       )}
-      {(query.data ?? [])
-        .filter((error) => {
-          const agent = agentsStore.agentById(error.agentId);
-          return agent?.serverId === switchServersStore.activeServerId;
-        })
-        .map((error) => (
-          <div
-            key={error.agentId}
-            role="alert"
-            className="px-3 py-2 text-xs text-foreground-destructive"
+      {grouped.map(({ message, agentIds }) => (
+        <div key={message} role="alert" className="px-3 py-2 text-xs text-foreground-destructive">
+          {message}
+          {agentIds.length > 1 && ` (${agentIds.length} agents)`}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={retry.isPending}
+            onClick={() => retry.mutate(agentIds)}
           >
-            {error.message}
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={retry.isPending}
-              onClick={() => retry.mutate(error.agentId)}
-            >
-              Retry discovery
-            </Button>
-          </div>
-        ))}
+            Retry discovery
+          </Button>
+        </div>
+      ))}
     </>
   );
 });
