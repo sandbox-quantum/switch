@@ -25,6 +25,13 @@ export function sharedSessionRoot(sessionId: string): string {
  * Console supervises a local host itself so the tree ends when Console does.
  */
 export type Supervision = {
+  /**
+   * Names the code this supervision runs. A host recorded under a different
+   * build was started by an older deployment, and is replaced rather than
+   * adopted — otherwise an upgraded Console uploads a new bundle to a host
+   * that goes on running the old one until somebody restarts it by hand.
+   */
+  build: string;
   start: (input: { root: string; configPath: string; watcher: boolean }) => Promise<void>;
   /** Stops whatever currently owns this root, so a replacement can take it. */
   stop: (root: string) => Promise<void>;
@@ -41,6 +48,7 @@ type LaunchInput = {
 
 export function detachedSupervision(entrypoint: string): Supervision {
   return {
+    build: entrypoint,
     start: async ({ root, configPath, watcher }) => {
       const log = await open(join(root, 'supervisor.log'), 'a', 0o600);
       try {
@@ -129,22 +137,40 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
       roomConnection: saved.roomConnection,
     });
   }
-  try {
-    const owner = JSON.parse(await readFile(join(input.root, 'supervisor', 'owner.json'), 'utf8'));
-    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
-      throw new Error('Invalid shared host supervisor owner.');
-    process.kill(owner.pid, 0);
-    return { created };
-  } catch (error) {
-    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+  const running = await liveSupervisor(input.root);
+  if (running) {
+    if (running.build === input.supervision.build) return { created };
+    await input.supervision.stop(input.root);
   }
   await unlink(join(input.root, 'supervisor', 'failure.json')).catch(
     (error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;
     }
   );
-  await input.supervision.start({ root: input.root, configPath: path, watcher: input.watcher });
+  await input.supervision.start({
+    root: input.root,
+    configPath: path,
+    watcher: input.watcher,
+  });
   return { created };
+}
+
+/**
+ * The supervisor currently holding this root, or null if none is alive. A
+ * supervisor from a build predating the record reports no build, which reads
+ * as different from whatever is asking — so it is replaced.
+ */
+async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
+  try {
+    const owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
+    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
+      throw new Error('Invalid shared host supervisor owner.');
+    process.kill(owner.pid, 0);
+    return { build: owner.build };
+  } catch (error) {
+    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    return null;
+  }
 }
 
 async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {

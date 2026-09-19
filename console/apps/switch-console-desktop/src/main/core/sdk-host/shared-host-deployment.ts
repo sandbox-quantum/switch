@@ -10,6 +10,15 @@ import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 
+/**
+ * Every deployment leaves a bundle named after its own hash, so without this
+ * an upgraded host accumulates one file per build it has ever run. A bundle a
+ * process still names on its command line is kept: it belongs to a host this
+ * deployment has not replaced yet.
+ */
+const PRUNE_SUPERSEDED_BUNDLES =
+  "const fs=require('node:fs');const [dir,keep]=process.argv.slice(1);const running=require('node:child_process').execFileSync('ps',['-eo','args='],{encoding:'utf8'});for(const name of fs.readdirSync(dir)){if(name===keep||!/^shared-host-[a-f0-9]{64}\\.mjs$/.test(name)||running.includes(name))continue;fs.rmSync(dir+'/'+name,{force:true})}";
+
 export async function deploySharedHost(
   transport: LocationTransport,
   sessionPath: string,
@@ -63,6 +72,7 @@ export async function deploySharedHost(
         `${directory}/${temporary}`,
       ]);
     }
+    await ctx.exec('node', ['-e', PRUNE_SUPERSEDED_BUNDLES, directory, `shared-host-${hash}.mjs`]);
   } else ctx = new LocalExecutionContext();
   const { stdout } = await ctx.exec('node', [
     '-e',

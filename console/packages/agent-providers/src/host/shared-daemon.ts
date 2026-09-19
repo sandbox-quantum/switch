@@ -103,6 +103,7 @@ async function main(): Promise<void> {
       ],
       env: process.env,
       signal: stop.signal,
+      build: process.argv[1]!,
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();

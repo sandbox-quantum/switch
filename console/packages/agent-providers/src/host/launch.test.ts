@@ -104,7 +104,7 @@ it('refreshes renamed agent configuration without changing the saved session or 
   await mkdir(join(input.root, 'supervisor'));
   await writeFile(
     join(input.root, 'supervisor', 'owner.json'),
-    JSON.stringify({ pid: process.pid })
+    JSON.stringify({ pid: process.pid, build: input.supervision.build })
   );
   input.config = structuredClone(input.config);
   input.config.start.input.agentName = 'new-name';
@@ -114,5 +114,76 @@ it('refreshes renamed agent configuration without changing the saved session or 
   const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
   expect(saved.start.input.agentName).toBe('new-name');
   expect(saved.session.hostId).toBe('host');
-  expect(saved.roomConnection).toEqual({ connectionId: 'connection', rooms: ['room'] });
+  expect(saved.roomConnection).toEqual({
+    connectionId: 'connection',
+    rooms: ['room'],
+  });
 });
+
+it.skipIf(process.platform === 'win32')(
+  'replaces a supervisor an earlier deployment left running',
+  async () => {
+    const input = await fixture();
+    input.restart = false;
+    await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+    await writeFile(
+      input.entrypoint,
+      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+    );
+    await mkdir(join(input.root, 'supervisor'));
+    const old = spawn(
+      process.execPath,
+      ['-e', `console.log('ready');setInterval(()=>{},1000);`, input.root],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    try {
+      await once(old.stdout!, 'data');
+      await writeFile(
+        join(input.root, 'supervisor', 'owner.json'),
+        JSON.stringify({
+          pid: old.pid,
+          build: join(input.root, 'superseded.cjs'),
+        })
+      );
+      const exit = once(old, 'exit');
+      expect(await ensureSharedProcess(input)).toEqual({ created: false });
+      await exit;
+      await expect.poll(async () => readFile(join(input.root, 'trace'), 'utf8')).toBe('new\n');
+    } finally {
+      if (old.exitCode === null) old.kill('SIGKILL');
+    }
+  }
+);
+
+it.skipIf(process.platform === 'win32')(
+  'leaves a supervisor running the deployed build alone',
+  async () => {
+    const input = await fixture();
+    input.restart = false;
+    await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+    await writeFile(
+      input.entrypoint,
+      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+    );
+    await mkdir(join(input.root, 'supervisor'));
+    const running = spawn(
+      process.execPath,
+      ['-e', `console.log('ready');setInterval(()=>{},1000);`, input.root],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    try {
+      await once(running.stdout!, 'data');
+      await writeFile(
+        join(input.root, 'supervisor', 'owner.json'),
+        JSON.stringify({ pid: running.pid, build: input.supervision.build })
+      );
+      expect(await ensureSharedProcess(input)).toEqual({ created: false });
+      expect(running.exitCode).toBeNull();
+      await expect(readFile(join(input.root, 'trace'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      if (running.exitCode === null) running.kill('SIGKILL');
+    }
+  }
+);

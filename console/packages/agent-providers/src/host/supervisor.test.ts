@@ -34,6 +34,7 @@ it('restarts a crashed isolated worker and exits after a clean stop', async () =
     args: ['-e', script],
     env: process.env,
     signal: new AbortController().signal,
+    build: 'test-bundle.mjs',
   });
   expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('2');
   await expect(readFile(join(root, 'supervisor', 'owner.json'))).rejects.toMatchObject({
@@ -50,6 +51,7 @@ it('reports a fatal worker failure instead of restarting it repeatedly', async (
       args: ['-e', 'process.exit(1)'],
       env: process.env,
       signal: new AbortController().signal,
+      build: 'test-bundle.mjs',
     })
   ).rejects.toThrow('exit code 1');
   expect(
@@ -72,6 +74,7 @@ it('reaps provider descendants even after a clean worker exit', async () => {
     args: ['-e', script],
     env: process.env,
     signal: new AbortController().signal,
+    build: 'test-bundle.mjs',
   });
   const pid = Number(await readFile(join(root, 'provider.pid'), 'utf8'));
   expect(() => process.kill(pid, 0)).toThrow();
@@ -91,6 +94,7 @@ it('preserves the worker failure reason for Console startup', async () => {
       ],
       env: process.env,
       signal: new AbortController().signal,
+      build: 'test-bundle.mjs',
     })
   ).rejects.toThrow('exit code 1');
   expect(JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message).toBe(
@@ -132,6 +136,7 @@ it('relaunches the worker after a lease-expiry exit and returns on its clean exi
     args: await leaseWorker(root, LEASE_EXPIRED_EXIT_CODE),
     env: process.env,
     signal: new AbortController().signal,
+    build: 'test-bundle.mjs',
   });
   expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('2');
   await expect(readFile(join(root, 'supervisor', 'failure.json'))).rejects.toMatchObject({
@@ -147,6 +152,7 @@ it('releases the expired worker owner record before the relaunch', async () => {
     args: await leaseWorker(root, LEASE_EXPIRED_EXIT_CODE),
     env: process.env,
     signal: new AbortController().signal,
+    build: 'test-bundle.mjs',
   });
   expect(await readFile(join(root, 'lock-at-relaunch'), 'utf8')).toBe('missing');
   await expect(readFile(join(root, 'shared-owner.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -161,6 +167,7 @@ it('does not relaunch a worker that exits with a fatal code', async () => {
       args: await leaseWorker(root, 1),
       env: process.env,
       signal: new AbortController().signal,
+      build: 'test-bundle.mjs',
     })
   ).rejects.toThrow('exit code 1');
   expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('1');

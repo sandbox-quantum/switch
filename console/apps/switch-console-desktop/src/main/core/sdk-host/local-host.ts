@@ -134,6 +134,9 @@ async function halt(
  * supervisor rather than detaching one, so the worker stops when Console does.
  */
 export const consoleSupervision: Supervision = {
+  get build() {
+    return resolveSharedHostBundlePath();
+  },
   start: async ({ root, configPath, watcher }) => {
     const bundle = resolveSharedHostBundlePath();
     track(
@@ -146,6 +149,7 @@ export const consoleSupervision: Supervision = {
           args: [bundle, root, configPath, ...(watcher ? ['--watch-worker'] : [])],
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           signal,
+          build: bundle,
         }),
       'Local SDK host supervisor stopped',
       // The supervisor records a worker's own failure under this root already.
@@ -198,6 +202,7 @@ export async function startLocalWatcher(config: SharedHostConfig): Promise<void>
     watcher: true,
     restart: false,
     supervision: {
+      build: consoleSupervision.build,
       start: async ({ root: prepared }) => {
         await note(prepared, 'Room watcher started inside Console.');
         track(

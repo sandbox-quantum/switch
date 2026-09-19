@@ -37,11 +37,14 @@ export async function superviseSharedHost(input: {
   args: string[];
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
+  /** The bundle this supervisor respawns, recorded so a later deployment can
+   * tell its own host apart from one an earlier build left running. */
+  build: string;
 }): Promise<void> {
   const directory = join(input.root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const ownerPath = join(directory, 'owner.json');
-  const owner = { pid: process.pid, token: randomUUID() };
+  const owner = { pid: process.pid, token: randomUUID(), build: input.build };
   await withOwnershipLock(directory, async () => {
     const pid = await ownerPid(ownerPath);
     if (pid !== null && alive(pid))
