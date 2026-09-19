@@ -19,7 +19,9 @@ def refusal(code):
 def adapter():
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
-            workspace_id="workspace-demo", bot_token="", app_token=""
+            workspace_id="workspace-demo",
+            bot_token="xoxb-test",
+            app_token="xapp-test",
         )
     )
     adapter._web_client = SimpleNamespace(
