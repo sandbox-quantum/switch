@@ -5,6 +5,7 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
 import { adoptSubagent } from './adopt-subagent';
+import { stopLegacySidecar } from './legacy-sidecar';
 import { startLocalWatcher, stopLocalWatcher } from './local-host';
 import { buildSharedHostConfig } from './shared-agent-runtime';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
@@ -86,6 +87,7 @@ export async function configureSharedWatcher(
     config.session.agentId,
     true
   );
+  await stopLegacySidecar(ctx, location.dir, config.execution!.credentialsPath);
   await ctx.exec('node', [
     '-e',
     "const fs=require('node:fs');const path=require('node:path');const [root,enabled]=process.argv.slice(1);fs.mkdirSync(root,{recursive:true,mode:0o700});const dest=path.join(root,'watch.json');const tmp=dest+'.'+require('node:crypto').randomUUID();const fd=fs.openSync(tmp,'wx',0o600);try{fs.writeFileSync(fd,JSON.stringify({enabled:enabled==='true'}));fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(tmp,dest)",

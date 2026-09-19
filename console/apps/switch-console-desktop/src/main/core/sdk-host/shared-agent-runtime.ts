@@ -1,6 +1,7 @@
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
 import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
+import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 export { deploySharedHost } from './shared-host-deployment';
@@ -148,6 +149,11 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         false
       );
       root = deployed.root;
+      await stopLegacySidecar(
+        deployed.ctx,
+        this.params.sessionPath,
+        config.execution!.credentialsPath
+      );
       readFailure = async () => {
         const result = await deployed.ctx.exec('node', [
           '-e',
