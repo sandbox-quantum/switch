@@ -32,6 +32,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
+from switch_core.telemetry import TelemetryService
 
 _state: dict[str, Any] = {}
 
@@ -219,6 +220,19 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
+
+
+def current_telemetry() -> TelemetryService | None:
+    """The telemetry service, or None where there is nothing wired.
+
+    Reporting from a gateway route needs the service the app was built with,
+    and `get_protocol()` raises when nothing has been initialised — which is
+    the ordinary state in a route test. An analytics call must never be the
+    reason a request fails, and it must never be the reason a test needs a
+    protocol service it otherwise has no use for.
+    """
+    protocol = _state.get("protocol")
+    return getattr(protocol, "telemetry", None) if protocol is not None else None
 
 
 def get_install_store() -> MessagingInstallStore:

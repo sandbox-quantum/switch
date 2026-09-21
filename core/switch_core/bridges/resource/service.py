@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -35,8 +36,32 @@ from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
+from switch_core.telemetry import TelemetryService, emit_safely
 
 logger = logging.getLogger(__name__)
+
+
+def _reference_type(type_: str) -> str:
+    """A reference type as the telemetry catalogue spells it.
+
+    Only the builtins are named. A user-defined type's slug is free text
+    chosen by whoever registered it, so it can never go on the wire — what is
+    reportable is that it was not one of ours.
+    """
+    return type_ if is_builtin_type(type_) else "other"
+
+
+def _visibility(value: str) -> str:
+    return value if value in ("private", "public") else "private"
+
+
+def _age_days(created_at: object) -> float:
+    """How old a row is, in days, for reporting. Zero if unknown."""
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
+
 
 ROOM_DOCUMENT_MAX_CONTENT_BYTES = 1_048_576
 
@@ -74,6 +99,10 @@ class ReferenceTypeRow:
 
 
 class ResourceService:
+    # Class-level default: several tests build this without `__init__`, and
+    # `emit_safely` treats None as "report nothing".
+    _telemetry: TelemetryService | None = None
+
     """Business logic for References, Documents, and Packages.
 
     Used by:
@@ -91,7 +120,9 @@ class ResourceService:
         package_store: PackageStore,
         room_link_store: RoomLinkStore,
         session_factory: async_sessionmaker[AsyncSession],
+        telemetry: TelemetryService | None = None,
     ) -> None:
+        self._telemetry = telemetry
         self._references = reference_store
         self._reference_types = reference_type_store
         self._documents = document_store
@@ -317,7 +348,12 @@ class ResourceService:
             instructions=instructions,
             value_hint=value_hint,
         )
-        return await self._reference_types.create(session, reference_type)
+        created = await self._reference_types.create(session, reference_type)
+        # No slug: the type's name is free text whoever registered it chose,
+        # and that is exactly what a user-defined type is — the fact that one
+        # was registered is the whole reportable content.
+        emit_safely(self._telemetry, "reference_type_created", {})
+        return created
 
     async def update_reference_type(
         self,
@@ -377,7 +413,9 @@ class ResourceService:
                     f"Reference type '{type_}' is used by {in_use} reference(s) "
                     "and cannot be deleted"
                 )
+        age = _age_days(reference_type.created_at)
         await self._reference_types.delete(session, type_)
+        emit_safely(self._telemetry, "reference_type_deleted", {"age_days": age})
 
     async def log_builtin_shadowing(self, session: AsyncSession) -> None:
         """Report every stored type a built-in shadows.
@@ -509,7 +547,17 @@ class ResourceService:
             instructions=instructions,
             value=normalised_value,
         )
-        return await self._references.create(session, ref)
+        created = await self._references.create(session, ref)
+        emit_safely(
+            self._telemetry,
+            "reference_created",
+            {
+                "reference_type": _reference_type(type),
+                "read_visibility": _visibility(read_visibility),
+                "created_by_kind": "user",
+            },
+        )
+        return created
 
     async def get_reference_for_user(
         self,
@@ -606,7 +654,14 @@ class ResourceService:
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "delete", ref)
-        return await self._references.delete(session, reference_id)
+        kind, age = _reference_type(ref.type), _age_days(ref.created_at)
+        detached = await self._references.delete(session, reference_id)
+        emit_safely(
+            self._telemetry,
+            "reference_deleted",
+            {"reference_type": kind, "age_days": age},
+        )
+        return detached
 
     async def attach_reference_to_room(
         self,
@@ -622,11 +677,22 @@ class ResourceService:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "read", ref)
         await self._references.attach_to_room(session, room_id, reference_id)
+        emit_safely(
+            self._telemetry,
+            "reference_attached_to_room",
+            {"reference_type": _reference_type(ref.type)},
+        )
 
     async def detach_reference_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
     ) -> None:
+        ref = await self._references.get(session, reference_id)
         await self._references.detach_from_room(session, room_id, reference_id)
+        emit_safely(
+            self._telemetry,
+            "reference_detached_from_room",
+            {"reference_type": _reference_type(ref.type) if ref else "other"},
+        )
 
     async def list_room_references(
         self, session: AsyncSession, room_id: str
@@ -735,6 +801,9 @@ class ResourceService:
         if await self._room_links.exists(session, source_room_id, target_room_id):
             raise ValueError(f"Room {source_room_id} already links to {target_room_id}")
         await self._room_links.attach(session, source_room_id, target_room_id, label)
+        # No label: it is free text describing why two rooms relate, which is
+        # exactly the kind of thing that names a customer's work.
+        emit_safely(self._telemetry, "room_link_created", {})
         return {
             "target_room_id": target.id,
             "target_room_name": target.name,
@@ -749,7 +818,11 @@ class ResourceService:
         source_room_id: str,
         target_room_id: str,
     ) -> bool:
-        return await self._room_links.detach(session, source_room_id, target_room_id)
+        detached = await self._room_links.detach(
+            session, source_room_id, target_room_id
+        )
+        emit_safely(self._telemetry, "room_link_removed", {})
+        return detached
 
     # ── Document CRUD (gateway) ───────────────────────────────────────────
 
@@ -775,7 +848,17 @@ class ResourceService:
             instructions=instructions,
             content=content,
         )
-        return await self._documents.create(session, doc)
+        created = await self._documents.create(session, doc)
+        emit_safely(
+            self._telemetry,
+            "document_created",
+            {
+                "scope": "library",
+                "created_by_kind": "user",
+                "has_instructions": bool(instructions),
+            },
+        )
+        return created
 
     async def get_document_for_user(
         self,
@@ -841,7 +924,14 @@ class ResourceService:
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
         require(Principal(user_id, is_admin), "delete", doc)
-        return await self._documents.delete(session, document_id)
+        age = _age_days(doc.created_at)
+        detached = await self._documents.delete(session, document_id)
+        emit_safely(
+            self._telemetry,
+            "document_deleted",
+            {"scope": "library", "age_days": age},
+        )
+        return detached
 
     async def attach_document_to_room(
         self,
@@ -862,11 +952,13 @@ class ResourceService:
             )
         require(Principal(user_id, is_admin), "read", doc)
         await self._documents.attach_to_room(session, room_id, document_id)
+        emit_safely(self._telemetry, "document_attached_to_room", {})
 
     async def detach_document_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
     ) -> None:
         await self._documents.detach_from_room(session, room_id, document_id)
+        emit_safely(self._telemetry, "document_detached_from_room", {})
 
     async def list_room_documents(
         self, session: AsyncSession, room_id: str
@@ -919,7 +1011,17 @@ class ResourceService:
             instructions=instructions,
             content=content,
         )
-        return await self._documents.create(session, doc)
+        created = await self._documents.create(session, doc)
+        emit_safely(
+            self._telemetry,
+            "document_created",
+            {
+                "scope": "room",
+                "created_by_kind": "agent",
+                "has_instructions": bool(instructions),
+            },
+        )
+        return created
 
     async def create_room_document_for_user(
         self,
@@ -955,7 +1057,17 @@ class ResourceService:
             instructions=instructions,
             content=content,
         )
-        return await self._documents.create(session, doc)
+        created = await self._documents.create(session, doc)
+        emit_safely(
+            self._telemetry,
+            "document_created",
+            {
+                "scope": "room",
+                "created_by_kind": "user",
+                "has_instructions": bool(instructions),
+            },
+        )
+        return created
 
     async def update_room_document(
         self,
@@ -1095,7 +1207,9 @@ class ResourceService:
             description=description,
             instructions=instructions,
         )
-        return await self._packages.create(session, pkg)
+        created = await self._packages.create(session, pkg)
+        emit_safely(self._telemetry, "package_created", {"created_by_kind": "user"})
+        return created
 
     async def get_package_for_user(
         self,
@@ -1159,7 +1273,10 @@ class ResourceService:
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "delete", pkg)
-        return await self._packages.delete(session, package_id)
+        age = _age_days(pkg.created_at)
+        detached = await self._packages.delete(session, package_id)
+        emit_safely(self._telemetry, "package_deleted", {"age_days": age})
+        return detached
 
     async def attach_package_to_room(
         self,
@@ -1175,11 +1292,26 @@ class ResourceService:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "read", pkg)
         await self._packages.attach_to_room(session, room_id, package_id)
+        # What the package brought with it, which is the whole point of
+        # attaching one rather than its parts.
+        emit_safely(
+            self._telemetry,
+            "package_attached_to_room",
+            {
+                "reference_count": (
+                    await self._packages.get_reference_counts(session, [package_id])
+                ).get(package_id, 0),
+                "document_count": (
+                    await self._packages.get_document_counts(session, [package_id])
+                ).get(package_id, 0),
+            },
+        )
 
     async def detach_package_from_room(
         self, session: AsyncSession, room_id: str, package_id: str
     ) -> None:
         await self._packages.detach_from_room(session, room_id, package_id)
+        emit_safely(self._telemetry, "package_detached_from_room", {})
 
     async def list_room_packages(
         self, session: AsyncSession, room_id: str

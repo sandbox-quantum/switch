@@ -168,6 +168,7 @@ async def register_known_agent(
 
     try:
         result = await protocol.register_agent(
+            registration_path="gateway",
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
@@ -490,6 +491,7 @@ async def register_other_agent(
 
     try:
         result = await protocol.register_agent(
+            registration_path="gateway",
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,

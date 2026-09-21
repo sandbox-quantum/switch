@@ -102,6 +102,11 @@ secrets:
   mattermostUserPassword: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
+  # than beside the other observability settings because the documented use for
+  # it is a collector's API key, and every other credential in this chart comes
+  # from the Secret. Left empty for a collector that needs no authentication.
+  otlpHeaders: ""
   # Distributed Slack app (required when switchCore.slackApp.enabled). The
   # signing secret is the whole of what distinguishes a real Slack event from
   # a post by anyone who learned the URL.
@@ -134,6 +139,54 @@ switchCore:
     tenantId: default
     environment: ""
     serviceName: switch-core
+
+  # Where this deployment reports metrics and logs.
+  #
+  # Empty endpoint means it reports nowhere, which is the default: nothing
+  # leaves the deployment until an operator names a collector. Readiness
+  # checking is unaffected either way — /health/ready works regardless.
+  observability:
+    # Base URL of an OTLP/HTTP collector, with no path: `/v1/metrics` and
+    # `/v1/logs` are appended, the same convention every other OTLP client
+    # follows. Setting this is what turns reporting on.
+    otlpEndpoint: ""
+    # A UUID identifying this deployment, stable across restarts and upgrades.
+    # Required when otlpEndpoint is set — the collector drops what it cannot
+    # attribute, so without one this reports nothing while looking configured.
+    # Generate once with `uuidgen` and leave it alone; a new id per install
+    # makes one deployment look like a population of them.
+    deploymentId: ""
+    metrics: true
+    # Off by default: logs already go to the container's output, where a
+    # cluster log agent can read them. Turning this on sends a second copy
+    # over the network, which costs money somebody has to choose to spend.
+    logs: false
+    exportIntervalSeconds: 60
+    # How long an export may take before it is abandoned. Raise it for a
+    # collector that is slow or far away.
+    timeoutSeconds: 10
+
+  # Anonymous product telemetry: usage counts and timings reported to the
+  # Flint relay, which is the same pipeline Switch Console reports to.
+  #
+  # Off by default, and that is deliberate — this deployment's usage may be
+  # yours rather than ours, so reporting it is a choice you make rather than
+  # one you discover. When it is off nothing is collected and no request is
+  # made.
+  #
+  # Nothing that identifies anything inside the deployment is ever sent: no
+  # room, tenant, agent, user or message id, no names, no message content, and
+  # no free text of any kind. What is sent is counts (how many rooms, how many
+  # active users, how much traffic) and durations (how long from install to a
+  # working connector). The full list is in docs/old/telemetry-events.md and
+  # is enforced in code, not just documented.
+  telemetry:
+    enabled: false
+    # Base URL, no path — `/v1/logs` is appended, the same
+    # convention otlpEndpoint follows.
+    endpoint: https://telemetry.flintai.dev
+    # How often the usage snapshot is collected and sent.
+    snapshotIntervalHours: 24
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""

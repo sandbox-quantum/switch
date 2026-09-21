@@ -25,6 +25,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     InboundCustomEvent,
@@ -1320,3 +1321,163 @@ async def test_the_schema_forbids_a_client_row_in_another_tenants_room(
         )
         with pytest.raises(IntegrityError):
             await session.commit()
+
+
+class TestWhatIsMeasured:
+    """The counters, against a real database round trip (CHOO-2807).
+
+    A real delivery rather than a hand-built event: asserting on the latter
+    would prove the arithmetic and nothing about whether the instrumentation is
+    actually on the path a message takes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _registry(self) -> Iterator[MetricsRegistry]:
+        registry = MetricsRegistry()
+        install(registry)
+        self._tasks: list[asyncio.Task] = []
+        yield registry
+        for task in self._tasks:
+            task.cancel()
+        uninstall()
+
+    async def _receiving(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        handlers: TransportHandlers | None = None,
+    ) -> tuple[PostgresTransport, _FakeListener, str]:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(handlers or _Received().handlers())
+        await transport.join_room(transport_room_id)
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        await _watched_room(transport)
+        return transport, listener, transport_room_id
+
+    @staticmethod
+    def _kinds(payloads: dict, name: str) -> dict[str, float]:
+        return {
+            str(point.attributes["kind"]): point.value
+            for point in payloads[name].numbers
+        }
+
+    async def test_a_send_and_its_delivery_are_both_counted(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        transport, listener, room = await self._receiving(session_factory)
+
+        await transport.send_message(room, "hello", sender_name="agent one")
+        await listener.announce(await _watched_room(transport))
+
+        payloads = {p.name: p for p in _registry.collect()}
+        assert self._kinds(payloads, "switch.messages.sent") == {"message": 1.0}
+        assert self._kinds(payloads, "switch.messages.delivered") == {"message": 1.0}
+
+    async def test_media_is_counted_apart_from_text(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        transport, listener, room = await self._receiving(session_factory)
+
+        await transport.send_media(
+            room,
+            uri="mxc://test/abc",
+            filename="a.png",
+            mimetype="image/png",
+            size=3,
+            sender_name="agent one",
+            msgtype="m.image",
+        )
+        await listener.announce(await _watched_room(transport))
+
+        payloads = {p.name: p for p in _registry.collect()}
+        # Both travel as `m.room.message`, so without reading the msgtype these
+        # would be one undifferentiated number.
+        assert self._kinds(payloads, "switch.messages.sent") == {"media": 1.0}
+        assert self._kinds(payloads, "switch.messages.delivered") == {"media": 1.0}
+
+    async def test_delivery_lag_is_measured_per_message(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        transport, listener, room = await self._receiving(session_factory)
+
+        await transport.send_message(room, "hello", sender_name="agent one")
+        await listener.announce(await _watched_room(transport))
+
+        payload = next(
+            p for p in _registry.collect() if p.name == "switch.messages.delivery_lag"
+        )
+        point = payload.histograms[0]
+        assert point.count == 1
+        assert point.attributes == {"kind": "message"}
+        # Never negative: the row's timestamp comes from the database's clock
+        # and the subtraction happens on this process's, so skew is ordinary.
+        assert 0.0 <= point.total < 60_000.0
+
+    async def test_a_failing_handler_is_counted_not_just_logged(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        async def explode(_room, _event) -> None:
+            raise RuntimeError("handler is broken")
+
+        transport, listener, room = await self._receiving(
+            session_factory,
+            TransportHandlers(
+                on_message=explode,
+                on_media=explode,
+                on_member_event=explode,
+                on_custom_event=explode,
+            ),
+        )
+
+        await transport.send_message(room, "hello", sender_name="agent one")
+        await listener.announce(await _watched_room(transport))
+
+        # Swallowing the exception is what keeps the delivery loop alive for
+        # every other room; the counter is what stops that being invisible.
+        payload = next(
+            p
+            for p in _registry.collect()
+            if p.name == "switch.messages.delivery_failures"
+        )
+        assert payload.numbers[0].value >= 1.0
+
+    async def test_a_send_that_never_persists_is_not_counted(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        """The counter goes after the commit, and only a failing send proves it.
+
+        Every happy-path assertion looks identical either way.
+        """
+        transport, _, _ = await self._receiving(session_factory)
+
+        with pytest.raises(Exception):
+            await transport.send_message(
+                "!room-that-does-not-exist:test", "hello", sender_name="agent one"
+            )
+
+        recorded = {payload.name for payload in _registry.collect()}
+        assert "switch.messages.sent" not in recorded
+
+    async def test_a_send_that_never_persists_is_counted_as_a_failure(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        """Otherwise the only symptom is an absence, and a quiet room is one too."""
+        transport, _, _ = await self._receiving(session_factory)
+
+        with pytest.raises(Exception):
+            await transport.send_message(
+                "!room-that-does-not-exist:test", "hello", sender_name="agent one"
+            )
+
+        payload = next(
+            p for p in _registry.collect() if p.name == "switch.messages.send_failures"
+        )
+        assert {
+            str(point.attributes["kind"]): point.value for point in payload.numbers
+        } == {"message": 1.0}

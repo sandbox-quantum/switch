@@ -29,6 +29,8 @@ from collections import deque
 from dataclasses import dataclass
 
 from switch_core.bridges.agent.protocol.types import AgentEvent
+from switch_core.observability.catalogue import AGENT_EVENTS_DROPPED
+from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -370,14 +372,19 @@ class EventBuffer:
             return
 
         dropped_seq = 0
+        expired = 0
         cutoff = time.monotonic() - self._retention_seconds
         while events and events[0].appended_at < cutoff:
             dropped_seq = events.popleft().seq
+            expired += 1
+        if expired:
+            metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "retention"}, expired)
 
         overflow = len(events) - self._max_events
         if overflow > 0:
             for _ in range(overflow):
                 dropped_seq = events.popleft().seq
+            metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "overflow"}, overflow)
             logger.warning(
                 "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
                 "through seq=%s — readers resuming from before this will be "

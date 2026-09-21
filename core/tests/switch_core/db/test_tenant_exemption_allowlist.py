@@ -88,6 +88,15 @@ _ALLOWED_MODULES = {
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
     # asking for it.
+    #
+    # The usage snapshot counts every tenant's rooms, messages and agents and
+    # reports one deployment-wide total. That is the same boot-style fan-out
+    # `main` does: enumerate the tenants, then bind each one in turn and read
+    # its rows under its own policy. It has to ask, because a session with
+    # nothing bound reads nothing — a snapshot written without this would
+    # report a page of zeroes on a correctly configured deployment and look
+    # perfectly healthy doing it.
+    "switch_core.telemetry.snapshot",
 }
 
 # Every module allowed to open a session straight from the factory. Not short,
@@ -137,12 +146,30 @@ _RAW_SESSION_FACTORY_MODULES = {
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
     "switch_core.db.tenant_lookup",
+    # ── The readiness check, which issues `SELECT 1` and reads no table at
+    # all. Unbound on purpose: binding a tenant would make the health of the
+    # database a question about one customer's rows, and reading a scoped
+    # table here would be the one check that passes in development and raises
+    # under the restricted runtime role in production.
+    "switch_core.observability.health",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
     # came off this list with the runtime role: the transport learned its own
     # tenant from its client row and the middleware learned a credential's
     # from the exemption, so neither has a session left that says nothing.
     # `switch_core.main` came off it earlier, when the tenant-zero fallback
     # went.
+    #
+    # ── Telemetry bookkeeping: three tables that carry no tenant and no
+    # policy, named in `rls_ddl.GLOBAL_TABLES`. Each records a fact about the
+    # *installation* — which deployment this is, when it was installed, which
+    # once-ever milestones it has reported, when the last snapshot went out —
+    # so there is no tenant for a policy to narrow on and binding one would be
+    # theatre. Same shape, and same reasoning, as reading `users`.
+    "switch_core.telemetry.deployment",
+    "switch_core.telemetry.reporter",
+    # Its own reads are the per-tenant fan-out above; this is the one global
+    # read beside them, the deployment's user count.
+    "switch_core.telemetry.snapshot",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

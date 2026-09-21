@@ -1825,6 +1825,71 @@ class SessionRequestPost(TenantScoped, Base):
     )
 
 
+# ── Telemetry bookkeeping ────────────────────────────────────────────────────
+
+
+class DeploymentIdentity(Base):
+    """Who this installation is to the telemetry relay, and when it began.
+
+    Not tenant-scoped: a deployment running several tenants is one subject.
+    Exactly one row, pinned by a check constraint — two would silently double
+    every count derived from it.
+
+    `client_id` is a random UUID, derived from nothing, kept across restarts.
+
+    `installed_at` is null where the identity was created against a database
+    that already held content; milestones are suppressed for such a deployment
+    rather than measured from a guess. The daily counts are unaffected.
+    """
+
+    __tablename__ = "deployment_identity"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_deployment_identity_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    client_id: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
+    installed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TelemetryMilestone(Base):
+    """A once-ever telemetry event that has already been reported.
+
+    A row rather than process state, so a restart cannot re-emit one. The name
+    is the primary key, which makes the insert itself the guard.
+    """
+
+    __tablename__ = "telemetry_milestones"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    emitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TelemetrySnapshotWatermark(Base):
+    """When the daily usage snapshot was last sent.
+
+    Anchored to what was sent rather than to uptime, so restarts do not change
+    the cadence. One row, pinned like the identity above.
+    """
+
+    __tablename__ = "telemetry_snapshot_watermark"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_telemetry_snapshot_watermark_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    last_sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 
@@ -1876,6 +1941,10 @@ class Message(TenantScoped, Base):
         # is what a caller asking for a time window filters by, so it needs an
         # index of its own rather than a scan back along seq.
         Index("ix_messages_room_sent_at", "room_id", "sent_at"),
+        # The usage snapshot's shape: one tenant's messages since a moment,
+        # across every room. The index above leads on the room, so it cannot
+        # serve that and each pass would scan the whole table.
+        Index("ix_messages_tenant_sent_at", "tenant_id", "sent_at"),
         Index(
             "ix_messages_thread_root",
             "room_id",

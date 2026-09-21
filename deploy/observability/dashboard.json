@@ -1,0 +1,639 @@
+{
+  "title": "Switch \u2014 core service health",
+  "description": "What switch-core reports about itself. Metric definitions live in core/switch_core/observability/catalogue.py; this dashboard is checked into deploy/observability/ in the switch repository, so edit it there rather than here.",
+  "layout_type": "ordered",
+  "reflow_type": "fixed",
+  "template_variables": [
+    {
+      "name": "env",
+      "prefix": "env",
+      "default": "*"
+    },
+    {
+      "name": "service",
+      "prefix": "service",
+      "default": "switch-core"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Is it working?** Each dependency reports 1 when its last check passed and 0 when it failed. Only the database takes the server out of service \u2014 switch-core runs as a single replica, so failing readiness empties the service rather than shifting traffic. A crashed bridge is a real fault that is deliberately not fatal.",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Dependency checks (1 = passing)",
+        "show_legend": true,
+        "legend_layout": "horizontal",
+        "requests": [
+          {
+            "q": "min:switch.health.check{$env,$service} by {check}",
+            "display_type": "line",
+            "style": {
+              "palette": "cool",
+              "line_type": "solid",
+              "line_width": "normal"
+            }
+          }
+        ],
+        "yaxis": {
+          "min": "0",
+          "max": "1.2"
+        }
+      },
+      "layout": {
+        "x": 0,
+        "y": 2,
+        "width": 8,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Agents connected",
+        "requests": [
+          {
+            "q": "avg:switch.agents.connected{$env,$service}",
+            "aggregator": "last"
+          }
+        ],
+        "autoscale": true,
+        "precision": 0
+      },
+      "layout": {
+        "x": 8,
+        "y": 2,
+        "width": 2,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Bridges running",
+        "requests": [
+          {
+            "q": "avg:switch.bridges.running{$env,$service}",
+            "aggregator": "last"
+          }
+        ],
+        "autoscale": true,
+        "precision": 0
+      },
+      "layout": {
+        "x": 10,
+        "y": 2,
+        "width": 2,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Room clients running",
+        "requests": [
+          {
+            "q": "avg:switch.clients.running{$env,$service}",
+            "aggregator": "last"
+          }
+        ],
+        "autoscale": true,
+        "precision": 0
+      },
+      "layout": {
+        "x": 8,
+        "y": 6,
+        "width": 2,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Event-loop lag (ms, worst)",
+        "requests": [
+          {
+            "q": "max:switch.runtime.event_loop_lag{$env,$service}",
+            "aggregator": "max",
+            "conditional_formats": [
+              {
+                "comparator": "<",
+                "value": 100,
+                "palette": "white_on_green"
+              },
+              {
+                "comparator": "<",
+                "value": 1000,
+                "palette": "white_on_yellow"
+              },
+              {
+                "comparator": ">=",
+                "value": 1000,
+                "palette": "white_on_red"
+              }
+            ]
+          }
+        ],
+        "autoscale": true,
+        "precision": 0
+      },
+      "layout": {
+        "x": 10,
+        "y": 6,
+        "width": 2,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**HTTP.** Routes are templates, never resolved paths \u2014 a path carries an id per request and would be a new series each time. Anything the router could not place is folded into `unmatched`.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 8,
+        "width": 12,
+        "height": 1
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Requests per second, by outcome (none = no response sent)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.requests{$env,$service} by {status_class}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 9,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Server errors per second, by route",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.requests{$env,$service,status_class:5xx} by {route}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 9,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Request duration p95 by route (ms) \u2014 needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.http.request.duration{$env,$service} by {route}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 13,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Rooms.** Delivery lag is the age of a message when it reached a recipient, measured per delivery. Delivery failures are the exceptions the delivery loop swallows on purpose so one bad room cannot stop the others \u2014 which is also what makes them invisible without this.\n\n**Sent and delivered are not the same unit.** A send is one write; a delivery is one recipient, so a room with five clients delivers five times per send. Delivered sitting above sent is normal. What matters is the shape of each line, not the gap between them.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 17,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messages per second: sent (writes) vs delivered (per recipient)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messages.sent{$env,$service}.as_rate()",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 19,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Delivery failures per second",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "sum:switch.messages.delivery_failures{$env,$service}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 19,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Delivery lag p95 / p99 (ms) \u2014 needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.messages.delivery_lag{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.messages.delivery_lag{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 23,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Bridges.** Inbound is counted where every platform event already funnels through; outbound at the relay, so a puppet's own echo and a room with no channel are not counted as traffic nobody sent.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 27,
+        "width": 12,
+        "height": 1
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Inbound platform events per second, by platform",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.bridge.events_in{$env,$service} by {platform}.as_rate()",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 28,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Outbound relays per second, by platform",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.bridge.events_out{$env,$service} by {platform}.as_rate()",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 28,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Bridge errors per second, by platform and direction",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.bridge.errors{$env,$service} by {platform,direction}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 28,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Resources.** Reported by the process about itself \u2014 there is no infrastructure agent in this cluster. Event-loop lag is the one no agent could produce: the server is single-threaded, so one blocking call stalls every room and bridge at once, and from outside that looks like an unrelated timeout somewhere else.\n\nPool overflow is zero until the pool is full, then counts the connections opened beyond it \u2014 saturation shows as in-use approaching size.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 32,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database pool: in use vs size",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "avg:switch.db.pool.in_use{$env,$service}",
+            "display_type": "area"
+          },
+          {
+            "q": "avg:switch.db.pool.size{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "avg:switch.db.pool.overflow{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 34,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Event-loop lag (ms)",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "max:switch.runtime.event_loop_lag{$env,$service}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 34,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Process memory (bytes)",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "avg:switch.runtime.memory_rss{$env,$service}",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 38,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "CPU seconds per second, by mode",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.runtime.cpu_seconds{$env,$service} by {mode}.as_rate()",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 38,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Open file descriptors",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "avg:switch.runtime.open_fds{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 38,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Things that are lost.** Each of these is a message or an event that existed and did not arrive. They are counted rather than only logged because every one of them is invisible from the outside: a send that never persisted looks like a quiet room, and an agent told it missed events has no way to tell anyone else.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 41,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Sends that never persisted, per second",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messages.send_failures{$env,$service} by {kind}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 43,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent events dropped per second, by cause",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.events_dropped{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 43,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent connections expired per second (heartbeat lapsed)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.connections_expired{$env,$service}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 47,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Server-side connectors running",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "avg:switch.connectors.running{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 47,
+        "width": 6,
+        "height": 4
+      }
+    }
+  ]
+}

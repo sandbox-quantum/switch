@@ -66,6 +66,7 @@ class _RecordingAdapter:
 
 def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
     core = object.__new__(BridgeCore)
+    core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[assignment]
     core._puppet_matrix_ids = set()  # type: ignore[assignment]
     core._bridge_client_matrix_user_id = "@bridge:switch.local"  # type: ignore[assignment]

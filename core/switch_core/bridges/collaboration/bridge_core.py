@@ -4,7 +4,8 @@ import asyncio
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args
 
@@ -59,6 +60,12 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
+from switch_core.observability.catalogue import (
+    BRIDGE_ERRORS,
+    BRIDGE_EVENTS_IN,
+    BRIDGE_EVENTS_OUT,
+)
+from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.sessions.attachments import normalise_mime_type
@@ -324,11 +331,36 @@ class BridgeCore:
     def tenant_id(self) -> str:
         return self._bridge_tenant_id
 
+    @property
+    def bridge_type(self) -> str:
+        """The collaboration platform this bridge talks to."""
+        return self._bridge_type
+
+    @contextmanager
+    def _counted_outbound(self, kind: str) -> Iterator[None]:
+        """Count one relay out to the platform, and its failure if it fails.
+
+        Placed around the relay call rather than at the top of the handler: a
+        handler returns early for a puppet's own echo and for a room with no
+        channel mapping, and neither of those is a message anybody sent
+        outwards.
+        """
+        metrics().increment(
+            BRIDGE_EVENTS_OUT, {"platform": self._bridge_type, "kind": kind}
+        )
+        try:
+            yield
+        except Exception:
+            metrics().increment(
+                BRIDGE_ERRORS, {"platform": self._bridge_type, "direction": "outbound"}
+            )
+            raise
+
     def _traced(
-        self, handler: Callable[[_InboundEventT], Awaitable[None]]
+        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[None]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
-        """Give each inbound platform event its own id in the logs, and bind
-        the tenant the event belongs to.
+        """Give each inbound platform event its own id in the logs, count it,
+        and bind the tenant the event belongs to.
 
         An event fans out across room lookup, identity provisioning and the
         transport, so without this the lines from two events arriving at once
@@ -356,6 +388,9 @@ class BridgeCore:
         async def traced(event: _InboundEventT) -> None:
             event_id = uuid.uuid4().hex[:16]
             with log_context(request_id=f"{self._bridge_type}-{event_id}"):
+                metrics().increment(
+                    BRIDGE_EVENTS_IN, {"platform": self._bridge_type, "event": kind}
+                )
                 room_ids = self._channel_to_room.get(event.channel_id)
                 tenant_id = (
                     self._bridge_tenant_id
@@ -363,7 +398,18 @@ class BridgeCore:
                     else await self._room_tenant(room_ids[0])
                 )
                 with tenant_scope(tenant_id):
-                    await handler(event)
+                    try:
+                        await handler(event)
+                    except Exception:
+                        # Counted here and re-raised unchanged: whoever handles
+                        # it above still does. An inbound handler that fails is
+                        # a message a person sent and nobody received, which is
+                        # invisible from the platform's side.
+                        metrics().increment(
+                            BRIDGE_ERRORS,
+                            {"platform": self._bridge_type, "direction": "inbound"},
+                        )
+                        raise
 
         return traced
 
@@ -374,16 +420,20 @@ class BridgeCore:
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         if self._session_interactions is not None:
             self._adapter.set_interaction_handler(
-                self._traced(self._handle_inbound_interaction)
+                self._traced("interaction", self._handle_inbound_interaction)
             )
         if self._session_publisher is not None:
             self._adapter.set_activity_resolver(self._activity_shown_at)
         await self._adapter.start(
-            on_message=self._traced(self._handle_inbound_message),
-            on_command=self._traced(self._handle_inbound_command),
-            on_agent_joined=self._traced(self._handle_agent_joined_channel),
-            on_user_joined=self._traced(self._handle_user_joined_channel),
-            on_app_joined=self._traced(self._handle_app_joined_channel),
+            on_message=self._traced("message", self._handle_inbound_message),
+            on_command=self._traced("command", self._handle_inbound_command),
+            on_agent_joined=self._traced(
+                "agent_joined", self._handle_agent_joined_channel
+            ),
+            on_user_joined=self._traced(
+                "user_joined", self._handle_user_joined_channel
+            ),
+            on_app_joined=self._traced("app_joined", self._handle_app_joined_channel),
         )
         await self._ensure_channel_captures()
         if self._session_publisher is not None:
@@ -979,7 +1029,7 @@ class BridgeCore:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
             await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name]
+                room_id, agent_names=[join.agent_name], added_by_kind="system"
             )
             return
 
@@ -1137,6 +1187,9 @@ class BridgeCore:
             channel_type=channel_type,
             bridge_id=self._bridge_id,
             external_channel_id=channel_id,
+            # Adopted from a channel that appeared on the platform, not asked
+            # for by anyone in Switch.
+            created_by_kind="system",
         )
 
         try:
@@ -1947,7 +2000,8 @@ class BridgeCore:
 
         room_id, _ = self._channel_to_room[channel_id]
         with tenant_scope(await self._room_tenant(room_id)):
-            await self._relay_outbound_message(channel_id, event)
+            with self._counted_outbound("message"):
+                await self._relay_outbound_message(channel_id, event)
 
     async def _relay_outbound_message(
         self, channel_id: str, event: TransportMessage
@@ -2080,7 +2134,8 @@ class BridgeCore:
 
         room_id, _ = self._channel_to_room[channel_id]
         with tenant_scope(await self._room_tenant(room_id)):
-            await self._relay_outbound_media(channel_id, event, client)
+            with self._counted_outbound("media"):
+                await self._relay_outbound_media(channel_id, event, client)
 
     async def _relay_outbound_media(
         self, channel_id: str, event: TransportMedia, client: ClientBase[Any]

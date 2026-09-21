@@ -14,6 +14,7 @@ already answered — agreeing right up until the day it did not.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import quote
 
@@ -31,6 +32,7 @@ from switch_core.db.stores.template_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_config,
     get_session,
     get_template_store,
@@ -46,7 +48,25 @@ from switch_core.gateway.schemas import (
     TemplateValidateRequest,
     TemplateValidateResponse,
 )
+from switch_core.telemetry import emit_safely
 from switch_core.template_lint import lint_template
+
+
+def _kind(value: str | None) -> str:
+    """A template's kind as the catalogue spells it.
+
+    The column is free text, so only the three the product uses are named and
+    an operator's own kind reports as `other`.
+    """
+    return value if value in ("room", "group", "agent") else "other"
+
+
+def _age_days(created_at: object) -> float:
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
+
 
 router = APIRouter()
 
@@ -218,6 +238,12 @@ async def create_template(
     except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     await session.commit()
+    # What the template provisions, not what it is called. A template that
+    # brings rooms and agents with it is a different thing from one that
+    # carries neither, and that shape is reportable where the name is not.
+    emit_safely(
+        current_telemetry(), "template_created", {"template_kind": _kind(req.kind)}
+    )
     return _detail(template, await _owner_name(session, user_store, user.id))
 
 
@@ -343,10 +369,18 @@ async def delete_template(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDeleteResponse:
-    await _load_for_management(session, template_store, template_id, user, is_admin)
+    template = await _load_for_management(
+        session, template_store, template_id, user, is_admin
+    )
+    kind, age = _kind(template.kind), _age_days(template.created_at)
     try:
         await template_store.delete(session, template_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
+    emit_safely(
+        current_telemetry(),
+        "template_deleted",
+        {"template_kind": kind, "age_days": age},
+    )
     return TemplateDeleteResponse(deleted_id=template_id)
