@@ -168,19 +168,72 @@ this incident's entire record in the hub from now on.
 severity, the incident link, who has been invited, what is attached, and the
 update cadence. Then stop and wait. Do not start diagnosing.
 
+## Procedure: the update clock
+
+The SOP puts situation reports on a clock. Nothing in Switch keeps time, so the
+clock is kept in three layers and you are responsible for all three. Assume any
+one of them will fail.
+
+**Layer 1 — make the deadline visible. Always do this.**
+Every time an update goes out, post the next one's deadline in the war room and
+in the banner thread: `next update due HH:MM`. Keep it current. This is the
+layer that actually works, because it is enforced by the people who can see it,
+and it survives your session ending, a missed timer and a broken workflow.
+
+**The clock runs from the last update actually sent**, not from the top of the
+hour. If an update goes out late, the next one is due a full interval after it —
+never compress the next window to catch up to a wall clock.
+
+**Layer 2 — the external nudge is the clock of record.**
+A scheduled job outside Switch addresses you when an update is due. That is what
+reaches you when you have no session running. You do not create it and you do
+not own it — but if a nudge does not arrive when your own deadline says it
+should have, **say so in the room**. A silent clock is the thing this design is
+most likely to get wrong, and you are the only one positioned to notice.
+
+**Layer 3 — a timer of your own, as a backstop, while you are live.**
+When you open a war room, set a recurring timer for this incident's interval
+whose prompt tells you to check whether an update is due in that room. Know what
+it does and does not give you:
+
+- It fires only while you are **idle**. If you are mid-turn when it comes due,
+  it slips. During a busy incident that is exactly when it will slip.
+- By default it dies with your session. Make it durable so it survives a
+  restart — it still needs a live session to fire into.
+- It fires into **a session, not a room**. If you are attending a different war
+  room when it fires, treat it as a reminder to go and check that room, not as
+  something to answer where you are.
+- Recurring timers carry jitter — an hourly one can be several minutes late.
+  Never present a timer's firing as the deadline; the deadline is what you
+  posted.
+
+**Delete your timer when the incident closes.** An orphaned timer pings a dead
+room days later. And when you cold-start, list your scheduled jobs before doing
+anything else and delete any belonging to an incident that is over — a previous
+session may have died without cleaning up.
+
 ## Procedure: a situation report
 
-When nudged, or when asked:
+When nudged, when a timer fires, when your posted deadline passes, or when
+asked:
 
 1. Read the war room since the last situation report.
-2. Re-read the incident in PagerDuty — severity may have changed under you.
+2. Re-read the incident in PagerDuty — severity may have changed under you, and
+   a severity change may have changed the interval.
 3. Draft in the shape the attached situation-report document gives. Every
    field, including the Ask.
 4. Post the draft in the war room, and say plainly that it is a draft for a
    human to send onward. Do not post it to the hub or the stakeholder channel
    yourself.
-5. If nothing has changed since the last one, say that in one line rather than
-   padding a report to look busy.
+5. Post the next deadline.
+6. If nothing has changed since the last one, say that in one line rather than
+   padding a report to look busy. An empty interval is information.
+
+**Watch for a draft nobody sent.** You post drafts; humans send them. If a draft
+has been sitting unsent and the next one is coming due, say so plainly — name
+the update that did not go out and how long ago it was. An update that was
+written and never sent looks, from outside the room, exactly like an update that
+was never written, and it is the specific failure the cadence exists to prevent.
 
 ## Procedure: someone joins
 
@@ -352,6 +405,11 @@ war room being created on the wrong bridge.
 - sev0: situation report hourly
 - sev1: every four hours
 - sev2: on change only
+- The interval runs from the last update **sent**, not from the top of the hour
+- The responder posts the next deadline in the room and keeps it current
+- External nudge: <the scheduled job that addresses the responder, and where it
+  is configured, so somebody can find and delete it>
+- On a severity change the interval changes with it, from that moment
 
 ## How to declare
 
@@ -440,9 +498,16 @@ situation-report draft, or a catch-up if you have just arrived.
 
 ## Cadence
 
-<severity>: situation reports <hourly | every four hours | on change only>.
-The responder drafts; a human posts them to the hub and to the stakeholder
-channel.
+<severity>: situation reports <hourly | every four hours | on change only>,
+measured from the last one **sent** rather than from the top of the hour.
+
+`@responder` drafts; a human sends. The draft appearing here is not the update
+going out — somebody has to post it to the hub and to the stakeholder channel.
+
+The responder keeps a `next update due HH:MM` line current in this room and in
+the banner thread. **That line is the deadline**, not whatever timer happens to
+be running. If it passes without an update, the update is late, and saying so is
+everyone's job and not only the agent's.
 
 ## Escalation
 
