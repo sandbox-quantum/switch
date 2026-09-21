@@ -315,7 +315,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   );
   const createsAgents = (loaded?.agents.length ?? 0) > 0;
   const hasRoomPart = loaded?.coreYaml !== null && parsed !== null && !intoRoomId;
-  const isGroupDoc = (parsed?.rooms.length ?? 0) > 1 || parsed?.groupName !== null;
+  const isGroupDoc = (parsed?.rooms.length ?? 0) > 1 || (parsed?.groupName ?? null) !== null;
   const templateRoom = parsed?.rooms[0] ?? null;
 
   // ── Which section each param belongs to ─────────────────────────────────
@@ -1162,9 +1162,19 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 
   /** One param as the template says to show it: asked, folded, or fixed.
    * Inside the Advanced fold an `advanced` param is a plain field: the fold does the folding. */
-  const paramRow = (param: ParamSpec, sshHost: string | null, inFold = false) => {
+  const paramRow = (
+    param: ParamSpec,
+    sshHost: string | null,
+    inFold = false,
+    /** The agent whose section the row sits in, for a directory param's resolved path. */
+    slotIndex: number | null = null
+  ) => {
     const value = values[param.name] ?? '';
     const error = fieldErrors[param.name] ?? clashErrors[param.name] ?? valueProblem(param, value);
+    const resolvedDirectory =
+      param.type === 'directory' && slotIndex !== null && setups[slotIndex]?.directory
+        ? setups[slotIndex].directory
+        : null;
     const summary =
       param.type === 'provider'
         ? (providerDisplayName(String(value)) ?? String(value))
@@ -1173,20 +1183,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           : param.type === 'room' && value === NEW
             ? (newRoomForPick?.name ?? 'New room')
             : param.type === 'directory'
-              ? (setups.find((s) => s.directory !== '')?.directory ?? String(value)).replace(
-                  /^\/(?:Users|home)\/[^/]+/,
-                  '~'
-                )
+              ? (resolvedDirectory ?? String(value)).replace(/^\/(?:Users|home)\/[^/]+/, '~')
               : String(value);
     if (param.input === 'fixed') {
       return <FixedRow key={param.name} label={paramLabel(param)} value={summary} />;
     }
     // A directory param's value can read `{$agents_dir}` and `{agent}`; the
     // control shows the path they resolve to, and an edit writes a literal.
-    const shown =
-      param.type === 'directory'
-        ? (setups.find((s) => s.directory !== '')?.directory ?? value)
-        : value;
+    const shown = resolvedDirectory ?? value;
     const field = (
       <ParamField
         key={param.name}
@@ -1275,7 +1279,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             hint={slot.entry.description || undefined}
           />
         )}
-        {asked.map((p) => paramRow(p, sshHost))}
+        {asked.map((p) => paramRow(p, sshHost, false, i))}
         {asksProvider && (
           <div className="flex flex-col gap-2">
             <div className="flex items-baseline gap-2">
@@ -1315,7 +1319,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           >
             <div className="flex flex-col gap-5 rounded-[10px] border border-border px-4 py-4">
               <span className="text-[12.5px] font-medium">{foldLabel}</span>
-              {folded.map((p) => paramRow(p, sshHost, true))}
+              {folded.map((p) => paramRow(p, sshHost, true, i))}
               {asksDirectory && (
                 <div className="flex flex-col gap-2">
                   <span className="text-[12.5px] font-medium">Directory</span>

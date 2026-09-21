@@ -206,8 +206,12 @@ export function parseAgentTemplate(
   fallbackInstructions: string | null = null
 ): ParsedAgentTemplate {
   const doc = parseYaml(yamlText);
-  if (asRecord(doc.agent) === null && !Array.isArray(doc.agents)) {
-    throw new Error('Template must have an "agent:" block.');
+  if (asRecord(doc.agent) === null) {
+    throw new Error(
+      Array.isArray(doc.agents)
+        ? 'This template creates several agents, so it has no single set of instructions to offer.'
+        : 'Template must have an "agent:" block.'
+    );
   }
   const { agents, warnings } = parseTemplateAgents(yamlText, fallbackInstructions);
   const [agent] = agents;
@@ -329,14 +333,15 @@ export function substituteAgentSlots(
   const rename = (name: unknown) =>
     typeof name === 'string' && Object.hasOwn(replacements, name) ? replacements[name] : name;
   // One pass over the text, longest name first so `{team}-ab` is matched
-  // before `{team}-a`, and a name only counts when the next character
-  // cannot continue an agent name. A dot continues one only when a name
-  // character follows it, so "@helper." at the end of a sentence still matches.
+  // before `{team}-a`, and a name only counts when neither neighbour can
+  // continue an agent name: `my-helper` is not `helper`. A dot continues a
+  // name only when a name character follows it, so "@helper." at the end of
+  // a sentence still matches and `helper._bot` is left alone.
   const names = Object.keys(replacements).sort((a, b) => b.length - a.length);
   const pattern =
     names.length > 0
       ? new RegExp(
-          `(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`,
+          `(?<![A-Za-z0-9_.-])(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`,
           'g'
         )
       : null;

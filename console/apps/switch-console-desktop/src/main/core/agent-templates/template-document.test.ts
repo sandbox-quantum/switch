@@ -4,6 +4,7 @@ import {
   composeTemplateDocument,
   formOptions,
   serverDocument,
+  parseAgentTemplate,
   parseTemplateAgents,
   substituteAgentSlots,
   templateKind,
@@ -205,10 +206,26 @@ describe('substituteAgentSlots: whole names', () => {
 
   it('renames both when both change, whichever order the map lists them', () => {
     const core = 'room:\n  name: r\n  agents: ["{t}-a", "{t}-ab"]\nkickoff: "@{t}-a and @{t}-ab"\n';
-    const out = load(substituteAgentSlots(core, { '{t}-a': 'x-a', '{t}-ab': 'x-ab' })) as {
-      kickoff: string;
-    };
-    expect(out.kickoff).toBe('@x-a and @x-ab');
+    for (const map of [
+      { '{t}-a': 'x-a', '{t}-ab': 'x-ab' },
+      { '{t}-ab': 'x-ab', '{t}-a': 'x-a' },
+    ]) {
+      const out = load(substituteAgentSlots(core, map)) as { kickoff: string };
+      expect(out.kickoff).toBe('@x-a and @x-ab');
+    }
+  });
+
+  it('leaves a name that ends in the renamed one alone, and a dotted one too', () => {
+    const core =
+      'room:\n  name: r\n  agents: [helper]\nkickoff: "@my-helper, @helper._bot and @helper."\n';
+    const out = load(substituteAgentSlots(core, { helper: 'bob' })) as { kickoff: string };
+    expect(out.kickoff).toBe('@my-helper, @helper._bot and @bob.');
+  });
+
+  it('has no single-agent view of a document with several agents', () => {
+    expect(() => parseAgentTemplate('agents:\n  - name: a\n    instructions: i\n')).toThrow(
+      /several agents/
+    );
   });
 });
 
