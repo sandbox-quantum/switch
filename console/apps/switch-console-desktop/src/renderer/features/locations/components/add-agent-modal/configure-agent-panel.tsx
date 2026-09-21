@@ -232,25 +232,12 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
  * agents — so the two halves can sit in different places in the dialog without
  * the identity fields waiting on four queries they do not use.
  */
-export function AgentIdentityFields({
-  form,
-  instructionsTemplateName = null,
-}: {
-  form: ConfigureAgentFormState;
-  /** The name of the template the instructions were prefilled from. When
-   * set, the instructions start folded to a one-line summary with an Edit
-   * button: the user did not write them and does not need to read a page
-   * of text to confirm the agent. */
-  instructionsTemplateName?: string | null;
-}) {
+export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
   const nameId = useId();
   const displayNameId = useId();
   const descriptionId = useId();
   const instructionsId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
-  const [instructionsOpen, setInstructionsOpen] = useState(instructionsTemplateName === null);
-  const instructionLines =
-    form.instructions.length === 0 ? 0 : form.instructions.split('\n').length;
 
   return (
     <FieldGroup>
@@ -356,30 +343,13 @@ export function AgentIdentityFields({
         <FieldLabel htmlFor={instructionsId}>
           Agent instructions <span className="text-foreground-muted">(optional)</span>
         </FieldLabel>
-        {instructionsOpen ? (
-          <Textarea
-            id={instructionsId}
-            rows={4}
-            placeholder="How this agent should work"
-            value={form.instructions}
-            onChange={(e) => form.setInstructions(e.target.value)}
-          />
-        ) : (
-          <div className="flex h-9 items-center gap-2 rounded-md border border-border pr-1 pl-3">
-            <span className="min-w-0 flex-1 truncate text-sm text-foreground-muted">
-              From &quot;{instructionsTemplateName}&quot; · {instructionLines} lines
-            </span>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="cursor-pointer text-foreground"
-              onClick={() => setInstructionsOpen(true)}
-            >
-              Edit
-            </Button>
-          </div>
-        )}
+        <Textarea
+          id={instructionsId}
+          rows={4}
+          placeholder="How this agent should work"
+          value={form.instructions}
+          onChange={(e) => form.setInstructions(e.target.value)}
+        />
       </Field>
     </FieldGroup>
   );

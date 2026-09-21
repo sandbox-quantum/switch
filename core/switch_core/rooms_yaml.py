@@ -736,7 +736,8 @@ class RoomYamlService:
         """
         wanted: dict[str, list[tuple[str, str]]] = {}
         for name, spec in parsed.params.items():
-            if spec.type in ENTITY_PARAM_TYPES:
+            # An optional entity param left empty names nothing to check.
+            if spec.type in ENTITY_PARAM_TYPES and name in parsed.values:
                 wanted.setdefault(spec.type, []).append(
                     (name, str(parsed.values[name]))
                 )
@@ -849,7 +850,7 @@ class RoomYamlService:
                     if candidate in have:
                         filled[name] = candidate
                         break
-        return filled if len(filled) > len(given) else inputs
+        return filled if filled != given else inputs
 
     async def _names_of(self, session: AsyncSession, param_type: str) -> list[str]:
         """What the server has of one entity type, the ``$first`` one first."""

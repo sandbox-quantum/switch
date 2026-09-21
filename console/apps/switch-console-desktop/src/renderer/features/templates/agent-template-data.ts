@@ -1,9 +1,6 @@
-import type {
-  ParsedAgentEntry,
-  ParsedAgentTemplate,
-  TemplateKind,
-  TemplateSummary,
-} from '@main/core/agent-templates/controller';
+import type { ParsedAgentTemplate } from '@main/core/agent-templates/agent-template-format';
+import type { ParsedAgentEntry, TemplateKind } from '@main/core/agent-templates/template-document';
+import type { TemplateSummary } from '@main/core/agent-templates/template-summary';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
@@ -44,7 +41,7 @@ export async function agentTemplateFromContent(
 ): Promise<AgentTemplate> {
   const parsed = await rpc.agentTemplates.parse({ yamlText: content, instructions });
   const roomYaml = parsed.room
-    ? await rpc.agentTemplates.roomDocument({ yamlText: content })
+    ? await rpc.agentTemplates.serverDocument({ yamlText: content })
     : null;
   return {
     name: templateName,
@@ -129,14 +126,6 @@ export type LoadedTemplate = {
   /** The full document with agent instructions inlined, as stored or as it would be stored. */
   document: string;
 };
-
-/** Classify a document from its top-level keys alone, without parsing the YAML. */
-export function documentKind(yamlText: string): TemplateKind {
-  if (/^group:/m.test(yamlText) || /^rooms:/m.test(yamlText)) return 'group';
-  if (/^agents:/m.test(yamlText)) return 'group';
-  if (/^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText)) return 'agent';
-  return 'room';
-}
 
 /**
  * Load one template by the id the listing gave it: a bundled id, or a registry

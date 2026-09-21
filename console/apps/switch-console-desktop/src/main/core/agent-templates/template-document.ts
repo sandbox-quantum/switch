@@ -8,6 +8,7 @@ import {
   type AgentTemplateSource,
   extractSources,
   optionalString,
+  type ParsedAgentTemplate,
   stripFrontMatter,
 } from './agent-template-format';
 
@@ -192,6 +193,36 @@ export function formOptions(yamlText: string): FormOptions {
       label: optionalString(advanced?.label) ?? 'Advanced',
       open: advanced?.open === true,
     },
+  };
+}
+
+/**
+ * The single-agent view of a document: the first agent entry and the room it
+ * is put in. What the agent's settings page reads when it offers the
+ * template's current instructions. Same parse as `parseTemplateAgents`.
+ */
+export function parseAgentTemplate(
+  yamlText: string,
+  fallbackInstructions: string | null = null
+): ParsedAgentTemplate {
+  const doc = parseYaml(yamlText);
+  if (asRecord(doc.agent) === null && !Array.isArray(doc.agents)) {
+    throw new Error('Template must have an "agent:" block.');
+  }
+  const { agents, warnings } = parseTemplateAgents(yamlText, fallbackInstructions);
+  const [agent] = agents;
+  if (!agent) throw new Error('Template must have an "agent:" block.');
+  const room = asRecord(doc.room);
+  return {
+    name: agent.name,
+    addressing: agent.addressing,
+    description: agent.description,
+    instructions: agent.instructions,
+    repoUrl: agent.repoUrl,
+    sources: agent.sources,
+    room: room ? { name: optionalString(room.name), kickoff: optionalString(doc.kickoff) } : null,
+    provider: agent.provider,
+    warnings,
   };
 }
 

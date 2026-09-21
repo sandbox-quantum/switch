@@ -113,18 +113,3 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     creates: roomEntries.length > 0 ? creates : [],
   };
 }
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`;
-}
-
-/** The card line: "Creates 1 room and 2 agents · 4 inputs". An agent
- * template's room is optional, so the card names the agent alone. */
-export function describeSummary(s: TemplateSummary): { creates: string; inputs: string } {
-  const parts: string[] = [];
-  if (s.rooms > 0 && s.kind !== 'agent') parts.push(plural(s.rooms, 'room'));
-  if (s.agents > 0) parts.push(s.kind === 'agent' ? 'an agent' : plural(s.agents, 'agent'));
-  const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
-  const inputs = s.inputs === 0 ? 'nothing to fill in' : plural(s.inputs, 'input');
-  return { creates, inputs };
-}

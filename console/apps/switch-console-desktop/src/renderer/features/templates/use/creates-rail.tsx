@@ -1,6 +1,6 @@
 import { Check, ChevronRight, DoorOpen, Loader2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import type { ParsedAgentEntry } from '@main/core/agent-templates/controller';
+import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
 import type { TemplateRoom } from '@main/core/room-templates/controller';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
@@ -58,12 +58,6 @@ export function newSlot(entry: ParsedAgentEntry): AgentSlot {
     step: null,
     cloneWarning: null,
   };
-}
-
-/** The name from the template's `name` field with the inputs filled in, or the name typed in the name field. */
-export function slotWantedName(slot: AgentSlot, values: Values, override: string | null): string {
-  if (override !== null) return override;
-  return interpolate(slot.entry.name ?? '', values);
 }
 
 function StatusLine({ slot }: { slot: AgentSlot }) {
@@ -211,17 +205,14 @@ export function SlotDirectoryField({
 export function AgentSlotCard({
   slot,
   wantedName,
-  finalName,
   onChange,
   lists,
   locationLabel,
   choice = true,
 }: {
   slot: AgentSlot;
-  /** The name the deployer asked for; see `slotWantedName`. */
+  /** The name the agent is created under, as far as the inputs resolve it. */
   wantedName: string;
-  /** The name the agent will be created under: `wantedName`, or `wantedName-2`, `-3`, … when it is taken. */
-  finalName: string;
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;
   /** The run location's display name, shown under the existing-agent picker. */
@@ -234,7 +225,7 @@ export function AgentSlotCard({
   const shownName =
     slot.mode === 'existing'
       ? slot.existingName || 'Pick an agent'
-      : (slot.createdName ?? (finalName || wantedName));
+      : (slot.createdName ?? wantedName);
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
@@ -284,16 +275,7 @@ export function AgentSlotCard({
                     : `Agents of yours that run on ${locationLabel}.`}
                 </p>
               </div>
-            ) : (
-              <>
-                {finalName !== wantedName && finalName !== '' && (
-                  <p className="text-[11.5px] text-foreground-muted">
-                    An agent called {wantedName} already exists on this server, so this one will be{' '}
-                    <span className="font-mono">{finalName}</span>.
-                  </p>
-                )}
-              </>
-            )}
+            ) : null}
           </div>
         )}
       {slot.status !== 'idle' && (

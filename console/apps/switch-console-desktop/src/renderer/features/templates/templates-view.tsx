@@ -13,7 +13,8 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { TemplateSummary } from '@main/core/agent-templates/controller';
+import type { TemplateKind } from '@main/core/agent-templates/template-document';
+import type { TemplateSummary } from '@main/core/agent-templates/template-summary';
 import type { RecentTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -32,7 +33,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
-import { documentKind, prefillForSave } from './agent-template-data';
+import { prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 
 function useServerId(): string {
@@ -281,18 +282,34 @@ function RecentsSection({
 }) {
   const { navigate } = useNavigate();
   const showSaveModal = useShowModal('saveTemplateModal');
-  const [recents, setRecents] = useState<RecentTemplate[] | null>(null);
+  // Each recent with its kind, classified by the same parser as the listing.
+  const [recents, setRecents] = useState<(RecentTemplate & { kind: TemplateKind })[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    rpc.roomTemplates
-      .getRecents(serverId)
-      // One row per name. The same template used before and after an edit is two
-      // documents with one name, and only the newest use is offered.
-      .then((list) =>
-        setRecents(list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i))
-      )
-      .catch(() => setRecents([]));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await rpc.roomTemplates.getRecents(serverId);
+        // One row per name. The same template used before and after an edit is two
+        // documents with one name, and only the newest use is offered.
+        const newest = list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i);
+        const classified = await Promise.all(
+          newest.map(async (r) => ({
+            ...r,
+            kind: await rpc.agentTemplates
+              .kind({ yamlText: r.yamlText })
+              .catch(() => 'room' as const),
+          }))
+        );
+        if (!cancelled) setRecents(classified);
+      } catch {
+        if (!cancelled) setRecents([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [serverId]);
 
   const saveToWorkspace = async (recent: RecentTemplate) => {
@@ -320,7 +337,7 @@ function RecentsSection({
   const needle = query.trim().toLowerCase();
   const shown = (recents ?? []).filter(
     (r) =>
-      (kind === 'all' || documentKind(r.yamlText) === kind) &&
+      (kind === 'all' || r.kind === kind) &&
       (needle.length === 0 || r.name.toLowerCase().includes(needle))
   );
   if (shown.length === 0) return null;
@@ -351,7 +368,7 @@ function RecentsSection({
             >
               <span className="flex items-center gap-2 truncate">
                 {(() => {
-                  const Icon = KIND_ICON[documentKind(r.yamlText)];
+                  const Icon = KIND_ICON[r.kind];
                   return <Icon className="size-3.5 shrink-0 text-foreground-muted" />;
                 })()}
                 {r.name}

@@ -12,16 +12,15 @@ import { getGitExecutable } from '@main/core/utils/exec';
 import { buildExternalToolEnv } from '@main/utils/childProcessEnv';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
-  agentTemplateRoomDocument,
   cloneDirectory,
-  composeAgentTemplateDocument,
   firstFreeDirectory,
-  parseAgentTemplate,
   type ParsedAgentTemplate,
 } from './agent-template-format';
 import {
+  composeTemplateDocument,
   type FormOptions,
   formOptions,
+  parseAgentTemplate,
   serverDocument,
   parseTemplateAgents,
   substituteAgentSlots,
@@ -30,15 +29,6 @@ import {
   type TemplateKind,
 } from './template-document';
 import { summarizeTemplate, type TemplateSummary } from './template-summary';
-
-export type { AgentTemplateSource, ParsedAgentTemplate } from './agent-template-format';
-export type {
-  FormOptions,
-  ParsedAgentEntry,
-  TemplateAgents,
-  TemplateKind,
-} from './template-document';
-export type { TemplateEntity, TemplateSummary } from './template-summary';
 
 const execFileAsync = promisify(execFile);
 
@@ -130,9 +120,6 @@ export const agentTemplatesController = createRPCController({
   parse: (params: { yamlText: string; instructions?: string | null }): ParsedAgentTemplate =>
     parseAgentTemplate(params.yamlText, params.instructions ?? null),
 
-  roomDocument: (params: { yamlText: string }): string | null =>
-    agentTemplateRoomDocument(params.yamlText),
-
   /** What a document of any known shape creates, for a listing card. */
   summarize: (params: { yamlText: string }): TemplateSummary => summarizeTemplate(params.yamlText),
 
@@ -156,7 +143,7 @@ export const agentTemplatesController = createRPCController({
 
   /** The document with every agent's instructions inlined, ready to store on a server. */
   compose: (params: { yamlText: string; instructions: string }): string =>
-    composeAgentTemplateDocument(params.yamlText, params.instructions),
+    composeTemplateDocument(params.yamlText, params.instructions),
 
   /** The directory agents are kept under, on this machine or on `sshHost`:
    * the `{$agents_dir}` a template's `directory` field may refer to. */

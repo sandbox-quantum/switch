@@ -1639,6 +1639,33 @@ def test_an_optional_string_left_empty_is_empty(env):
     assert spec.name == "n"
 
 
+async def test_an_unset_optional_entity_param_passes_the_entity_check(env):
+    """``check_entity_params`` skips a param ``resolve_params`` gave no value,
+    instead of asking for it."""
+    svc = _svc(env)
+    parsed = svc.parse_template(
+        "params:\n  bridge:\n    type: bridge\n    required: false\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+    )
+    assert "bridge" not in parsed.values
+    await svc.check_entity_params(parsed)
+
+
+async def test_a_chain_resolves_over_an_input_sent_as_null(env):
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.slack",
+    )
+    text = (
+        "params:\n  app:\n    type: bridge\n    default: [Slack, $first]\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{app}"\n'
+    )
+    assert await _svc(env).resolve_defaults(text, {"app": None}) == {"app": "Slack"}
+
+
 def test_an_optional_bridge_left_empty_lands_on_the_default_app(env):
     """The room's bridge field written as `{bridge}` is cleared rather than
     left as a placeholder, so provisioning picks the default messaging app."""

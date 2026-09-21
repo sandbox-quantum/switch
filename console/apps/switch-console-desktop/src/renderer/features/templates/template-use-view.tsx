@@ -6,7 +6,7 @@ import type {
   FormOptions,
   ParsedAgentEntry,
   TemplateKind,
-} from '@main/core/agent-templates/controller';
+} from '@main/core/agent-templates/template-document';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -857,6 +857,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const byRoomName = new Map((roomsQuery.data ?? []).map((r) => [r.name, r.id]));
     const byAgentName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
     const joinsByRoom = new Map<string, string[]>();
+    // Agents the server did not register cannot be put in a room; the run
+    // stops and says so rather than opening the room without them.
+    const missingJoin: string[] = [];
     slots.forEach((slot, i) => {
       const agentId =
         slot.mode === 'existing'
@@ -864,7 +867,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           : (slot.createdSwitchAgentId ??
             created.find((c) => c.slotIndex === i)?.switchAgentId ??
             null);
-      if (!agentId) return;
+      if (!agentId) {
+        if (intoRoomId || setups[i].joins.length > 0)
+          missingJoin.push(slot.createdName ?? setups[i].name);
+        return;
+      }
       const roomIds = [
         ...(intoRoomId ? [intoRoomId] : []),
         ...setups[i].joins.map((r) => byRoomName.get(r)).filter((id): id is string => !!id),
@@ -873,6 +880,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         joinsByRoom.set(roomId, [...(joinsByRoom.get(roomId) ?? []), agentId]);
       }
     });
+    if (missingJoin.length > 0) {
+      setRoomStatus('failed');
+      setCreateError(
+        `${missingJoin.join(', ')} ${missingJoin.length === 1 ? 'was' : 'were'} created but the server has not registered ${missingJoin.length === 1 ? 'it' : 'them'} yet, so ${missingJoin.length === 1 ? 'it' : 'they'} could not be added to the room. Open the agent and add it to the room from there.`
+      );
+      setPhase('failed');
+      return;
+    }
     let joinedRoomId: string | null = null;
     if (joinsByRoom.size > 0) {
       setRoomStatus('creating');
@@ -1166,11 +1181,17 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     if (param.input === 'fixed') {
       return <FixedRow key={param.name} label={paramLabel(param)} value={summary} />;
     }
+    // A directory param's value can read `{$agents_dir}` and `{agent}`; the
+    // control shows the path they resolve to, and an edit writes a literal.
+    const shown =
+      param.type === 'directory'
+        ? (setups.find((s) => s.directory !== '')?.directory ?? value)
+        : value;
     const field = (
       <ParamField
         key={param.name}
         param={param}
-        value={value}
+        value={shown}
         onChange={(v) => setValues((prev) => ({ ...prev, [param.name]: v }))}
         error={error}
         lists={lists}
@@ -1617,7 +1638,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                       key={i}
                       slot={slot}
                       wantedName={setups[i]?.name ?? ''}
-                      finalName={setups[i]?.name ?? ''}
                       onChange={(next) =>
                         setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
                       }

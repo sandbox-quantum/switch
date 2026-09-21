@@ -46,7 +46,9 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
+from switch_core.rooms_yaml import RoomYamlService
 
 
 class FakeRoomService:
@@ -176,6 +178,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         client_lifecycle=FakeLifecycle(admin),
         session_factory=session_factory,
         agent_store=agent_store,
+        user_store=UserStore(),
         room_service=FakeRoomService(session_factory, agent_store),
         resource_service=resource_service,
         room_store=RoomStore(),
@@ -183,6 +186,19 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         external_user_store=ExternalUserStore(),
         room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
+    )
+    # The same wiring `ProtocolService.room_yaml_service` does, over the fakes.
+    fake_protocol.room_yaml_service = lambda: RoomYamlService(
+        room_service=fake_protocol.room_service,
+        resource_service=fake_protocol.resource_service,
+        room_store=fake_protocol.room_store,
+        agent_store=fake_protocol.agent_store,
+        bridge_store=fake_protocol.bridge_store,
+        external_user_store=fake_protocol.external_user_store,
+        room_role_store=fake_protocol.room_role_store,
+        session_factory=fake_protocol.session_factory,
+        room_group_store=fake_protocol.room_group_store,
+        client_lifecycle=fake_protocol.client_lifecycle,
     )
 
     async with session_factory() as session:

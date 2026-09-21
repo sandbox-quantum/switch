@@ -31,7 +31,7 @@ from switch_core.bridges.agent.protocol.instructions import build_room_instructi
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
-from switch_core.rooms_yaml import GroupSpec, RoomYamlService
+from switch_core.rooms_yaml import GroupSpec
 
 logger = logging.getLogger(__name__)
 
@@ -1598,20 +1598,12 @@ async def create_room_from_yaml(
         owner_id = owner.id
         owner_name = owner.name
         owner_email = owner.email
-        owner_is_admin = owner.role == "admin"
+        # The owner's standing in this tenant, the same bit the gateway's
+        # from-yaml route derives, so a document provisions the same way
+        # whichever way it arrives.
+        owner_is_admin = await protocol.user_store.administers(session, owner)
 
-    rooms_yaml = RoomYamlService(
-        room_service=protocol.room_service,
-        resource_service=protocol.resource_service,
-        room_store=protocol.room_store,
-        agent_store=protocol.agent_store,
-        bridge_store=protocol.bridge_store,
-        external_user_store=protocol.external_user_store,
-        room_role_store=protocol.room_role_store,
-        session_factory=protocol.session_factory,
-        room_group_store=protocol.room_group_store,
-        client_lifecycle=protocol.client_lifecycle,
-    )
+    rooms_yaml = protocol.room_yaml_service()
     inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
     builtins = await rooms_yaml.builtins_for(
         user_id=owner_id, name=owner_name, email=owner_email, text=yaml, inputs=inputs

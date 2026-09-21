@@ -17,9 +17,7 @@ import { switchRoomsStore as roomConnectionsStore } from './switch-rooms-store';
  * normally has a single local session, so room id alone disambiguates;
  * `agentId` / `server` from the deeplink are advisory.
  */
-export function findSessionForRoom(
-  roomId: string
-): { locationId: string; sessionId: string } | null {
+function findSessionForRoom(roomId: string): { locationId: string; sessionId: string } | null {
   for (const locationId of getLocationManagerStore().locations.keys()) {
     const manager = getSessionManagerStore(locationId);
     if (!manager) continue;
