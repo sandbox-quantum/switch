@@ -196,7 +196,13 @@ class TestEachStartFailurePointReportsAndReraises:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """`tenant_of_collaboration_bridge` finds nothing to bind, so there is
-        no row and no platform — `lifecycle_service.py`'s own `:532`."""
+        no row and no platform to read off it.
+
+        `unknown`, not `none`: every bridge is on some platform, so `none` is
+        the value reserved for a room that has no bridge at all — and reporting
+        an unreadable row as one would put a failure that cannot be attributed
+        to any platform into the same bucket as the rooms that are on none.
+        """
         service, sink = _service_with_telemetry(session_factory)
 
         with pytest.raises(ValueError, match="Bridge not found"):
@@ -206,7 +212,7 @@ class TestEachStartFailurePointReportsAndReraises:
         events = await _bridge_connected_events(sink)
         assert events == [
             {
-                "bridge_platform": "none",
+                "bridge_platform": "unknown",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
             }

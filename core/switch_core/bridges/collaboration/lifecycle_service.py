@@ -94,12 +94,14 @@ try:
     # the underlying `requests` exception, since that is the client it wraps.
     from requests.exceptions import ConnectionError as RequestsConnectionError
     from requests.exceptions import HTTPError as RequestsHTTPError
+    from requests.exceptions import InvalidJSONError as RequestsInvalidJSON
     from requests.exceptions import Timeout as RequestsTimeout
 except ImportError:  # pragma: no cover
     MattermostNoAccessTokenProvided = None  # type: ignore[assignment, misc]
     MattermostNotEnoughPermissions = None  # type: ignore[assignment, misc]
     RequestsConnectionError = None  # type: ignore[assignment, misc]
     RequestsHTTPError = None  # type: ignore[assignment, misc]
+    RequestsInvalidJSON = None  # type: ignore[assignment, misc]
     RequestsTimeout = None  # type: ignore[assignment, misc]
 
 logger = logging.getLogger(__name__)
@@ -137,16 +139,26 @@ _TELEGRAM_DEFINITE_REFUSALS = tuple(
 # `mattermostdriver`, which raises its own named exceptions only for the
 # status codes it maps and lets a connection failure surface as the
 # underlying `requests` exception unchanged).
+#
+# Each library's own base class for "the transport failed", not the individual
+# leaves. A timeout is the case that makes this worth stating: `ConnectTimeout`
+# is a `TimeoutException` rather than a `ConnectError` in httpx, and
+# `ServerTimeoutError` is not a `ClientOSError` in aiohttp — so a list of
+# leaves classifies a refusal as `network` and the timeout beside it as
+# `unknown`, which are the two outcomes an operator most needs to tell apart.
 _NETWORK_EXCEPTIONS = tuple(
     exc_type
     for exc_type in (
         TelegramNetworkError,
-        aiohttp.ClientConnectorError,
-        aiohttp.ClientOSError,
-        aiohttp.ServerDisconnectedError,
-        httpx.ConnectError,
+        aiohttp.ClientConnectionError,
+        httpx.TransportError,
         RequestsConnectionError,
         RequestsTimeout,
+        # The two builtins, for a failure that reaches here without a library's
+        # name on it: `asyncio.wait_for` raises the first, and a raw socket
+        # connect the second.
+        TimeoutError,
+        ConnectionError,
     )
     if exc_type is not None
 )
@@ -169,8 +181,16 @@ def _slack_failure_reason(exc: SlackApiError) -> str:
     as `platform_error` sends an operator to check Slack's status page instead
     of their own token.
     """
+    # `.response` is not always a mapping. On the async client slack_sdk
+    # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
+    # whenever the body it was handed is not the JSON the content type claimed
+    # — an empty 502, a proxy's error page. That object has no `.get`, and this
+    # is evaluated inside the argument list of the `emit_safely` that reports
+    # the failure, so an `AttributeError` here would replace the bridge's real
+    # exception with a meaningless one *and* suppress the event.
     response = getattr(exc, "response", None)
-    code = response.get("error") if response is not None else None
+    reader = getattr(response, "get", None)
+    code = reader("error") if callable(reader) else None
     if code in _SLACK_AUTH_ERROR_CODES:
         return "auth_failed"
     return "platform_error"
@@ -227,6 +247,13 @@ def _failure_reason(exc: BaseException) -> str:
     if RequestsHTTPError is not None and isinstance(exc, RequestsHTTPError):
         return "platform_error"
     if TelegramError is not None and isinstance(exc, TelegramError):
+        return "platform_error"
+
+    # Ahead of the `ValueError` below, which it is one of: `requests` folds a
+    # body it could not parse into `InvalidJSONError`, and a Mattermost server
+    # answering with a proxy error page is the platform misbehaving, not a
+    # connection config somebody typed wrong.
+    if RequestsInvalidJSON is not None and isinstance(exc, RequestsInvalidJSON):
         return "platform_error"
 
     if isinstance(exc, ValueError):
@@ -698,10 +725,11 @@ class CollaborationBridgeLifecycleService:
         after the other, never together.
         """
         # `bridge_platform` is required on every `bridge_connected` event, but
-        # a bridge whose row cannot even be read has no platform to name —
-        # `none` is what `normalise_platform` gives an id it does not
-        # recognise, not a guess.
-        platform = "none"
+        # a bridge whose row cannot even be read has no platform to name.
+        # `unknown`, not `none`: every bridge here is on some platform, so
+        # `none` would be a claim — and the one this catalogue reserves for a
+        # room with no bridge at all.
+        platform = "unknown"
         # Before the first statement that can fail, so a bridge that never gets
         # past reading its own row still reports how long that took.
         self._connect_started[bridge_id] = time.monotonic()
@@ -829,14 +857,21 @@ class CollaborationBridgeLifecycleService:
             logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
         except Exception as exc:
             self._note_connect_failure(bridge_id)
+            # Resolved before the call, never inside its argument list: an
+            # expression there is evaluated before `emit_safely` is entered, so
+            # anything it raised would escape the guard — replacing the
+            # bridge's own exception with a meaningless one, and taking the
+            # event this method exists to emit with it.
+            reason = _failure_reason(exc)
+            duration_ms = self._connect_duration_ms(bridge_id)
             emit_safely(
                 self._telemetry,
                 "bridge_connected",
                 {
                     "bridge_platform": platform,
                     "outcome": "failure",
-                    "failure_reason": _failure_reason(exc),
-                    "duration_ms": self._connect_duration_ms(bridge_id),
+                    "failure_reason": reason,
+                    "duration_ms": duration_ms,
                 },
             )
             raise
@@ -942,25 +977,32 @@ class CollaborationBridgeLifecycleService:
                     await endpoint.withdraw()
                 # A failure before the adapter came up never connected at all.
                 self._connected.discard(bridge_id)
+                # Resolved here rather than inside the argument lists below,
+                # for the reason `start` gives: an expression there runs
+                # outside `emit_safely`'s guard, and this one is on the path of
+                # a task nobody awaits, where anything it raised would surface
+                # only as "Task exception was never retrieved" at collection.
+                reason = _failure_reason(exc)
                 if connected:
                     emit_safely(
                         self._telemetry,
                         "bridge_disconnected",
                         {
                             "bridge_platform": normalise_platform(platform),
-                            "reason": _failure_reason(exc),
+                            "reason": reason,
                         },
                     )
                 else:
                     self._note_connect_failure(bridge_id)
+                    duration_ms = self._connect_duration_ms(bridge_id)
                     emit_safely(
                         self._telemetry,
                         "bridge_connected",
                         {
                             "bridge_platform": normalise_platform(platform),
                             "outcome": "failure",
-                            "failure_reason": _failure_reason(exc),
-                            "duration_ms": self._connect_duration_ms(bridge_id),
+                            "failure_reason": reason,
+                            "duration_ms": duration_ms,
                         },
                     )
 
@@ -1072,6 +1114,12 @@ class CollaborationBridgeLifecycleService:
         self._bridges.pop(bridge_id, None)
         self._held_resources.pop(bridge_id, None)
         self._started.discard(bridge_id)
+        # A bridge cancelled before it connected never reaches an outcome, and
+        # `_run_bridge`'s handler does not catch `CancelledError`, so its
+        # reading would otherwise sit here for the life of the process — and be
+        # spent by the *next* attempt on the same id, which would then report a
+        # duration measured from the one before it.
+        self._connect_started.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
         # `_bridges` membership is set before the connection is attempted, so
@@ -1176,7 +1224,12 @@ class CollaborationBridgeLifecycleService:
                     "room_count": room_count,
                 },
             )
+        # Every per-bridge map keyed by an id that will never be seen again.
+        # Bridge ids are fresh UUIDs, so a deployment that repeatedly connects
+        # and removes connectors grows these without bound otherwise.
         self._bridge_facts.pop(bridge_id, None)
+        self._connect_failures.pop(bridge_id, None)
+        self._connect_started.pop(bridge_id, None)
 
     def get(self, bridge_id: str) -> BridgeCore | None:
         return self._bridges.get(bridge_id)

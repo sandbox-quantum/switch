@@ -265,6 +265,56 @@ class TestTheSnapshotSchedule:
         names = [record.name for record in sink.sent]
         assert "switch_core.usage_snapshot" in names
 
+    async def test_the_room_half_failing_does_not_resend_the_snapshot_forever(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The snapshot is emitted before the newly-active-room half runs, so a
+        failure there does not discard a pass already collected. That move has
+        a trap: the watermark only advances when `run_once` returns, and
+        `run_forever` retries every five minutes — so a raise *after* the emit
+        would re-send the same daily figure hundreds of times a day, which is
+        far worse than losing one pass. The room half is therefore contained
+        too: the pass completes, the window moves on, and the rooms in it are
+        given up rather than reported twice.
+        """
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, session_factory)
+
+        # A watermark a day old: the pass below is due, and `since` is set —
+        # which is what makes the room half run at all.
+        async with session_factory() as session:
+            await session.execute(delete(TelemetrySnapshotWatermark))
+            session.add(
+                TelemetrySnapshotWatermark(
+                    id=1, last_sent_at=datetime.now(UTC) - timedelta(days=2)
+                )
+            )
+            await session.commit()
+
+        # Only the room half: `collect_usage` runs before the emit, and a
+        # failure there is the case the per-tenant containment already covers.
+        def _explode(*_args: object, **_kwargs: object) -> list[object]:
+            raise RuntimeError("the room query fell over")
+
+        monkeypatch.setattr(
+            "switch_core.telemetry.reporter.newly_active_rooms", _explode
+        )
+
+        with caplog.at_level(logging.ERROR, logger="switch_core.telemetry.reporter"):
+            assert await reporter.run_once_if_due() is True
+
+        # The pass completed, so the watermark advanced and the next one is not
+        # due — which is what stops the duplicate.
+        assert await reporter.run_once_if_due() is False
+        # And it is disclosed rather than swallowed.
+        assert any("newly-active rooms" in record.message for record in caplog.records)
+        assert (
+            len([r for r in sink.sent if r.name == "switch_core.usage_snapshot"]) == 1
+        )
+
     async def test_a_second_pass_inside_the_interval_does_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

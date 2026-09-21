@@ -24,6 +24,7 @@ from mattermostdriver.exceptions import (
 )
 from pydantic import BaseModel, ValidationError
 from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError
 from requests.exceptions import Timeout as RequestsTimeout
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.exc import DBAPIError
@@ -223,3 +224,75 @@ class TestSlackAuthCodesAreExhaustiveOverNothingElse:
         """Defensive: a malformed or unexpected response body must degrade to
         the safe default rather than raising out of the classifier itself."""
         assert _failure_reason(SlackApiError("boom", {"ok": False})) == "platform_error"
+
+    def test_a_response_that_is_not_a_mapping_at_all_does_not_crash(self) -> None:
+        """The case that actually bites.
+
+        On the async client slack_sdk raises `SlackApiError(message, res)` with
+        the raw `aiohttp.ClientResponse` — not a parsed body — whenever what it
+        was handed is not the JSON the content type promised: an empty 502, a
+        proxy's error page. That object has no `.get`.
+
+        Reading it as a mapping raised `AttributeError` from inside the
+        argument list of the very `emit_safely` call that reports the bridge
+        failure. Arguments are evaluated before the call, so the guard did not
+        cover it: the caller got an `AttributeError` in place of Slack's own
+        exception, and the `bridge_connected` event — the one this whole area
+        exists to emit — was never built.
+        """
+
+        class _NotAMapping:
+            """Stands in for `aiohttp.ClientResponse`: no `.get`."""
+
+            status = 502
+
+        assert (
+            _failure_reason(SlackApiError("boom", _NotAMapping()))  # type: ignore[arg-type]
+            == "platform_error"
+        )
+
+    def test_a_response_of_none_does_not_crash(self) -> None:
+        assert _failure_reason(SlackApiError("boom", None)) == "platform_error"  # type: ignore[arg-type]
+
+
+class TestTheTransportFailuresThatHaveNoLibraryName:
+    """A timeout and a refusal are the two outcomes an operator most needs to
+    tell apart, and both must read `network`.
+
+    Classifying on the individual leaf classes got this wrong in one direction
+    per library: `httpx.ConnectTimeout` is a `TimeoutException` rather than a
+    `ConnectError`, and `aiohttp.ServerTimeoutError` is not a `ClientOSError` —
+    so the refusal classified and the timeout beside it came out `unknown`.
+    Each library's own transport base class is what covers both.
+    """
+
+    @pytest.mark.parametrize(
+        ("description", "exc"),
+        [
+            ("httpx connect refused", httpx.ConnectError("refused")),
+            ("httpx connect timed out", httpx.ConnectTimeout("timed out")),
+            ("httpx read timed out", httpx.ReadTimeout("timed out")),
+            ("httpx pool exhausted", httpx.PoolTimeout("no connection")),
+            ("httpx read failed", httpx.ReadError("reset")),
+            ("aiohttp server hung up", aiohttp.ServerDisconnectedError()),
+            ("aiohttp server timed out", aiohttp.ServerTimeoutError()),
+            ("aiohttp connection reset", aiohttp.ClientConnectionResetError()),
+            ("a bare asyncio timeout", TimeoutError()),
+            ("a bare refused socket", ConnectionRefusedError()),
+        ],
+    )
+    def test_it_reports_network(self, description: str, exc: Exception) -> None:
+        assert _failure_reason(exc) == "network", description
+
+
+class TestABodyThatIsNotJsonIsNotTheOperatorsConfig:
+    """`requests` folds an unparseable body into `InvalidJSONError`, which is a
+    `ValueError` — so it fell through to `config_invalid` and reported a
+    Mattermost server answering with a proxy error page as a connection config
+    somebody typed wrong."""
+
+    def test_an_unparseable_mattermost_body_is_the_platform(self) -> None:
+        assert (
+            _failure_reason(RequestsJSONDecodeError("not json", "<html>", 0))
+            == "platform_error"
+        )

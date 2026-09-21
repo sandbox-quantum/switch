@@ -90,11 +90,9 @@ class SnapshotReporter:
         """Collect and report one snapshot, plus any room that just went live."""
         counts = await collect_usage(self._session_factory, now=now)
 
-        # Emitted right after collection, before `newly_active_rooms` runs:
-        # per-tenant failures in either call are contained inside
-        # `snapshot.py`, but if something broader than one tenant takes
-        # `newly_active_rooms` down entirely, the snapshot already collected
-        # here must still go out rather than being discarded along with it.
+        # Emitted before the room half runs: per-tenant failures in either
+        # call are contained inside `snapshot.py`, and a broader failure there
+        # must not discard a snapshot that has already been collected.
         self._telemetry.emit(
             "usage_snapshot",
             **counts.as_event_properties(
@@ -102,26 +100,42 @@ class SnapshotReporter:
             ),
         )
 
-        # Skipped entirely on the first pass — see the module docstring.
-        active = (
-            await newly_active_rooms(self._session_factory, since=since, now=now)
-            if since is not None
-            else []
-        )
-
-        logger.info("Usage snapshot: %s", summarise(counts, active))
-
-        for room in active:
-            self._telemetry.emit(
-                "room_became_active",
-                seconds_since_room_created=room.seconds_since_room_created,
-                bridge_platform=room.bridge_platform,
-                channel_type=room.channel_type,
-                agent_count=room.agent_count,
-                created_by_kind=room.created_by_kind,
+        # And nothing after that emit may raise out of this method. The
+        # watermark advances only when `run_once` returns, and the loop retries
+        # every poll interval — so a raise here would re-send the same snapshot
+        # every five minutes for as long as the condition lasted, turning one
+        # lost pass into hundreds of duplicates of a figure meant to be daily.
+        # The rooms are the part that is given up instead: the window has moved
+        # past them, which is the trade the docstring on `newly_active_rooms`
+        # already describes, and it keeps "no room is reported twice" true.
+        try:
+            # Skipped entirely on the first pass — see the module docstring.
+            active = (
+                await newly_active_rooms(self._session_factory, since=since, now=now)
+                if since is not None
+                else []
             )
 
-        await self._report_first_room_active(active)
+            logger.info("Usage snapshot: %s", summarise(counts, active))
+
+            for room in active:
+                self._telemetry.emit(
+                    "room_became_active",
+                    seconds_since_room_created=room.seconds_since_room_created,
+                    bridge_platform=room.bridge_platform,
+                    channel_type=room.channel_type,
+                    agent_count=room.agent_count,
+                    created_by_kind=room.created_by_kind,
+                )
+
+            await self._report_first_room_active(active)
+        except Exception:
+            logger.exception(
+                "Usage snapshot: the snapshot was sent, but newly-active rooms "
+                "could not be reported for this window. Any room that went "
+                "active in it is not reported at all — the next window starts "
+                "after it."
+            )
 
     async def _report_first_room_active(self, active: list) -> None:
         """The activation milestone: the first room a person actually used.

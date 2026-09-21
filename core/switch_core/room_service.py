@@ -600,12 +600,23 @@ class RoomService:
         )
 
         # Only a room a person made counts as activation.
+        #
+        # Guarded like the emit above it. This used to run at the tail of the
+        # function, where anything it raised cost only the attachments; it now
+        # runs ahead of the Matrix invite, the agent adds and the client joins,
+        # so an unguarded raise would leave a committed room that nobody is in.
         if self._telemetry is not None and config.created_by_kind == "user":
-            await self._telemetry.emit_milestone(
-                "first_room_created",
-                channel_type=normalise_channel_type(channel_type),
-                bridge_platform=platform,
-            )
+            try:
+                await self._telemetry.emit_milestone(
+                    "first_room_created",
+                    channel_type=normalise_channel_type(channel_type),
+                    bridge_platform=platform,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not report the first_room_created milestone for room %s",
+                    room.id,
+                )
 
         if bridge_core and external_channel_id:
             await self._ensure_channel_capture(
