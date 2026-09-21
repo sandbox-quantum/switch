@@ -48,10 +48,7 @@ export interface HostEndpoint {
 const folder = (root: string, sessionId: string) =>
   join(root, 'sessions', createHash('sha256').update(sessionId).digest('hex'));
 
-export function adapterFor(
-  provider: HostStartRequest['provider'],
-  binaryPath?: string
-): ProviderAdapter {
+export function adapterFor(provider: Session['provider'], binaryPath?: string): ProviderAdapter {
   switch (provider) {
     case 'claude':
       return createClaudeAdapter({ claudeExecutablePath: binaryPath });
