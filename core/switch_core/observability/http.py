@@ -32,6 +32,41 @@ UNMATCHED_ROUTE = "unmatched"
 # the app raised before sending anything.
 NO_STATUS = "none"
 
+# The MCP surface is a mounted Starlette app, not FastAPI routes, and only
+# FastAPI sets `scope["route"]`. Without naming it here every MCP call — the
+# primary way agents use Switch — would be indistinguishable from a 404 in the
+# `unmatched` bucket. One label for the mount rather than per-tool: the tool is
+# in the body, and a label taken from a request body is a label a caller
+# chooses.
+MCP_ROUTE = "/mcp"
+
+# Routes that are counted but not timed.
+#
+# An agent's event stream is held open deliberately until something happens or
+# the client's own timeout expires, so its duration measures how long the
+# caller asked to wait. Putting that in a latency histogram does two bad
+# things: it makes this route's percentiles describe a client's parameter
+# rather than the server's speed, and on a panel with a shared axis the tens
+# of seconds it reports flatten every other route into the floor.
+#
+# The request count still matters — these are the highest-volume endpoints
+# Switch serves — so they are counted, and only the timing is skipped.
+# `test_streaming_routes_exist` pins each of these against the real app, so
+# renaming an endpoint fails a test rather than silently restoring the noise.
+UNTIMED_ROUTES = frozenset(
+    {
+        "/agents/{agent_id}/events",
+        "/agents/{agent_id}/rooms/{room_id}/events",
+        "/agents/{agent_id}/notifications",
+        # Every MCP call arrives through a mount, and a mount does not set the
+        # route a FastAPI route does — so all of it labels as `unmatched`,
+        # streamable-HTTP sessions included. Those are held open like any other
+        # stream. See `route_label`, which gives the mount its own name so this
+        # entry means what it says rather than silently covering 404s too.
+        MCP_ROUTE,
+    }
+)
+
 
 def route_label(scope: Scope) -> str:
     """The matched route template, or a single bucket for everything else.
@@ -54,6 +89,12 @@ def route_label(scope: Scope) -> str:
     route = scope.get("route")
     path = getattr(route, "path", None)
     if not isinstance(path, str) or not path:
+        # Nothing matched, or something matched that does not record a route.
+        # A mount is the second case: the MCP app is reached through one, so it
+        # is named before everything else falls into the bucket.
+        raw = scope.get("path", "")
+        if raw == MCP_ROUTE or raw.startswith(f"{MCP_ROUTE}/"):
+            return MCP_ROUTE
         return UNMATCHED_ROUTE
 
     return f"{scope.get('root_path') or ''}{path}"
@@ -117,6 +158,9 @@ class MetricsMiddleware:
                 HTTP_REQUESTS,
                 {"route": route, "method": method, "status_class": outcome},
             )
-            registry.observe(
-                HTTP_REQUEST_DURATION, {"route": route, "method": method}, elapsed_ms
-            )
+            if route not in UNTIMED_ROUTES:
+                registry.observe(
+                    HTTP_REQUEST_DURATION,
+                    {"route": route, "method": method},
+                    elapsed_ms,
+                )

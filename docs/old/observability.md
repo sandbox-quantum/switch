@@ -18,8 +18,11 @@ DEPLOYMENT_ID=0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10   # `uuidgen`, once, then lea
 OTLP_LOGS_ENABLED=true                                # optional
 ```
 
-In Helm the same settings are `switchCore.observability.*`. Dashboards and
-alerts are checked in under [`deploy/observability/`](../../deploy/observability/).
+In Helm the same settings are `switchCore.observability.*`, with one
+exception: `OTLP_HEADERS` is `secrets.otlpHeaders`, because the documented use
+for it is a collector's API key and every other credential in that chart comes
+from the Secret rather than the pod spec. Dashboards and alerts are checked in
+under [`deploy/observability/`](../../deploy/observability/).
 
 ## Checking it actually works
 
@@ -155,6 +158,13 @@ recorded — the registry rejects an unknown name and an attribute the spec does
 not list.
 
 **Traces** are not implemented. See "What is missing" below.
+
+**The agent event streams are counted but not timed.** A long poll is held
+open until something happens or the caller's own timeout expires, so its
+duration measures a parameter the client chose rather than anything this
+server did. In a latency histogram that is worse than useless: it would make
+those routes' percentiles meaningless and, sharing an axis, flatten every
+other route to the floor. They are counted like everything else.
 
 **Not every HTTP surface is counted.** `switch.http.*` comes from middleware on
 the FastAPI app, which is the agent bridge, the MCP mount and the gateway

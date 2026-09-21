@@ -62,6 +62,9 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
+{{- if .Values.secrets.otlpHeaders }}
+OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
+{{- end }}
 {{- if .Values.switchCore.slackApp.enabled }}
 SLACK_APP_CLIENT_SECRET: {{ required "secrets.slackAppClientSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppClientSecret | b64enc | quote }}
 SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppSigningSecret | b64enc | quote }}
@@ -637,9 +640,12 @@ Include with `nindent 12`.
   value: {{ .exportIntervalSeconds | quote }}
 - name: OTLP_TIMEOUT_SECONDS
   value: {{ .timeoutSeconds | quote }}
-{{- with .headers }}
+{{- if $.Values.secrets.otlpHeaders }}
 - name: OTLP_HEADERS
-  value: {{ . | quote }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: OTLP_HEADERS
 {{- end }}
 {{- end }}
 {{- end }}

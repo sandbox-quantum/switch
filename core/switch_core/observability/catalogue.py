@@ -82,7 +82,10 @@ HTTP_REQUEST_DURATION = _spec(
     "switch.http.request.duration",
     "histogram",
     "ms",
-    "Wall time to serve an HTTP request.",
+    "Wall time to serve an HTTP request. The agent event streams are counted "
+    "but not timed — they are held open for a wait the caller chooses, which "
+    "is not a measure of this server's speed. See `observability.http."
+    "UNTIMED_ROUTES`.",
     "route",
     "method",
 )

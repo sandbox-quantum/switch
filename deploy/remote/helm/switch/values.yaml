@@ -102,6 +102,11 @@ secrets:
   mattermostUserPassword: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
+  # than beside the other observability settings because the documented use for
+  # it is a collector's API key, and every other credential in this chart comes
+  # from the Secret. Left empty for a collector that needs no authentication.
+  otlpHeaders: ""
   # Distributed Slack app (required when switchCore.slackApp.enabled). The
   # signing secret is the whole of what distinguishes a real Slack event from
   # a post by anyone who learned the URL.
@@ -160,9 +165,6 @@ switchCore:
     # How long an export may take before it is abandoned. Raise it for a
     # collector that is slow or far away.
     timeoutSeconds: 10
-    # `key=value` pairs, comma-separated, sent on every request. The relay
-    # needs none; a private collector usually wants an API key.
-    headers: ""
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
