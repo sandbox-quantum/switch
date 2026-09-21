@@ -8,7 +8,6 @@ const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
 const fetchAuthConfig = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
-const resolveAgentServers = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
 const deleteBridge = vi.hoisted(() => vi.fn());
@@ -22,7 +21,6 @@ const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
 // ssh / agent side effects at load.
 vi.mock('@main/core/agents/agent-defaults', () => ({ suggestAgentDefaults: vi.fn() }));
 vi.mock('@main/core/agents/propagate-server-api-url', () => ({ propagateServerApiUrl: vi.fn() }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers }));
 vi.mock('@main/core/agents/write-remote-switch-settings', () => ({
   writeRemoteSwitchSettings: vi.fn(),
 }));
@@ -287,16 +285,11 @@ describe('adding a server by URL', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveAgentServers.mockResolvedValue(undefined);
   });
 
-  it('keeps the add that worked when reconciling the agent links does not', async () => {
-    // The row is in; unlinking agents from servers that are gone is bookkeeping
-    // after the fact. Rejecting here would show the user a failure for a server
-    // they now have, and a second press would register it twice.
+  it('reports the add that worked', async () => {
     const added = server({ id: 'new' });
     addServer.mockResolvedValue(added);
-    resolveAgentServers.mockRejectedValue(new Error('database is locked'));
 
     await expect(switchServersController.addServer(params)).resolves.toBe(added);
     expect(trackEvent).toHaveBeenCalledExactlyOnceWith('server_added', {

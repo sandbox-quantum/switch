@@ -104,6 +104,9 @@ vi.mock('@main/db/client', () => ({
 }));
 vi.mock('@main/db/schema', () => ({ agents: { id: 'id', switchAgentId: 'switchAgentId' } }));
 vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
+vi.mock('@main/core/workspaces/workspaces-store', () => ({
+  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+}));
 
 const { addAgent } = await import('./add-agent');
 const { trackEvent } = await import('@main/core/telemetry/telemetry-service');

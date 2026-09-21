@@ -15,7 +15,7 @@ import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { agentSettingsRelativePath } from './switch-settings-paths';
-import { mapAgentRowToAgent } from './utils';
+import { mapAgentRow } from './utils';
 import { foreignCredentialsEndpoint } from './write-switch-settings';
 
 async function moveSidecarToNewName(_previous: Agent, renamed: Agent): Promise<void> {
@@ -187,7 +187,7 @@ export async function renameAgent(
     .returning();
   if (!row) return err({ type: 'agent-not-found' });
 
-  const renamed = mapAgentRowToAgent(row);
+  const renamed = await mapAgentRow(row);
   if (previous.name !== renamed.name) {
     await moveProvisionedFiles(previous, renamed);
     await moveSidecarToNewName(previous, renamed);

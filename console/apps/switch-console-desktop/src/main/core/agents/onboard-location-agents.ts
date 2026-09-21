@@ -8,6 +8,7 @@ import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { findServerByEndpoint, getServer } from '@main/core/switch-servers/servers-store';
+import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { Agent } from '@shared/core/agents/agents';
@@ -18,7 +19,7 @@ import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { resolveWorkspaceFsFor, type WorkspaceFs } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
-import { getLocationAgentsOnServer } from './getAgents';
+import { getLocationAgentsInWorkspace } from './getAgents';
 import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
@@ -196,8 +197,9 @@ export async function onboardLocationAgents(
     name: params.locationName ?? basenameFromAnyPath(params.dir) ?? params.providerId,
   });
 
+  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
   const existing = new Set(
-    (await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name)
+    (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
   );
 
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
@@ -247,7 +249,7 @@ export async function onboardLocationAgents(
         providerId: params.providerId,
         switchAgentId: resolved.identity.switchAgentId,
         apiEndpoint: resolved.identity.apiEndpoint,
-        serverId: params.serverId,
+        workspaceId: targetWorkspace.id,
         autoApprove: params.sshHost !== null,
       });
       existing.add(def.name);

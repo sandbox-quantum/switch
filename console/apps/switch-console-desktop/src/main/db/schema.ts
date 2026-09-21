@@ -4,6 +4,7 @@ import { versionedJsonColumn } from '@main/db/versioned-column';
 import { agentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
+import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 
 // ---------------------------------------------------------------------------
 // Data model (Switch Console rework — diverges from upstream; see
@@ -135,17 +136,21 @@ export const switchServers = sqliteTable(
  * in `kv` under `activeWorkspaceId`). Switching workspace swaps the whole
  * window — agents, rooms, sidebar — the way switching server used to.
  *
- * `tenantId` is the workspace's id on the gateway, and is null when the server
- * reports no tenancy: there the workspace *is* the whole server, which is every
- * server registered before multi-tenancy and every self-hosted install that
- * never turns it on. Workspaces are discovered from the gateway rather than
- * created by hand, so a server that gains tenancy later fills in the ids on its
- * next reconcile without the user doing anything.
+ * `tenantId` is the workspace's id on the gateway. It is null only until the
+ * gateway has been asked: a workspace is created locally the moment a server is
+ * registered, because the app has to be usable before the answer arrives, and
+ * the upgrade to workspaces created one per already-registered server the same
+ * way. Every deployed Switch server has tenancy — the backend migration that
+ * introduced it puts every existing user in a tenant — so a tenant-less row is
+ * a workspace that has not reconciled yet, not a server without tenants.
+ *
+ * Reconcile therefore has to *match* that row to a tenant rather than insert
+ * the real workspace beside it: the row's id is what every agent points at, and
+ * the (server, tenant) unique index cannot catch a duplicate here because
+ * SQLite treats NULLs as distinct.
  *
  * `slug` is the gateway's handle for the workspace; null alongside a null
- * `tenantId`. The (server, tenant) pair is unique so a reconcile can upsert on
- * it, with tenant-less rows excluded from the index — SQLite treats NULLs as
- * distinct, which is what lets the one-per-server legacy row coexist.
+ * `tenantId`.
  */
 export const workspaces = sqliteTable(
   'workspaces',
@@ -164,7 +169,7 @@ export const workspaces = sqliteTable(
      * (`owner` / `admin` / `member`). Null for a tenant-less workspace, where
      * the notion does not apply.
      */
-    role: text('role'),
+    role: text('role').$type<WorkspaceRole>(),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -175,6 +180,13 @@ export const workspaces = sqliteTable(
   (table) => ({
     serverIdIdx: index('idx_workspaces_server_id').on(table.serverId),
     serverTenantIdx: uniqueIndex('idx_workspaces_server_tenant').on(table.serverId, table.tenantId),
+    // A server has at most one unreconciled row. The index above cannot say so,
+    // because SQLite treats NULLs as distinct, so two registrations racing on
+    // the same server would each insert a placeholder and reconcile would only
+    // ever repair the first one it found.
+    serverPlaceholderIdx: uniqueIndex('idx_workspaces_server_placeholder')
+      .on(table.serverId)
+      .where(sql`tenant_id IS NULL`),
   })
 );
 
@@ -185,12 +197,10 @@ export const workspaces = sqliteTable(
  * the location dir is configured as a Switch agent (detected from
  * `.claude/settings.local.json`); they are null for a plain local agent.
  *
- * `workspaceId` binds the agent to the one workspace it belongs to. It is
- * resolved by matching the detected `apiEndpoint` against the registered
- * servers' origins and then the server's active workspace. It is nullable: an
- * agent whose workspace is not (or no longer) registered is shown as "unlinked"
- * rather than guessed, and removing a workspace sets its agents' `workspaceId`
- * to null instead of deleting them.
+ * `workspaceId` binds the agent to the one workspace it belongs to, chosen and
+ * verified at onboarding rather than inferred. It is nullable: an agent whose
+ * workspace is gone is shown as "unlinked" rather than guessed, and removing a
+ * server sets its workspaces' agents to null instead of deleting them.
  */
 export const agents = sqliteTable(
   'agents',

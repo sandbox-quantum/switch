@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { deleteAgent } from '@main/core/agents/deleteAgent';
 import { db } from '@main/db/client';
-import { agents } from '@main/db/schema';
+import { agents, workspaces } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 
 /**
- * Delete every agent that belongs to a managed Switch server, as part of
+ * Delete every agent in every workspace of a managed Switch server, as part of
  * destroying that server's stack.
  *
  * Wiping a managed stack destroys the server-side identity behind each of its
@@ -33,7 +33,8 @@ export async function deleteAgentsForServer(
   const rows = await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
-    .where(eq(agents.serverId, serverId));
+    .innerJoin(workspaces, eq(agents.workspaceId, workspaces.id))
+    .where(eq(workspaces.serverId, serverId));
 
   const deleted: string[] = [];
   const failed: { agentId: string; error: string }[] = [];

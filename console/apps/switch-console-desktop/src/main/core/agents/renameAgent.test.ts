@@ -74,6 +74,7 @@ vi.mock('@main/db/client', () => ({
 vi.mock('@main/db/schema', () => ({ agents: {} }));
 vi.mock('./utils', () => ({
   mapAgentRowToAgent: (row: Record<string, unknown>) => row,
+  mapAgentRow: async (row: Record<string, unknown>) => row,
 }));
 
 const { renameAgent } = await import('./renameAgent');

@@ -46,10 +46,10 @@ const h = vi.hoisted(() => {
   const state: {
     workspace: PluginFs | null;
     /** Agent-row names already in the directory, per Switch server. */
-    agentNamesByServer: Record<string, string[]>;
+    agentNamesByWorkspace: Record<string, string[]>;
     existsOnServer: boolean;
     existsThrows: Error | null;
-  } = { workspace: null, agentNamesByServer: {}, existsOnServer: true, existsThrows: null };
+  } = { workspace: null, agentNamesByWorkspace: {}, existsOnServer: true, existsThrows: null };
   return {
     state,
     GatewayError,
@@ -69,9 +69,12 @@ vi.mock('@main/core/locations/store', () => ({
   ensureLocation: vi.fn(async () => ({ id: 'loc-1' })),
 }));
 vi.mock('./getAgents', () => ({
-  getLocationAgentsOnServer: vi.fn(async (_locationId: string, serverId: string) =>
-    (h.state.agentNamesByServer[serverId] ?? []).map((name) => ({ name }))
+  getLocationAgentsInWorkspace: vi.fn(async (_locationId: string, workspaceId: string) =>
+    (h.state.agentNamesByWorkspace[workspaceId] ?? []).map((name) => ({ name }))
   ),
+}));
+vi.mock('@main/core/workspaces/workspaces-store', () => ({
+  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
 }));
 vi.mock('./agent-workspace-fs', () => ({
   resolveWorkspaceFsFor: vi.fn(async () => ({
@@ -115,7 +118,7 @@ function params(agents: Array<{ name: string; providerId: 'codex' | 'claude' }>)
 describe('attachConfiguredAgents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.state.agentNamesByServer = {};
+    h.state.agentNamesByWorkspace = {};
     h.state.existsOnServer = true;
     h.state.existsThrows = null;
     h.state.workspace = readOnlyFs({ '.switch/agents/theirs.json': creds('sw-theirs') });
@@ -175,7 +178,7 @@ describe('attachConfiguredAgents', () => {
   });
 
   it('skips an agent this Switch Console already has', async () => {
-    h.state.agentNamesByServer = { 'srv-1': ['theirs'] };
+    h.state.agentNamesByWorkspace = { 'ws-srv-1': ['theirs'] };
 
     const result = await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
 
@@ -185,13 +188,13 @@ describe('attachConfiguredAgents', () => {
 
   it('attaches an agent already attached to a different server (CHOO-2044)', async () => {
     // Same directory, same name, other server — a separate agent, not a duplicate.
-    h.state.agentNamesByServer = { 'srv-other': ['theirs'] };
+    h.state.agentNamesByWorkspace = { 'ws-srv-other': ['theirs'] };
 
     const result = await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
 
     expect(result.success).toBe(true);
     expect(h.createAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'theirs', serverId: 'srv-1' })
+      expect.objectContaining({ name: 'theirs', workspaceId: 'ws-srv-1' })
     );
   });
 
