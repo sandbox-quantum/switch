@@ -338,7 +338,9 @@ def lint_template(text: str) -> LintResult:
                 name,
             )
         )
-    for name in sorted(declared - used):
+    # `agent` is the Console's to fill, not a declared param, so a room that
+    # never names the agent is not an unused parameter.
+    for name in sorted(declared - used - {"agent"}):
         warnings.append(
             Finding(
                 "unused_param",

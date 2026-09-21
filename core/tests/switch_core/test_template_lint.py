@@ -503,3 +503,8 @@ def test_the_policy_fields_are_known_param_fields():
     result = lint_template(text)
     assert result.errors == []
     assert "unknown_param_field" not in {w.code for w in result.warnings}
+
+
+def test_an_agent_template_without_a_room_is_not_told_agent_is_unused():
+    result = lint_template("agent:\n  name: a\n  instructions: x\n")
+    assert "unused_param" not in {w.code for w in result.warnings}

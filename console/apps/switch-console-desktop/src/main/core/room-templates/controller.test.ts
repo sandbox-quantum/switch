@@ -194,7 +194,7 @@ describe('roomTemplatesController.parse: kickoff and creator', () => {
     expect(result.usesCreator).toBe(true);
   });
 
-  it('warns about the stale room-level kickoff form and ignores it', () => {
+  it('warns about the room-level kickoff form, which the server refuses', () => {
     const result = roomTemplatesController.parse({
       yamlText: ['room:', '  name: n', '  description: d', '  kickoff: go'].join('\n'),
     });

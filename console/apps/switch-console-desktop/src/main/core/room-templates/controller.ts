@@ -275,7 +275,7 @@ export const roomTemplatesController = createRPCController({
     const kickoff = typeof doc.kickoff === 'string' ? doc.kickoff : null;
     if (!isGroup && first?.kickoff) {
       warnings.push(
-        '`kickoff:` belongs at the top level, beside `room:`. Inside `room:` the server ignores it.'
+        '`kickoff:` belongs at the top level, beside `room:`. Inside `room:` the server refuses it.'
       );
     }
     if (isGroup && kickoff) {

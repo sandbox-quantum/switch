@@ -184,7 +184,12 @@ export async function loadTemplateById(
   }
   const kind = await rpc.agentTemplates.kind({ yamlText: document });
   const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
-  const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText: document });
+  // Every param, the Console's own types included, so the Inputs table lists
+  // what the Use page asks for and what the card counts.
+  const coreYaml = await rpc.agentTemplates.serverDocument({
+    yamlText: document,
+    keepConsoleParams: true,
+  });
   const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
   const summary = await rpc.agentTemplates.summarize({ yamlText: document });
   return {
