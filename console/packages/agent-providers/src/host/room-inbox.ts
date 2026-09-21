@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
+import { EVICTION_HEARTBEAT_LAPSED, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
@@ -214,8 +214,8 @@ export class SharedRoomInbox {
           }
           this.gap = detail;
         },
-        onEvicted: (reason) => {
-          if (reason === 'heartbeat lapsed' || reason.startsWith('heartbeat lapsed;'))
+        onEvicted: ({ code, reason }) => {
+          if (code === EVICTION_HEARTBEAT_LAPSED)
             console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
           else fail(new Error(`Room connection was evicted: ${reason}`));
         },

@@ -15,10 +15,12 @@ vi.mock('@main/lib/logger', () => ({ log: { error: vi.fn() } }));
 
 it('starts watchers for saved agents and reconciles them off on request', async () => {
   await autoSessionWatcher.initialize();
-  expect(configure).toHaveBeenCalledWith('agent', true);
+  // Restoring at boot, not asking for the watcher back: one that stood down
+  // because another client took its connection stays down until someone says so.
+  expect(configure).toHaveBeenCalledWith('agent', true, 'restore');
   configure.mockClear();
   await autoSessionWatcher.reconcile('agent', false);
-  expect(configure).toHaveBeenCalledWith('agent', false);
+  expect(configure).toHaveBeenCalledWith('agent', false, 'explicit');
 });
 
 it('stops everything it hosts when Console closes', async () => {

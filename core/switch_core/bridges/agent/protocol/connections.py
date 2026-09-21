@@ -93,6 +93,62 @@ class RoomOccupiedError(ConnectionError_):
         self.holder_id = holder_id
 
 
+class SupersededConnectionError(ConnectionError_):
+    """A tick for an incarnation of the connection that is no longer current."""
+
+    def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
+        super().__init__(
+            f"connection {connection_id} was reopened since incarnation "
+            f"{presented} and is now at {current}; another client holds it, so "
+            "this heartbeat was refused and its cursor was not applied"
+        )
+        self.connection_id = connection_id
+        self.presented = presented
+        self.current = current
+
+
+CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed"]
+
+
+@dataclass(frozen=True, slots=True)
+class Closure:
+    """Why a connection ended, in a form both sides can act on.
+
+    The prose alone was not enough. Three producers phrased the same three
+    endings six different ways, and the clients that had to tell a recoverable
+    ending from a fatal one did it by comparing those strings — so one of them
+    matched the short heartbeat-lapse wording, missed the long one, and killed
+    a watcher that only needed to reconnect. `code` is the part that is
+    promised and compared; `message` is for a human reading a log and may be
+    reworded freely.
+
+    `room_id` names the room the ending was about, and is null when it was not
+    about one. A client that loses a connection over a room it declared cannot
+    otherwise tell which room, and so cannot stop declaring it.
+    """
+
+    code: CloseCode
+    message: str
+    room_id: str | None
+
+
+#: The connection's client stopped ticking. Recoverable: reopen and resume.
+HEARTBEAT_LAPSED = Closure(
+    code="heartbeat_lapsed",
+    message="heartbeat lapsed; reopen the stream and resume from your cursor",
+    room_id=None,
+)
+
+#: Another stream attached to this id. Terminal for the displaced client:
+#: reopening is itself a takeover, so retrying is how two clients trade the
+#: connection back and forth forever.
+TAKEN_OVER = Closure(
+    code="taken_over",
+    message="another stream attached to this connection and took it over",
+    room_id=None,
+)
+
+
 def evicted_session_warning(room_id: str, evicted_connection_id: str) -> str:
     """What to tell a caller that took a room off another live session.
 
@@ -213,17 +269,14 @@ class Connection:
     # Bumped when a new stream attaches, so a superseded stream can notice it
     # has been replaced and stop writing.
     stream_generation: int = 0
-    closed_reason: str | None = None
+    closure: Closure | None = None
     # What the client said about itself on connect (CHOO-1865). Defaults to an
     # empty declaration, which means unknown — never "current".
     declaration: ClientDeclaration = field(default_factory=lambda: ClientDeclaration())
     wake: asyncio.Event = field(default_factory=asyncio.Event)
 
     def is_alive(self, now: float) -> bool:
-        return (
-            self.closed_reason is None
-            and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
-        )
+        return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
 
 
 class ConnectionRegistry:
@@ -287,7 +340,7 @@ class ConnectionRegistry:
             existing.spawn_capable = spawn_capable
             existing.cursor = cursor
             existing.last_beat = time.monotonic()
-            existing.closed_reason = None
+            existing.closure = None
             existing.stream_attached = True
             existing.stream_generation += 1
             # A reattach can come from an upgraded client, so the declaration
@@ -363,7 +416,7 @@ class ConnectionRegistry:
         """
         self._on_close = listener
 
-    def close(self, connection_id: str, reason: str) -> Connection | None:
+    def close(self, connection_id: str, closure: Closure) -> Connection | None:
         conn = self._by_id.pop(connection_id, None)
         if conn is None:
             return None
@@ -372,7 +425,7 @@ class ConnectionRegistry:
             owned.discard(connection_id)
             if not owned:
                 self._by_agent.pop(conn.agent_id, None)
-        conn.closed_reason = reason
+        conn.closure = closure
         conn.stream_attached = False
         conn.wake.set()
         # `beats` and the age separate the two ways a connection dies, which
@@ -381,10 +434,13 @@ class ConnectionRegistry:
         # one that beat and then stopped (beats>0 — it went away, or the server
         # was too busy to process ticks).
         logger.info(
-            "[CONN] closed agent=%s connection=%s reason=%s beats=%d last_beat_age=%.1fs",
+            "[CONN] closed agent=%s connection=%s code=%s room=%s reason=%s "
+            "beats=%d last_beat_age=%.1fs",
             conn.agent_id,
             connection_id,
-            reason,
+            closure.code,
+            closure.room_id or "-",
+            closure.message,
             conn.beats,
             time.monotonic() - conn.last_beat,
         )
@@ -413,7 +469,7 @@ class ConnectionRegistry:
         ]
         closed = []
         for conn in stale:
-            gone = self.close(conn.id, "heartbeat lapsed")
+            gone = self.close(conn.id, HEARTBEAT_LAPSED)
             if gone is not None:
                 closed.append(gone)
         if closed:
@@ -426,14 +482,37 @@ class ConnectionRegistry:
     # Liveness
     # ------------------------------------------------------------------
 
-    def beat(self, agent_id: str, connection_id: str, cursor: int) -> Connection:
+    def beat(
+        self,
+        agent_id: str,
+        connection_id: str,
+        cursor: int,
+        generation: int | None,
+    ) -> Connection:
         """Record a client tick and its cursor.
 
         Rejects a tick for a connection with no stream: the client is alive but
         receiving nothing, and must be told to reopen rather than left believing
         it is connected.
+
+        `generation` fences the tick against the incarnation the client is
+        actually attached to. Sharing an id is what makes takeover work, and it
+        is also what makes a displaced client's tick indistinguishable from the
+        winner's — same id, same token. Unfenced, the loser keeps the
+        connection alive on the winner's behalf and, because a higher cursor is
+        adopted, drags the winner past events it was never sent. Nothing is
+        mutated before the check, so a refused tick costs the winner nothing.
+
+        `None` is a client built before the fence existed. That is unknown, not
+        current: such a tick cannot be fenced and is accepted, which is the
+        honest answer until the protocol floor rises past it. It is recorded on
+        the connection's declaration, so who cannot be fenced is answerable.
         """
         conn = self.require(agent_id, connection_id)
+        if generation is not None and generation != conn.stream_generation:
+            raise SupersededConnectionError(
+                connection_id, presented=generation, current=conn.stream_generation
+            )
         if not conn.stream_attached:
             raise NoStreamAttachedError(connection_id)
         conn.last_beat = time.monotonic()
@@ -447,7 +526,7 @@ class ConnectionRegistry:
         if conn is None or conn.agent_id != agent_id:
             raise UnknownConnectionError(connection_id)
         if not conn.is_alive(time.monotonic()):
-            self.close(connection_id, "heartbeat lapsed")
+            self.close(connection_id, HEARTBEAT_LAPSED)
             raise UnknownConnectionError(connection_id)
         return conn
 

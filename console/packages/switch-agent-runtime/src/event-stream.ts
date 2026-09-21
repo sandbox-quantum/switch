@@ -35,9 +35,64 @@ export const BEAT_INTERVAL_MS = 2000;
 const BEAT_REQUEST_TIMEOUT_MS = 4000;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
+/**
+ * How long an open socket has to last before it counts as a working stream.
+ *
+ * A successful handshake is not evidence of one. A stream that opens and is
+ * closed again immediately — the shape of a contested connection — would
+ * otherwise reset the backoff on every attempt, so the curve never leaves its
+ * first step and the two clients bounce off each other at one reconnect a
+ * second indefinitely. A healthy stream lives for minutes.
+ */
+const STABLE_STREAM_MS = 30_000;
 
 export type StreamScope = 'single' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
+
+/**
+ * Why a stream ended, in the form a caller can branch on.
+ *
+ * The prose that comes with it is for a human reading a log and may be
+ * reworded at any time. Branch on `code`.
+ *
+ * - `taken_over` — another client attached to this connection id. **Terminal.**
+ *   Reopening is itself a takeover, so a displaced client that retries is how
+ *   two clients trade one connection back and forth forever.
+ * - `heartbeat_lapsed` — we stopped ticking. Recoverable: reopen and resume.
+ * - `closed` — the server ended it for some other reason; `roomId` names the
+ *   room when it was about one.
+ * - `credentials_rejected` — decided here rather than sent: every reopen would
+ *   carry the same token. Terminal.
+ */
+export interface Eviction {
+  code: string;
+  reason: string;
+  roomId: string | null;
+}
+
+export const EVICTION_TAKEN_OVER = 'taken_over';
+export const EVICTION_HEARTBEAT_LAPSED = 'heartbeat_lapsed';
+export const EVICTION_CLOSED = 'closed';
+export const EVICTION_CREDENTIALS_REJECTED = 'credentials_rejected';
+
+/**
+ * Read the code off an `evicted` frame, falling back to its prose.
+ *
+ * A revision-1 server sends prose and no code. Rather than leave every consumer
+ * matching strings — the bug this replaces, where one of them matched the short
+ * heartbeat wording, missed the long one, and killed a watcher that only needed
+ * to reconnect — the one remaining match lives here at the edge, against the
+ * three phrasings that server actually produced. It goes when `accepts` rises
+ * past revision 1.
+ */
+function evictionCode(data: Record<string, unknown>): string {
+  const code = data.code;
+  if (typeof code === 'string' && code.length > 0) return code;
+  const reason = String(data.reason ?? '');
+  if (reason.startsWith('heartbeat lapsed')) return EVICTION_HEARTBEAT_LAPSED;
+  if (reason.startsWith('another stream attached')) return EVICTION_TAKEN_OVER;
+  return EVICTION_CLOSED;
+}
 
 export interface EventStreamLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
@@ -101,8 +156,10 @@ export interface SwitchEventStreamDeps {
     resumedAt?: number;
     cursorReset?: boolean;
   }): void | Promise<void>;
-  /** Fired when another stream took this connection over, or it was closed. */
-  onEvicted(reason: string): void;
+  /** Fired when another stream took this connection over, or it was closed.
+   * A `taken_over` eviction has already halted both loops before this runs:
+   * there is nothing left to reconnect, only something to report. */
+  onEvicted(eviction: Eviction): void;
   log: EventStreamLogger;
   /** Aborts the stream and the heartbeat together. */
   signal: AbortSignal;
@@ -121,6 +178,20 @@ export class SwitchEventStream {
    * refusals can never be retried into a success, and both loops have to end. */
   private readonly halt = new AbortController();
   private rooms: string[];
+  /**
+   * Which incarnation of the connection id the server last told us we are.
+   *
+   * Sent on every beat so the server can refuse a tick from a client that has
+   * been displaced: sharing the id is what makes takeover work, and it is also
+   * what makes the loser's beat indistinguishable from the winner's.
+   *
+   * Kept across a dropped socket rather than cleared. The connection outlives
+   * its socket, so a client whose socket merely dropped is still the holder,
+   * and nulling this would have it beat unfenced — or, worse, stop beating and
+   * lose the connection it still owns. Null only before the first
+   * `connection_state`, and against a server too old to send one.
+   */
+  private generation: number | null = null;
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -209,9 +280,11 @@ export class SwitchEventStream {
       detail,
     });
     this.halt.abort();
-    this.deps.onEvicted(
-      `Switch rejected the agent credentials (HTTP ${status})${detail ? `: ${detail}` : ''}`
-    );
+    this.deps.onEvicted({
+      code: EVICTION_CREDENTIALS_REJECTED,
+      reason: `Switch rejected the agent credentials (HTTP ${status})${detail ? `: ${detail}` : ''}`,
+      roomId: null,
+    });
   }
 
   private async subscribe(roomId: string): Promise<void> {
@@ -257,9 +330,24 @@ export class SwitchEventStream {
     let backoff = INITIAL_BACKOFF_MS;
     let failures = 0;
 
+    /** Wait before reopening, and widen the wait.
+     *
+     * Every ending an open socket can have comes through here — a transport
+     * error and a clean close alike. The clean close is the one that used to be
+     * free: the server ends the stream, the read loop finishes, and the next
+     * open went out with no delay at all. That is a storm precisely when the
+     * server is ending streams on purpose.
+     */
+    const pace = async (): Promise<void> => {
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    };
+
     while (!signal.aborted && !this.halt.signal.aborted) {
       const socketAbort = new AbortController();
       this.socketAbort = socketAbort;
+      let openedAt = 0;
+      let failure: unknown = null;
       try {
         const params = new URLSearchParams({
           connection_id: connectionId,
@@ -302,14 +390,7 @@ export class SwitchEventStream {
           throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
-        backoff = INITIAL_BACKOFF_MS;
-        if (failures > 0) {
-          log.warn('SwitchEventStream: stream recovered', {
-            event: 'switch_stream_recovered',
-            afterFailures: failures,
-          });
-          failures = 0;
-        }
+        openedAt = Date.now();
         log.debug('SwitchEventStream: stream open', {
           event: 'switch_stream_open',
           connectionId,
@@ -322,23 +403,39 @@ export class SwitchEventStream {
           if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
       } catch (error) {
-        if (signal.aborted || this.halt.signal.aborted) return;
-        // A deliberate reopen (repoint) aborts the socket; that is not an error.
-        if (!socketAbort.signal.aborted) {
-          failures += 1;
-          if ((failures & (failures - 1)) === 0) {
-            log.warn('SwitchEventStream: stream error', {
-              event: 'switch_stream_error',
-              endpoint: creds.apiEndpoint,
-              failures,
-              error: String(error),
-              backoffMs: backoff,
-            });
-          }
-          await new Promise((r) => setTimeout(r, backoff));
-          backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-        }
+        failure = error;
       }
+
+      if (signal.aborted || this.halt.signal.aborted) return;
+      // A deliberate reopen (repoint) aborts the socket. Not an ending to
+      // count, and not one to wait out — reopening at once is the point of it.
+      if (socketAbort.signal.aborted) continue;
+
+      // Only a stream that lasted proves the endpoint is healthy. Resetting on
+      // the handshake alone would let an immediately-closed stream clear the
+      // curve it is supposed to be climbing.
+      if (openedAt > 0 && Date.now() - openedAt >= STABLE_STREAM_MS) {
+        if (failures > 0) {
+          log.warn('SwitchEventStream: stream recovered', {
+            event: 'switch_stream_recovered',
+            afterFailures: failures,
+          });
+          failures = 0;
+        }
+        backoff = INITIAL_BACKOFF_MS;
+      }
+
+      failures += 1;
+      if ((failures & (failures - 1)) === 0) {
+        log.warn('SwitchEventStream: stream ended — reopening', {
+          event: 'switch_stream_error',
+          endpoint: creds.apiEndpoint,
+          failures,
+          error: failure === null ? 'the server closed the stream' : String(failure),
+          backoffMs: backoff,
+        });
+      }
+      await pace();
     }
   }
 
@@ -346,9 +443,11 @@ export class SwitchEventStream {
     const { log, onGap, onEvicted, onEvent } = this.deps;
     switch (frame.event) {
       case 'connection_state':
+        if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
         log.debug('SwitchEventStream: connection established', {
           event: 'switch_stream_connected',
           rooms: frame.data.rooms,
+          generation: this.generation,
           // What the server says it is (CHOO-1865). Recorded, not acted on —
           // logging it is what makes "which versions are actually talking to
           // each other" answerable from a bug report rather than a guess.
@@ -382,13 +481,25 @@ export class SwitchEventStream {
         if (resumedAt !== undefined) this.cursor = Number(resumedAt);
         return;
       }
-      case 'evicted':
+      case 'evicted': {
+        const code = evictionCode(frame.data);
         log.warn('SwitchEventStream: evicted', {
           event: 'switch_stream_evicted',
+          code,
           reason: frame.data.reason,
+          roomId: frame.data.room_id ?? null,
         });
-        onEvicted(String(frame.data.reason ?? 'connection closed'));
+        // Halt before reporting: a takeover is the one ending that reopening
+        // cannot recover, because reopening is itself a takeover. Both loops
+        // end here, and nothing the callback does can restart them.
+        if (code === EVICTION_TAKEN_OVER) this.halt.abort();
+        onEvicted({
+          code,
+          reason: String(frame.data.reason ?? 'connection closed'),
+          roomId: typeof frame.data.room_id === 'string' ? frame.data.room_id : null,
+        });
         return;
+      }
       default:
         await onEvent(frame.data as unknown as AgentBridgeEvent);
     }
@@ -445,6 +556,7 @@ export class SwitchEventStream {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,
           cursor: this.cursor,
+          generation: this.generation,
         });
         if (resp.status === 401 || resp.status === 403) {
           this.rejectCredentials(resp.status, await resp.text());

@@ -28,9 +28,14 @@ export {
 } from './artifacts';
 export {
   BEAT_INTERVAL_MS,
+  EVICTION_CLOSED,
+  EVICTION_CREDENTIALS_REJECTED,
+  EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_TAKEN_OVER,
   SwitchEventStream,
   type DeliveryFilter,
   type EventStreamLogger,
+  type Eviction,
   type StreamScope,
   type SwitchEventStreamDeps,
 } from './event-stream';

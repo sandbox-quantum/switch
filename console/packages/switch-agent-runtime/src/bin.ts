@@ -519,6 +519,12 @@ let heartbeatAbort: AbortController | null = null;
 // trim what we have seen.
 let cursor = 0;
 
+// Which incarnation of the connection id the server last told us we are. Sent
+// on every heartbeat so a beat from a client that has since been displaced is
+// refused rather than moving the winner's cursor. Kept across a dropped socket:
+// the connection outlives its stream, so the incarnation is still ours.
+let streamGeneration: number | null = null;
+
 // Whether the currently open stream declared a room when it opened.
 let streamHasRoom = false;
 
@@ -1185,6 +1191,13 @@ async function handleSendAttachment(rawArgs: Record<string, unknown>) {
 // reopen with the same connection id and Last-Event-ID, and the server resumes
 // from where we stopped — the gap fills itself rather than being lost.
 
+/**
+ * How long an open stream has to last before it counts as a working one, and so
+ * before its backoff is allowed back to the floor. A healthy stream lives for
+ * minutes; one that opens and closes again at once is contested.
+ */
+const STABLE_STREAM_MS = 30_000;
+
 function stopStream() {
   if (streamAbort) {
     streamAbort.abort();
@@ -1207,6 +1220,7 @@ function startStream() {
     let backoff = 1000;
 
     while (!abort.signal.aborted) {
+      let openedAt = 0;
       try {
         const params = new URLSearchParams({
           connection_id: CONNECTION_ID,
@@ -1239,7 +1253,7 @@ function startStream() {
           throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
         }
 
-        backoff = 1000;
+        openedAt = Date.now();
         process.stderr.write(
           `switch: stream open (connection ${CONNECTION_ID}, cursor ${cursor})\n`
         );
@@ -1248,12 +1262,25 @@ function startStream() {
           if (frame.id) cursor = Math.max(cursor, Number(frame.id) || 0);
           await handleFrame(frame);
         }
+        if (abort.signal.aborted) return;
+        process.stderr.write(`switch: stream closed, reopening in ${backoff / 1000}s\n`);
       } catch (err) {
         if (abort.signal.aborted) return;
         process.stderr.write(`switch: stream error: ${err}, reconnecting in ${backoff / 1000}s\n`);
-        await new Promise((r) => setTimeout(r, backoff));
-        backoff = Math.min(backoff * 2, 30000);
       }
+
+      // Waiting out a clean close as well as an error is the whole point. A
+      // connection another client has taken ends the stream cleanly, and
+      // reopening is itself a takeover — with no pause the two clients trade it
+      // back and forth as fast as the network allows.
+      await new Promise((r) => setTimeout(r, backoff));
+      // Only a stream that lasted proves the endpoint is healthy. A handshake
+      // does not: a contested connection opens and closes again at once, which
+      // would reset the curve on every attempt and hold it on its first step.
+      backoff =
+        openedAt > 0 && Date.now() - openedAt >= STABLE_STREAM_MS
+          ? 1000
+          : Math.min(backoff * 2, 30000);
     }
   })();
 }
@@ -1261,6 +1288,7 @@ function startStream() {
 async function handleFrame(frame: SseFrame): Promise<void> {
   switch (frame.event) {
     case 'connection_state':
+      if (typeof frame.data.generation === 'number') streamGeneration = frame.data.generation;
       process.stderr.write(
         `switch: connection established (rooms=${JSON.stringify(frame.data.rooms)})\n`
       );
@@ -1399,6 +1427,7 @@ function startHeartbeat() {
   heartbeatAbort = abort;
 
   void (async () => {
+    let interval = HEARTBEAT_INTERVAL_MS;
     while (!abort.signal.aborted) {
       try {
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/connection/beat`, {
@@ -1407,26 +1436,38 @@ function startHeartbeat() {
             Authorization: `Bearer ${API_TOKEN}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ connection_id: CONNECTION_ID, cursor }),
+          body: JSON.stringify({
+            connection_id: CONNECTION_ID,
+            cursor,
+            generation: streamGeneration,
+          }),
           signal: abort.signal,
         });
         if (resp.status === 409 || resp.status === 404) {
-          // Either the stream is gone or the connection expired. Both mean we
-          // are not receiving; reopening resumes from the cursor.
+          // The stream is gone, the connection expired, or another client has
+          // taken it over. All three mean we are not receiving; reopening
+          // resumes from the cursor.
+          //
+          // Slowing down matters most in the last case: reopening is itself a
+          // takeover, so at full rate two clients would trade the connection
+          // between them twice a second for as long as both ran.
           process.stderr.write(
-            `switch: heartbeat rejected (HTTP ${resp.status}) — reopening stream\n`
+            `switch: heartbeat rejected (HTTP ${resp.status}) — reopening stream in ${interval / 1000}s\n`
           );
+          interval = Math.min(interval * 2, 30000);
           stopStreamKeepingRoom();
           startStream();
           // No re-claim here. When we own the connection and serve the room,
           // reopening declares it on the URL; when the supervisor serves it,
           // the slot is the supervisor's and claiming would take it away.
+        } else if (resp.ok) {
+          interval = HEARTBEAT_INTERVAL_MS;
         }
       } catch (err) {
         if (abort.signal.aborted) return;
         process.stderr.write(`switch: heartbeat error: ${err}\n`);
       }
-      await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+      await new Promise((r) => setTimeout(r, interval));
     }
   })();
 }

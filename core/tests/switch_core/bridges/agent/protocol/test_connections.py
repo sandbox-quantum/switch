@@ -12,10 +12,12 @@ from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     ClientDeclaration,
+    Closure,
     ConnectionRegistry,
     NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
+    SupersededConnectionError,
     TooManyConnectionsError,
     UnknownConnectionError,
 )
@@ -208,7 +210,7 @@ def test_a_beat_without_a_stream_is_rejected() -> None:
     # The client is alive but receiving nothing. It must be told, not left
     # believing it is connected.
     with pytest.raises(NoStreamAttachedError):
-        registry.beat(AGENT, "c1", 5)
+        registry.beat(AGENT, "c1", 5, None)
 
 
 def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
@@ -238,8 +240,66 @@ def test_beat_advances_the_cursor_but_never_rewinds_it() -> None:
     registry = ConnectionRegistry()
     _open(registry, "c1")
 
-    assert registry.beat(AGENT, "c1", 7).cursor == 7
-    assert registry.beat(AGENT, "c1", 3).cursor == 7
+    assert registry.beat(AGENT, "c1", 7, None).cursor == 7
+    assert registry.beat(AGENT, "c1", 3, None).cursor == 7
+
+
+def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    displaced = conn.stream_generation
+
+    _open(registry, "c1")  # the winner attaches; incarnation bumps
+
+    with pytest.raises(SupersededConnectionError) as caught:
+        registry.beat(AGENT, "c1", 0, displaced)
+
+    assert caught.value.presented == displaced
+    assert caught.value.current == displaced + 1
+
+
+def test_a_refused_beat_leaves_the_winners_cursor_where_it_was() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    displaced = conn.stream_generation
+    winner = _open(registry, "c1")
+    registry.beat(AGENT, "c1", 7, winner.stream_generation)
+
+    before = winner.cursor
+    assert before == 7
+
+    # The displaced client is further ahead than the winner — it was sent
+    # events the winner never saw. Adopting that cursor would skip them.
+    with pytest.raises(SupersededConnectionError):
+        registry.beat(AGENT, "c1", 99, displaced)
+
+    assert winner.cursor == before
+    assert winner.beats == 1
+
+
+def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    displaced = conn.stream_generation
+    winner = _open(registry, "c1")
+    aging = time.monotonic() - (HEARTBEAT_TTL_SECONDS / 2)
+    winner.last_beat = aging
+
+    with pytest.raises(SupersededConnectionError):
+        registry.beat(AGENT, "c1", 0, displaced)
+
+    # The loser cannot hold the winner's connection open on its behalf: the
+    # clock keeps running, so a winner that has gone quiet still lapses.
+    assert winner.last_beat == aging
+
+
+def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
+    registry = ConnectionRegistry()
+    _open(registry, "c1")
+    _open(registry, "c1")
+
+    # A revision-1 client sends no incarnation. Unknown is not superseded.
+    assert registry.beat(AGENT, "c1", 4, None).cursor == 4
 
 
 # ── Room slots ──────────────────────────────────────────────────────────────
@@ -305,7 +365,9 @@ def test_coverage_returns_to_the_daemon_when_the_session_goes() -> None:
     registry.claim_room(session, ROOM_A)
     assert not registry.covers(daemon, ROOM_A)
 
-    registry.close("session", "session ended")
+    registry.close(
+        "session", Closure(code="closed", message="session ended", room_id=None)
+    )
 
     assert registry.covers(daemon, ROOM_A)
     assert registry.holder_of(AGENT, ROOM_A) is daemon

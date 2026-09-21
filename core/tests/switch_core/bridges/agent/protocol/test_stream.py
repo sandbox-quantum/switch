@@ -11,10 +11,12 @@ import pytest
 from switch_core import version as version_module
 from switch_core.bridges.agent.protocol import stream as stream_module
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     ClientDeclaration,
+    Closure,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -98,6 +100,9 @@ async def test_first_frame_is_the_connection_state() -> None:
     assert data["scope"] == "single"
     assert data["rooms"] == [ROOM_A]
     assert data["protocol"] == PROTOCOL_VERSION
+    # The client returns this on every heartbeat; without it the server cannot
+    # tell the holder of a connection from a client displaced from it.
+    assert data["generation"] == conn.stream_generation
 
 
 async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
@@ -300,6 +305,9 @@ async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
 
     frames = await _take(stream, 1)
     assert frames[0][0] == "evicted"
+    # The code is what the displaced client acts on: reopening would itself be
+    # a takeover, so this ending is terminal and must not be read as prose.
+    assert frames[0][1]["code"] == "taken_over"
 
 
 async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
@@ -311,11 +319,34 @@ async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
     stream = event_stream(conn=conn, registry=registry, buffer=buffer)
     await _take(stream, 1)
 
-    registry.close(conn.id, "heartbeat lapsed")
+    registry.close(conn.id, HEARTBEAT_LAPSED)
 
     frames = await _take(stream, 1)
     assert frames[0][0] == "evicted"
-    assert frames[0][1]["reason"] == "heartbeat lapsed"
+    assert frames[0][1]["code"] == "heartbeat_lapsed"
+    assert "heartbeat lapsed" in frames[0][1]["reason"]
+    assert frames[0][1]["room_id"] is None
+
+
+async def test_a_close_about_a_room_names_the_room_it_was_about() -> None:
+    """A client that loses a connection over a room it declared must be told which."""
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry)
+    registry.claim_room(conn, ROOM_A)
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    await _take(stream, 1)
+
+    registry.close(
+        conn.id,
+        Closure(code="closed", message="the room is already held", room_id=ROOM_A),
+    )
+
+    ((name, data),) = await _take(stream, 1)
+    assert name == "evicted"
+    assert data["code"] == "closed"
+    assert data["room_id"] == ROOM_A
 
 
 async def test_subscription_change_is_announced() -> None:
@@ -478,6 +509,7 @@ class TestALapsedHeartbeatStopsDelivery:
         ((name, data),) = await _take(stream, 1)
 
         assert name == "evicted"
+        assert data["code"] == "heartbeat_lapsed"
         assert "heartbeat" in data["reason"]
 
     async def test_the_connection_is_closed_not_merely_ignored(self) -> None:
@@ -495,7 +527,7 @@ class TestALapsedHeartbeatStopsDelivery:
         await _take(stream, 1)
 
         assert registry.claimant_of(AGENT, ROOM_A) is None
-        assert conn.closed_reason is not None
+        assert conn.closure is not None
 
 
 class TestFilteredEventsDoNotSpinTheLoop:
@@ -633,7 +665,7 @@ async def test_replaced_stream_cannot_capture_its_successors_generation() -> Non
     old = event_stream(conn=conn, registry=registry, buffer=buffer)
     _open(registry)
     assert await _take(old, 1) == []
-    assert registry.beat(AGENT, conn.id, 0).stream_attached
+    assert registry.beat(AGENT, conn.id, 0, None).stream_attached
 
 
 async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
@@ -642,11 +674,11 @@ async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
     conn = _open(registry)
     old = event_stream(conn=conn, registry=registry, buffer=buffer)
     await anext(old)
-    registry.close(conn.id, "heartbeat lapsed")
+    registry.close(conn.id, HEARTBEAT_LAPSED)
     replacement = _open(registry)
     assert replacement is not conn
     await old.aclose()
-    assert registry.beat(AGENT, replacement.id, 0).stream_attached
+    assert registry.beat(AGENT, replacement.id, 0, None).stream_attached
 
 
 async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_from() -> (

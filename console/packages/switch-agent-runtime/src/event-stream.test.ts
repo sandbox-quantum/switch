@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BEAT_INTERVAL_MS, SwitchEventStream, type SwitchEventStreamDeps } from './event-stream';
+import {
+  BEAT_INTERVAL_MS,
+  EVICTION_CREDENTIALS_REJECTED,
+  EVICTION_TAKEN_OVER,
+  SwitchEventStream,
+  type Eviction,
+  type SwitchEventStreamDeps,
+} from './event-stream';
 
 /**
  * Two ways a client can retry something that can never succeed.
@@ -160,10 +167,10 @@ describe('credentials the server rejects', () => {
         ? refusal(status, detail)
         : { ok: true, status: 200, text: async (): Promise<string> => '' }
     );
-    const evicted: string[] = [];
+    const evicted: Eviction[] = [];
     const { abort, log } = makeStream(fetchMock, {
       rooms: ['room-live'],
-      onEvicted: (reason) => evicted.push(reason),
+      onEvicted: (eviction) => evicted.push(eviction),
     });
     await vi.advanceTimersByTimeAsync(0);
     const settled = fetchMock.mock.calls.length;
@@ -179,8 +186,9 @@ describe('credentials the server rejects', () => {
     // Nothing beyond the beat already in flight when the refusal landed.
     expect(fetchMock.mock.calls).toHaveLength(settled);
     expect(evicted).toHaveLength(1);
-    expect(evicted[0]).toContain('credentials');
-    expect(evicted[0]).toContain('401');
+    expect(evicted[0]?.code).toBe(EVICTION_CREDENTIALS_REJECTED);
+    expect(evicted[0]?.reason).toContain('credentials');
+    expect(evicted[0]?.reason).toContain('401');
     expect(log.error).toHaveBeenCalled();
   });
 
@@ -193,8 +201,9 @@ describe('credentials the server rejects', () => {
     expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
     expect(fetchMock.mock.calls).toHaveLength(settled);
     expect(evicted).toHaveLength(1);
-    expect(evicted[0]).toContain('credentials');
-    expect(evicted[0]).toContain('403');
+    expect(evicted[0]?.code).toBe(EVICTION_CREDENTIALS_REJECTED);
+    expect(evicted[0]?.reason).toContain('credentials');
+    expect(evicted[0]?.reason).toContain('403');
   });
 
   it('ends the stream and the heartbeat on a 401 heartbeat, and says so once', async () => {
@@ -204,10 +213,10 @@ describe('credentials the server rejects', () => {
         ? { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' }
         : refusal(401, 'Invalid agent token')
     );
-    const evicted: string[] = [];
+    const evicted: Eviction[] = [];
     const { abort, log } = makeStream(fetchMock, {
       rooms: ['room-live'],
-      onEvicted: (reason) => evicted.push(reason),
+      onEvicted: (eviction) => evicted.push(eviction),
     });
     await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS + 1);
     const settled = fetchMock.mock.calls.length;
@@ -217,8 +226,9 @@ describe('credentials the server rejects', () => {
     expect(urlsFor(fetchMock, 'connection/beat')).toHaveLength(1);
     expect(fetchMock.mock.calls).toHaveLength(settled);
     expect(evicted).toHaveLength(1);
-    expect(evicted[0]).toContain('credentials');
-    expect(evicted[0]).toContain('401');
+    expect(evicted[0]?.code).toBe(EVICTION_CREDENTIALS_REJECTED);
+    expect(evicted[0]?.reason).toContain('credentials');
+    expect(evicted[0]?.reason).toContain('401');
     expect(log.error).toHaveBeenCalledTimes(1);
   });
 
@@ -231,10 +241,10 @@ describe('credentials the server rejects', () => {
       }
       return refusal(401, 'Invalid agent token');
     });
-    const evicted: string[] = [];
+    const evicted: Eviction[] = [];
     const { abort, log } = makeStream(fetchMock, {
       rooms: ['room-live'],
-      onEvicted: (reason) => evicted.push(reason),
+      onEvicted: (eviction) => evicted.push(eviction),
     });
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     abort.abort();
@@ -256,10 +266,10 @@ describe('credentials the server rejects', () => {
         ? { ok: false, status, body: null, text: async (): Promise<string> => 'try later' }
         : { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' };
     });
-    const evicted: string[] = [];
+    const evicted: Eviction[] = [];
     const { abort } = makeStream(fetchMock, {
       rooms: [],
-      onEvicted: (reason) => evicted.push(reason),
+      onEvicted: (eviction) => evicted.push(eviction),
     });
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -279,10 +289,10 @@ describe('credentials the server rejects', () => {
       if (opens === 1) throw new TypeError('fetch failed');
       return { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' };
     });
-    const evicted: string[] = [];
+    const evicted: Eviction[] = [];
     const { abort } = makeStream(fetchMock, {
       rooms: [],
-      onEvicted: (reason) => evicted.push(reason),
+      onEvicted: (eviction) => evicted.push(eviction),
     });
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -350,6 +360,134 @@ describe('the heartbeat', () => {
     await vi.advanceTimersByTimeAsync(10 * BEAT_INTERVAL_MS);
 
     expect(urlsFor(fetchMock, 'connection/beat').length - recovered).toBeGreaterThanOrEqual(9);
+    abort.abort();
+  });
+});
+
+describe('a connection another client takes over', () => {
+  /** A stream body carrying one frame and then closing, the way the server ends
+   * a displaced stream. */
+  function frameThenClose(name: string, data: unknown): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+        );
+        controller.close();
+      },
+    });
+  }
+
+  it('halts instead of reopening, because reopening would be a takeover back', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: frameThenClose('evicted', {
+              code: 'taken_over',
+              reason: 'another stream attached to this connection',
+              room_id: null,
+            }),
+            text: async (): Promise<string> => '',
+          }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      onEvicted: (eviction) => evicted.push(eviction),
+    });
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    // Two clients reopening each other's connection is the loop this prevents:
+    // whoever reopens wins, so a displaced client that reopens starts it again.
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(evicted).toEqual([
+      {
+        code: EVICTION_TAKEN_OVER,
+        reason: 'another stream attached to this connection',
+        roomId: null,
+      },
+    ]);
+    abort.abort();
+  });
+
+  it('reads an old server’s wording as a takeover when it sends no code', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: frameThenClose('evicted', {
+              reason: 'another stream attached to this connection',
+            }),
+            text: async (): Promise<string> => '',
+          }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      onEvicted: (eviction) => evicted.push(eviction),
+    });
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    expect(evicted[0]?.code).toBe(EVICTION_TAKEN_OVER);
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    abort.abort();
+  });
+});
+
+describe('a stream the server closes cleanly', () => {
+  /** Opens, closes at once, forever — the shape of a contested connection. */
+  function closesAtOnce() {
+    return vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.close();
+              },
+            }),
+            text: async (): Promise<string> => '',
+          }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+  }
+
+  it('waits before reopening rather than reconnecting at full rate', async () => {
+    vi.useFakeTimers();
+    const fetchMock = closesAtOnce();
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    // A minute of 1s, 2s, 4s… is seven opens. Without pacing a clean close it
+    // is an unbounded spin, limited only by how fast the server can answer.
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(urlsFor(fetchMock, '/events').length).toBeLessThanOrEqual(8);
+    abort.abort();
+  });
+
+  it('keeps backing off rather than resetting on every handshake', async () => {
+    vi.useFakeTimers();
+    const fetchMock = closesAtOnce();
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const early = urlsFor(fetchMock, '/events').length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    const late = urlsFor(fetchMock, '/events').length - early;
+
+    // An open is not evidence of a working stream. Resetting the curve on the
+    // handshake held two contending clients at a reconnect a second forever.
+    expect(late).toBeLessThan(early);
     abort.abort();
   });
 });

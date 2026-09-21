@@ -39,15 +39,20 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
   const deployed = data?.transport === 'ssh';
   const differentBuild =
     deployed && !!watcher?.buildHash && watcher.buildHash !== data?.availableBuildHash;
+  // Standing down is a decision, not a fault, and reporting it as one would send
+  // people looking through the log for a crash that never happened.
+  const takenOver = !running && watcher?.takenOver ? watcher.takenOver : null;
   const status = running
     ? differentBuild
       ? 'Different build'
       : watcher?.buildHash
         ? 'Up to date'
         : 'Running'
-    : enabled
-      ? 'Unavailable'
-      : 'Stopped';
+    : takenOver
+      ? 'Taken over'
+      : enabled
+        ? 'Unavailable'
+        : 'Stopped';
 
   return (
     <div className="flex flex-col gap-4">
@@ -81,7 +86,9 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
       {data && (
         <>
           <div className="flex flex-wrap items-center gap-3 rounded-md bg-foreground/5 px-3 py-2 text-sm">
-            <span className={enabled && !running ? 'text-destructive' : ''}>{status}</span>
+            <span className={enabled && !running && !takenOver ? 'text-destructive' : ''}>
+              {status}
+            </span>
             {watcher?.buildHash && (
               <span className="font-mono">{watcher.buildHash.slice(0, 12)}</span>
             )}
@@ -125,7 +132,25 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               build.
             </p>
           )}
-          {enabled && !running && (
+          {takenOver && (
+            <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="break-words">
+                Another client took this agent’s room connection on{' '}
+                {new Date(takenOver.at).toLocaleString()} ({takenOver.reason}), so the watcher stood
+                down and will not come back on its own — restarting it would take the connection
+                back and the two would trade it. Restart once you know the other client is gone.
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={action.isPending}
+                onClick={() => action.mutate('restart')}
+              >
+                <RefreshCw className="size-3.5" /> Restart
+              </Button>
+            </div>
+          )}
+          {enabled && !running && !takenOver && (
             <p role="alert" className="text-sm text-destructive">
               New room messages cannot automatically start this agent.{' '}
               {deployed

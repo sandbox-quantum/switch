@@ -149,9 +149,16 @@ contracts:
       The wire protocol between switch-core's agent bridge and an agent
       runtime: the event stream, its frame shapes, the resume cursor, and the
       tool-call channel.
+    # Revision 2 adds the connection incarnation: the server publishes it on
+    # `connection_state`, the client returns it on every heartbeat, and a tick
+    # bearing a superseded one is refused. The same revision gives the
+    # `evicted` frame a stable `code` and the room it applies to, so a client
+    # no longer decides recoverable-or-fatal by matching prose. Both are
+    # additive and `accepts` stays at 1: a revision-1 client sends no
+    # incarnation and is recorded as unfenceable rather than refused.
     artifacts:
-      switch-core: { speaks: 1, accepts: 1 }
-      agent-runtime: { speaks: 1, accepts: 1 }
+      switch-core: { speaks: 2, accepts: 1 }
+      agent-runtime: { speaks: 2, accepts: 1 }
 
   gateway-api:
     description: >-

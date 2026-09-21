@@ -1,16 +1,22 @@
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  AgentBridgeEvent,
-  SwitchCredentials,
-  SwitchEventStreamDeps,
+import type * as runtime from '@sandboxaq/switch-agent-runtime';
+import {
+  EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_TAKEN_OVER,
+  type AgentBridgeEvent,
+  type SwitchCredentials,
+  type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SharedRoomInbox } from './room-inbox';
 
 const { streams } = vi.hoisted(() => ({ streams: [] as SwitchEventStreamDeps[] }));
-vi.mock('@sandboxaq/switch-agent-runtime', () => ({
+// Only the stream is replaced. The eviction codes are the contract under test,
+// so a stub of them would let the inbox and the runtime disagree unnoticed.
+vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof runtime>()),
   SwitchEventStream: class {
     constructor(private readonly deps: SwitchEventStreamDeps) {
       streams.push(deps);
@@ -213,23 +219,38 @@ it('retains a zero checkpoint and gap before the next message arrives', async ()
   expect(next.inbox.pending()[0].gap?.reason).toBe('buffer reset');
 });
 
-it.each(['heartbeat lapsed', 'heartbeat lapsed; reopen the stream and resume from your cursor'])(
-  'keeps the session alive during recoverable eviction: %s',
-  async (reason) => {
-    const { stream, failures } = await connected();
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    stream.onEvicted(reason);
-    expect(failures).toEqual([]);
-    expect(warning).toHaveBeenCalledWith(
-      'Room heartbeat lapsed; reconnecting from the saved cursor.'
-    );
-  }
-);
+it('keeps the session alive during recoverable eviction, whatever the wording', async () => {
+  const { stream, failures } = await connected();
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // The prose is free to change; the code is the promise. Matching the prose
+  // is what once killed a watcher that only needed to reconnect.
+  stream.onEvicted({
+    code: EVICTION_HEARTBEAT_LAPSED,
+    reason: 'a phrasing no build has ever produced',
+    roomId: null,
+  });
+  expect(failures).toEqual([]);
+  expect(warning).toHaveBeenCalledWith(
+    'Room heartbeat lapsed; reconnecting from the saved cursor.'
+  );
+});
 
 it('still fails visibly on a non-recoverable eviction', async () => {
   const { stream, failures } = await connected();
-  stream.onEvicted('credentials revoked');
+  stream.onEvicted({ code: 'closed', reason: 'credentials revoked', roomId: null });
   expect(failures.map((error) => error.message)).toEqual([
     'Room connection was evicted: credentials revoked',
+  ]);
+});
+
+it('does not read a takeover as recoverable', async () => {
+  const { stream, failures } = await connected();
+  stream.onEvicted({
+    code: EVICTION_TAKEN_OVER,
+    reason: 'another stream attached to this connection and took it over',
+    roomId: null,
+  });
+  expect(failures.map((error) => error.message)).toEqual([
+    'Room connection was evicted: another stream attached to this connection and took it over',
   ]);
 });

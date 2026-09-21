@@ -23,6 +23,7 @@ from switch_core.bridges.agent.operations.definitions import (
 from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_VERSION,
     ClientDeclaration,
+    Closure,
     ConnectionRegistry,
 )
 
@@ -109,7 +110,7 @@ async def test_a_closed_connection_falls_back_to_writing_the_row() -> None:
     # from an MCP transport session, and resolves the same way.
     registry = ConnectionRegistry()
     _open(registry, CONN)
-    registry.close(CONN, "gone")
+    registry.close(CONN, Closure(code="closed", message="gone", room_id=None))
     store = _RecordingSessionStore()
 
     await _write_binding_row_if_needed(_protocol(registry, store), CONN)

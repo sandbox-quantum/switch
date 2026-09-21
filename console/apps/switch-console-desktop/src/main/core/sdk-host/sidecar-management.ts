@@ -24,6 +24,8 @@ export async function manageAgentSidecar(
     throw new Error(
       'Automatic sessions are off. Start the sidecar before updating or restarting it.'
     );
-  await configureSharedWatcher(agentId, false);
-  await configureSharedWatcher(agentId, true);
+  // Someone pressed Update or Restart, so this is the explicit ask that brings
+  // a watcher back after it stood down for a connection something else took.
+  await configureSharedWatcher(agentId, false, 'explicit');
+  await configureSharedWatcher(agentId, true, 'explicit');
 }

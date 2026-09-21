@@ -3,9 +3,16 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ensureSharedProcess } from './launch';
+import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
-import { replaceSupersededSessions, SharedWatchAssignments } from './shared-watcher';
+import {
+  replaceSupersededSessions,
+  runSharedWatcher,
+  SharedWatchAssignments,
+} from './shared-watcher';
+import { clearTakenOver, recordTakenOver } from './taken-over';
+
+const supervision: Supervision = { build: 'build', start: async () => {}, stop: async () => {} };
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
@@ -137,6 +144,46 @@ function template(root: string) {
     roomConnection: { connectionId: 'watcher', rooms: [], startCursor: 0 },
   });
 }
+
+function watchable(root: string) {
+  const config = template(root);
+  config.execution = {
+    credentialsPath: join(root, 'credentials.json'),
+    inheritEnv: [],
+    mcpRuntime: 'runtime',
+    codexConfig: '',
+    skill: '',
+    context: '',
+  };
+  return config;
+}
+
+it('stays down while a takeover marker says another client holds the connection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-taken-over-'));
+  roots.push(root);
+  paths.root = root;
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true }));
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  await recordTakenOver(root, {
+    at: '2026-01-01T00:00:00.000Z',
+    reason: 'another stream attached to this connection',
+    connectionId: 'watcher',
+  });
+  // Returns instead of reading the credentials it would need to connect: the
+  // watcher never gets as far as reopening the connection it lost.
+  await expect(
+    runSharedWatcher(root, watchable(root), new AbortController().signal, supervision)
+  ).resolves.toBeUndefined();
+  expect(warning.mock.calls[0]?.[0]).toContain('stood down at 2026-01-01T00:00:00.000Z');
+
+  // Cleared by the explicit restart, and the watcher tries to connect again —
+  // failing here only because this test gave it no credentials to read.
+  await clearTakenOver(root);
+  await expect(
+    runSharedWatcher(root, watchable(root), new AbortController().signal, supervision)
+  ).rejects.toThrow('credentials.json');
+});
 
 it('resumes at the server head after its numbering restarts, keeping room sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-'));

@@ -80,12 +80,14 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
+    Closure,
     ConnectionError_,
     DeliveryFilter,
     NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
     Scope,
+    SupersededConnectionError,
     UnknownConnectionError,
     evicted_session_warning,
 )
@@ -846,10 +848,20 @@ async def _open_event_stream(
             # stream 409s and retries forever.
             protocol.connections.claim_room(conn, room_id, takeover=True)
         except (ValueError, PermissionError) as exc:
-            protocol.connections.close(conn.id, "invalid room subscription")
+            protocol.connections.close(
+                conn.id,
+                Closure(
+                    code="closed",
+                    message=f"the room declared on connect cannot be served: {exc}",
+                    room_id=room_id,
+                ),
+            )
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ConnectionError_ as exc:
-            protocol.connections.close(conn.id, "room already claimed")
+            protocol.connections.close(
+                conn.id,
+                Closure(code="closed", message=str(exc), room_id=room_id),
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Every claim succeeded and the stream is about to be returned, so this is
@@ -904,8 +916,10 @@ async def connection_beat(
     cursor = min(req.cursor, head)
 
     try:
-        conn = protocol.connections.beat(agent.id, req.connection_id, cursor)
-    except NoStreamAttachedError as exc:
+        conn = protocol.connections.beat(
+            agent.id, req.connection_id, cursor, req.generation
+        )
+    except (NoStreamAttachedError, SupersededConnectionError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -50,6 +50,7 @@ export type { SharedHostOptions } from './host/shared-host';
 export { detachedSupervision, ensureSharedProcess, sharedSessionRoot } from './host/launch';
 export type { Supervision } from './host/launch';
 export { runSharedWatcher } from './host/shared-watcher';
+export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
 export { superviseSharedHost } from './host/supervisor';
 
 export { prepareCodexSessionHome } from './codex/home';

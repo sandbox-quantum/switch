@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   supervise: vi.fn(),
   bundle: vi.fn(() => '/bundle/shared-host.mjs'),
   home: vi.fn(),
+  clearTakenOver: vi.fn(),
 }));
 
 vi.mock('node:os', async (importOriginal) => ({
@@ -19,6 +20,7 @@ vi.mock('@switch-console/agent-providers', () => ({
   ensureSharedProcess: mocks.ensure,
   runSharedWatcher: mocks.runWatcher,
   superviseSharedHost: mocks.supervise,
+  clearTakenOver: mocks.clearTakenOver,
 }));
 vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: mocks.bundle,
@@ -52,7 +54,7 @@ const config = {
 
 it('records why the watcher stopped so the agent panel can show it', async () => {
   mocks.runWatcher.mockRejectedValue(new Error('Shared SDK watcher delivery gap: sequence reset.'));
-  await startLocalWatcher(config);
+  await startLocalWatcher(config, 'explicit');
   const root = localWatcherRoot('switch-agent-1');
   await expect
     .poll(() => readLocalHostFailure(root))
@@ -61,7 +63,7 @@ it('records why the watcher stopped so the agent panel can show it', async () =>
 
 it('records nothing while the watcher is running', async () => {
   mocks.runWatcher.mockReturnValue(new Promise(() => {}));
-  await startLocalWatcher(config);
+  await startLocalWatcher(config, 'explicit');
   expect(await readLocalHostFailure(localWatcherRoot('switch-agent-1'))).toBeNull();
 });
 
@@ -71,14 +73,25 @@ it('drops a supervisor record left behind by a process that is gone', async () =
   await mkdir(join(keyed, 'supervisor'), { recursive: true });
   await writeFile(join(keyed, 'supervisor', 'owner.json'), JSON.stringify({ pid: 999999 }));
   mocks.runWatcher.mockReturnValue(new Promise(() => {}));
-  await startLocalWatcher(config);
+  await startLocalWatcher(config, 'explicit');
   await expect(readFile(join(keyed, 'supervisor', 'owner.json'), 'utf8')).rejects.toThrow('ENOENT');
   expect(root).toBeTruthy();
 });
 
+it.each([
+  // Boot and reconciles bring the watcher back to a state it was already in;
+  // neither is anyone asking to reclaim a connection something else now holds.
+  ['restore', 0],
+  ['explicit', 1],
+] as const)('%s clears the stood-down marker %i times', async (intent, cleared) => {
+  mocks.runWatcher.mockReturnValue(new Promise(() => {}));
+  await startLocalWatcher(config, intent);
+  expect(mocks.clearTakenOver).toHaveBeenCalledTimes(cleared);
+});
+
 it('appends start and failure lines to the log the panel tails', async () => {
   mocks.runWatcher.mockRejectedValue(new Error('Shared SDK watcher delivery gap: sequence reset.'));
-  await startLocalWatcher(config);
+  await startLocalWatcher(config, 'explicit');
   const log = join(localWatcherRoot('switch-agent-1'), 'supervisor.log');
   await expect
     .poll(() => readFile(log, 'utf8'))

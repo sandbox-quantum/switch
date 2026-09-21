@@ -35,7 +35,8 @@ if(fs.existsSync(directory))for(const name of fs.readdirSync(directory)){
   }catch(e){if(e.status!==1)throw e}
  }
  result.push({running:pid!==null,enabled:read(path.join(root,'watch.json'))?.enabled??false,
- pid,supervisorPid,buildHash,failure:pid?null:read(path.join(root,'supervisor','failure.json'))?.message??null});
+ pid,supervisorPid,buildHash,takenOver:read(path.join(root,'taken-over.json')),
+ failure:pid?null:read(path.join(root,'supervisor','failure.json'))?.message??null});
 }
 if(result.length>1)throw new Error('Competing saved watchers require explicit cleanup.');
 console.log(JSON.stringify(process.argv[2]==='logs'?logs.join('\n\n'):result));

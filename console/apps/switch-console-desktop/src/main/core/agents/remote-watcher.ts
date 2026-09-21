@@ -27,10 +27,19 @@ export async function initializeRemoteDiscovery(): Promise<void> {
 export async function startRemoteDiscovery(agentId: string): Promise<void> {
   if ((await getAgentById(agentId))?.switchAgentId) remoteSessionReconciler.start(agentId);
 }
+/**
+ * Puts the watcher back in the state it is already configured to be in, after a
+ * rename or a saved provider config. Nobody asked for the watcher here, so one
+ * that stood down after a takeover is left alone.
+ */
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
-  await configureSharedWatcher(agentId, (await listAutoSessionAgentIds()).includes(agentId));
+  await configureSharedWatcher(
+    agentId,
+    (await listAutoSessionAgentIds()).includes(agentId),
+    'restore'
+  );
   remoteSessionReconciler.start(agentId);
 }
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
-  await configureSharedWatcher(agentId, false);
+  await configureSharedWatcher(agentId, false, 'restore');
 }

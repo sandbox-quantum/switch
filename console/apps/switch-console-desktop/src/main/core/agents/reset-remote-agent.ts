@@ -23,7 +23,7 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
     throw new Error('The agent is not linked to Switch.');
   const server = await getServer(agent.serverId);
   if (!server) throw new Error('The agent’s Switch server is missing.');
-  await configureSharedWatcher(agentId, false);
+  await configureSharedWatcher(agentId, false, 'explicit');
   remoteSessionReconciler.stop(agentId);
   const remote = sessionSchema.array().parse(await fetchSdkSessions(server));
   for (const session of remote) {

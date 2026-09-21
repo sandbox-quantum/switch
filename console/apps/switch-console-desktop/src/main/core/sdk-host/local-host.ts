@@ -4,6 +4,7 @@ import { appendFile, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
+  clearTakenOver,
   ensureSharedProcess,
   runSharedWatcher,
   type SharedHostConfig,
@@ -24,6 +25,19 @@ const consoleLifetime = new AbortController();
 
 const watchers = new Map<string, { stop: AbortController; done: Promise<void> }>();
 const sessions = new Map<string, { stop: AbortController; done: Promise<void> }>();
+
+/**
+ * Who asked for this watcher to run.
+ *
+ * `'restore'` — Console booting, an agent renamed, a provider config saved.
+ * The watcher is being brought back to the state it was already meant to be
+ * in, and nothing about that is a decision to reclaim a connection something
+ * else now holds.
+ *
+ * `'explicit'` — a person turned auto-sessions on, or pressed Restart. That is
+ * a decision, and it clears a stood-down watcher's marker.
+ */
+export type WatcherIntent = 'restore' | 'explicit';
 
 export function localStateBase(kind: 'sdk-sessions' | 'sdk-watchers'): string {
   return join(homedir(), '.local', 'state', 'switch', kind);
@@ -190,10 +204,22 @@ export async function readLocalHostFailure(root: string): Promise<unknown> {
   }
 }
 
-/** Runs the room watcher inside Console rather than deploying a detached host. */
-export async function startLocalWatcher(config: SharedHostConfig): Promise<void> {
+/**
+ * Runs the room watcher inside Console rather than deploying a detached host.
+ *
+ * `intent` decides what to do about a watcher that stood down because something
+ * took its connection. `'restore'` — boot, a rename, a config reconcile — leaves
+ * it standing down: none of those is anybody asking for this watcher back, and
+ * starting it would take the connection off whoever holds it now. `'explicit'`
+ * is a person asking, and clears the marker.
+ */
+export async function startLocalWatcher(
+  config: SharedHostConfig,
+  intent: WatcherIntent
+): Promise<void> {
   const root = localWatcherRoot(config.session.agentId);
   await clearStaleOwners(root);
+  if (intent === 'explicit') await clearTakenOver(root);
   await writeWatchEnabled(root, true);
   await ensureSharedProcess({
     root,
@@ -221,6 +247,9 @@ export async function startLocalWatcher(config: SharedHostConfig): Promise<void>
 export async function stopLocalWatcher(identity: string): Promise<void> {
   const root = localWatcherRoot(identity);
   await writeWatchEnabled(root, false);
+  // Turning the watcher off answers the question the marker was holding open.
+  // Leaving it would make the next enable a no-op that reports nothing.
+  await clearTakenOver(root);
   await halt(watchers, root);
 }
 

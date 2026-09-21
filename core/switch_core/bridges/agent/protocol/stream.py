@@ -20,7 +20,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
+    TAKEN_OVER,
+    Closure,
     Connection,
     ConnectionRegistry,
 )
@@ -65,6 +68,11 @@ def _connection_state(conn: Connection) -> dict[str, Any]:
     return {
         "connection_id": conn.id,
         "agent_id": conn.agent_id,
+        # Which incarnation of the id this stream is. The client sends it back
+        # on every heartbeat, which is what lets the server tell the holder of
+        # a connection from a client that has been displaced from it — the two
+        # are otherwise identical on the wire.
+        "generation": conn.stream_generation,
         "scope": conn.scope,
         "filter": conn.delivery_filter,
         "spawn_capable": conn.spawn_capable,
@@ -77,6 +85,15 @@ def _connection_state(conn: Connection) -> dict[str, Any]:
         # have said — a declaration that silently failed to parse is worse
         # than one never sent, because both sides think it landed.
         "client": conn.declaration.as_dict(),
+    }
+
+
+def _eviction(closure: Closure) -> dict[str, Any]:
+    """The evicted frame: a code to act on, prose to read, a room when one applies."""
+    return {
+        "code": closure.code,
+        "reason": closure.message,
+        "room_id": closure.room_id,
     }
 
 
@@ -164,13 +181,10 @@ async def _event_stream(
         while True:
             if conn.stream_generation != generation:
                 # Another stream took this connection over.
-                yield _frame(
-                    "evicted",
-                    {"reason": "another stream attached to this connection"},
-                )
+                yield _frame("evicted", _eviction(TAKEN_OVER))
                 return
-            if conn.closed_reason is not None:
-                yield _frame("evicted", {"reason": conn.closed_reason})
+            if conn.closure is not None:
+                yield _frame("evicted", _eviction(conn.closure))
                 return
             if not conn.is_alive(time.monotonic()):
                 # Delivering to a connection whose heartbeat has lapsed is the
@@ -186,14 +200,8 @@ async def _event_stream(
                     agent_id,
                     conn.id,
                 )
-                registry.close(conn.id, "heartbeat lapsed")
-                yield _frame(
-                    "evicted",
-                    {
-                        "reason": "heartbeat lapsed; reopen the stream and resume "
-                        "from your cursor"
-                    },
-                )
+                registry.close(conn.id, HEARTBEAT_LAPSED)
+                yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
 
             if conn.rooms != last_rooms:

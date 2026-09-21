@@ -2,7 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
+import {
+  EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_TAKEN_OVER,
+  SwitchEventStream,
+} from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 import {
@@ -15,6 +19,7 @@ import {
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { readTakenOver, recordTakenOver } from './taken-over';
 
 const assignmentSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -237,11 +242,23 @@ export async function runSharedWatcher(
   try {
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
+    const connectionId = template.roomConnection.connectionId;
     const enabled = async () =>
       z
         .object({ enabled: z.boolean() })
         .parse(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).enabled;
     if (!(await enabled())) return;
+    // Stood down after a takeover, and staying down. Starting would reopen the
+    // connection, which is itself a takeover — the watcher would win it back
+    // from whoever displaced it, and the two would trade the agent's one
+    // controller connection between them for as long as both were running.
+    const displaced = await readTakenOver(root);
+    if (displaced) {
+      console.warn(
+        `Shared SDK watcher stood down at ${displaced.at} because another client took its connection (${displaced.reason}). It will not restart on its own; use Restart on the agent's Room watcher settings.`
+      );
+      return;
+    }
     const credentials = await readSharedCredentials(template);
     const assignments = await SharedWatchAssignments.open(root);
     const launch = async (config: SharedHostConfig) => {
@@ -263,7 +280,7 @@ export async function runSharedWatcher(
         apiEndpoint: credentials.SWITCH_API_ENDPOINT,
         token: credentials.SWITCH_API_TOKEN,
       },
-      connectionId: template.roomConnection.connectionId,
+      connectionId,
       scope: 'all',
       filter: 'addressed',
       spawnCapable: true,
@@ -307,10 +324,32 @@ export async function runSharedWatcher(
           throw error;
         });
       },
-      onEvicted: (reason) => {
-        if (reason === 'heartbeat lapsed')
+      onEvicted: ({ code, reason }) => {
+        if (code === EVICTION_HEARTBEAT_LAPSED) {
           console.warn('Watcher heartbeat lapsed; reconnecting from the saved cursor.');
-        else fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
+          return;
+        }
+        if (code === EVICTION_TAKEN_OVER) {
+          // Not a failure: something else is now this agent's controller, and
+          // it is entitled to be. Recorded and exited cleanly, so the
+          // supervisor does not treat standing down as a crash to restart.
+          console.warn(
+            `Shared SDK watcher was taken over (${reason}); standing down until restarted.`
+          );
+          pending = pending.then(() =>
+            recordTakenOver(root, {
+              at: new Date().toISOString(),
+              reason,
+              connectionId,
+            })
+          );
+          void pending.then(
+            () => stop.abort(),
+            (error: Error) => fail(error)
+          );
+          return;
+        }
+        fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
       },
     });
     stream.start();

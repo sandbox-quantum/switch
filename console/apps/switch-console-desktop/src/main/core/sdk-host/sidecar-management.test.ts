@@ -35,13 +35,15 @@ it.each(['update', 'restart'] as const)(
         })
     );
     const pending = manageAgentSidecar('agent', action);
-    await vi.waitFor(() => expect(mocks.configure).toHaveBeenCalledWith('agent', false));
+    await vi.waitFor(() =>
+      expect(mocks.configure).toHaveBeenCalledWith('agent', false, 'explicit')
+    );
     expect(mocks.configure).toHaveBeenCalledTimes(1);
     finish();
     await pending;
     expect(mocks.configure.mock.calls).toEqual([
-      ['agent', false],
-      ['agent', true],
+      ['agent', false, 'explicit'],
+      ['agent', true, 'explicit'],
     ]);
     expect(mocks.setAutoSession).not.toHaveBeenCalled();
   }

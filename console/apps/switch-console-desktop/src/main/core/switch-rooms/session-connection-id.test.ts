@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionConnectionId, uuidV5 } from './session-connection-id';
+import { controllerConnectionId, sessionConnectionId, uuidV5 } from './session-connection-id';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -43,6 +43,41 @@ describe('sessionConnectionId', () => {
   it('produces a well-formed v5 UUID the server will accept', () => {
     for (const sessionId of ['session-a', '', 'ünïcode-session', 'x'.repeat(500)]) {
       expect(sessionConnectionId(sessionId)).toMatch(UUID_RE);
+    }
+  });
+});
+
+describe('controllerConnectionId', () => {
+  // The invariant this exists to serve: at most one controller connection per
+  // agent globally. Two Consoles watching the same agent have to arrive at the
+  // same id, from the agent alone, with nothing shared between them.
+  it('is the same id every time for an agent', () => {
+    const agent = '7c2f0f2e-1f1a-4c1e-9d6b-2f8a1d3c4b5e';
+    expect(controllerConnectionId(agent)).toBe(controllerConnectionId(agent));
+  });
+
+  it('is stable across process boundaries', () => {
+    // Pinned literally: recomputing it here would let a namespace change pass
+    // while every running controller kept holding the id it derived before.
+    expect(controllerConnectionId('7c2f0f2e-1f1a-4c1e-9d6b-2f8a1d3c4b5e')).toBe(
+      '703547a7-173b-54c6-a1ee-16ac53c62cb0'
+    );
+  });
+
+  it('gives different agents different connections', () => {
+    expect(controllerConnectionId('agent-a')).not.toBe(controllerConnectionId('agent-b'));
+  });
+
+  // A session reopening its own agent's controller connection would take it
+  // over, and the controller would take it straight back.
+  it('never collides with a session connection on the same identifier', () => {
+    const shared = '7c2f0f2e-1f1a-4c1e-9d6b-2f8a1d3c4b5e';
+    expect(controllerConnectionId(shared)).not.toBe(sessionConnectionId(shared));
+  });
+
+  it('produces a well-formed v5 UUID the server will accept', () => {
+    for (const agentId of ['agent-a', '', 'ünïcode-agent', 'x'.repeat(500)]) {
+      expect(controllerConnectionId(agentId)).toMatch(UUID_RE);
     }
   });
 });

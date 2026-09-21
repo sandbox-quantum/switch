@@ -131,6 +131,12 @@ class ConnectionBeatRequest(BaseModel):
 
     connection_id: str
     cursor: int = 0
+    #: The incarnation of the connection this client is attached to, as the
+    #: server told it on `connection_state`. Fences the tick: a client that has
+    #: been displaced still holds the id and the token, and is otherwise
+    #: indistinguishable from the one that replaced it. Null means a client
+    #: built before the fence existed — unknown, not current.
+    generation: int | None = None
 
 
 class StatusRequest(BaseModel):

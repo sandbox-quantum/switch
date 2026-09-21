@@ -38,10 +38,34 @@ it('reports a stopped watcher and its failure without inventing a build or PID',
       enabled: true,
       pid: null,
       supervisorPid: null,
+      takenOver: null,
       buildHash: null,
       failure: 'Connection failed',
     },
   ]);
+});
+it('reports a watcher standing down rather than leaving it to read as a crash', async () => {
+  const { home, root } = await fixture('agent');
+  await writeFile(
+    join(root, 'taken-over.json'),
+    JSON.stringify({
+      at: '2026-01-01T00:00:00.000Z',
+      reason: 'another stream attached to this connection',
+      connectionId: 'controller',
+    })
+  );
+  // Enabled and deliberately not running. Without this the panel shows the
+  // same red "cannot start this agent" as a watcher that died.
+  const [watcher] = await inspect(home, 'status');
+  expect(watcher).toMatchObject({
+    running: false,
+    enabled: true,
+    failure: null,
+    takenOver: {
+      at: '2026-01-01T00:00:00.000Z',
+      reason: 'another stream attached to this connection',
+    },
+  });
 });
 it('does not expose another agent’s status or logs', async () => {
   const { home, root } = await fixture('another-agent');
@@ -84,6 +108,7 @@ it('identifies the actual running remote bundle', async () => {
         enabled: true,
         pid: child.pid,
         supervisorPid: child.pid,
+        takenOver: null,
         buildHash: hash,
         failure: null,
       },

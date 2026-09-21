@@ -44,6 +44,7 @@ vi.mock('./local-host', () => ({
 }));
 
 const { configureSharedWatcher } = await import('./shared-watcher');
+const { controllerConnectionId } = await import('@main/core/switch-rooms/session-connection-id');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -57,15 +58,26 @@ beforeEach(() => {
 
 it('watches a local agent inside Console without deploying a host', async () => {
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
-  await configureSharedWatcher('agent-1', true);
+  await configureSharedWatcher('agent-1', true, 'explicit');
   expect(mocks.startLocal).toHaveBeenCalled();
   expect(mocks.deploy).not.toHaveBeenCalled();
   expect(mocks.runCommand).not.toHaveBeenCalled();
 });
 
+it('gives the watcher the agent’s controller connection, not a fresh one', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  await configureSharedWatcher('agent-1', true, 'explicit');
+  // Derived from the Switch agent id, so a second Console watching this agent
+  // reopens this connection rather than opening one the server cannot tell is
+  // the same role.
+  expect(mocks.startLocal.mock.calls[0][0].roomConnection).toEqual({
+    connectionId: controllerConnectionId('switch-agent-1'),
+  });
+});
+
 it('stops a local agent through Console rather than a deployed host', async () => {
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
-  await configureSharedWatcher('agent-1', false);
+  await configureSharedWatcher('agent-1', false, 'explicit');
   expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
   expect(mocks.deploy).not.toHaveBeenCalled();
 });
@@ -77,7 +89,7 @@ it('still deploys the shared host for an agent on an SSH host', async () => {
     sshHost: 'builder',
     connectionId: 'connection-1',
   });
-  await configureSharedWatcher('agent-1', true);
+  await configureSharedWatcher('agent-1', true, 'explicit');
   expect(mocks.deploy).toHaveBeenCalled();
   expect(mocks.runCommand).toHaveBeenCalledWith(
     expect.objectContaining({ kind: 'ssh' }),
@@ -88,3 +100,20 @@ it('still deploys the shared host for an agent on an SSH host', async () => {
   );
   expect(mocks.startLocal).not.toHaveBeenCalled();
 });
+
+it.each([
+  // A restore is nobody asking for this watcher back, so a host that stood down
+  // after a takeover stays down across a Console restart. An explicit start is
+  // somebody asking, and clears the marker on the same hop.
+  ['restore', true, 'false'],
+  ['explicit', true, 'true'],
+  ['restore', false, 'true'],
+] as const)(
+  'tells an SSH host whether a %s to enabled=%s clears standing down',
+  async (intent, enabled, clear) => {
+    mocks.location.mockResolvedValue({ id: 'remote', dir: '/work', sshHost: 'builder' });
+    await configureSharedWatcher('agent-1', enabled, intent);
+    const write = mocks.exec.mock.calls.find((call) => call[1][1].includes('taken-over.json'));
+    expect(write?.[1].slice(2)).toEqual(['/state/watcher', String(enabled), clear]);
+  }
+);

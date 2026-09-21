@@ -38,23 +38,28 @@ class AutoSessionWatcher {
       }
     }
   }
+  /**
+   * Booting restores the watcher an earlier run left enabled. That is not a
+   * decision to reclaim a connection something else has since taken, so a
+   * watcher that stood down stays down until someone asks for it by name.
+   */
   startForAgent(agentId: string): Promise<void> {
-    return configureSharedWatcher(agentId, true);
+    return configureSharedWatcher(agentId, true, 'restore');
   }
   stopForAgent(agentId: string): Promise<void> {
-    return configureSharedWatcher(agentId, false);
+    return configureSharedWatcher(agentId, false, 'restore');
   }
   startForSubagent(agentId: string, name: string): Promise<void> {
-    return configureSharedWatcher(agentId, true, name);
+    return configureSharedWatcher(agentId, true, 'restore', name);
   }
   stopForSubagent(agentId: string, name: string): Promise<void> {
-    return configureSharedWatcher(agentId, false, name);
+    return configureSharedWatcher(agentId, false, 'restore', name);
   }
   reconcile(agentId: string, enabled: boolean): Promise<void> {
-    return configureSharedWatcher(agentId, enabled);
+    return configureSharedWatcher(agentId, enabled, 'explicit');
   }
   reconcileSubagent(agentId: string, name: string, enabled: boolean): Promise<void> {
-    return configureSharedWatcher(agentId, enabled, name);
+    return configureSharedWatcher(agentId, enabled, 'explicit', name);
   }
   /** Stops every locally hosted watcher and session, so none outlives Console. */
   dispose(): Promise<void> {

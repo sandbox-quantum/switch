@@ -248,4 +248,4 @@ def test_a_fault_that_is_not_occupancy_is_logged_and_not_raised(
         claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
 
     assert any("could not claim room" in r.getMessage() for r in caplog.records)
-    assert conn.closed_reason is None
+    assert conn.closure is None
