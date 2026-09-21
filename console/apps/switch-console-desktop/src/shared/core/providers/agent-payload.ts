@@ -118,7 +118,7 @@ export type HostDependencySelection = InstallOverride | null;
 type InstallCommandError =
   | { type: 'permission-denied'; message: string; output: string; exitCode?: number }
   | { type: 'command-failed'; message: string; output: string; exitCode?: number }
-  | { type: 'pty-open-failed'; message: string };
+  | { type: 'process-open-failed'; message: string };
 
 export type AgentInstallError =
   | { type: 'unknown-dependency'; id: string }

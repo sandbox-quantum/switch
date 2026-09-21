@@ -17,8 +17,7 @@ export type CommandContext = {
    * own session across the Switch Console lifetime (e.g. claude --session-id, opencode --session). */
   sessionId?: string;
   /** Provider-native session identifier stored by the agent classifier. When present, used
-   * for resume on providers that generate their own session IDs (e.g. grok, copilot, kimi,
-   * codex, droid). Undefined means the provider has not yet emitted a session ID. */
+   * for resume on providers that generate their own session IDs (e.g. Codex). Undefined means the provider has not yet emitted a session ID. */
   providerSessionId?: string;
   isResuming?: boolean;
   model: string;
@@ -44,14 +43,6 @@ export const promptCapability = definePluginCapability<Prompt>()(
     z.object({
       kind: z.literal('argv'),
       flag: z.string().optional(),
-    }),
-    z.object({
-      kind: z.literal('keystroke'),
-      submitSequence: z.string().optional(),
-      submitDelayMs: z.number().optional(),
-    }),
-    z.object({
-      kind: z.literal('stdin-pipe'),
     }),
     z.object({
       kind: z.literal('none'),

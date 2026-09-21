@@ -3,6 +3,7 @@ import type {
   SwitchLaunchSpecialization,
 } from '@switch-console/core/agents/plugins';
 import z from 'zod';
+import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-schema';
 
 /**
@@ -94,6 +95,11 @@ export const agentProviderConfig = defineVersionedSchema()
 
 export type AgentProviderConfig = typeof agentProviderConfig.Type;
 
+/** Whether a stored provider ID is supported by this build. */
+export function supportsProviderRuntime(providerId: string | null | undefined): boolean {
+  return isValidProviderId(providerId);
+}
+
 /**
  * Map stored per-agent config to the launch-time specialization the profile
  * builder consumes. Returns `undefined` when nothing is set, so callers pass no
@@ -145,5 +151,7 @@ export function providerConfigFromAttributes(
     const value = clean(raw);
     if (value !== undefined) values[key] = value;
   }
-  return Object.keys(values).length > 0 ? { version: '2', providerId, values } : null;
+  delete values.runtime;
+  if (Object.keys(values).length === 0) return null;
+  return { version: '2', providerId, values };
 }

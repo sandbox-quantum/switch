@@ -6,7 +6,7 @@
  * CLIs are installed with npm and therefore need Node first. Here the order is
  * declared once, in one place:
  *
- *   1. core host tools, in dependency order (git → node → tmux → …)
+ *   1. core host tools, in dependency order (git → node)
  *   2. per agent type: its CLI, then the Switch connector plugin
  *
  * Rebuilding is **merge, not replace**. A plan is rebuilt whenever the set of
@@ -31,8 +31,9 @@ export type PlannableDependency = {
   name: string;
 };
 
-/** An agent type that can run under Switch, and therefore needs CLI + plugin. */
+/** A supported CLI and whether it needs a separately installed connector. */
 export type PlannableAgentType = {
+  connectorRequired: boolean;
   agentId: string;
   name: string;
 };
@@ -41,7 +42,7 @@ export type BuildPlanInput = {
   sshHost: string;
   /** Core host tools, already in the order they should be installed. */
   coreDependencies: PlannableDependency[];
-  /** Agent types worth offering — only those the Switch plugin supports. */
+  /** Supported agent types to offer on the execution host. */
   agentTypes: PlannableAgentType[];
   /** Existing plan to merge onto, when one has been persisted. */
   existing: HostSetupPlan | null;
@@ -88,15 +89,16 @@ export function buildSetupPlan(input: BuildPlanInput): HostSetupPlan {
         dependsOn: coreDependencies.some((d) => d.id === 'node') ? ['node'] : [],
       })
     );
-    steps.push(
-      blankStep(
-        agentPluginStepId(agent.agentId),
-        'agent-plugin',
-        `${agent.name} · Switch connector`,
-        now,
-        { dependsOn: [agent.agentId] }
-      )
-    );
+    if (agent.connectorRequired)
+      steps.push(
+        blankStep(
+          agentPluginStepId(agent.agentId),
+          'agent-plugin',
+          `${agent.name} · Switch connector`,
+          now,
+          { dependsOn: [agent.agentId] }
+        )
+      );
   }
 
   return {

@@ -1,5 +1,6 @@
 import './app/configure-app-identity';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
@@ -29,9 +30,9 @@ import {
   reconcileResourceSampler,
   stopResourceSampler,
 } from './core/resource-monitor/resource-sampler';
+import { reapDetachedLocalWatchers } from './core/sdk-host/reap-local-hosts';
 import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
-import { registerSidecarDiagnostics } from './core/sidecar/sidecar-diagnostics';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
@@ -58,6 +59,8 @@ if (import.meta.env.DEV) {
   dotenvConfig({ path: '.env.local', override: false });
 }
 
+const LOCAL_HOST_SHUTDOWN_MS = 5000;
+
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
 }
@@ -68,7 +71,6 @@ setupDeeplinks();
 initializeFileLogger();
 registerLogEnrichment();
 registerAppDiagnostics();
-registerSidecarDiagnostics();
 registerProcessErrorLogging(log);
 registerRendererLogHandler(ipcMain);
 logAppStart();
@@ -208,6 +210,12 @@ void app.whenReady().then(async () => {
   // then start the auto_session watchers — the watcher's "is a session already
   // attending this room?" check relies on those connections being present.
   void Promise.all([agentHookReady, dependenciesReady, migrationReady]).then(async () => {
+    try {
+      bridgeAgentEventsToRenderer();
+      await initializeRemoteDiscovery();
+    } catch (e) {
+      log.error('Failed to initialise remote session discovery at startup:', e);
+    }
     // Must precede the remote watchers: they gate on host reachability, and
     // starting them first would let every agent on a known-down host attempt a
     // connect before the persisted state is loaded.
@@ -221,6 +229,14 @@ void app.whenReady().then(async () => {
     } catch (e) {
       log.error('Failed to restore Switch room sessions at startup:', e);
     }
+    // Must precede the watchers: an earlier build left detached watchers behind
+    // for local agents, and one still holding a root would block the in-process
+    // watcher that replaces it.
+    try {
+      await reapDetachedLocalWatchers();
+    } catch (e) {
+      log.error('Failed to reap detached local watchers at startup:', e);
+    }
     try {
       await autoSessionWatcher.initialize();
     } catch (e) {
@@ -230,12 +246,6 @@ void app.whenReady().then(async () => {
       await initializeRemoteWatchers();
     } catch (e) {
       log.error('Failed to initialise remote watchers at startup:', e);
-    }
-    try {
-      bridgeAgentEventsToRenderer();
-      await initializeRemoteDiscovery();
-    } catch (e) {
-      log.error('Failed to initialise remote session discovery at startup:', e);
     }
   });
 
@@ -276,8 +286,20 @@ app.on('before-quit', (event) => {
   localServerService.dispose();
   remoteServerService.dispose();
   updateService.dispose();
-  void locationManager.dispose().catch((e) => {
-    log.error('Failed to shutdown location manager:', e);
-  });
-  app.exit(0);
+  void (async () => {
+    // Locally hosted watchers and sessions are Console's own children. Stop them
+    // before exiting, bounded so a stuck host cannot keep Console from quitting.
+    await Promise.race([
+      autoSessionWatcher.dispose(),
+      delay(LOCAL_HOST_SHUTDOWN_MS).then(() =>
+        log.warn('Local SDK hosts did not stop in time; they may outlive Console.')
+      ),
+    ]).catch((e) => {
+      log.error('Failed to stop local SDK hosts:', e);
+    });
+    await locationManager.dispose().catch((e) => {
+      log.error('Failed to shutdown location manager:', e);
+    });
+    app.exit(0);
+  })();
 });

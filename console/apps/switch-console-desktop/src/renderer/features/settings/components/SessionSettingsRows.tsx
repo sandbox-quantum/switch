@@ -1,6 +1,5 @@
 import React from 'react';
 import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { Switch } from '@renderer/lib/ui/switch';
 import { InfoTooltip } from './InfoTooltip';
 import { ResetToDefaultButton } from './ResetToDefaultButton';
@@ -85,41 +84,6 @@ export const PreserveSessionNameCapitalizationRow: React.FC = () => {
             checked={sessionSettings.preserveNameCapitalization}
             disabled={sessionSettings.loading || sessionSettings.saving}
             onCheckedChange={sessionSettings.updatePreserveNameCapitalization}
-          />
-        </>
-      }
-    />
-  );
-};
-
-export const EnableTmuxRow: React.FC = () => {
-  const {
-    value: locations,
-    update,
-    isLoading: loading,
-    isSaving: saving,
-    isFieldOverridden,
-    resetField,
-  } = useAppSettingsKey('location');
-
-  const tmuxByDefault = locations?.tmuxByDefault ?? false;
-
-  return (
-    <SettingRow
-      title="Enable tmux"
-      description="Run agent sessions and terminals in tmux sessions by default."
-      control={
-        <>
-          <ResetToDefaultButton
-            visible={isFieldOverridden('tmuxByDefault')}
-            defaultLabel="off"
-            onReset={() => resetField('tmuxByDefault')}
-            disabled={loading || saving}
-          />
-          <Switch
-            checked={tmuxByDefault}
-            disabled={loading || saving}
-            onCheckedChange={(checked) => update({ tmuxByDefault: checked })}
           />
         </>
       }

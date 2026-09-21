@@ -63,12 +63,10 @@ function runElectronRebuild(onlyModules: string[]) {
   process.exit(typeof result.status === 'number' ? result.status : 1);
 }
 
-const disablePty = process.env.SWITCHDASH_DISABLE_PTY === '1';
 const disableNativeDb = process.env.SWITCHDASH_DISABLE_NATIVE_DB === '1';
 
 const nativeModules: string[] = [];
 if (!disableNativeDb) nativeModules.push('better-sqlite3');
-if (!disablePty) nativeModules.push('node-pty');
 
 if (nativeModules.length === 0) {
   process.exit(0);

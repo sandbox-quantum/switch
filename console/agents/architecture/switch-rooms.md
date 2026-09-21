@@ -14,7 +14,7 @@ and how a room's conversation is shown in the app.
 | Room connection, credentials, event stream | `src/main/core/switch-rooms/` |
 | Room/session binding | table `session_room_connections`, `session-room-store.ts` |
 | Auto-start a session from room activity | `switch-rooms/auto-session-watcher.ts` |
-| Prompt injection into a live TUI | `switch-rooms/injection-sink.ts`, `tmux-injection-sink.ts` |
+| Durable room delivery | `packages/agent-providers/src/host/` and server SDK session commands |
 | Switch servers (managed or external) | `src/main/core/switch-servers/`, `managed-switch-server/` |
 | Renderer | `src/renderer/features/switch-rooms/`, `features/switch-servers/` |
 | Shared types | `src/shared/core/switch-rooms/` |
@@ -36,20 +36,13 @@ remember.
 session, and starts one. This is why an agent can be addressed from Slack or Mattermost and
 simply respond, without anyone opening Switch Console first.
 
-**The sidecar has its own implementation of this watcher**
-(`src/sidecar/notification-watcher.ts`). They are two implementations of one behaviour, and
-neither follows the other — see the sidecar table in `AGENTS.md`.
+## SDK room delivery
 
-## Prompt injection
-
-Some providers cannot be handed a new prompt through an API once their TUI is running, so
-Switch Console types it in. `InjectionSink` abstracts the transport:
-
-- **Local** — write straight to the agent's PTY via node-pty.
-- **Remote** — the sidecar performs `tmux send-keys` into the agent's tmux pane.
-
-`acquire` returns null when the target is not ready to receive input (e.g. the PTY is not
-live yet); callers defer and retry rather than dropping the injection.
+The persistent host binds its room stream to the SDK session through the
+server. Addressed messages retain durable delivery identities and are queued
+through native provider adapters. Room controls use server-authorized commands
+with receipts and recovery epochs. Unknown outcomes are never resent
+implicitly. Local and SSH execution follow the same contract.
 
 ## The inline bridge pane (CHOO-1674)
 
@@ -81,6 +74,7 @@ oldest beyond a handful.
 
 ## When editing here
 
-- Changing session startup? Check whether `src/sidecar/` needs the same change.
-- Changing what reaches a session's environment? Both sides build that separately.
-- See `agents/architecture/remote-execution.md` for hosts, reachability, and the sidecar.
+- Test room binding, replay cursors and command receipts across host recovery.
+- Keep local and SSH host behavior aligned.
+- See [SDK sessions](../../docs/sdk-sessions.md) and
+  [remote execution](remote-execution.md).

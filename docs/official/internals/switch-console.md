@@ -18,9 +18,9 @@ Console is an Electron app, developed in a monorepo alongside the rest of Switch
 | **Preload** | A context bridge exposing a narrow, explicit API to the renderer |
 | **Renderer** | The React UI |
 | **Shared** | The agent provider registry and the types both sides agree on |
-| **Sidecar** | A headless on-host process, not an Electron one |
+| **Sidecar** | A headless process on a remote host, not an Electron one |
 
-The sidecar exists because Console is a window on a laptop and laptops close. Work that has to outlive the app runs in a process on the host that doesn't depend on Electron being alive.
+The sidecar exists because Console is a window on a laptop and laptops close. Work that has to outlive the app runs in a process on the remote host that doesn't depend on Electron being alive. It is a remote mechanism only: a local agent is never given one.
 
 ## Its own database
 
@@ -59,13 +59,17 @@ sequenceDiagram
 
 The session's runtime is the connector process that runs beside the agent and speaks HTTP and SSE to the agent bridge. It holds the event stream and claims the room the message arrived in.
 
-### A separate implementation per host
+### One implementation, two process trees
 
-The sidecar carries its own implementation of on-demand start for remote hosts. Local and remote are independent implementations of one behavior.
+On-demand start is one implementation for both local and remote agents. What differs is where the watcher runs and what its process tree hangs off — and that difference is deliberate, not an accident of history.
 
-Fixing on-demand start in Console does not fix it on a remote host. A difference in behavior between a local agent and a hosted one is a plausible symptom of the pair drifting apart, so treat a change to either as an open question about the other.
+**Local.** The watcher runs inside the Console process, and Console supervises the session it starts. Quitting Console stops the watcher and its sessions with it. Nothing is left detached and no sidecar is deployed, so a local agent does not answer while Console is closed. That is the intended behavior: the machine the agent lives on is the machine Console is on, and a process quietly surviving on someone's own laptop is a surprise, not a feature.
 
-An agent that didn't answer is usually a question about the machine. The server did its part when the message was addressed. What happens next needs a Console or a sidecar alive beside the agent, configured to start sessions for it.
+**Remote.** The watcher runs in the sidecar on the SSH host. Console deploys and manages it but is not in its process tree and is not required for it to run, which is the whole point — a remote agent keeps working with Console closed.
+
+In both cases the agent's own CLI is a separate process: the provider SDKs launch it and talk to it, so there is always at least one process per running agent whatever the design. What moves between the two shapes is the watcher and the supervision around it.
+
+An agent that didn't answer is usually a question about the machine. The server did its part when the message was addressed. What happens next needs Console open beside a local agent, or a sidecar alive beside a remote one, configured to start sessions for it.
 
 ## Binding a session to a room
 

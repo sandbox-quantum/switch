@@ -45,6 +45,11 @@ spec:
               name: teams
               protocol: TCP
             {{- end }}
+            {{- if .Values.switchCore.collaborationCallback.enabled }}
+            - containerPort: {{ .Values.switchCore.collaborationCallback.port }}
+              name: callbacks
+              protocol: TCP
+            {{- end }}
           env:
             {{- include "switch.coreEnv" . | nindent 12 }}
           # Readiness checks the database; liveness deliberately does not.

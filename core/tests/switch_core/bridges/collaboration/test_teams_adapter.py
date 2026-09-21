@@ -785,6 +785,18 @@ class _RecordThenRaiseConnector(_FakeConnector):
     async def send_to_conversation(
         self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
     ) -> str:
+        self._record(service_url, conversation_id, activity)
+        raise RuntimeError("boom")
+
+    async def send_signal(
+        self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
+    ) -> None:
+        self._record(service_url, conversation_id, activity)
+        raise RuntimeError("boom")
+
+    def _record(
+        self, service_url: str, conversation_id: str, activity: dict[str, Any]
+    ) -> None:
         self.sends.append(
             {
                 "service_url": service_url,
@@ -792,7 +804,6 @@ class _RecordThenRaiseConnector(_FakeConnector):
                 "activity": activity,
             }
         )
-        raise RuntimeError("boom")
 
 
 def test_typing_failure_is_swallowed() -> None:
@@ -827,7 +838,7 @@ def _rendering(label: str, icon_url: str) -> AgentRendering:
 
 def test_agent_card_carries_name_and_body() -> None:
     card = agent_message_card(
-        _rendering("worker", "https://example.com/i.png"), "the message body", []
+        _rendering("worker", "https://example.com/i.png"), "the message body", [], []
     )
     # Name appears in the header column; body appears as its own TextBlock.
     header = card["body"][0]["columns"][1]["items"][0]
@@ -837,7 +848,7 @@ def test_agent_card_carries_name_and_body() -> None:
 
 def test_agent_card_renders_the_supplied_icon() -> None:
     card = agent_message_card(
-        _rendering("worker", "https://example.com/custom.png"), "body", []
+        _rendering("worker", "https://example.com/custom.png"), "body", [], []
     )
     image = card["body"][0]["columns"][0]["items"][0]
     assert image["url"] == "https://example.com/custom.png"
@@ -848,7 +859,7 @@ async def test_message_activity_carries_notification_summary_and_fallback() -> N
     # Teams renders a "cards.unsupported" placeholder in notifications, mobile, and
     # link/search previews.
     adapter = _adapter()
-    activity = await adapter._message_activity("worker", "hello world")
+    activity = await adapter._message_activity("worker", "hello world", [])
     assert activity["summary"] == "worker: hello world"
     assert (
         activity["attachments"][0]["content"]["fallbackText"] == "worker: hello world"
@@ -863,7 +874,7 @@ async def test_message_activity_uses_the_agents_own_icon_when_it_has_one() -> No
         return AgentPresentation(display_name=None, icon_url=icon)
 
     adapter.set_agent_presentation_resolver(_resolver)
-    activity = await adapter._message_activity("worker", "hello")
+    activity = await adapter._message_activity("worker", "hello", [])
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]
     assert image["url"] == "https://example.com/worker.png"
@@ -876,194 +887,13 @@ async def test_message_activity_falls_back_to_the_default_icon() -> None:
         return AgentPresentation(display_name=None, icon_url=None)
 
     adapter.set_agent_presentation_resolver(_resolver)
-    activity = await adapter._message_activity("worker", "hello")
+    activity = await adapter._message_activity("worker", "hello", [])
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]
     assert image["url"] == default_icon_url("worker")
-
-
-# ── Runtime state ────────────────────────────────────────────────────────────
-
-
-class _CountingConnector:
-    """Connector fake that returns a distinct id per posted message."""
-
-    def __init__(self) -> None:
-        self.threads: list[dict[str, Any]] = []
-        self.sends: list[dict[str, Any]] = []
-        self.updates: list[dict[str, Any]] = []
-        self.deletes: list[str] = []
-        self._n = 0
-
-    def _next(self) -> str:
-        self._n += 1
-        return f"M{self._n}"
-
-    async def create_channel_thread(
-        self, *, service_url: str, channel_id: str, activity: dict[str, Any]
-    ) -> tuple[str, str]:
-        self.threads.append(activity)
-        mid = self._next()
-        return f"{channel_id};messageid={mid}", mid
-
-    async def send_to_conversation(
-        self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
-    ) -> str:
-        self.sends.append({"conversation_id": conversation_id, "activity": activity})
-        return self._next()
-
-    async def update_activity(
-        self,
-        *,
-        service_url: str,
-        conversation_id: str,
-        activity_id: str,
-        activity: dict[str, Any],
-    ) -> None:
-        self.updates.append({"activity_id": activity_id, "activity": activity})
-
-    async def delete_activity(
-        self, *, service_url: str, conversation_id: str, activity_id: str
-    ) -> None:
-        self.deletes.append(activity_id)
 
 
 def _card_text(activity: dict[str, Any]) -> str:
     """The body an agent card carries, whatever its shape."""
     card = activity["attachments"][0]["content"]
     return "\n".join(str(block.get("text", "")) for block in card["body"])
-
-
-def _wire_counting(adapter: TeamsAdapter, connector: _CountingConnector) -> None:
-    adapter._connector = connector  # type: ignore[assignment]
-    adapter._default_service_url = "https://smba.example/amer/"
-    adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
-
-
-def test_working_posts_status_card() -> None:
-    adapter = _adapter()
-    fake = _CountingConnector()
-    _wire_counting(adapter, fake)
-
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    assert len(fake.threads) == 1
-    assert adapter._working_msg[("19:abc@thread.tacv2", "worker")].message_ref == "M1"
-
-
-def test_working_detail_refreshes_in_place() -> None:
-    adapter = _adapter()
-    fake = _CountingConnector()
-    _wire_counting(adapter, fake)
-
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-            detail="Editing adapter.py",
-        )
-    )
-
-    # One post, one in-place edit; the tracked ref is unchanged.
-    assert len(fake.threads) == 1
-    assert len(fake.updates) == 1
-    assert fake.updates[0]["activity_id"] == "M1"
-    assert adapter._working_msg[("19:abc@thread.tacv2", "worker")].message_ref == "M1"
-
-
-def test_idle_retires_the_working_message_by_editing_it() -> None:
-    adapter = _adapter()
-    fake = _CountingConnector()
-    _wire_counting(adapter, fake)
-
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "idle",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    # A posts channel: Teams substitutes "This message has been deleted." for
-    # anything removed and keeps it in the post, so the status is edited into a
-    # terminal marker instead of being deleted.
-    assert fake.deletes == []
-    assert [u["activity_id"] for u in fake.updates] == ["M1"]
-    assert "Done" in _card_text(fake.updates[-1]["activity"])
-    assert ("19:abc@thread.tacv2", "worker") not in adapter._working_msg
-
-
-def test_awaiting_input_keeps_working_and_pings() -> None:
-    adapter = _adapter()
-    fake = _CountingConnector()
-    _wire_counting(adapter, fake)
-    key = ("19:abc@thread.tacv2", "worker")
-
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "awaiting-input",
-            mention_handle="louis",
-            thread_root_id=None,
-        )
-    )
-
-    # Working indicator stays up; a ping is tracked separately.
-    assert adapter._working_msg[key].message_ref == "M1"
-    assert adapter._input_pings[key] == ["M2"]
-
-    _run(
-        adapter.apply_runtime_state(
-            "19:abc@thread.tacv2",
-            "worker",
-            "idle",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    # Both are retired on idle — edited, not deleted, in a posts channel.
-    assert fake.deletes == []
-    assert {u["activity_id"] for u in fake.updates} == {"M1", "M2"}
-    assert key not in adapter._working_msg
-    assert key not in adapter._input_pings

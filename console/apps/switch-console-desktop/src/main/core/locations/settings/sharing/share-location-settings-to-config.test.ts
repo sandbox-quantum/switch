@@ -55,7 +55,7 @@ describe('shareLocationSettingsToConfig', () => {
         get: vi.fn().mockResolvedValue({
           defaultBranch: 'origin/main',
           baseRemote: 'origin',
-          tmux: true,
+          autoRunSetupScriptOnSessionCreation: true,
           preservePatterns: ['.env', '.env.local'],
           shellSetup: 'nvm use',
           scripts: {

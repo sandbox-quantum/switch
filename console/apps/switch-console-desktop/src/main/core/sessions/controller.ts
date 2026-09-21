@@ -1,8 +1,4 @@
-import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
-import type { AttachState } from '@main/core/agent-runtime/attachment/types';
-import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { provisionTriggerOf } from '@main/core/telemetry/narrow';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -14,54 +10,11 @@ import { markSessionSeen } from './operations/markSessionSeen';
 import { restartSessionAgent } from './operations/restartSessionAgent';
 import { sessionService } from './session-service';
 
-/**
- * Report an attach the user asked for and waited on.
- *
- * Only the two states that are an answer. `attaching` is not over yet, and
- * `detached` covers both a local session, which never attaches, and an attach
- * cancelled because the transport dropped — one failure for the whole host, not
- * one per session queued behind it.
- */
-function reportAttach(sessionId: string, state: AttachState): void {
-  if (state !== 'attached' && state !== 'failed') return;
-
-  // Not awaited: describing the attach needs a read the person attaching should
-  // not be waiting on, and a failure to describe it must not fail the attach.
-  void getSession(sessionId)
-    .then((session) => {
-      trackEvent('session_attached', {
-        agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
-        outcome: state === 'attached' ? 'success' : 'failure',
-      });
-    })
-    .catch(() => {});
-}
-
 export const sessionController = createRPCController({
   getSession,
   hydrateSession,
   dehydrateSession,
   markSessionSeen,
-  /**
-   * Tell the main process which session the user is looking at.
-   *
-   * Attachment is capped per remote host, and the focused session is the one
-   * that must always have a terminal: it is pinned against eviction and
-   * attached on demand. Pass null when leaving the session view.
-   */
-  async focusSession(sessionId: string | null) {
-    remoteAttachmentPool.setFocused(sessionId);
-  },
-  /** Attach a session's terminal on request — the detached state's Attach button. */
-  async attachSession(sessionId: string) {
-    const state = await remoteAttachmentPool.requestAttach(sessionId, 'user');
-    reportAttach(sessionId, state);
-    return state;
-  },
-  /** Close a session's terminal, leaving its agent running on the VM. */
-  async detachSession(sessionId: string) {
-    await remoteAttachmentPool.requestDetach(sessionId);
-  },
   async createSession(params: CreateSessionParams) {
     return sessionService.createSession(params);
   },

@@ -64,15 +64,18 @@ export function ModelCombobox({
       // The typed text is the value: picking an item fills the box, and what is
       // in the box is what gets saved, listed or not.
       inputValue={value}
-      onInputValueChange={(next: string) => {
+      onInputValueChange={(next: string, details) => {
+        if (details.reason === 'escape-key') return;
         onChange(next);
         // Typing has to open the list, and does not on its own here: the input
         // value is controlled, so the combobox treats the change as programmatic
         // rather than as someone typing, and stays shut. Without this the list
         // only ever appeared via the chevron.
-        setOpen(true);
+        if (details.reason === 'input-change') setOpen(true);
       }}
-      onValueChange={(next: string | null) => onChange(next ?? '')}
+      onValueChange={(next: string | null, details) => {
+        if (details.reason !== 'escape-key') onChange(next ?? '');
+      }}
       open={open}
       onOpenChange={setOpen}
       openOnInputClick
@@ -82,7 +85,7 @@ export function ModelCombobox({
         <ComboboxList>
           {(group: ProviderGroup) => (
             <ComboboxGroup key={group.value} items={group.items}>
-              <ComboboxLabel>{group.value}</ComboboxLabel>
+              {group.value && <ComboboxLabel>{group.value}</ComboboxLabel>}
               <ComboboxCollection>
                 {(modelId: string) => (
                   <ComboboxItem key={modelId} value={modelId}>
@@ -100,7 +103,9 @@ export function ModelCombobox({
         </ComboboxList>
         {/* Not an error: a name that matches nothing is still allowed, and the
             field's own note says whether the host knows it. */}
-        <ComboboxEmpty>No model of that name on this host.</ComboboxEmpty>
+        <ComboboxEmpty>
+          No matching model in the loaded list. You can enter a model ID.
+        </ComboboxEmpty>
       </ComboboxContent>
     </Combobox>
   );
@@ -114,7 +119,7 @@ export function ModelCombobox({
 export function groupByProvider(models: LaunchProfileModel[]): ProviderGroup[] {
   const groups: ProviderGroup[] = [];
   for (const model of models) {
-    const provider = model.id.split('/')[0] ?? '';
+    const provider = model.id.includes('/') ? model.id.split('/')[0]! : '';
     const group = groups.find((candidate) => candidate.value === provider);
     if (group) group.items.push(model.id);
     else groups.push({ value: provider, items: [model.id] });

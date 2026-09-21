@@ -8,7 +8,6 @@ from switch_core.clients.client_base import (
     ClientBaseKwargs,
     ClientConfig,
 )
-from switch_core.events import AgentRuntimeStateEvent
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
 if TYPE_CHECKING:
@@ -48,8 +47,3 @@ class BridgeClient(ClientBase[BridgeClientConfig]):
             event.sender,
         )
         await self._bridge_core.handle_outbound_media(room, event, self)
-
-    async def on_agent_runtime_state(
-        self, room: RoomRef, event: AgentRuntimeStateEvent
-    ) -> None:
-        await self._bridge_core.handle_agent_runtime_state(room, event)
