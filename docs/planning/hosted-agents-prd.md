@@ -1,8 +1,8 @@
 # PRD: Switch Hosted Agents
 
 Status: Updated draft for product and engineering review; not deployed
-Updated: 2026-09-18
-Implementation base: `codex/sdk-server-split`
+Updated: 2026-09-21
+Implementation base: `main` (SDK/server split and subsequent fixes integrated)
 Audience: Product, application engineering and infrastructure engineering
 
 ## Current position
@@ -44,10 +44,12 @@ inventory remain outside this public document.
 
 ### Implementation stack
 
-Review/merge order:
-1. [SDK/server split — PR #427](https://github.com/sandbox-quantum/switch/pull/427).
-2. [Hosted runtime foundation — PR #502](https://github.com/sandbox-quantum/switch/pull/502).
-3. [Operator-controlled EC2 workers — PR #503](https://github.com/sandbox-quantum/switch/pull/503).
+The SDK/server work is now integrated in `main`. Review/merge order:
+1. [Hosted runtime foundation — PR #502](https://github.com/sandbox-quantum/switch/pull/502), based on `main`.
+2. [Operator-controlled EC2 workers — PR #503](https://github.com/sandbox-quantum/switch/pull/503), based on the runtime foundation.
+
+The rebase preserves the newer Console-owned local watcher lifecycle, detached
+remote supervision and build-aware process ownership from `main`.
 
 At this checkpoint, the hosted PR checks passed; one existing recovery-test
 assertion needed a rerun. Adversarial review found lifecycle defects, which were
