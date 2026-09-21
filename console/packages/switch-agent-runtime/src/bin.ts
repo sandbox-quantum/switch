@@ -526,6 +526,13 @@ let cursor = 0;
 // the connection outlives its stream, so the incarnation is still ours.
 let streamGeneration: number | null = null;
 
+// Whether the server has named the incarnation of the stream we are opening.
+// False from the moment a socket is attempted until its `connection_state`
+// arrives — every attach makes a new incarnation, so a beat sent inside that
+// window names the one before it and is refused as a takeover. The heartbeat
+// sits the window out rather than reading its own reconnect as a displacement.
+let streamAttached = false;
+
 // Whether the currently open stream declared a room when it opened.
 let streamHasRoom = false;
 
@@ -1204,6 +1211,7 @@ function stopStream() {
     streamAbort.abort();
     streamAbort = null;
   }
+  streamAttached = false;
   pollingRoomId = null;
 }
 
@@ -1222,6 +1230,7 @@ function startStream() {
 
     while (!abort.signal.aborted) {
       let openedAt = 0;
+      streamAttached = false;
       try {
         const params = new URLSearchParams({
           connection_id: CONNECTION_ID,
@@ -1290,6 +1299,7 @@ async function handleFrame(frame: SseFrame): Promise<void> {
   switch (frame.event) {
     case 'connection_state':
       if (typeof frame.data.generation === 'number') streamGeneration = frame.data.generation;
+      streamAttached = true;
       process.stderr.write(
         `switch: connection established (rooms=${JSON.stringify(frame.data.rooms)})\n`
       );
@@ -1430,6 +1440,16 @@ function startHeartbeat() {
   void (async () => {
     let interval = HEARTBEAT_INTERVAL_MS;
     while (!abort.signal.aborted) {
+      if (!streamAttached) {
+        // Mid-attach. The incarnation we hold is the one before this open, so
+        // sending it would be refused as a takeover — and a beat with no
+        // stream attached is refused anyway, so the tick is worth nothing
+        // until the frame lands. Waited out at the ordinary cadence rather
+        // than the backoff, which is there for a server refusing beats, not
+        // for a socket still opening: the connection lapses in seconds.
+        await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+        continue;
+      }
       try {
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/connection/beat`, {
           method: 'POST',

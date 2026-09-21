@@ -114,6 +114,44 @@ export function beatRefusalCode(body: string): string | null {
   }
 }
 
+/**
+ * The gate the heartbeat waits at while the stream is attaching.
+ *
+ * Opened by the `connection_state` frame that ends an attach, and closed again
+ * before the next open is attempted. Every attach makes a new incarnation of
+ * the connection server-side — the first one and every reopen alike — so a
+ * tick sent between the open and its frame carries the incarnation before it
+ * and is refused as a takeover. A client would be reading its own reconnect as
+ * someone else's. Beating pauses across that window instead.
+ */
+class Attachment {
+  private live = false;
+  private open: () => void = () => {};
+  private gate: Promise<void> = new Promise((resolve) => {
+    this.open = resolve;
+  });
+
+  /** Resolves once the stream is attached; already resolved while it is. */
+  get reached(): Promise<void> {
+    return this.gate;
+  }
+
+  /** The server has said which incarnation this socket is. */
+  arrived(): void {
+    this.live = true;
+    this.open();
+  }
+
+  /** A socket is about to be opened, which will make a new incarnation. */
+  departed(): void {
+    if (!this.live) return;
+    this.live = false;
+    this.gate = new Promise((resolve) => {
+      this.open = resolve;
+    });
+  }
+}
+
 /** Resolves when any of these signals aborts, so a wait can be given up on. */
 function until(...signals: AbortSignal[]): Promise<void> {
   const any = AbortSignal.any(signals);
@@ -221,21 +259,19 @@ export class SwitchEventStream {
    * `connection_state`, and against a server too old to send one.
    */
   private generation: number | null = null;
-  private announceAttached: () => void = () => {};
   /**
-   * Resolved by the first `connection_state` frame of this connection's life.
+   * Whether the server has told us which incarnation this socket is.
    *
-   * The heartbeat waits on it. Until the server has said which incarnation we
-   * are, a tick cannot be fenced, and an unfenced tick is exactly what a
-   * displaced client sends — so beating before the frame arrives is beating as
-   * someone the server cannot place. There is nothing to keep alive yet
-   * either: the connection does not exist until the stream opens it. A server
-   * too old to carry an incarnation still sends the frame, so waiting costs
-   * that case nothing.
+   * The heartbeat waits on it before every tick. Until the frame arrives a
+   * tick cannot be fenced with anything current: before the first one there is
+   * no incarnation to send, and before a later one there is a stale one, which
+   * is worse — the server refuses it as a takeover and we would stand down
+   * over our own reconnect. There is nothing to keep alive across that window
+   * either; a beat with no stream attached is refused anyway. A server too old
+   * to carry an incarnation still sends the frame, so waiting costs that case
+   * nothing.
    */
-  private readonly attached: Promise<void> = new Promise((resolve) => {
-    this.announceAttached = resolve;
-  });
+  private readonly attachment = new Attachment();
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -411,6 +447,10 @@ export class SwitchEventStream {
     while (!signal.aborted && !this.halt.signal.aborted) {
       const socketAbort = new AbortController();
       this.socketAbort = socketAbort;
+      // Closed before the open rather than after it lands: it is this open
+      // that makes the new incarnation, so the heartbeat has to be held from
+      // here until the frame naming it arrives.
+      this.attachment.departed();
       let openedAt = 0;
       let failure: unknown = null;
       try {
@@ -519,7 +559,7 @@ export class SwitchEventStream {
           server: frame.data.server ?? null,
         });
         this.reportRooms(frame.data.rooms);
-        this.announceAttached();
+        this.attachment.arrived();
         return;
       case 'subscription_changed':
         log.debug('SwitchEventStream: subscription changed', {
@@ -619,11 +659,11 @@ export class SwitchEventStream {
       });
     };
 
-    // Nothing to keep alive until the server has told us we are connected, and
-    // nothing to fence the tick with either.
-    await Promise.race([this.attached, until(signal, this.halt.signal)]);
-
     while (!signal.aborted && !this.halt.signal.aborted) {
+      // Every pass, not only the first: a reconnect makes a new incarnation,
+      // and the tick has to name the one the server is on.
+      await Promise.race([this.attachment.reached, until(signal, this.halt.signal)]);
+      if (signal.aborted || this.halt.signal.aborted) return;
       try {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,

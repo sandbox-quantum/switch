@@ -7,6 +7,7 @@ import time
 import pytest
 
 from switch_core.bridges.agent.protocol.connections import (
+    FENCED_PROTOCOL_REVISION,
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
     PROTOCOL_ACCEPTS,
@@ -301,7 +302,18 @@ def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
     _open(registry, "c1", speaks=None)
     _open(registry, "c1", speaks=None)
 
-    # A revision-1 client sends no incarnation. Unknown is not superseded.
+    # A client that declares nothing sends no incarnation. Unknown is not
+    # superseded.
+    assert registry.beat(AGENT, "c1", 4, None).cursor == 4
+
+
+def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> None:
+    registry = ConnectionRegistry()
+    _open(registry, "c1", speaks=FENCED_PROTOCOL_REVISION - 1)
+
+    # The server still accepts revision 1, and that revision has no incarnation
+    # to return, so its tick is taken as it always was. Refusing it would break
+    # every client released before the fence rather than fencing it.
     assert registry.beat(AGENT, "c1", 4, None).cursor == 4
 
 

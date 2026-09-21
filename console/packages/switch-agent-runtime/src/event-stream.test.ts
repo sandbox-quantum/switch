@@ -79,6 +79,16 @@ function openUntilAborted(init: { signal: AbortSignal }): ReadableStream<Uint8Ar
   });
 }
 
+/** The incarnation each beat carried, in order. */
+function beatGenerations(fetchMock: { mock: { calls: unknown[][] } }): (number | null)[] {
+  return fetchMock.mock.calls
+    .filter((call) => String(call[0]).includes('connection/beat'))
+    .map(
+      (call) =>
+        (JSON.parse((call[1] as { body: string }).body) as { generation: number | null }).generation
+    );
+}
+
 function urlsFor(fetchMock: { mock: { calls: unknown[][] } }, fragment: string): string[] {
   return fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes(fragment));
 }
@@ -453,6 +463,65 @@ describe('the heartbeat', () => {
     // And it carries the incarnation that frame named, so the server can fence it.
     const [, sent] = beats[0] as unknown as [string, { body: string }];
     expect(JSON.parse(sent.body).generation).toBe(7);
+    abort.abort();
+  });
+
+  it('waits for the new incarnation after its own reconnect, instead of standing down', async () => {
+    vi.useFakeTimers();
+    // A server that fences: every attach is a new incarnation, and a tick
+    // naming an older one is refused the way a displaced client's is.
+    const server = { generation: 0, announce: (): void => {}, drop: (): void => {} };
+    const fetchMock = vi.fn(async (url: string, init: { body: string }) => {
+      if (String(url).includes('/events')) {
+        server.generation += 1;
+        const attached = server.generation;
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              const announce = (): void => controller.enqueue(connected(attached));
+              // The first attach is announced at once; the second is held, so
+              // the beat falls due inside the window this test is about.
+              if (attached === 1) announce();
+              else server.announce = announce;
+              server.drop = () => controller.close();
+            },
+          }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      const sent = (JSON.parse(init.body) as { generation: number | null }).generation;
+      if (sent === server.generation)
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      return {
+        ok: false,
+        status: 409,
+        text: async (): Promise<string> =>
+          JSON.stringify({ detail: { code: 'taken_over', message: 'another stream attached' } }),
+      };
+    });
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, { rooms: [], onEvicted: (e) => evicted.push(e) });
+
+    await vi.advanceTimersByTimeAsync(2 * BEAT_INTERVAL_MS);
+    const first = beatGenerations(fetchMock);
+    expect(first.length).toBeGreaterThan(0);
+    expect(first.every((generation) => generation === 1)).toBe(true);
+
+    server.drop();
+    await vi.advanceTimersByTimeAsync(10 * BEAT_INTERVAL_MS);
+    // Nothing went out while the reopen was in flight: the incarnation we hold
+    // is the one before it, and a tick carrying that is a stand-down.
+    expect(beatGenerations(fetchMock)).toHaveLength(first.length);
+    expect(evicted).toEqual([]);
+
+    server.announce();
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+    const resumed = beatGenerations(fetchMock).slice(first.length);
+    expect(resumed.length).toBeGreaterThan(0);
+    expect(resumed.every((generation) => generation === 2)).toBe(true);
+    expect(evicted).toEqual([]);
     abort.abort();
   });
 
