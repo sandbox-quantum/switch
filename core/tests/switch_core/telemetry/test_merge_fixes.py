@@ -9,6 +9,7 @@ three that reported.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
@@ -115,11 +117,20 @@ class TestTheDeploymentIdIsCheckedWhereverItIsSet:
         _config(telemetry_enabled=True)
 
 
-class TestSessionEndsAreReportedFromEveryClosePath:
-    """Five paths close a connection and three reported. The two that did not
-    also remove it from the registry, so nothing downstream could recover it."""
+class TestASessionIsTheAgentNotTheConnection:
+    """What filled the first real dashboard, and why.
 
-    def _registry(self, sink: _RecordingSink) -> ConnectionRegistry:
+    Two ordinary things make an agent hold a succession of short connections
+    while being, to anyone watching the product, continuously present: a stream
+    rejected at the room claim and retried, and a stream whose heartbeat lapsed
+    (the TTL is six seconds) closing itself so the client reopens. Reported per
+    connection, both are a storm of session pairs seconds apart. Reported per
+    agent, neither is a session at all.
+    """
+
+    def _reporter(
+        self, sink: _RecordingSink, registry: ConnectionRegistry
+    ) -> SessionReporter:
         service = TelemetryService(
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
@@ -128,10 +139,9 @@ class TestSessionEndsAreReportedFromEveryClosePath:
             version="1.0.0",
             environment=None,
         )
-        registry = ConnectionRegistry()
-        self.reporter = SessionReporter(service)
-        registry.set_close_listener(self.reporter.on_close)
-        return registry
+        reporter = SessionReporter(service, registry)
+        registry.set_close_listener(reporter.on_close)
+        return reporter
 
     def _open(self, registry: ConnectionRegistry, agent: str = "agent-1") -> str:
         connection_id = uuid.uuid4().hex
@@ -144,86 +154,171 @@ class TestSessionEndsAreReportedFromEveryClosePath:
             cursor=0,
             declaration=ClientDeclaration(),
         )
-        # The handler reports the start once the stream is handed back; these
-        # tests are about the close, so mark it started directly.
-        self.reporter._started.add(connection_id)
         return connection_id
 
-    async def test_a_close_reports_the_session(self) -> None:
-        sink = _RecordingSink()
-        registry = self._registry(sink)
-        connection_id = self._open(registry)
-
-        registry.close(connection_id, "heartbeat lapsed")
-        # The send is fire-and-forget; let it run.
-        await _settle()
-
-        assert [r.name for r in sink.sent] == ["switch_core.agent_session_ended"]
-        assert sink.sent[0].properties["reason"] == "heartbeat_lapsed"
-
-    async def test_a_room_claim_failure_reports_too(self) -> None:
-        """One of the two paths that previously reported nothing."""
-        sink = _RecordingSink()
-        registry = self._registry(sink)
-        connection_id = self._open(registry)
-
-        registry.close(connection_id, "room already claimed")
-        await _settle()
-
-        assert sink.sent[0].properties["reason"] == "room_claimed"
-
-    async def test_an_unknown_reason_degrades_rather_than_failing(self) -> None:
-        """A reason added to the registry later must not make the event
-        invalid at the moment a session drops."""
-        sink = _RecordingSink()
-        registry = self._registry(sink)
-        connection_id = self._open(registry)
-
-        registry.close(connection_id, "something nobody mapped")
-        await _settle()
-
-        assert sink.sent[0].properties["reason"] == "error"
-
-    async def test_the_duration_is_the_session_length(self) -> None:
-        sink = _RecordingSink()
-        registry = self._registry(sink)
-        connection_id = self._open(registry)
-        conn = registry.get(connection_id)
+    async def _stream(
+        self, reporter: SessionReporter, registry: ConnectionRegistry, cid: str
+    ) -> None:
+        conn = registry.get(cid)
         assert conn is not None
-        conn.opened_at = time.monotonic() - 42.0
+        await reporter.started(
+            SimpleNamespace(metadata_={"known_agent_type": "codex"}),  # type: ignore[arg-type]
+            conn,
+        )
 
-        registry.close(connection_id, "heartbeat lapsed")
-        await _settle()
+    def _names(self, sink: _RecordingSink) -> list[str]:
+        return [r.name.removeprefix("switch_core.") for r in sink.sent]
 
-        assert 41.0 < float(sink.sent[0].properties["duration_seconds"]) < 43.0
-
-    async def test_closing_an_unknown_connection_reports_nothing(self) -> None:
+    async def test_a_rejected_stream_reports_nothing(self) -> None:
+        """No stream was handed back, so no session began."""
+        registry = ConnectionRegistry()
         sink = _RecordingSink()
-        registry = self._registry(sink)
+        self._reporter(sink, registry)
 
-        registry.close("never-opened", "heartbeat lapsed")
+        cid = self._open(registry)
+        registry.close(cid, "room already claimed")
         await _settle()
 
         assert sink.sent == []
 
-    def test_a_listener_that_raises_does_not_break_the_close(self) -> None:
-        """The registry's contract is that the connection is closed and handed
-        back. An observer cannot be allowed to change that."""
+    async def test_twenty_rejected_attempts_report_nothing(self) -> None:
+        """The retry loop, as the dashboard actually saw it."""
         registry = ConnectionRegistry()
-        self.reporter = SessionReporter(None)
+        sink = _RecordingSink()
+        self._reporter(sink, registry)
+
+        for _ in range(20):
+            cid = self._open(registry)
+            registry.close(cid, "room already claimed")
+        await _settle()
+
+        assert sink.sent == []
+
+    async def test_a_reconnect_within_the_grace_continues_the_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The heartbeat-lapse loop: one session, not one per six seconds."""
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        for _ in range(5):
+            cid = self._open(registry)
+            await self._stream(reporter, registry, cid)
+            registry.close(cid, "heartbeat lapsed")
+            await asyncio.sleep(0.01)  # well inside the grace period
+        await _settle()
+
+        assert self._names(sink) == ["agent_session_started"]
+
+    async def test_the_session_ends_once_the_agent_stays_away(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        cid = self._open(registry)
+        await self._stream(reporter, registry, cid)
+        registry.close(cid, "heartbeat lapsed")
+        await asyncio.sleep(0.15)
+        await _settle()
+
+        assert self._names(sink) == ["agent_session_started", "agent_session_ended"]
+        assert sink.sent[1].properties["reason"] == "heartbeat_lapsed"
+
+    async def test_the_duration_spans_the_whole_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not the last connection's lifetime — the span the agent was present,
+        across however many reconnects it took."""
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        cid = self._open(registry)
+        await self._stream(reporter, registry, cid)
+        reporter._sessions["agent-1"].started_at = time.monotonic() - 300.0
+        registry.close(cid, "heartbeat lapsed")
+        await asyncio.sleep(0.15)
+        await _settle()
+
+        ended = next(r for r in sink.sent if r.name.endswith("session_ended"))
+        assert float(ended.properties["duration_seconds"]) > 299.0
+
+    async def test_a_second_connection_does_not_start_a_second_session(
+        self,
+    ) -> None:
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        for _ in range(3):
+            cid = self._open(registry)
+            await self._stream(reporter, registry, cid)
+        await _settle()
+
+        assert self._names(sink) == ["agent_session_started"]
+
+    async def test_closing_one_of_several_connections_ends_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        first = self._open(registry)
+        second = self._open(registry)
+        await self._stream(reporter, registry, first)
+        await self._stream(reporter, registry, second)
+        registry.close(first, "heartbeat lapsed")
+        await asyncio.sleep(0.15)
+        await _settle()
+
+        assert self._names(sink) == ["agent_session_started"]
+
+    async def test_two_agents_are_two_sessions(self) -> None:
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        for agent in ("agent-1", "agent-2"):
+            cid = self._open(registry, agent)
+            await self._stream(reporter, registry, cid)
+        await _settle()
+
+        assert self._names(sink) == [
+            "agent_session_started",
+            "agent_session_started",
+        ]
+
+    async def test_shutdown_reports_no_ends(self) -> None:
+        """Every agent disconnects at once when the process stops; a burst of
+        ends saying "the server stopped" is noise, not signal."""
+        registry = ConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        cid = self._open(registry)
+        await self._stream(reporter, registry, cid)
+        await reporter.aclose()
+        await _settle()
+
+        assert self._names(sink) == ["agent_session_started"]
+
+    def test_a_listener_that_raises_does_not_break_the_close(self) -> None:
+        """The registry's contract — the connection is closed and handed back —
+        must not depend on whoever is watching."""
+        registry = ConnectionRegistry()
         registry.set_close_listener(lambda conn: (_ for _ in ()).throw(RuntimeError()))
-        connection_id = self._open(registry)
+        cid = self._open(registry)
 
-        assert registry.close(connection_id, "heartbeat lapsed") is not None
-        assert registry.get(connection_id) is None
-
-
-async def _settle() -> None:
-    """Let a fire-and-forget send run."""
-    import asyncio
-
-    for _ in range(3):
-        await asyncio.sleep(0)
+        assert registry.close(cid, "heartbeat lapsed") is not None
+        assert registry.get(cid) is None
 
 
 class TestTelemetryNeverPreventsBoot:
@@ -279,110 +374,7 @@ class TestTelemetryNeverPreventsBoot:
         await service.aclose()
 
 
-class TestARejectedStreamIsNotASession:
-    """The flood that reached the first real dashboard.
-
-    Opening a stream creates a connection, then claims rooms on it, and a claim
-    can fail — the room is held by another live session, or the agent is not a
-    member. The connection is closed and the client retries. Reporting the
-    start when the connection was created turned every rejected attempt into a
-    session that began and ended in the same second, for as long as the client
-    kept trying, which is forever.
-    """
-
-    def _reporter(self, sink: _RecordingSink) -> SessionReporter:
-        return SessionReporter(
-            TelemetryService(
-                sink=sink,  # type: ignore[arg-type]
-                enabled=True,
-                client_id=VALID_UUID,
-                service_name="switch-core",
-                version="1.0.0",
-                environment=None,
-            )
-        )
-
-    def _conn(self, registry: ConnectionRegistry) -> str:
-        connection_id = uuid.uuid4().hex
-        registry.open(
-            agent_id="agent-1",
-            connection_id=connection_id,
-            scope="all",
-            delivery_filter="all",
-            spawn_capable=False,
-            cursor=0,
-            declaration=ClientDeclaration(),
-        )
-        return connection_id
-
-    async def test_a_connection_closed_before_the_stream_reports_nothing(
-        self,
-    ) -> None:
-        """The room claim failed, so no session ever began — and reporting an
-        end for it would be an end with no start."""
-        sink = _RecordingSink()
-        reporter = self._reporter(sink)
-        registry = ConnectionRegistry()
-        registry.set_close_listener(reporter.on_close)
-
-        connection_id = self._conn(registry)
-        registry.close(connection_id, "room already claimed")
-        await _settle()
-
-        assert sink.sent == []
-
-    async def test_a_retry_loop_produces_no_events_at_all(self) -> None:
-        """Twenty rejected attempts is what the dashboard actually saw."""
-        sink = _RecordingSink()
-        reporter = self._reporter(sink)
-        registry = ConnectionRegistry()
-        registry.set_close_listener(reporter.on_close)
-
-        for _ in range(20):
-            connection_id = self._conn(registry)
-            registry.close(connection_id, "room already claimed")
-        await _settle()
-
-        assert sink.sent == []
-
-    async def test_a_stream_that_was_handed_back_reports_both(self) -> None:
-        sink = _RecordingSink()
-        reporter = self._reporter(sink)
-        registry = ConnectionRegistry()
-        registry.set_close_listener(reporter.on_close)
-
-        connection_id = self._conn(registry)
-        conn = registry.get(connection_id)
-        assert conn is not None
-        await reporter.started(
-            SimpleNamespace(metadata_={"known_agent_type": "codex"}),  # type: ignore[arg-type]
-            conn,
-        )
-        registry.close(connection_id, "heartbeat lapsed")
-        await _settle()
-
-        assert [r.name for r in sink.sent] == [
-            "switch_core.agent_session_started",
-            "switch_core.agent_session_ended",
-        ]
-
-    async def test_the_started_set_does_not_grow(self) -> None:
-        """It is bounded by the live connection count; the sweep reaps anything
-        whose client went away, so every id is eventually discarded."""
-        sink = _RecordingSink()
-        reporter = self._reporter(sink)
-        registry = ConnectionRegistry()
-        registry.set_close_listener(reporter.on_close)
-
-        for _ in range(50):
-            connection_id = self._conn(registry)
-            conn = registry.get(connection_id)
-            assert conn is not None
-            await reporter.started(
-                SimpleNamespace(metadata_=None),  # type: ignore[arg-type]
-                conn,
-            )
-            registry.close(connection_id, "heartbeat lapsed")
-        await _settle()
-
-        assert reporter._started == set()
+async def _settle() -> None:
+    """Let a fire-and-forget send run."""
+    for _ in range(3):
+        await asyncio.sleep(0)

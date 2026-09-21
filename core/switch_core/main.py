@@ -682,6 +682,7 @@ async def run(config: SwitchConfig) -> None:
                 # on analytics and takes the "N log record(s) never exported"
                 # line down with it. A product event is the least valuable
                 # thing in this block; it must be the first to be given up.
+                await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, telemetry_http)
                 await observability.aclose()
                 # Cleared so a probe landing during teardown gets the honest

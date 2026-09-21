@@ -284,7 +284,7 @@ class ProtocolService:
         # Pairs session start with session end. Held here because the handler
         # that starts a session and the registry listener that ends one must
         # be the same object — an end is reported only for a start this saw.
-        self.sessions = SessionReporter(telemetry)
+        self.sessions = SessionReporter(telemetry, connections)
         self.agent_store = agent_store
         self.agent_session_store = agent_session_store
         self.agent_runtime_state_store = AgentRuntimeStateStore()
