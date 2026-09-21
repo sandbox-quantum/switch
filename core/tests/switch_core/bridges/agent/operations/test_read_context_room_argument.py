@@ -71,6 +71,7 @@ def connected(protocol: _Protocol) -> None:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     protocol.connections.claim_room(connection, CONNECTED_ROOM)
 

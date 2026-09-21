@@ -88,6 +88,7 @@ from switch_core.bridges.agent.protocol.connections import (
     RoomOccupiedError,
     Scope,
     SupersededConnectionError,
+    SupersededReattachError,
     UnfencedBeatError,
     UnknownConnectionError,
     evicted_session_warning,
@@ -694,6 +695,7 @@ async def poll_events(
     spawn_capable: Annotated[bool, Query()] = False,
     protocol_version: Annotated[int | None, Query(alias="protocol")] = None,
     protocol_accepts: Annotated[int | None, Query()] = None,
+    expected_generation: Annotated[int | None, Query()] = None,
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
@@ -729,6 +731,7 @@ async def poll_events(
             ),
             rooms=rooms,
             last_event_id=last_event_id,
+            expected_generation=expected_generation,
         )
 
     events = await protocol.poll_events(agent.id, timeout=timeout)
@@ -772,6 +775,7 @@ async def _open_event_stream(
     declaration: ClientDeclaration,
     rooms: str | None,
     last_event_id: str | None,
+    expected_generation: int | None,
 ) -> StreamingResponse:
     if not connection_id:
         raise HTTPException(
@@ -801,7 +805,16 @@ async def _open_event_stream(
             spawn_capable=spawn_capable,
             cursor=cursor,
             declaration=declaration,
+            expected_generation=expected_generation,
         )
+    except SupersededReattachError as exc:
+        # Structured, like the refused heartbeat: this is the same ending, and
+        # the client acts on the code rather than the prose. It is also the
+        # last thing this client will be told — a refused reattach means it has
+        # no stream and no beat that will be answered.
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
     except ProtocolVersionError as exc:
         # The refused client never receives a connection_state frame, so this
         # body is the only chance to tell it what the server speaks. Structured

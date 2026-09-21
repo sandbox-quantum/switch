@@ -44,6 +44,7 @@ def _registry(
             spawn_capable=spawn_capable,
             cursor=0,
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
         )
         if room is not None:
             registry.claim_room(conn, room)

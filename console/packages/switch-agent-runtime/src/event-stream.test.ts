@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BEAT_INTERVAL_MS,
+  BEAT_SETTLE_LIMIT_MS,
   EVICTION_CREDENTIALS_REJECTED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
@@ -522,6 +523,133 @@ describe('the heartbeat', () => {
     expect(resumed.length).toBeGreaterThan(0);
     expect(resumed.every((generation) => generation === 2)).toBe(true);
     expect(evicted).toEqual([]);
+    abort.abort();
+  });
+
+  it('does not stand down over a beat that was already in flight when it reopened', async () => {
+    vi.useFakeTimers();
+    // The gate stops a beat *starting* inside the reattach window. It cannot
+    // recall one that left before the gate shut, and that beat is answered
+    // against the incarnation the reopen replaced — a truthful `taken_over`
+    // about a takeover this client performed on itself.
+    const server = {
+      generation: 0,
+      announce: (): void => {},
+      drop: (): void => {},
+      answerBeat: (): void => {},
+      beatsHeld: 0,
+    };
+    const fetchMock = vi.fn(async (url: string, init: { body: string }) => {
+      if (String(url).includes('/events')) {
+        const claimed = new URL(String(url)).searchParams.get('expected_generation');
+        if (claimed !== null && Number(claimed) !== server.generation) {
+          return {
+            ok: false,
+            status: 409,
+            text: async (): Promise<string> =>
+              JSON.stringify({ detail: { code: 'taken_over', message: 'reattach refused' } }),
+          };
+        }
+        server.generation += 1;
+        const attached = server.generation;
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(connected(attached));
+              server.drop = () => controller.close();
+            },
+          }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      const sent = (JSON.parse(init.body) as { generation: number | null }).generation;
+      // Held rather than answered: the point of the test is an answer that
+      // arrives after the connection has moved on beneath it.
+      server.beatsHeld += 1;
+      await new Promise<void>((resolve) => {
+        server.answerBeat = resolve;
+      });
+      if (sent === server.generation)
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      return {
+        ok: false,
+        status: 409,
+        text: async (): Promise<string> =>
+          JSON.stringify({ detail: { code: 'taken_over', message: 'another stream attached' } }),
+      };
+    });
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, { rooms: [], onEvicted: (e) => evicted.push(e) });
+
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+    expect(server.beatsHeld).toBe(1);
+    expect(beatGenerations(fetchMock)).toEqual([1]);
+
+    // Reopen with that beat still outstanding. The bound expires, the open goes
+    // ahead, and the server is at 2 by the time the old beat is answered.
+    server.drop();
+    await vi.advanceTimersByTimeAsync(BEAT_SETTLE_LIMIT_MS + 10 * BEAT_INTERVAL_MS);
+    expect(urlsFor(fetchMock, 'expected_generation=1')).toHaveLength(1);
+
+    server.answerBeat();
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+
+    // Undecidable, so inert. Standing down here stops a client that nothing
+    // has taken anything from.
+    expect(evicted).toEqual([]);
+    const resumed = beatGenerations(fetchMock).slice(1);
+    expect(resumed.length).toBeGreaterThan(0);
+    expect(resumed.every((generation) => generation === 2)).toBe(true);
+    abort.abort();
+  });
+
+  it('stands down when its reattach is refused, rather than trying again', async () => {
+    vi.useFakeTimers();
+    // The other half: a client that missed its eviction and comes back. The
+    // server refuses the reattach without disturbing the holder, and this is
+    // the only thing left that can tell the loser it lost.
+    const server = { generation: 0, drop: (): void => {} };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!String(url).includes('/events'))
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      const claimed = new URL(String(url)).searchParams.get('expected_generation');
+      if (claimed !== null) {
+        // Someone else attached while we were away, so our claim is stale.
+        return {
+          ok: false,
+          status: 409,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: { code: 'taken_over', message: 'reattach refused' } }),
+        };
+      }
+      server.generation += 1;
+      const attached = server.generation;
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(connected(attached));
+            server.drop = () => controller.close();
+          },
+        }),
+        text: async (): Promise<string> => '',
+      };
+    });
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, { rooms: [], onEvicted: (e) => evicted.push(e) });
+
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+    server.drop();
+    await vi.advanceTimersByTimeAsync(20 * BEAT_INTERVAL_MS);
+
+    expect(evicted.map((e) => e.code)).toEqual([EVICTION_TAKEN_OVER]);
+    // And it stopped asking: retrying is how the pair trade the connection.
+    const attempts = urlsFor(fetchMock, 'expected_generation=1').length;
+    await vi.advanceTimersByTimeAsync(20 * BEAT_INTERVAL_MS);
+    expect(urlsFor(fetchMock, 'expected_generation=1')).toHaveLength(attempts);
     abort.abort();
   });
 

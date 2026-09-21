@@ -81,6 +81,7 @@ def _open(registry: ConnectionRegistry, **kw: Any):
         "spawn_capable": False,
         "cursor": 0,
         "declaration": ClientDeclaration(speaks=PROTOCOL_VERSION),
+        "expected_generation": None,
     }
     params.update(kw)
     return registry.open(**params)
@@ -392,6 +393,7 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     registry.claim_room(session, ROOM_A)
 
@@ -403,6 +405,7 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     registry.claim_room(other_agent, ROOM_A)
 

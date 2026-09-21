@@ -61,6 +61,7 @@ def _connect(protocol: _Protocol, cursor: int = 0) -> Any:
         spawn_capable=False,
         cursor=cursor,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     conn.stream_attached = True
     return conn

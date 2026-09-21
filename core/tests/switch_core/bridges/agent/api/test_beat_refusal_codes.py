@@ -45,6 +45,7 @@ def _open(protocol: _Protocol, *, speaks: int | None = PROTOCOL_VERSION) -> Any:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=speaks),
+        expected_generation=None,
     )
 
 

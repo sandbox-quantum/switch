@@ -51,6 +51,7 @@ def _open(registry: ConnectionRegistry, connection_id: str, agent_id: str = AGEN
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
 
 

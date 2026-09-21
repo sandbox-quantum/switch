@@ -1,4 +1,5 @@
 import { contractRange } from './artifacts';
+import { ReattachFence } from './reattach-fence';
 import { readSse, type SseFrame } from './sse';
 import type { AgentBridgeEvent, SwitchCredentials } from './types';
 import { RUNTIME_ARTIFACT, RUNTIME_VERSION } from './version';
@@ -33,6 +34,16 @@ const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
  * 6s TTL — the server declares the connection dead without it. */
 export const BEAT_INTERVAL_MS = 2000;
 const BEAT_REQUEST_TIMEOUT_MS = 4000;
+/**
+ * How long a reopen waits for a beat already in flight before disowning it.
+ *
+ * A beat answered inside this window is still believed, so a takeover that
+ * lands while the socket happens to be reopening is acted on. Past it the
+ * answer cannot be told apart from one our own reopen provoked, and the reopen
+ * matters more: it is what restores delivery, and the server gives the
+ * connection six seconds without a beat.
+ */
+export const BEAT_SETTLE_LIMIT_MS = 1000;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 /**
@@ -95,15 +106,15 @@ function evictionCode(data: Record<string, unknown>): string {
 }
 
 /**
- * Read the code off a refused heartbeat.
+ * Read the code off a refusal — a rejected heartbeat or a rejected reattach.
  *
  * Every refusal shares one status, and they call for opposite responses: being
- * superseded is terminal, because reopening is itself a takeover, while the
+ * superseded is terminal, because attaching is itself a takeover, while the
  * rest are recovered by reopening. A server that sends no code — one built
  * before the refusals were distinguishable — yields null, and null keeps the
  * reopen it has always had.
  */
-export function beatRefusalCode(body: string): string | null {
+export function refusalCode(body: string): string | null {
   try {
     const detail = (JSON.parse(body) as { detail?: unknown }).detail;
     if (typeof detail !== 'object' || detail === null) return null;
@@ -114,46 +125,8 @@ export function beatRefusalCode(body: string): string | null {
   }
 }
 
-/**
- * The gate the heartbeat waits at while the stream is attaching.
- *
- * Opened by the `connection_state` frame that ends an attach, and closed again
- * before the next open is attempted. Every attach makes a new incarnation of
- * the connection server-side — the first one and every reopen alike — so a
- * tick sent between the open and its frame carries the incarnation before it
- * and is refused as a takeover. A client would be reading its own reconnect as
- * someone else's. Beating pauses across that window instead.
- */
-class Attachment {
-  private live = false;
-  private open: () => void = () => {};
-  private gate: Promise<void> = new Promise((resolve) => {
-    this.open = resolve;
-  });
-
-  /** Resolves once the stream is attached; already resolved while it is. */
-  get reached(): Promise<void> {
-    return this.gate;
-  }
-
-  /** The server has said which incarnation this socket is. */
-  arrived(): void {
-    this.live = true;
-    this.open();
-  }
-
-  /** A socket is about to be opened, which will make a new incarnation. */
-  departed(): void {
-    if (!this.live) return;
-    this.live = false;
-    this.gate = new Promise((resolve) => {
-      this.open = resolve;
-    });
-  }
-}
-
 /** Resolves when any of these signals aborts, so a wait can be given up on. */
-function until(...signals: AbortSignal[]): Promise<void> {
+export function until(...signals: AbortSignal[]): Promise<void> {
   const any = AbortSignal.any(signals);
   if (any.aborted) return Promise.resolve();
   return new Promise((resolve) => {
@@ -260,18 +233,21 @@ export class SwitchEventStream {
    */
   private generation: number | null = null;
   /**
-   * Whether the server has told us which incarnation this socket is.
+   * The barrier between the heartbeat and the socket it beats for.
    *
-   * The heartbeat waits on it before every tick. Until the frame arrives a
-   * tick cannot be fenced with anything current: before the first one there is
-   * no incarnation to send, and before a later one there is a stale one, which
-   * is worse — the server refuses it as a takeover and we would stand down
-   * over our own reconnect. There is nothing to keep alive across that window
-   * either; a beat with no stream attached is refused anyway. A server too old
-   * to carry an incarnation still sends the frame, so waiting costs that case
-   * nothing.
+   * The heartbeat waits on it before every tick, so no beat is sent between an
+   * open and the frame naming the incarnation that open made: there is nothing
+   * current to fence such a tick with, and a stale incarnation is worse than
+   * none — the server reads it as a takeover and we would stand down over our
+   * own reconnect. Nothing is lost by waiting, since a beat with no stream
+   * attached is refused anyway, and a server too old to carry an incarnation
+   * still sends the frame.
+   *
+   * It also disowns a beat that was already in flight when the open began, for
+   * the same reason from the other end: that answer was decided about the
+   * incarnation we have just replaced.
    */
-  private readonly attachment = new Attachment();
+  private readonly fence = new ReattachFence();
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -449,8 +425,10 @@ export class SwitchEventStream {
       this.socketAbort = socketAbort;
       // Closed before the open rather than after it lands: it is this open
       // that makes the new incarnation, so the heartbeat has to be held from
-      // here until the frame naming it arrives.
-      this.attachment.departed();
+      // here until the frame naming it arrives. A beat already in flight is
+      // given a moment to come back and be believed, and disowned after that.
+      await this.fence.detaching(BEAT_SETTLE_LIMIT_MS);
+      if (signal.aborted || this.halt.signal.aborted) return;
       let openedAt = 0;
       let failure: unknown = null;
       try {
@@ -471,6 +449,14 @@ export class SwitchEventStream {
         });
         if (this.deps.spawnCapable) params.set('spawn_capable', 'true');
         if (this.rooms.length) params.set('rooms', this.rooms.join(','));
+        // Reattaching, so say which incarnation we believe we still are and
+        // let the server refuse us if we are wrong. An attach is a takeover,
+        // and a client that missed its own eviction — a partition, a dropped
+        // socket, a beat whose refusal never arrived — would otherwise take
+        // the connection straight back off whoever legitimately holds it. The
+        // first open of this object's life sends nothing, which is how a
+        // deliberate takeover still works: it has no incarnation to claim.
+        if (this.generation !== null) params.set('expected_generation', String(this.generation));
 
         const resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/events?${params}`, {
           headers: {
@@ -490,6 +476,14 @@ export class SwitchEventStream {
           if (this.dropRefusedRooms(resp.status, body)) continue;
           if (resp.status === 401 || resp.status === 403) {
             this.rejectCredentials(resp.status, body);
+            return;
+          }
+          if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+            // The reattach was refused because someone else holds the
+            // connection now, and nothing was disturbed in refusing it. This
+            // is the only place the loser can be told once its socket and its
+            // heartbeat have both stopped being able to reach it.
+            this.standDown();
             return;
           }
           throw new Error(`HTTP ${resp.status}: ${body}`);
@@ -559,7 +553,7 @@ export class SwitchEventStream {
           server: frame.data.server ?? null,
         });
         this.reportRooms(frame.data.rooms);
-        this.attachment.arrived();
+        this.fence.attached();
         return;
       case 'subscription_changed':
         log.debug('SwitchEventStream: subscription changed', {
@@ -659,22 +653,59 @@ export class SwitchEventStream {
       });
     };
 
-    while (!signal.aborted && !this.halt.signal.aborted) {
-      // Every pass, not only the first: a reconnect makes a new incarnation,
-      // and the tick has to name the one the server is on.
-      await Promise.race([this.attachment.reached, until(signal, this.halt.signal)]);
-      if (signal.aborted || this.halt.signal.aborted) return;
+    /**
+     * One beat, as a value rather than a throw.
+     *
+     * A beat the fence disowns must have no outcome at all, and an exception
+     * is an outcome — it would slow the loop down over a request the reattach
+     * itself invalidated. So the whole exchange, body included, happens inside
+     * the flight the fence is timing, and comes back as something to ignore or
+     * act on once it is known which.
+     */
+    const beat = async (): Promise<
+      | { answered: true; status: number; ok: boolean; body: string }
+      | { answered: false; error: unknown }
+    > => {
       try {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,
           cursor: this.cursor,
           generation: this.generation,
         });
-        if (resp.status === 401 || resp.status === 403) {
-          this.rejectCredentials(resp.status, await resp.text());
+        return { answered: true, status: resp.status, ok: resp.ok, body: await resp.text() };
+      } catch (error) {
+        return { answered: false, error };
+      }
+    };
+
+    while (!signal.aborted && !this.halt.signal.aborted) {
+      // Every pass, not only the first: a reconnect makes a new incarnation,
+      // and the tick has to name the one the server is on. Nothing may be
+      // awaited between passing the gate and registering the flight, or the
+      // beat could be sent under an incarnation later than the one recorded.
+      await Promise.race([this.fence.reached, until(signal, this.halt.signal)]);
+      if (signal.aborted || this.halt.signal.aborted) return;
+      const tick = await this.fence.tick(beat);
+      if (signal.aborted || this.halt.signal.aborted) return;
+
+      if (!tick.current) {
+        // A reattach began while this was in flight, so the answer describes
+        // an incarnation we are no longer on and cannot be told apart from
+        // one that arrived late about our own reopen. Inert: no stand-down,
+        // no reopen, no cursor, and no mark against the beat rate either.
+        log.debug('SwitchEventStream: heartbeat answer discarded — reattached in flight', {
+          event: 'switch_beat_stale',
+          connectionId,
+        });
+      } else if (!tick.value.answered) {
+        fail(tick.value.error);
+      } else {
+        const { status, ok, body } = tick.value;
+        if (status === 401 || status === 403) {
+          this.rejectCredentials(status, body);
           return;
         }
-        if (resp.status === 409 && beatRefusalCode(await resp.text()) === EVICTION_TAKEN_OVER) {
+        if (status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
           // The other door onto a takeover. A displaced client whose socket
           // dropped before the `evicted` frame reached it learns here instead,
           // and must end the same way: reopening is a takeover, so a loser
@@ -682,7 +713,7 @@ export class SwitchEventStream {
           this.standDown();
           return;
         }
-        if (resp.status === 404 || resp.status === 409) {
+        if (status === 404 || status === 409) {
           // The server answered, so this is not an outage — but it is not a
           // beat that landed either: we are not attached, and only a reopen
           // fixes that. Reopen, and slow down all the same. A reopen that
@@ -693,14 +724,14 @@ export class SwitchEventStream {
           if (report) {
             log.warn('SwitchEventStream: heartbeat rejected — reopening', {
               event: 'switch_beat_rejected',
-              status: resp.status,
+              status,
               connectionId,
               failures,
               backoffMs: backoff,
             });
           }
-        } else if (!resp.ok) {
-          fail(new Error(`HTTP ${resp.status}`));
+        } else if (!ok) {
+          fail(new Error(`HTTP ${status}`));
         } else {
           if (failures > 0) {
             log.warn('SwitchEventStream: heartbeat recovered', {
@@ -711,9 +742,6 @@ export class SwitchEventStream {
           failures = 0;
           backoff = BEAT_INTERVAL_MS;
         }
-      } catch (error) {
-        if (signal.aborted || this.halt.signal.aborted) return;
-        fail(error);
       }
       await new Promise((r) => setTimeout(r, backoff));
     }

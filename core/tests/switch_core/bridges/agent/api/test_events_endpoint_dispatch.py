@@ -319,6 +319,7 @@ class TestDeclaringARoomAtOpenTakesOver:
             spawn_capable=False,
             cursor=0,
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
         )
         protocol.connections.claim_room(incumbent, "room-1")
 

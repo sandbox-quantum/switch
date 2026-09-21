@@ -19,6 +19,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ProtocolVersionError,
     RoomOccupiedError,
     SupersededConnectionError,
+    SupersededReattachError,
     TooManyConnectionsError,
     UnfencedBeatError,
     UnknownConnectionError,
@@ -40,6 +41,7 @@ def _open(
     spawn_capable: bool = False,
     cursor: int = 0,
     speaks: int | None = PROTOCOL_VERSION,
+    expected_generation: int | None = None,
 ):
     return registry.open(
         agent_id=agent_id,
@@ -49,6 +51,7 @@ def _open(
         spawn_capable=spawn_capable,
         cursor=cursor,
         declaration=ClientDeclaration(speaks=speaks),
+        expected_generation=expected_generation,
     )
 
 
@@ -89,6 +92,7 @@ def test_incompatible_protocol_is_refused() -> None:
             spawn_capable=False,
             cursor=0,
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION + 1),
+            expected_generation=None,
         )
 
 
@@ -103,6 +107,7 @@ def _open_declaring(
         spawn_capable=False,
         cursor=0,
         declaration=declaration,
+        expected_generation=None,
     )
 
 
@@ -474,3 +479,82 @@ def test_rooms_of_one_agent_do_not_block_another() -> None:
 
     assert registry.holder_of(AGENT, ROOM_A) is mine
     assert registry.holder_of(OTHER_AGENT, ROOM_A) is theirs
+
+
+class TestAReattachCanBeFenced:
+    """A client returning must be able to prove it is still the holder.
+
+    The heartbeat fence stops a displaced client keeping the connection alive,
+    but it cannot stop one reattaching: the loser of a takeover may never
+    receive its eviction frame or its refused tick — a partition drops both —
+    and reopening is itself a takeover, so it would silently pull the
+    connection back off the winner. Naming the incarnation on the way in is
+    what makes that reversal impossible.
+    """
+
+    def test_the_holder_reattaches_and_the_incarnation_moves_on(self) -> None:
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+
+        _open(registry, "c1", expected_generation=conn.stream_generation)
+
+        assert conn.stream_generation == 1
+
+    def test_a_claim_on_a_superseded_incarnation_is_refused(self) -> None:
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        _open(registry, "c1")
+
+        with pytest.raises(SupersededReattachError) as refused:
+            _open(registry, "c1", expected_generation=0)
+
+        assert refused.value.presented == 0
+        assert refused.value.current == conn.stream_generation
+
+    def test_a_refused_reattach_leaves_the_holder_untouched(self) -> None:
+        """The whole point: refusing costs the winner nothing.
+
+        A refusal that detached the stream, moved the incarnation or replaced
+        the declaration would hand the loser a way to disrupt the winner
+        without ever taking the connection from it.
+        """
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        _open(registry, "c1", speaks=PROTOCOL_VERSION)
+        before = (conn.stream_generation, conn.stream_attached, conn.declaration)
+
+        with pytest.raises(SupersededReattachError):
+            _open(registry, "c1", expected_generation=0, speaks=None)
+
+        assert (
+            conn.stream_generation,
+            conn.stream_attached,
+            conn.declaration,
+        ) == before
+        assert registry.beat(AGENT, "c1", 7, conn.stream_generation).cursor == 7
+
+    def test_claiming_nothing_still_takes_the_connection_over(self) -> None:
+        """A deliberate takeover makes no claim, and keeps working.
+
+        It is how a supervisor adopts a session's connection, and how every
+        client built before the check attaches. Both are unconditional.
+        """
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        _open(registry, "c1")
+
+        _open(registry, "c1", expected_generation=None)
+
+        assert conn.stream_generation == 2
+
+    def test_a_claim_against_a_connection_the_server_never_had_opens_it(self) -> None:
+        """A restarted server has no incarnation to compare against.
+
+        Refusing here would strand every client that outlived the process:
+        there is no holder to protect, so there is nothing to take away.
+        """
+        registry = ConnectionRegistry()
+
+        conn = _open(registry, "c1", expected_generation=4)
+
+        assert conn.stream_generation == 0

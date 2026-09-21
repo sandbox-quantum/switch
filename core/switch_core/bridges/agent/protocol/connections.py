@@ -132,6 +132,31 @@ class SupersededConnectionError(ConnectionError_):
         self.current = current
 
 
+class SupersededReattachError(ConnectionError_):
+    """A reattach claiming an incarnation of the connection that has moved on.
+
+    Attaching is a takeover, so a client that reattaches unconditionally takes
+    the connection back off whoever holds it — and a client that missed its own
+    eviction, because the socket died before the frame or the heartbeat refusal
+    never arrived, cannot know it is doing so. A reattach that names the
+    incarnation it believes it still holds can be refused instead, and refusing
+    it changes nothing: the holder keeps the stream, the incarnation does not
+    move, and the client that asked is told, in the one exchange it has left.
+    """
+
+    code = "taken_over"
+
+    def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
+        super().__init__(
+            f"connection {connection_id} has been reopened since incarnation "
+            f"{presented} and is now at {current}; another client holds it, so "
+            "this reattach was refused and the connection was left untouched"
+        )
+        self.connection_id = connection_id
+        self.presented = presented
+        self.current = current
+
+
 class UnfencedBeatError(ConnectionError_):
     """A tick carrying no incarnation, from a client whose holder sends one."""
 
@@ -348,6 +373,7 @@ class ConnectionRegistry:
         spawn_capable: bool,
         cursor: int,
         declaration: ClientDeclaration,
+        expected_generation: int | None,
     ) -> Connection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -356,6 +382,17 @@ class ConnectionRegistry:
         live id takes it over — "the same client returning" and "the same
         client duplicated" are indistinguishable, and takeover is right for
         both.
+
+        `expected_generation` is what makes that takeover deliberate. A client
+        reattaching names the incarnation it believes it still holds, and is
+        refused without mutation if the connection has moved past it. The
+        heartbeat fence alone cannot cover this: the loser of a takeover may
+        never receive its eviction or its refused tick — a partition drops
+        both — and would then reopen and take the connection straight back off
+        the winner, which is the reversal the fence exists to prevent. `None`
+        means no claim is being made, which is a first open, a deliberate
+        takeover, or a client built before the check, and keeps the
+        unconditional attach all three have always had.
 
         A client that declares an `agent-protocol` range with no overlap is
         refused. A client that declares nothing is recorded as unknown and
@@ -377,6 +414,17 @@ class ConnectionRegistry:
             if existing.agent_id != agent_id:
                 # Never let one agent attach to another's connection.
                 raise UnknownConnectionError(connection_id)
+            if (
+                expected_generation is not None
+                and expected_generation != existing.stream_generation
+            ):
+                # Nothing above this line has changed the connection, and
+                # nothing below it runs. The holder is undisturbed.
+                raise SupersededReattachError(
+                    connection_id,
+                    presented=expected_generation,
+                    current=existing.stream_generation,
+                )
             existing.scope = scope
             existing.delivery_filter = delivery_filter
             existing.spawn_capable = spawn_capable

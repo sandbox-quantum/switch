@@ -442,6 +442,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(),
+        expected_generation=None,
     )
     connections.claim_room(connection, "room-demo")
     assert await service.bind_connection(
@@ -594,6 +595,7 @@ async def ready_control_session(session_factory):
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(),
+        expected_generation=None,
     )
     connections.claim_room(connection, "room-demo")
     await service.bind_connection(

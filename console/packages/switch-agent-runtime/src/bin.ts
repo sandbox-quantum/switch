@@ -52,8 +52,9 @@ import {
   readAgentStore,
   type ResolvedAgent,
 } from './credentials';
-import { beatRefusalCode, EVICTION_TAKEN_OVER } from './event-stream';
+import { BEAT_SETTLE_LIMIT_MS, EVICTION_TAKEN_OVER, refusalCode, until } from './event-stream';
 import { reapOrphanedRuntimes } from './reap';
+import { ReattachFence } from './reattach-fence';
 import { readSse, type SseFrame } from './sse';
 
 const ENV_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
@@ -526,12 +527,14 @@ let cursor = 0;
 // the connection outlives its stream, so the incarnation is still ours.
 let streamGeneration: number | null = null;
 
-// Whether the server has named the incarnation of the stream we are opening.
-// False from the moment a socket is attempted until its `connection_state`
-// arrives — every attach makes a new incarnation, so a beat sent inside that
-// window names the one before it and is refused as a takeover. The heartbeat
-// sits the window out rather than reading its own reconnect as a displacement.
-let streamAttached = false;
+// The barrier between the heartbeat and the socket it beats for. Shut from the
+// moment a socket is attempted until its `connection_state` arrives — every
+// attach makes a new incarnation, so a beat sent inside that window names the
+// one before it and is refused as a takeover. It also disowns a beat that was
+// already in flight when the open began, whose answer was decided about the
+// incarnation the open replaced. Either way the heartbeat sits the window out
+// rather than reading this client's own reconnect as a displacement.
+const streamFence = new ReattachFence();
 
 // Whether the currently open stream declared a room when it opened.
 let streamHasRoom = false;
@@ -1211,7 +1214,7 @@ function stopStream() {
     streamAbort.abort();
     streamAbort = null;
   }
-  streamAttached = false;
+  streamFence.closeAdmission();
   pollingRoomId = null;
 }
 
@@ -1230,7 +1233,11 @@ function startStream() {
 
     while (!abort.signal.aborted) {
       let openedAt = 0;
-      streamAttached = false;
+      // Before the open, not after it lands: it is this open that makes the new
+      // incarnation. A beat already in flight is given a moment to come back
+      // and be believed, and disowned after that.
+      await streamFence.detaching(BEAT_SETTLE_LIMIT_MS);
+      if (abort.signal.aborted) return;
       try {
         const params = new URLSearchParams({
           connection_id: CONNECTION_ID,
@@ -1238,6 +1245,15 @@ function startStream() {
           filter: 'all',
           start_from: cursor > 0 ? String(cursor) : 'head',
         });
+        // Reattaching, so say which incarnation we believe we still are and let
+        // the server refuse us if we are wrong. Attaching is a takeover, and a
+        // client that missed its own eviction would otherwise take the
+        // connection back off whoever legitimately holds it. The first open of
+        // the process sends nothing, which is how a deliberate takeover of a
+        // connection left behind by a dead session still works.
+        if (streamGeneration !== null) {
+          params.set('expected_generation', String(streamGeneration));
+        }
         // Declare the room when opening, not after: catch-up runs immediately,
         // and a room subscribed afterwards would arrive too late for the
         // buffered events this reconnect exists to recover.
@@ -1260,7 +1276,14 @@ function startStream() {
         });
 
         if (!resp.ok || !resp.body) {
-          throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+          const body = await resp.text();
+          if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+            // The reattach was refused: someone else holds the connection, and
+            // refusing left them holding it. Retrying would only ask again.
+            standDown();
+            return;
+          }
+          throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
         openedAt = Date.now();
@@ -1299,7 +1322,7 @@ async function handleFrame(frame: SseFrame): Promise<void> {
   switch (frame.event) {
     case 'connection_state':
       if (typeof frame.data.generation === 'number') streamGeneration = frame.data.generation;
-      streamAttached = true;
+      streamFence.attached();
       process.stderr.write(
         `switch: connection established (rooms=${JSON.stringify(frame.data.rooms)})\n`
       );
@@ -1439,17 +1462,13 @@ function startHeartbeat() {
 
   void (async () => {
     let interval = HEARTBEAT_INTERVAL_MS;
-    while (!abort.signal.aborted) {
-      if (!streamAttached) {
-        // Mid-attach. The incarnation we hold is the one before this open, so
-        // sending it would be refused as a takeover — and a beat with no
-        // stream attached is refused anyway, so the tick is worth nothing
-        // until the frame lands. Waited out at the ordinary cadence rather
-        // than the backoff, which is there for a server refusing beats, not
-        // for a socket still opening: the connection lapses in seconds.
-        await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
-        continue;
-      }
+
+    /** One beat, as a value rather than a throw: a beat the fence disowns must
+     * have no outcome at all, and an exception is an outcome. */
+    const beat = async (): Promise<
+      | { answered: true; status: number; ok: boolean; body: string }
+      | { answered: false; error: unknown }
+    > => {
       try {
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/connection/beat`, {
           method: 'POST',
@@ -1464,25 +1483,42 @@ function startHeartbeat() {
           }),
           signal: abort.signal,
         });
-        if (resp.status === 409 && beatRefusalCode(await resp.text()) === EVICTION_TAKEN_OVER) {
-          // Another client holds this connection now. Reopening is itself a
-          // takeover, so coming back would pull it off whoever has it and
-          // start the two of us trading it. Stop receiving, and say so: a
-          // session that quietly stopped being pushed events is the failure
-          // this transport exists to remove.
-          process.stderr.write(
-            'switch: another client took this connection over — no longer receiving events. ' +
-              'Restart this session if it should hold the connection instead.\n'
-          );
-          stopStreamKeepingRoom();
-          stopHeartbeat();
+        return { answered: true, status: resp.status, ok: resp.ok, body: await resp.text() };
+      } catch (error) {
+        return { answered: false, error };
+      }
+    };
+
+    while (!abort.signal.aborted) {
+      // Mid-attach the incarnation we hold is the one before the open, so a
+      // tick would be refused as a takeover — and a beat with no stream
+      // attached is refused anyway, so it is worth nothing until the frame
+      // lands. Nothing may be awaited between passing the gate and registering
+      // the flight, or the beat could go out under a later incarnation than
+      // the one the fence recorded for it.
+      await Promise.race([streamFence.reached, until(abort.signal)]);
+      if (abort.signal.aborted) return;
+      const tick = await streamFence.tick(beat);
+      if (abort.signal.aborted) return;
+
+      if (!tick.current) {
+        // A reattach began while this was in flight, so the answer describes an
+        // incarnation we are no longer on and cannot be told apart from one
+        // arriving late about our own reopen. Inert: no stand-down, no reopen,
+        // and no mark against the beat rate either.
+      } else if (!tick.value.answered) {
+        process.stderr.write(`switch: heartbeat error: ${tick.value.error}\n`);
+      } else {
+        const { status, ok, body } = tick.value;
+        if (status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+          standDown();
           return;
         }
-        if (resp.status === 409 || resp.status === 404) {
+        if (status === 409 || status === 404) {
           // The stream is gone or the connection expired. Both mean we are not
           // receiving; reopening resumes from the cursor.
           process.stderr.write(
-            `switch: heartbeat rejected (HTTP ${resp.status}) — reopening stream in ${interval / 1000}s\n`
+            `switch: heartbeat rejected (HTTP ${status}) — reopening stream in ${interval / 1000}s\n`
           );
           interval = Math.min(interval * 2, 30000);
           stopStreamKeepingRoom();
@@ -1490,12 +1526,9 @@ function startHeartbeat() {
           // No re-claim here. When we own the connection and serve the room,
           // reopening declares it on the URL; when the supervisor serves it,
           // the slot is the supervisor's and claiming would take it away.
-        } else if (resp.ok) {
+        } else if (ok) {
           interval = HEARTBEAT_INTERVAL_MS;
         }
-      } catch (err) {
-        if (abort.signal.aborted) return;
-        process.stderr.write(`switch: heartbeat error: ${err}\n`);
       }
       await new Promise((r) => setTimeout(r, interval));
     }
@@ -1511,6 +1544,26 @@ function stopStreamKeepingRoom() {
   const room = pollingRoomId;
   stopStream();
   pollingRoomId = room;
+}
+
+/**
+ * Give up the connection to whoever holds it now.
+ *
+ * Reached from either door onto a takeover: a beat refused as superseded, or a
+ * reattach refused because the incarnation moved on. Both are terminal —
+ * attaching is itself a takeover, so coming back would pull the connection off
+ * the client that has it and start the two of us trading it. The room is kept
+ * so the MCP tools go on working; only delivery stops. Said out loud, because
+ * a session that quietly stopped being pushed events is the exact failure this
+ * transport exists to remove.
+ */
+function standDown() {
+  process.stderr.write(
+    'switch: another client took this connection over — no longer receiving events. ' +
+      'Restart this session if it should hold the connection instead.\n'
+  );
+  stopStreamKeepingRoom();
+  stopHeartbeat();
 }
 
 // -- Role lease renewal ------------------------------------------------------
