@@ -184,33 +184,60 @@ and it survives your session ending, a missed timer and a broken workflow.
 hour. If an update goes out late, the next one is due a full interval after it —
 never compress the next window to catch up to a wall clock.
 
-**Layer 2 — the external nudge is the clock of record.**
-A scheduled job outside Switch addresses you when an update is due. That is what
-reaches you when you have no session running. You do not create it and you do
-not own it — but if a nudge does not arrive when your own deadline says it
-should have, **say so in the room**. A silent clock is the thing this design is
-most likely to get wrong, and you are the only one positioned to notice.
+**Layer 2 — your own standing timer. This is the working mechanism.**
 
-**Layer 3 — a timer of your own, as a backstop, while you are live.**
-When you open a war room, set a recurring timer for this incident's interval
-whose prompt tells you to check whether an update is due in that room. Know what
-it does and does not give you:
+Keep **one** durable recurring job, not one per incident. It is a *poll*, not an
+alarm: it fires often — about every ten minutes — and each time it fires you
+compare what you posted against the clock and act only if something is due.
 
-- It fires only while you are **idle**. If you are mid-turn when it comes due,
-  it slips. During a busy incident that is exactly when it will slip.
-- By default it dies with your session. Make it durable so it survives a
-  restart — it still needs a live session to fire into.
-- It fires into **a session, not a room**. If you are attending a different war
-  room when it fires, treat it as a reminder to go and check that room, not as
-  something to answer where you are.
-- Recurring timers carry jitter — an hourly one can be several minutes late.
-  Never present a timer's firing as the deadline; the deadline is what you
-  posted.
+Create it when you open the first war room. Delete it when the last one is
+archived. Its prompt:
 
-**Delete your timer when the incident closes.** An orphaned timer pings a dead
-room days later. And when you cold-start, list your scheduled jobs before doing
-anything else and delete any belonging to an incident that is over — a previous
-session may have died without cleaning up.
+> Situation-report check. For each war room you belong to that is not archived:
+> read it **without connecting** and compare the `next update due` line you last
+> posted against the time now. If nothing is due anywhere, do nothing and say
+> nothing. For each room that is due or overdue: connect to it, re-read the
+> incident in PagerDuty in case the severity moved, post a situation-report
+> draft, post the new deadline, and return to the hub. If PagerDuty is
+> unreachable, still post the draft, and mark what you could not verify.
+
+Why a frequent poll rather than a job set to the SOP's interval:
+
+- A timer fires only while you are **idle**. Set to fire hourly, it slips when
+  you are mid-turn — which during an incident is exactly when the update is due.
+  Polling makes a slip cost minutes, not an interval.
+- Recurring jobs carry jitter, so a timer set to the interval drifts. Polling
+  makes that irrelevant: the timer is not the deadline. **The deadline is the
+  line you posted**, and the timer's only job is to make you look at it.
+- A severity change mid-incident changes the interval. A poll re-reads it each
+  pass; a cron expression baked in at declaration does not.
+- One job serves every concurrent incident, so nothing needs rewiring when a
+  second one opens.
+
+Two rules that make the poll safe:
+
+- **Say nothing when nothing is due.** A poll that announces itself is worse
+  than no poll; the room will learn to ignore you.
+- **Check other rooms without connecting.** `read_context` takes a room id.
+  Connecting disconnects you from where you are and stops that room's events
+  reaching you, so only connect to a room you must actually post in, and go
+  straight back to the hub.
+
+**Layer 3 — an external check, as a dead-man's switch.**
+Something outside Switch addresses you periodically and expects an answer. Its
+job is **not** to carry the cadence — layer 2 does that. Its job is to notice if
+you are gone entirely, because your timer lives in your session and dies with
+it: a host restart or a crashed session takes the clock with the agent, silently.
+A check for that cannot live inside you.
+
+If that check stops arriving, say so in the hub. And if you are woken by it and
+find deadlines have passed while you were away, lead with that — say how long
+the gap was and which updates did not go out, before anything else.
+
+**Cleaning up.** Delete the timer when the last war room is archived. At cold
+start, list your scheduled jobs before anything else and delete any left behind
+by a session that died — an orphaned poll wakes you for rooms that closed days
+ago.
 
 ## Procedure: a situation report
 
@@ -407,8 +434,9 @@ war room being created on the wrong bridge.
 - sev2: on change only
 - The interval runs from the last update **sent**, not from the top of the hour
 - The responder posts the next deadline in the room and keeps it current
-- External nudge: <the scheduled job that addresses the responder, and where it
-  is configured, so somebody can find and delete it>
+- The responder polls its own timer every ~10 minutes while any incident is open
+- Dead-man's switch: <the external job that addresses the responder periodically
+  to prove it is alive, and where it is configured>
 - On a severity change the interval changes with it, from that moment
 
 ## How to declare
