@@ -8,6 +8,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.connections import (
     FENCED_PROTOCOL_REVISION,
+    HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
     PROTOCOL_ACCEPTS,
@@ -496,19 +497,21 @@ class TestAReattachCanBeFenced:
         registry = ConnectionRegistry()
         conn = _open(registry, "c1")
 
-        _open(registry, "c1", expected_generation=conn.stream_generation)
+        before = conn.stream_generation
+        _open(registry, "c1", expected_generation=before)
 
-        assert conn.stream_generation == 1
+        assert conn.stream_generation != before
 
     def test_a_claim_on_a_superseded_incarnation_is_refused(self) -> None:
         registry = ConnectionRegistry()
         conn = _open(registry, "c1")
+        displaced = conn.stream_generation
         _open(registry, "c1")
 
         with pytest.raises(SupersededReattachError) as refused:
-            _open(registry, "c1", expected_generation=0)
+            _open(registry, "c1", expected_generation=displaced)
 
-        assert refused.value.presented == 0
+        assert refused.value.presented == displaced
         assert refused.value.current == conn.stream_generation
 
     def test_a_refused_reattach_leaves_the_holder_untouched(self) -> None:
@@ -520,11 +523,12 @@ class TestAReattachCanBeFenced:
         """
         registry = ConnectionRegistry()
         conn = _open(registry, "c1")
+        displaced = conn.stream_generation
         _open(registry, "c1", speaks=PROTOCOL_VERSION)
         before = (conn.stream_generation, conn.stream_attached, conn.declaration)
 
         with pytest.raises(SupersededReattachError):
-            _open(registry, "c1", expected_generation=0, speaks=None)
+            _open(registry, "c1", expected_generation=displaced, speaks=None)
 
         assert (
             conn.stream_generation,
@@ -543,9 +547,10 @@ class TestAReattachCanBeFenced:
         conn = _open(registry, "c1")
         _open(registry, "c1")
 
+        before = conn.stream_generation
         _open(registry, "c1", expected_generation=None)
 
-        assert conn.stream_generation == 2
+        assert conn.stream_generation != before
 
     def test_a_claim_against_a_connection_the_server_never_had_opens_it(self) -> None:
         """A restarted server has no incarnation to compare against.
@@ -557,4 +562,29 @@ class TestAReattachCanBeFenced:
 
         conn = _open(registry, "c1", expected_generation=4)
 
-        assert conn.stream_generation == 0
+        assert conn.stream_attached
+
+    def test_an_incarnation_is_not_reissued_after_the_connection_is_recreated(
+        self,
+    ) -> None:
+        """The number must not mean "first attach"; it must mean *this* attach.
+
+        A per-connection counter restarts whenever the id is closed and opened
+        again, and the id is chosen by the client, so it is the same id. A
+        client that partitioned while holding the first incarnation would then
+        come back, match the number a brand-new connection happens to have, and
+        evict the client that legitimately opened it — the takeover the fence
+        exists to refuse, let through by arithmetic.
+        """
+        registry = ConnectionRegistry()
+        stale = _open(registry, "c1").stream_generation
+        registry.close("c1", HEARTBEAT_LAPSED)
+
+        # Someone else opens the same id from scratch.
+        fresh = _open(registry, "c1")
+        assert fresh.stream_generation != stale
+
+        with pytest.raises(SupersededReattachError):
+            _open(registry, "c1", expected_generation=stale)
+
+        assert registry.require(AGENT, "c1") is fresh

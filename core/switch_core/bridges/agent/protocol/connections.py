@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -357,8 +358,13 @@ class Connection:
     # difference between a client that never started beating and one that beat
     # and then stopped, which the timestamp alone cannot tell you.
     beats: int = 0
-    # Bumped when a new stream attaches, so a superseded stream can notice it
-    # has been replaced and stop writing.
+    # Which incarnation of this connection the attached stream is. Taken from
+    # the registry's sequence on every attach, so a superseded stream can
+    # notice it has been replaced and stop writing, and so a client can name
+    # the incarnation it holds and be refused if it has moved on. Never derived
+    # from the connection's own history: an id can be closed and opened again,
+    # and a per-connection counter would restart and make the new incarnation
+    # indistinguishable from the old one to a client holding a stale number.
     stream_generation: int = 0
     closure: Closure | None = None
     # What the client said about itself on connect (CHOO-1865). Defaults to an
@@ -382,6 +388,24 @@ class ConnectionRegistry:
         self._on_close: Callable[[Connection], None] = lambda conn: None
         self._by_id: dict[str, Connection] = {}
         self._by_agent: dict[str, set[str]] = {}
+        # Incarnations are drawn from here, never from the connection, so a
+        # number is never handed out twice in one process — including to a
+        # connection id that was closed and opened again. The seed is random so
+        # that a number does not mean something different after a restart: a
+        # client holding one from a previous boot is refused rather than
+        # matching whatever this boot has reached.
+        self._next_incarnation = secrets.randbits(32)
+
+    def _new_incarnation(self) -> int:
+        """The next never-before-used incarnation number.
+
+        Monotonic so it is readable in a log and orderable in a comparison, and
+        registry-wide rather than per-connection so that closing an id and
+        opening it again cannot reissue a number a departed client still holds.
+        """
+        incarnation = self._next_incarnation
+        self._next_incarnation += 1
+        return incarnation
 
     # ------------------------------------------------------------------
     # Opening and closing
@@ -456,7 +480,7 @@ class ConnectionRegistry:
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
-            existing.stream_generation += 1
+            existing.stream_generation = self._new_incarnation()
             # A reattach can come from an upgraded client, so the declaration
             # is replaced rather than kept. The connection outlives the socket;
             # what is on the other end of it need not.
@@ -485,6 +509,7 @@ class ConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
+            stream_generation=self._new_incarnation(),
             declaration=declaration,
         )
         self._by_id[connection_id] = conn

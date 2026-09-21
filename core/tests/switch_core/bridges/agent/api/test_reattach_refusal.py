@@ -82,13 +82,14 @@ async def test_a_reattach_claiming_a_superseded_incarnation_is_refused() -> None
 async def test_the_refused_reattach_leaves_the_winner_attached() -> None:
     """Refusing must cost the holder nothing, or it is a way to disrupt it."""
     protocol = _Protocol()
-    _attach(protocol)
+    displaced = _attach(protocol).stream_generation
     winner = _attach(protocol)
+    held = winner.stream_generation
 
     with pytest.raises(HTTPException):
-        await _reopen(protocol, 0)
+        await _reopen(protocol, displaced)
 
-    assert winner.stream_generation == 1
+    assert winner.stream_generation == held
     assert winner.stream_attached
     # The refusal happens before any bookkeeping, so nothing was recorded for a
     # client that never connected.
@@ -98,10 +99,13 @@ async def test_the_refused_reattach_leaves_the_winner_attached() -> None:
 async def test_the_holders_own_reattach_is_admitted() -> None:
     protocol = _Protocol()
     conn = _attach(protocol)
+    before = conn.stream_generation
 
-    await _reopen(protocol, conn.stream_generation)
+    await _reopen(protocol, before)
 
-    assert conn.stream_generation == 1
+    # Admitted, and it is a fresh incarnation: the reattach replaced the
+    # stream, so the number the client came in on is spent.
+    assert conn.stream_generation != before
     assert protocol.declarations != []
 
 
@@ -109,7 +113,8 @@ async def test_a_client_that_claims_nothing_still_takes_over() -> None:
     """Old clients, and deliberate takeovers, are unconditional as before."""
     protocol = _Protocol()
     conn = _attach(protocol)
+    before = conn.stream_generation
 
     await _reopen(protocol, None)
 
-    assert conn.stream_generation == 1
+    assert conn.stream_generation != before

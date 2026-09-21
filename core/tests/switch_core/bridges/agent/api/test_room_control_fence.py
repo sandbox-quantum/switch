@@ -87,19 +87,20 @@ async def test_a_displaced_client_cannot_claim_a_room_on_the_winners_connection(
 ):
     """The reviewer's trigger: A owns N, B takes N+1, A claims with N."""
     protocol = _Protocol()
-    _attach(protocol)  # A, incarnation 0
-    conn = _attach(protocol)  # B takes over, incarnation 1
-    await _call(connection_subscribe, protocol, ROOM_B, 1)
+    displaced = _attach(protocol).stream_generation  # A
+    conn = _attach(protocol)  # B takes over
+    held = conn.stream_generation
+    await _call(connection_subscribe, protocol, ROOM_B, held)
     before = set(conn.rooms)
 
     with pytest.raises(HTTPException) as caught:
-        await _call(connection_subscribe, protocol, ROOM_A, 0)
+        await _call(connection_subscribe, protocol, ROOM_A, displaced)
 
     assert caught.value.status_code == 409
     assert caught.value.detail["code"] == "taken_over"
     # Nothing moved, and the winner is still on the incarnation it attached on.
     assert conn.rooms == before
-    assert conn.stream_generation == 1
+    assert conn.stream_generation == held
 
 
 @pytest.mark.asyncio
@@ -110,11 +111,11 @@ async def test_the_refusal_comes_before_the_membership_check() -> None:
     displaced client should not be able to drive it at all.
     """
     protocol = _Protocol()
-    _attach(protocol)
+    displaced = _attach(protocol).stream_generation
     _attach(protocol)
 
     with pytest.raises(HTTPException):
-        await _call(connection_subscribe, protocol, ROOM_A, 0)
+        await _call(connection_subscribe, protocol, ROOM_A, displaced)
 
     assert protocol.membership_checks == []
 
@@ -122,12 +123,12 @@ async def test_the_refusal_comes_before_the_membership_check() -> None:
 @pytest.mark.asyncio
 async def test_a_displaced_client_cannot_release_the_winners_room() -> None:
     protocol = _Protocol()
-    _attach(protocol)
+    displaced = _attach(protocol).stream_generation
     conn = _attach(protocol)
-    await _call(connection_subscribe, protocol, ROOM_B, 1)
+    await _call(connection_subscribe, protocol, ROOM_B, conn.stream_generation)
 
     with pytest.raises(HTTPException) as caught:
-        await _call(connection_unsubscribe, protocol, ROOM_B, 0)
+        await _call(connection_unsubscribe, protocol, ROOM_B, displaced)
 
     assert caught.value.detail["code"] == "taken_over"
     assert conn.rooms == {ROOM_B}
@@ -152,11 +153,11 @@ async def test_no_room_holder_is_evicted_by_a_refused_claim() -> None:
         expected_generation=None,
     )
     protocol.connections.claim_room(holder, ROOM_A, takeover=False)
-    _attach(protocol)
+    displaced = _attach(protocol).stream_generation
     _attach(protocol)
 
     request = ConnectionSubscribeRequest(
-        connection_id=CONN_ID, room_id=ROOM_A, generation=0, takeover=True
+        connection_id=CONN_ID, room_id=ROOM_A, generation=displaced, takeover=True
     )
     with pytest.raises(HTTPException):
         await connection_subscribe(AGENT_ID, request, agent=_Agent(), protocol=protocol)
@@ -170,7 +171,7 @@ async def test_the_current_client_is_admitted() -> None:
     protocol = _Protocol()
     conn = _attach(protocol)
 
-    result = await _call(connection_subscribe, protocol, ROOM_A, 0)
+    result = await _call(connection_subscribe, protocol, ROOM_A, conn.stream_generation)
 
     assert result["ok"] is True
     assert conn.rooms == {ROOM_A}
