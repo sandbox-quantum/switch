@@ -16,7 +16,7 @@ import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-swit
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { cliFailureReason } from '@main/core/telemetry/cli-failure';
 import { startTimer } from '@main/core/telemetry/duration';
-import type { TelemetryCliAction } from '@main/core/telemetry/events';
+import type { TelemetryCliAction, TelemetryDurationMs } from '@main/core/telemetry/events';
 import { installMethodOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
@@ -104,7 +104,7 @@ function reportRemoteCliAction(
   id: string,
   method: InstallMethod | undefined,
   result: { success: boolean; error?: { type?: string } },
-  durationMs: number
+  durationMs: TelemetryDurationMs
 ): void {
   trackEvent('agent_cli_action', {
     agent_type: agentTypeOf(id),

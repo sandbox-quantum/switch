@@ -149,13 +149,13 @@ export type TelemetryCliFailure =
  * `uninstall_command_failed` and `install_command_failed` both occur on an
  * update: a host with no update verb removes the connector and puts it back, and
  * which half failed is the difference between "nothing changed" and "the agent
- * now has no connector at all".
+ * now has no connector at all". `files_write_failed` and `files_remove_failed`
+ * draw the same line for the connector the app writes itself.
  *
- * There is deliberately no `error` catch-all. Every variant here is produced by
- * a named branch, so the set describes what the code can actually report; a
- * bucket nothing fills would imply a coverage this has not got. An operation
- * that throws reports nothing at all today — see the note on
- * `connector_installed`.
+ * `error` is the one code not named at a branch: it is an operation that threw
+ * rather than returning a result — a dead SSH channel mid-install is the common
+ * way. It is deliberately a small residue. A code that starts filling up is the
+ * signal that a wall people are hitting has no name yet, not a bucket to widen.
  */
 export type TelemetryConnectorFailure =
   | 'none'
@@ -168,8 +168,12 @@ export type TelemetryConnectorFailure =
   | 'uninstall_command_failed'
   /** The app writes this connector itself, and the write failed. */
   | 'files_write_failed'
+  /** The app writes this connector itself, and removing it failed. */
+  | 'files_remove_failed'
   /** The agent declares a file-based connector and implements no behavior for it. */
-  | 'files_unimplemented';
+  | 'files_unimplemented'
+  /** The operation threw instead of returning a result. */
+  | 'error';
 
 /**
  * How long an operation took, in whole milliseconds.
@@ -187,10 +191,11 @@ export type TelemetryConnectorFailure =
  * Two things do bound it, and both shape the distribution:
  *
  * - Every command the connector drivers run carries `EXEC_TIMEOUT_MS` (120 s),
- *   so a `plugin install` that hangs on an auth prompt reports ~120000 rather
- *   than however long it would have hung. Expect a pile-up there, and at
- *   multiples of it for a reinstall-style update, which runs two commands. It is
- *   the timeout wall, not a latency distribution.
+ *   and an operation runs several in sequence, so the wall is a multiple of it
+ *   rather than 120 s. Repairing the marketplace is up to three commands (list,
+ *   remove, add); an install adds one more, and a reinstall-style update adds
+ *   two — so ~480000 for an install and ~600000 for a reinstall. Expect pile-ups
+ *   at those multiples. They are the timeout wall, not a latency distribution.
  * - The connector events time the **whole operation the user waited on**, which
  *   includes registering the plugin marketplace. On a machine that has never had
  *   it, that step clones a repository; on every later install it is a no-op. So
@@ -199,8 +204,15 @@ export type TelemetryConnectorFailure =
  *
  * It carries nothing about the machine: an elapsed time is not a fingerprint at
  * this resolution, and it names no path, host or command.
+ *
+ * It is branded so the properties above are held by the type rather than by this
+ * comment. `startTimer()` is the only thing that can mint one, which is what
+ * stops a call site reaching for `Date.now() - startedAt` — not monotonic, and
+ * across a clock step it yields a negative number that nothing at the far end
+ * can tell from data.
  */
-export type TelemetryDurationMs = number;
+declare const durationMsBrand: unique symbol;
+export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };
 
 /**
  * Which messaging platform a room or bridge is on.
@@ -393,9 +405,8 @@ export type TelemetryEventMap = {
    * connector written by the app. The two fail in entirely different places,
    * which is what `failure_reason` separates.
    *
-   * Known gap: an operation that *throws* rather than returning a failed result
-   * is not reported at all, so the denominator is attempts that got far enough
-   * to produce a result. The same is true of `agent_cli_action`.
+   * The denominator is every attempt: an operation that throws is caught at the
+   * driver boundary and reported as `error` rather than escaping unreported.
    */
   connector_installed: {
     agent_type: TelemetryAgentType;
@@ -542,6 +553,11 @@ export type TelemetryEventMap = {
    * one that takes ten seconds are otherwise the same row, and a package manager
    * getting slower is the kind of regression nobody reports because it never
    * fails.
+   *
+   * Known gap: the dependency manager returns a result rather than throwing, but
+   * if it ever does throw the controller reports nothing, so the denominator is
+   * attempts that got far enough to produce one. The connector events close this
+   * with an `error` code; this path has no equivalent yet.
    */
   agent_cli_action: {
     agent_type: TelemetryAgentType;

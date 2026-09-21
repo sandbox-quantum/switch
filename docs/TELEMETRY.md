@@ -140,7 +140,7 @@ match a known code.
 
 | Event | Fields, with example values |
 |---|---|
-| `connector_installed` | `agent_type`: `claude` · `target`: `local` · `outcome`: `success` · `failure_reason`: `none` / `unsupported` / `marketplace_failed` / `install_command_failed` / `update_command_failed` / `uninstall_command_failed` / `files_write_failed` / `files_unimplemented` · `duration_ms`: `8421` |
+| `connector_installed` | `agent_type`: `claude` · `target`: `local` · `outcome`: `success` · `failure_reason`: `none` / `unsupported` / `marketplace_failed` / `install_command_failed` / `update_command_failed` / `uninstall_command_failed` / `files_write_failed` / `files_remove_failed` / `files_unimplemented` / `error` · `duration_ms`: `8421` |
 | `connector_updated` | `agent_type` · `target`: `remote` · `outcome` · `was_reinstall`: `false` · `failure_reason` (same set) · `duration_ms` |
 | `connector_uninstalled` | `agent_type` · `target`: `local` · `outcome` · `failure_reason` (same set) · `duration_ms` |
 

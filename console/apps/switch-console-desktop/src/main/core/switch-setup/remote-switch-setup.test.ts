@@ -35,6 +35,7 @@ vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
+import { aDurationMs } from '@main/core/telemetry/duration.testing';
 import { getRemoteSwitchSetupService } from './remote-switch-setup';
 
 const SSH_HOST = 'agent-host';
@@ -291,9 +292,12 @@ describe('RemoteSwitchSetupService.getStatus', () => {
     });
   });
 
-  it('does not read manifests when the CLI already advertises versions', async () => {
-    // Claude Code reports them in `marketplace list --json`, so the fallback is
-    // dead weight there — two SSH round trips per status read.
+  it('skips the marketplace manifests when the CLI already advertises versions', async () => {
+    // Claude Code reports the advertised versions in `marketplace list --json`,
+    // so that fallback is dead weight there — two SSH round trips per status
+    // read. The installed version is still read from the plugin manifest, which
+    // is the accurate source and the one the local driver uses: the CLI records
+    // the version it installed and does not update it in place.
     mocks.getPlugin.mockReturnValue(CLAUDE_AGENT);
     mocks.resolveCommandPath.mockResolvedValue('/usr/bin/claude');
     mocks.exec.mockImplementation(claudeExecImpl('0.1.0', '0.2.0'));
@@ -301,7 +305,11 @@ describe('RemoteSwitchSetupService.getStatus', () => {
     const service = await getRemoteSwitchSetupService(SSH_HOST);
     await service.getStatus('claude');
 
-    expect(calls()).toEqual(['plugin list --json', 'plugin marketplace list --json']);
+    expect(calls()).toEqual([
+      'plugin list --json',
+      '/home/dev/.claude/plugins/switch-connector/.claude-plugin/plugin.json',
+      'plugin marketplace list --json',
+    ]);
   });
 });
 
@@ -393,6 +401,116 @@ describe('RemoteSwitchSetupService.update', () => {
         'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
     });
   });
+
+  /**
+   * The reinstall split, on the driver where it was not pinned.
+   *
+   * Both halves of a Codex update carry `was_reinstall: true`, so the flag alone
+   * cannot tell "nothing changed" from "the host now has no connector". The
+   * failure code is what separates them, and it has to be asserted on this
+   * driver too — the two are maintained by hand and have drifted before.
+   */
+  it('reports the removal half of a failed reinstall', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin remove ${CODEX_REF}`) {
+        return Promise.reject(Object.assign(new Error('exit 1'), { code: 1, stderr: 'locked' }));
+      }
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    await service.update('codex');
+
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      was_reinstall: true,
+      failure_reason: 'uninstall_command_failed',
+      duration_ms: aDurationMs,
+    });
+  });
+
+  it('reports the re-add half of a failed reinstall', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin add ${CODEX_REF}`) {
+        return Promise.reject(Object.assign(new Error('exit 1'), { code: 1, stderr: '' }));
+      }
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    await service.update('codex');
+
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      was_reinstall: true,
+      failure_reason: 'install_command_failed',
+      duration_ms: aDurationMs,
+    });
+  });
+
+  it('reports a successful reinstall-style update', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    await service.update('codex');
+
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'success',
+      was_reinstall: true,
+      failure_reason: 'none',
+      duration_ms: aDurationMs,
+    });
+  });
+});
+
+/**
+ * An SSH channel that dies mid-operation is the most common way a remote
+ * connector operation fails, and it arrives as a rejection rather than a result:
+ * `resolveCommandPath` re-throws a transport failure by design, because it is
+ * not evidence the binary is absent. Unreported, it is an attempt the user made
+ * that no event records, and a stack in the renderer instead of a message.
+ */
+describe('RemoteSwitchSetupService transport failures', () => {
+  beforeEach(() => {
+    mocks.resolveCommandPath.mockRejectedValue(new Error('ssh channel closed'));
+  });
+
+  it('reports an install that threw rather than letting it escape', async () => {
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('codex');
+
+    expect(result).toEqual({ success: false, message: 'ssh channel closed' });
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      failure_reason: 'error',
+      duration_ms: aDurationMs,
+    });
+  });
+
+  it('reports an update that threw, with nothing removed', async () => {
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.update('codex');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      // Everything that can throw runs before the remove-then-add, so the flag
+      // is false and the pair is not counted as a half-finished reinstall.
+      was_reinstall: false,
+      failure_reason: 'error',
+      duration_ms: aDurationMs,
+    });
+  });
 });
 
 describe('RemoteSwitchSetupService.install', () => {
@@ -410,7 +528,7 @@ describe('RemoteSwitchSetupService.install', () => {
       outcome: 'success',
       failure_reason: 'none',
       // Elapsed wall time: a real number, but not one a test can pin.
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 
@@ -434,7 +552,7 @@ describe('RemoteSwitchSetupService.install', () => {
       target: 'remote',
       outcome: 'failure',
       failure_reason: 'install_command_failed',
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 
@@ -495,7 +613,7 @@ describe('RemoteSwitchSetupService.install', () => {
         target: 'remote',
         outcome: 'success',
         failure_reason: 'none',
-        duration_ms: expect.any(Number),
+        duration_ms: aDurationMs,
       });
     });
 
@@ -511,7 +629,7 @@ describe('RemoteSwitchSetupService.install', () => {
         target: 'remote',
         outcome: 'failure',
         failure_reason: 'files_write_failed',
-        duration_ms: expect.any(Number),
+        duration_ms: aDurationMs,
       });
     });
 
@@ -535,7 +653,7 @@ describe('RemoteSwitchSetupService.install', () => {
         target: 'remote',
         outcome: 'failure',
         failure_reason: 'files_unimplemented',
-        duration_ms: expect.any(Number),
+        duration_ms: aDurationMs,
       });
     });
   });

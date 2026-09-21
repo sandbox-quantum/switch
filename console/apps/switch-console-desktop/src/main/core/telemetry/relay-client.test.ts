@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TelemetryConfig } from './config';
+import { durationMs } from './duration.testing';
 import {
   buildOtlpPayload,
   postTelemetryEvent,
@@ -199,7 +200,7 @@ describe('the record that gets built', () => {
         target: 'remote',
         outcome: 'success',
         failure_reason: 'none',
-        duration_ms: 4200,
+        duration_ms: durationMs(4200),
       },
       CONTEXT
     );

@@ -10,6 +10,7 @@ vi.mock('./install-id', () => ({ getInstallId: vi.fn(async () => 'install-abc') 
 
 import { log } from '@main/lib/logger';
 import { isTelemetryAllowed } from './consent';
+import { durationMs } from './duration.testing';
 import { telemetryService, trackEvent } from './telemetry-service';
 
 const fetchMock = vi.fn();
@@ -228,7 +229,7 @@ describe('the payload', () => {
       target: 'remote',
       outcome: 'failure',
       failure_reason: 'install_command_failed',
-      duration_ms: 4200,
+      duration_ms: durationMs(4200),
     });
 
     expect(sentResource()['service.version']).toBe('1.2.3');
@@ -240,7 +241,7 @@ describe('the payload', () => {
       failure_reason: 'install_command_failed',
       // A duration goes as a number, not as text: `4200` and not `"4200"`, so
       // the far end can average it without parsing it back.
-      duration_ms: 4200,
+      duration_ms: durationMs(4200),
       build: 'dev',
     });
   });

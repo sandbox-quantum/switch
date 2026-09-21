@@ -421,12 +421,16 @@ pnpm run lint
   success-vs-failure, how long an operation took, app version, operating system, and the
   random install id. A duration is the one permitted value that is not from a fixed set,
   so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
-  milliseconds, and never a span that could encode something else. Never:
-  prompts, code, file paths, working directories, error messages or stack traces (use an
-  enumerated code), machine or user names, IP or MAC addresses, email or sign-in, and no
-  agent, room, project, location or server names or ids. Widening this is a consent
-  decision — the user-facing wording lives in
-  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step with it.
+  milliseconds, and never a span that could encode something else. That is a branded
+  type, not an alias for `number`, and `startTimer()` is the only thing that mints one —
+  so a call site cannot reach for `Date.now() - startedAt`, which is not monotonic and
+  across a clock step yields a negative number nothing at the far end can tell from data.
+  Never: prompts, code, file paths, working directories, error messages or stack traces
+  (use an enumerated code), machine or user names, IP or MAC addresses, email or sign-in,
+  and no agent, room, project, location or server names or ids. Widening this is a consent
+  decision — the summary the user consents to lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts`, the field-by-field disclosure it
+  links to is `docs/TELEMETRY.md`, and both must be kept in step with it.
 - **The interface may report only through the one gate.** Almost everything is
   reported from the main process, where a call site is type-checked against the
   catalogue. The exceptions are moments that exist only in the UI — a screen

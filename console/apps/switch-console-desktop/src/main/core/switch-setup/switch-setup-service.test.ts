@@ -7,7 +7,10 @@ const mocks = vi.hoisted(() => ({
   listPlugins: vi.fn(),
   readFile: vi.fn(),
   trackEvent: vi.fn(),
+  createPluginFs: vi.fn(),
 }));
+
+vi.mock('../providers/plugin-fs', () => ({ createPluginFs: mocks.createPluginFs }));
 
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
   LocalExecutionContext: class {
@@ -36,6 +39,7 @@ vi.mock('@main/lib/logger', () => ({
 }));
 
 import { ARTIFACT_VERSIONS } from '@switch-console/shared';
+import { aDurationMs } from '@main/core/telemetry/duration.testing';
 import { switchSetupService } from './switch-setup-service';
 
 const CLI_AGENT = {
@@ -334,6 +338,42 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
     expect(availability[0]!.blockedReason).toBeTruthy();
   });
 
+  /**
+   * One broken plugin must not empty the list.
+   *
+   * This fans out over every agent type, so a status read that throws took the
+   * whole picker down with it — nothing rendered at all, which is a worse answer
+   * than the one unavailable row it should have been. The same condition the
+   * mutating paths report as `files_unimplemented` is the one that did it.
+   */
+  it('keeps the other types when one plugin cannot be read at all', async () => {
+    const BROKEN_FILES_AGENT = {
+      metadata: { id: 'opencode' },
+      capabilities: {
+        switchSetup: { kind: 'files', artifact: 'switch-connector-opencode' },
+        hostDependency: { binaryNames: ['opencode'] },
+      },
+      behavior: { switchSetup: {} },
+    };
+    mocks.listPlugins.mockReturnValue([CLI_AGENT, BROKEN_FILES_AGENT]);
+    mocks.getPlugin.mockImplementation((id: string) =>
+      id === 'opencode' ? BROKEN_FILES_AGENT : CLI_AGENT
+    );
+    mocks.exec.mockImplementation(execImpl('0.1.0'));
+    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
+
+    const availability = await switchSetupService.listAgentTypeAvailability();
+
+    expect(availability).toEqual([
+      { agentId: 'claude', available: true, blockedReason: null },
+      {
+        agentId: 'opencode',
+        available: false,
+        blockedReason: expect.stringContaining('implements no behavior'),
+      },
+    ]);
+  });
+
   it('never lists an agent type that declares no Switch setup', async () => {
     // `NONE_AGENT` cannot be onboarded at all, so it is not a thing the user
     // could fix — listing it greyed out would be noise, not information.
@@ -449,7 +489,7 @@ describe('switchSetupService mutations', () => {
       outcome: 'success',
       failure_reason: 'none',
       // Elapsed wall time: a real number, but not one a test can pin.
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 
@@ -498,7 +538,7 @@ describe('switchSetupService mutations', () => {
       target: 'local',
       outcome: 'failure',
       failure_reason: 'install_command_failed',
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 
@@ -535,7 +575,7 @@ describe('switchSetupService mutations', () => {
       target: 'local',
       outcome: 'failure',
       failure_reason: 'unsupported',
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 });
@@ -745,6 +785,7 @@ describe('switchSetupService with the codex dialect', () => {
 describe('file-based connector version', () => {
   const installedVersion = vi.fn();
   const install = vi.fn();
+  const uninstall = vi.fn();
   const FILES_AGENT = {
     metadata: { id: 'opencode' },
     capabilities: {
@@ -755,12 +796,13 @@ describe('file-based connector version', () => {
       },
       hostDependency: { binaryNames: ['opencode'] },
     },
-    behavior: { switchSetup: { files: { installedVersion, install } } },
+    behavior: { switchSetup: { files: { installedVersion, install, uninstall } } },
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getPlugin.mockReturnValue(FILES_AGENT);
+    mocks.createPluginFs.mockReturnValue({});
   });
 
   // The connector is versioned in its own directory and listed in the registry
@@ -799,7 +841,7 @@ describe('file-based connector version', () => {
       target: 'local',
       outcome: 'success',
       failure_reason: 'none',
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 
@@ -816,7 +858,7 @@ describe('file-based connector version', () => {
       target: 'local',
       outcome: 'failure',
       failure_reason: 'files_write_failed',
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
     });
   });
 
@@ -837,7 +879,55 @@ describe('file-based connector version', () => {
       target: 'local',
       outcome: 'failure',
       failure_reason: 'files_unimplemented',
-      duration_ms: expect.any(Number),
+      duration_ms: aDurationMs,
+    });
+  });
+
+  /**
+   * A failed removal is not a failed write.
+   *
+   * Both go through the same helper, so without a code of its own a read-only
+   * config directory on an uninstall is counted as the same thing as an install
+   * that could not write — on the one connector kind these codes exist to
+   * separate. The marketplace path has drawn this line all along.
+   */
+  it('separates a failed removal from a failed write', async () => {
+    uninstall.mockRejectedValue(new Error('permission denied'));
+
+    const result = await switchSetupService.uninstall('opencode');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_uninstalled', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'failure',
+      failure_reason: 'files_remove_failed',
+      duration_ms: aDurationMs,
+    });
+  });
+
+  /**
+   * `files_unimplemented` is a claim about the shipped app — this plugin ships
+   * no behavior — so only the plugin actually being unimplemented may produce
+   * it. A filesystem that cannot be built is a fault on the machine, and it
+   * counts as the write failing; reporting it as the plugin's fault would put a
+   * plugin-authoring defect and a machine fault in one number, and on the remote
+   * driver it would blame the shipped app for a dead SSH channel.
+   */
+  it('does not blame the plugin for a failure that is not the plugin', async () => {
+    mocks.createPluginFs.mockImplementation(() => {
+      throw new Error('home directory is not readable');
+    });
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result).toEqual({ success: false, message: 'home directory is not readable' });
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'failure',
+      failure_reason: 'files_write_failed',
+      duration_ms: aDurationMs,
     });
   });
 });
