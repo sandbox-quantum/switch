@@ -31,7 +31,7 @@ import type { AgentTemplateOrigin } from './agent-config-file';
 import { foreignCredentialsOwner, sameEndpointAgentId } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
 import { acknowledgeDefinition } from './import-agent-config';
 import { knownAgentTypeForProvider } from './known-agent-type';
@@ -269,13 +269,13 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   });
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
     // Writing the per-agent Switch credentials is unconditional core behavior for
     // every provider, keyed by the agent's `name` — the single key-space every
     // reader (launch path, auto-session watcher, notification poller) uses
     // (CHOO-1440).
-    await writeNeutralAgentSettingsFs(workspace.fs, {
+    await writeNeutralAgentSettingsFs(workdir.fs, {
       slug: params.name,
       apiEndpoint: server.apiUrl,
       apiToken: registered.apiKey,
@@ -287,10 +287,10 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     // name left behind is recorded as accounted for, so nothing takes it for an
     // edit to this one.
     await writeAgentConfigFile(
-      workspace.fs,
+      workdir.fs,
       params.name,
       await acknowledgeDefinition({
-        workspaceFs: workspace.fs,
+        workdirFs: workdir.fs,
         repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
         name: params.name,
         config: {
@@ -302,7 +302,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       })
     );
   } finally {
-    workspace.close();
+    workdir.close();
   }
 
   const location = await ensureLocation({

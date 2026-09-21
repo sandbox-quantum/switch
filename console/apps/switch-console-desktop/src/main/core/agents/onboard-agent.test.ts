@@ -75,8 +75,8 @@ vi.mock('./setAgentAutoSession', () => ({
   reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
 }));
 vi.mock('./write-switch-settings', () => ({ writeAgentNeutralSettings: vi.fn(async () => {}) }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: {}, close: () => {} })),
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: vi.fn(async () => ({ fs: {}, close: () => {} })),
 }));
 vi.mock('./import-agent-config', () => ({ importAgentConfig: h.importAgentConfig }));
 vi.mock('@main/core/providers/plugin-registry', () => ({

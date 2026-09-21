@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { agentEvents } from '@main/core/agents/agent-events';
 import { getAgentLocation } from '@main/core/agents/agent-location';
-import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
+import { resolveWorkdirFsFor } from '@main/core/agents/agent-workdir-fs';
 import { createAgent } from '@main/core/agents/createAgent';
 import { getLocationAgentsInWorkspace } from '@main/core/agents/getAgents';
 import { importAgentConfig } from '@main/core/agents/import-agent-config';
@@ -37,16 +37,16 @@ export async function adoptSubagent(
   // Every agent has a config file; a subagent's comes from its own definition.
   // Written before the row, so a failure leaves no agent behind that has none.
   const location = await getAgentLocation(parent);
-  const repo = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
     await importAgentConfig({
-      workspaceFs: repo.fs,
+      workdirFs: workdir.fs,
       repoAgents: getPlugin(parent.providerId).behavior.repoAgents ?? null,
       name,
       providerConfig: parent.providerConfig,
     });
   } finally {
-    repo.close();
+    workdir.close();
   }
   const agent = await createAgent({
     id: randomUUID(),

@@ -16,7 +16,7 @@ import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { readAgentConfigFile } from './agent-config-file';
 import { agentEvents } from './agent-events';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
 import { importAgentConfig } from './import-agent-config';
@@ -208,16 +208,16 @@ async function ensureAgentConfig(params: {
   name: string;
   providerId: AgentProviderId;
 }): Promise<void> {
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
-    if ((await readAgentConfigFile(workspace.fs, params.name)) !== null) return;
+    if ((await readAgentConfigFile(workdir.fs, params.name)) !== null) return;
     await importAgentConfig({
-      workspaceFs: workspace.fs,
+      workdirFs: workdir.fs,
       repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
       name: params.name,
       providerConfig: null,
     });
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

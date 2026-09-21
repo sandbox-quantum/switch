@@ -28,7 +28,7 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
 const h = vi.hoisted(() => {
   const writeDefinition = vi.fn(async () => {});
   // A faithful-enough stand-in for a repo-agents provider: the config sync
-  // renders the definition and writes it through the workspace fs, so the mock
+  // renders the definition and writes it through the workdir fs, so the mock
   // has to answer where it goes and what it looks like.
   const repoAgents = {
     writeDefinition,
@@ -40,11 +40,11 @@ const h = vi.hoisted(() => {
     readDefinition: async () => null,
   };
   const state: {
-    workspace: PluginFs | null;
+    workdir: PluginFs | null;
     repoAgents: object | null;
     nameTaken: boolean;
   } = {
-    workspace: null,
+    workdir: null,
     repoAgents,
     nameTaken: false,
   };
@@ -67,9 +67,9 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 }));
 vi.mock('./register-agent-identity', () => ({ registerAgentIdentity: h.registerAgentIdentity }));
 vi.mock('./createAgent', () => ({ createAgent: h.createAgent }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({
-    fs: h.state.workspace as PluginFs,
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: vi.fn(async () => ({
+    fs: h.state.workdir as PluginFs,
     close: vi.fn(),
   })),
 }));
@@ -141,7 +141,7 @@ describe('addAgent', () => {
     vi.clearAllMocks();
     h.state.nameTaken = false;
     h.state.repoAgents = h.repoAgents;
-    h.state.workspace = fakeFs();
+    h.state.workdir = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
     // `clearAllMocks` resets call records but not implementations: without a
     // default, whichever test last set one decides the answer for the rest.
@@ -187,7 +187,7 @@ describe('addAgent', () => {
     // unconditional it got no credentials on disk at all, so its sessions
     // authenticated to Switch as whatever was in settings.local.json.
     h.state.repoAgents = null;
-    const fs = h.state.workspace as PluginFs;
+    const fs = h.state.workdir as PluginFs;
 
     const result = await addAgent(params());
 
@@ -201,7 +201,7 @@ describe('addAgent', () => {
   });
 
   it('writes credentials and a config file, and no provider definition', async () => {
-    const fs = h.state.workspace as PluginFs;
+    const fs = h.state.workdir as PluginFs;
 
     await addAgent(params({ providerId: 'claude', name: 'cc-hoot' }));
 
@@ -213,7 +213,7 @@ describe('addAgent', () => {
   });
 
   it('records the agent’s instructions in its committed config file', async () => {
-    const fs = h.state.workspace as PluginFs;
+    const fs = h.state.workdir as PluginFs;
 
     await addAgent(params({ providerId: 'claude', name: 'cc-hoot', instructions: 'Be careful.' }));
 
@@ -224,7 +224,7 @@ describe('addAgent', () => {
   it('starts from what it was created with, whatever an earlier agent left behind', async () => {
     // A leftover definition under the same name used to be taken as a hand
     // edit, replacing everything typed into the form.
-    const fs = h.state.workspace as PluginFs;
+    const fs = h.state.workdir as PluginFs;
     await fs.write(
       '.claude/agents/cc-hoot.md',
       '---\nname: cc-hoot\ndescription: Old\n---\n\nOld instructions.\n'
@@ -238,7 +238,7 @@ describe('addAgent', () => {
   });
 
   it('git-ignores the credentials directory so the token never enters VCS', async () => {
-    const fs = h.state.workspace as PluginFs;
+    const fs = h.state.workdir as PluginFs;
     await addAgent(params());
     expect(await fs.read('.switch/agents/.gitignore')).toBe('*\n');
   });
@@ -257,9 +257,9 @@ describe('addAgent', () => {
     );
   });
 
-  it('writes nothing to the workspace when registration fails', async () => {
+  it('writes nothing to the workdir when registration fails', async () => {
     h.registerAgentIdentity.mockResolvedValue({ kind: 'name-conflict' } as never);
-    const fs = h.state.workspace as PluginFs;
+    const fs = h.state.workdir as PluginFs;
 
     expect((await addAgent(params())).kind).toBe('name-conflict');
     expect(await fs.read(agentSettingsRelativePath('codex-hoot'))).toBeNull();
@@ -278,7 +278,7 @@ describe('addAgent', () => {
         SWITCH_AGENT_ID: 'their-agent',
       },
     });
-    h.state.workspace = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: theirs });
+    h.state.workdir = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: theirs });
 
     const result = await addAgent(params());
 
@@ -288,9 +288,9 @@ describe('addAgent', () => {
     });
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.createAgent).not.toHaveBeenCalled();
-    expect(
-      await (h.state.workspace as PluginFs).read(agentSettingsRelativePath('codex-hoot'))
-    ).toBe(theirs);
+    expect(await (h.state.workdir as PluginFs).read(agentSettingsRelativePath('codex-hoot'))).toBe(
+      theirs
+    );
   });
 
   it('refuses when same-server credentials exist but the agent is unknown to this install (CHOO-2560)', async () => {
@@ -305,7 +305,7 @@ describe('addAgent', () => {
         SWITCH_AGENT_ID: 'colleague-agent',
       },
     });
-    h.state.workspace = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: colleague });
+    h.state.workdir = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: colleague });
 
     const result = await addAgent(params());
 
@@ -313,9 +313,9 @@ describe('addAgent', () => {
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.createAgent).not.toHaveBeenCalled();
     // The colleague's file is intact.
-    expect(
-      await (h.state.workspace as PluginFs).read(agentSettingsRelativePath('codex-hoot'))
-    ).toBe(colleague);
+    expect(await (h.state.workdir as PluginFs).read(agentSettingsRelativePath('codex-hoot'))).toBe(
+      colleague
+    );
   });
 
   it('refuses a name already taken in the location, without minting an identity', async () => {

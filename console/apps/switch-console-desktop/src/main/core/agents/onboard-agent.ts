@@ -21,7 +21,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { createAgent } from './createAgent';
 import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
@@ -197,16 +197,16 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   // Console, so whatever its Claude Code definition holds becomes the config.
   // Written before the agent row, so a failure here leaves no agent behind that
   // has none.
-  const workspace = await resolveWorkspaceFsFor(sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(sshHost, params.dir);
   try {
     await importAgentConfig({
-      workspaceFs: workspace.fs,
+      workdirFs: workdir.fs,
       repoAgents: getPlugin(params.providerId).behavior.repoAgents ?? null,
       name,
       providerConfig: null,
     });
   } finally {
-    workspace.close();
+    workdir.close();
   }
 
   const location = await ensureLocation({ sshHost, dir: params.dir, name: params.name });

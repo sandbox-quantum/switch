@@ -23,8 +23,8 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.ser
 vi.mock('@main/core/agents/agent-location', () => ({
   getAgentLocation: async () => ({ id: 'location', dir: '/repo', sshHost: 'vm-1' }),
 }));
-vi.mock('@main/core/agents/agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: async () => ({ fs: {}, close: () => {} }),
+vi.mock('@main/core/agents/agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: async () => ({ fs: {}, close: () => {} }),
 }));
 vi.mock('@main/core/agents/import-agent-config', () => ({ importAgentConfig: mocks.importConfig }));
 vi.mock('@main/core/providers/plugin-registry', () => ({
