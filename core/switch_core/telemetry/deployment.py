@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -70,25 +71,35 @@ def seconds_since_install(installed_at: datetime | None) -> float | None:
 
 async def milestone_claimed(
     session_factory: async_sessionmaker[AsyncSession], name: str
-) -> bool:
+) -> Literal["true", "false", "unknown"]:
     """Whether `name` has already been reported, without claiming it.
 
-    For the places that need to know a thing once happened — a connector's
-    removal asking whether it ever connected. False on failure.
+    For the one caller that needs to know a thing once happened without
+    taking the claim itself — a connector's removal asking whether it ever
+    connected. Returns a tri-state rather than a bool: `"unknown"` on a failed
+    lookup, since a lookup that could not run is not evidence the milestone
+    was never claimed, and the caller reports it as a telemetry property that
+    must say so rather than guess.
+
+    Distinct from `claim_milestone`, whose `False` means "not yet claimed" and
+    is always the safe answer for its callers (each takes the claim itself, so
+    losing a race or a lookup only means reporting nothing rather than
+    reporting wrongly) — that contract is unrelated to this one and is not
+    changed here.
     """
     try:
         async with session_factory() as session:
             found = await session.execute(
                 select(TelemetryMilestone.name).where(TelemetryMilestone.name == name)
             )
-            return found.scalar_one_or_none() is not None
+            return "true" if found.scalar_one_or_none() is not None else "false"
     except Exception:
         logger.warning(
-            "Could not read the %s telemetry milestone; treating it as unreported.",
+            "Could not read the %s telemetry milestone; reporting it as unknown.",
             name,
             exc_info=True,
         )
-        return False
+        return "unknown"
 
 
 async def claim_milestone(

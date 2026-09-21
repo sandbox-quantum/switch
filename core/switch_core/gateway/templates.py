@@ -14,7 +14,6 @@ already answered — agreeing right up until the day it did not.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import quote
 
@@ -49,6 +48,7 @@ from switch_core.gateway.schemas import (
     TemplateValidateResponse,
 )
 from switch_core.telemetry import emit_safely
+from switch_core.telemetry.ages import age_days
 from switch_core.template_lint import lint_template
 
 
@@ -59,13 +59,6 @@ def _kind(value: str | None) -> str:
     an operator's own kind reports as `other`.
     """
     return value if value in ("room", "group", "agent") else "other"
-
-
-def _age_days(created_at: object) -> float:
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
 
 
 router = APIRouter()
@@ -372,7 +365,7 @@ async def delete_template(
     template = await _load_for_management(
         session, template_store, template_id, user, is_admin
     )
-    kind, age = _kind(template.kind), _age_days(template.created_at)
+    kind, age = _kind(template.kind), age_days(template.created_at)
     try:
         await template_store.delete(session, template_id)
     except ValueError as e:

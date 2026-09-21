@@ -9,14 +9,22 @@ relies on a primary-key collision being the guard.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import DeploymentIdentity, TelemetrySnapshotWatermark
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    DeploymentIdentity,
+    TelemetrySnapshotWatermark,
+)
+from switch_core.telemetry import snapshot as snapshot_module
 from switch_core.telemetry.deployment import (
     DeploymentIdentityMissingError,
     claim_milestone,
@@ -28,6 +36,20 @@ from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+
+
+@contextlib.asynccontextmanager
+async def _always_broken_tenant_session(
+    factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> AsyncIterator[AsyncSession]:
+    """A `tenant_session` replacement that fails for every tenant, every time.
+
+    Stands in for a tenant whose queries never succeed — a permanently broken
+    row, a statement that always times out — so a test can ask whether the
+    schedule keeps moving regardless, rather than reproducing such a query.
+    """
+    raise RuntimeError("permanently broken tenant")
+    yield  # pragma: no cover - unreachable; keeps this an async generator
 
 
 class _RecordingSink:
@@ -320,3 +342,45 @@ class TestTheSnapshotSchedule:
             if record.name == "switch_core.usage_snapshot"
         )
         assert snapshot.properties["session_live_count"] == 2
+
+    async def test_a_permanently_broken_tenant_still_advances_the_watermark(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The regression test for the defect a review found: `collect_usage`
+        and `newly_active_rooms` used to let one tenant's exception escape the
+        whole fan-out, and `_write_watermark` only runs after `run_once`
+        returns — so a deterministically-failing tenant meant the watermark
+        never advanced and no snapshot was ever sent again, for any tenant,
+        for the life of the process. Contained per tenant, a snapshot still
+        goes out and the schedule still moves, pass after pass, regardless."""
+        await self._clear_watermark(session_factory)
+        monkeypatch.setattr(
+            snapshot_module, "tenant_session", _always_broken_tenant_session
+        )
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, session_factory)
+
+        with caplog.at_level(logging.ERROR, logger="switch_core.telemetry.snapshot"):
+            sent_first = await reporter.run_once_if_due()
+
+        assert sent_first is True
+        assert "switch_core.usage_snapshot" in [record.name for record in sink.sent]
+        assert any(TENANT_ZERO_ID in record.message for record in caplog.records)
+
+        # The watermark really did advance: called again immediately, the
+        # schedule says not due rather than trying, and failing, again.
+        assert await reporter.run_once_if_due() is False
+
+        # And it keeps moving on a later pass, not only the first one.
+        async with session_factory() as session:
+            await session.execute(
+                update(TelemetrySnapshotWatermark).values(
+                    last_sent_at=datetime.now(UTC) - timedelta(days=2)
+                )
+            )
+            await session.commit()
+
+        assert await reporter.run_once_if_due() is True

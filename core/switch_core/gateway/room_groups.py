@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -25,14 +24,7 @@ from switch_core.gateway.schemas import (
     RoomGroupUpdateRequest,
 )
 from switch_core.telemetry import emit_safely
-
-
-def _age_days(created_at: object) -> float:
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
-
+from switch_core.telemetry.ages import age_days
 
 router = APIRouter()
 
@@ -169,7 +161,7 @@ async def delete_room_group(
     # group and dismantling a working one.
     group = await room_group_store.get(session, group_id)
     room_count = (await room_group_store.get_room_counts(session)).get(group_id, 0)
-    age = _age_days(group.created_at) if group else 0.0
+    age = age_days(group.created_at) if group else 0.0
 
     removed = await room_group_store.delete(session, group_id)
     if not removed:

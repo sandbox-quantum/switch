@@ -241,7 +241,9 @@ never invisible.
 
 | Property | Type | Notes |
 |---|---|---|
-| `tenant_count` | number | tenants on the deployment |
+| `tenant_count` | number | tenants this pass actually counted — see `tenant_failed_count` |
+| `tenant_failed_count` | number | tenants whose queries raised and were stepped over. One tenant's failure no longer takes the whole pass down, so the pair is what makes a partial pass self-describing: without it, every count dropping at once is indistinguishable from a deployment losing its users |
+| `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly fifteen queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
 | `user_active_1d` | number | distinct humans who interacted in 24h |
 | `user_active_7d` | number | same over 7 days |
@@ -394,7 +396,8 @@ minutes and rooms created in week six never do, that is a different problem from
 a slow average.
 
 **`room_archived`** — `bridge_platform`, `age_days` (number), `was_ever_active`
-(boolean).
+(tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
+itself could not be run, which is not evidence the room was never used).
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind`.
 
@@ -413,18 +416,21 @@ and "deleted after a year" are opposite signals: the first is a mistake or an
 experiment, the second a deliberate clean-up.
 
 **`room_deleted`** — `bridge_platform`, `channel_type`, `created_by_kind`,
-`age_days`, `was_ever_active`, `agent_count`. The activity flag is read before
-the delete, because the cascade takes the room's messages with it and
-afterwards every room looks like it was never used.
+`age_days`, `was_ever_active` (tri-state, see `room_archived` above),
+`agent_count`. The activity flag is read before the delete, because the
+cascade takes the room's messages with it and afterwards every room looks like
+it was never used.
 
 **`agent_deleted`** — `known_agent_type`, `age_days`, `room_count`,
 `had_parent`.
 
-**`connector_removed`** — `bridge_platform`, `age_days`, `was_ever_connected`,
-`room_count`. `was_ever_connected` is the one that matters: a connector removed
-having never connected is a failed setup, and one removed after months of
-service is a decision. Reporting both as "removed" would hide the first, which
-is the one worth acting on.
+**`connector_removed`** — `bridge_platform`, `age_days`, `was_ever_connected`
+(tri-state: `true` | `false` | `unknown`), `room_count`. `was_ever_connected` is
+the one that matters: a connector removed having never connected is a failed
+setup, and one removed after months of service is a decision. Reporting both
+as "removed" would hide the first, which is the one worth acting on.
+`unknown` when the durable record backing it could not be read — reporting
+that as `false` would misfile a lookup failure as a failed setup.
 
 **`agent_registered`**
 
@@ -452,7 +458,22 @@ The connection registry already records a reason on every close, which is where
 these values come from; the set is closed here so a new reason string added in
 the code does not silently become a new Amplitude value.
 
-**`bridge_connected`** — `bridge_platform`, `outcome`, `failure_reason`.
+**`bridge_connected`** — `bridge_platform`, `outcome`, `failure_reason`,
+`duration_ms`.
+
+Fires for every attempt, including the ones that fail before the bridge's task
+is ever scheduled — an unregistered adapter type, a stored config that no
+longer validates, a port another bridge already holds. Those used to emit
+nothing at all, so the connect success rate was computed over a denominator
+that excluded the attempts that failed hardest.
+
+`duration_ms` is how long the attempt took, in whole milliseconds on a
+monotonic clock, spanning both halves of it: the synchronous setup and the task
+that actually reaches the platform. Nothing else times this — a bridge comes up
+on a background task rather than inside a request the server serves — and the
+failure half is the more interesting one, because a timeout and a refusal carry
+the same `failure_reason` and nothing alike in the time. `-1` if no reading was
+taken, following the convention below.
 
 **`bridge_disconnected`** — `bridge_platform`, `reason`
 (`shutdown` \| `restart` \| `auth_failed` \| `network` \| `platform_error` \|
@@ -473,7 +494,10 @@ rather than something the product wants to know.
 ### Closed value sets
 
 `bridge_platform`: `slack` | `mattermost` | `discord` | `teams` | `telegram` |
-`none`.
+`none` | `unknown`. `none` is "no bridge" (an internal-only room); `unknown` is
+"there is one and the lookup that would have named it failed" — the two are
+kept apart because collapsing them would misreport a Slack-bridged room as
+internal-only whenever that lookup has a transient error.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
@@ -483,15 +507,24 @@ set, because one classifier feeds both. A value that classifier can produce and
 only one of the two declares is an event that fails validation at the moment a
 bridge drops — which is precisely the event worth not losing.
 
-Where a duration cannot be known — a deployment with no install clock, a bridge
-whose configuration timestamp is unreadable — the property carries `-1` rather
-than `0`, so "we could not tell" is distinguishable from "it happened
-instantly".
+**Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
+server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
+`connector_removed`.`was_ever_connected`). Not a boolean, deliberately — a
+property that can be unknown is a three-valued fact, and collapsing the failed
+case into `false` reports a guess as a claim the code has no evidence for.
 
-Any property whose value is not in its set is a bug. It should raise where the
-event is built rather than be coerced, dropped, or sent as `unknown` — a
-silently-widening value set is how an analytics catalogue stops being
-trustworthy.
+Where a duration or an age cannot be known — a deployment with no install
+clock, a bridge whose configuration timestamp is unreadable, a row whose
+`created_at` could not be read — the property carries `-1` rather than `0`, so
+"we could not tell" is distinguishable from "it happened instantly" or
+"created just now".
+
+Any property whose value is not in its declared set is a bug. It should raise
+where the event is built rather than be coerced, dropped, or silently widened
+to a value nobody added to the catalogue. This is a different statement from
+the tri-states above: `unknown` is fine *as a value the catalogue itself
+declares* for the handful of properties that need it — what must never happen
+is a value reaching the wire that the catalogue does not know about.
 
 ## Consent
 

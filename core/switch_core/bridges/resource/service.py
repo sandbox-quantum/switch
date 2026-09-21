@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -37,6 +36,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.ages import age_days
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,6 @@ def _reference_type(type_: str) -> str:
 
 def _visibility(value: str) -> str:
     return value if value in ("private", "public") else "private"
-
-
-def _age_days(created_at: object) -> float:
-    """How old a row is, in days, for reporting. Zero if unknown."""
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
 
 
 ROOM_DOCUMENT_MAX_CONTENT_BYTES = 1_048_576
@@ -413,7 +405,7 @@ class ResourceService:
                     f"Reference type '{type_}' is used by {in_use} reference(s) "
                     "and cannot be deleted"
                 )
-        age = _age_days(reference_type.created_at)
+        age = age_days(reference_type.created_at)
         await self._reference_types.delete(session, type_)
         emit_safely(self._telemetry, "reference_type_deleted", {"age_days": age})
 
@@ -548,6 +540,12 @@ class ResourceService:
             value=normalised_value,
         )
         created = await self._references.create(session, ref)
+        # Deliberate trade: `create` above flushes, so a validation failure
+        # (a bad visibility pair, an unknown type) has already raised before
+        # this line runs — what remains uncommitted is the gateway route's
+        # own `session.commit()`, called on the same session right after this
+        # returns. This service does not own that transaction boundary, so
+        # the residual risk is a bare commit failure, not a business-rule one.
         emit_safely(
             self._telemetry,
             "reference_created",
@@ -654,7 +652,7 @@ class ResourceService:
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "delete", ref)
-        kind, age = _reference_type(ref.type), _age_days(ref.created_at)
+        kind, age = _reference_type(ref.type), age_days(ref.created_at)
         detached = await self._references.delete(session, reference_id)
         emit_safely(
             self._telemetry,
@@ -849,6 +847,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
+        # Same trade as `reference_created` above: flushed, not yet committed,
+        # and the commit is the gateway route's to call.
         emit_safely(
             self._telemetry,
             "document_created",
@@ -924,7 +924,7 @@ class ResourceService:
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
         require(Principal(user_id, is_admin), "delete", doc)
-        age = _age_days(doc.created_at)
+        age = age_days(doc.created_at)
         detached = await self._documents.delete(session, document_id)
         emit_safely(
             self._telemetry,
@@ -1012,6 +1012,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
+        # Same trade as `reference_created` above: flushed, not yet committed,
+        # and the commit is the MCP handler's to call.
         emit_safely(
             self._telemetry,
             "document_created",
@@ -1058,6 +1060,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
+        # Same trade as `reference_created` above: flushed, not yet committed,
+        # and the commit is the caller's to call.
         emit_safely(
             self._telemetry,
             "document_created",
@@ -1130,7 +1134,11 @@ class ResourceService:
             raise PermissionError(
                 f"Agent {agent_id} did not create document {document_id}"
             )
+        age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
+        emit_safely(
+            self._telemetry, "document_deleted", {"scope": "room", "age_days": age}
+        )
 
     async def delete_room_document_by_user(
         self,
@@ -1146,7 +1154,11 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
+        age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
+        emit_safely(
+            self._telemetry, "document_deleted", {"scope": "room", "age_days": age}
+        )
 
     async def get_room_scoped_document(
         self, session: AsyncSession, room_id: str, document_id: str
@@ -1208,6 +1220,8 @@ class ResourceService:
             instructions=instructions,
         )
         created = await self._packages.create(session, pkg)
+        # Same trade as `reference_created` above: flushed, not yet committed,
+        # and the commit is the gateway route's to call.
         emit_safely(self._telemetry, "package_created", {"created_by_kind": "user"})
         return created
 
@@ -1273,7 +1287,7 @@ class ResourceService:
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "delete", pkg)
-        age = _age_days(pkg.created_at)
+        age = age_days(pkg.created_at)
         detached = await self._packages.delete(session, package_id)
         emit_safely(self._telemetry, "package_deleted", {"age_days": age})
         return detached

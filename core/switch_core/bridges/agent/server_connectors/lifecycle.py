@@ -146,13 +146,20 @@ class ServerSideConnectorLifecycleService:
             await self._connector_store.create(session, record)
             await session.commit()
 
-        await self.start(record.id)
-
+        # Emitted here, before `start`, rather than after: the rows above are
+        # durably committed and are the fact this event describes, while
+        # `start` below is a post-commit side effect (decrypting the token,
+        # validating the connector's own config, dialling out) that can raise
+        # without undoing the registration. A failure there still propagates
+        # to this call's caller unchanged — only the reporting no longer
+        # depends on it succeeding.
         emit_safely(
             self._telemetry,
             "server_connector_registered",
             {"connector_kind": _connector_kind(connector_type)},
         )
+
+        await self.start(record.id)
 
         logger.info(
             "Registered server-side connector %s (%s): %s (owner: %s)",

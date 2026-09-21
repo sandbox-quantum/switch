@@ -3,16 +3,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime
+import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import aiohttp
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
-from switch_core.bridges.collaboration.models import BridgeConnectionConfig
+from switch_core.bridges.collaboration.models import (
+    BridgeConnectionConfig,
+    BridgeCredentialError,
+    BridgeOperationError,
+)
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
@@ -29,6 +35,7 @@ from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration
 from switch_core.deeplinks import gateway_url_warning
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.ages import UNKNOWN_AGE, age_days, seconds_since
 from switch_core.telemetry.deployment import (
     claim_milestone,
     milestone_claimed,
@@ -41,42 +48,191 @@ if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
 
+# Every platform SDK below is registered dynamically (`register_adapter`), so a
+# deployment that only wires up some of the five is plausible even though
+# every one is a hard dependency of switch-core today — hence guarded rather
+# than assumed. A dependency that is genuinely missing degrades classification
+# to `unknown` instead of taking the whole classifier down with an ImportError,
+# which would turn a bridge failure into a second, worse one.
+try:
+    from slack_sdk.errors import SlackApiError
+except ImportError:  # pragma: no cover - exercised only without slack-sdk installed
+    SlackApiError = None  # type: ignore[assignment, misc]
+
+try:
+    from discord.errors import DiscordException
+    from discord.errors import LoginFailure as DiscordLoginFailure
+except ImportError:  # pragma: no cover
+    DiscordException = None  # type: ignore[assignment, misc]
+    DiscordLoginFailure = None  # type: ignore[assignment, misc]
+
+try:
+    from telegram.error import BadRequest as TelegramBadRequest
+    from telegram.error import ChatMigrated as TelegramChatMigrated
+    from telegram.error import Forbidden as TelegramForbidden
+    from telegram.error import InvalidToken as TelegramInvalidToken
+    from telegram.error import NetworkError as TelegramNetworkError
+    from telegram.error import TelegramError
+except ImportError:  # pragma: no cover
+    TelegramBadRequest = None  # type: ignore[assignment, misc]
+    TelegramChatMigrated = None  # type: ignore[assignment, misc]
+    TelegramForbidden = None  # type: ignore[assignment, misc]
+    TelegramInvalidToken = None  # type: ignore[assignment, misc]
+    TelegramNetworkError = None  # type: ignore[assignment, misc]
+    TelegramError = None  # type: ignore[assignment, misc]
+
+try:
+    from mattermostdriver.exceptions import (
+        NoAccessTokenProvided as MattermostNoAccessTokenProvided,
+    )
+    from mattermostdriver.exceptions import (
+        NotEnoughPermissions as MattermostNotEnoughPermissions,
+    )
+
+    # `mattermostdriver` raises its named exceptions only for the status codes
+    # it maps; anything else (including a bare connection failure) surfaces as
+    # the underlying `requests` exception, since that is the client it wraps.
+    from requests.exceptions import ConnectionError as RequestsConnectionError
+    from requests.exceptions import HTTPError as RequestsHTTPError
+    from requests.exceptions import Timeout as RequestsTimeout
+except ImportError:  # pragma: no cover
+    MattermostNoAccessTokenProvided = None  # type: ignore[assignment, misc]
+    MattermostNotEnoughPermissions = None  # type: ignore[assignment, misc]
+    RequestsConnectionError = None  # type: ignore[assignment, misc]
+    RequestsHTTPError = None  # type: ignore[assignment, misc]
+    RequestsTimeout = None  # type: ignore[assignment, misc]
+
 logger = logging.getLogger(__name__)
+
+
+# Slack error codes that mean the credentials themselves are rejected, as
+# opposed to Slack refusing a call for some other reason (rate limited, a
+# scope not granted, an internal error). `SlackApiError` carries no separate
+# type for this — the distinction lives entirely in `response["error"]`.
+_SLACK_AUTH_ERROR_CODES = frozenset(
+    {
+        "invalid_auth",
+        "not_authed",
+        "account_inactive",
+        "token_revoked",
+        "token_expired",
+    }
+)
+
+# Telegram's own hierarchy already encodes "the server understood the request
+# and refused it" for these three. `BadRequest` is a subclass of
+# `NetworkError`, so they are checked ahead of `_NETWORK_EXCEPTIONS` below —
+# the same ordering `telegram/adapter.py`'s `_as_rich_failure` uses, and for
+# the same reason: checking `NetworkError` first would report a definite
+# refusal as an unreachable network.
+_TELEGRAM_DEFINITE_REFUSALS = tuple(
+    exc_type
+    for exc_type in (TelegramBadRequest, TelegramForbidden, TelegramChatMigrated)
+    if exc_type is not None
+)
+
+# Reaching the platform failed outright, across every transport an adapter
+# uses: aiohttp (Slack's Socket Mode, Teams' inbound listener), httpx (Teams'
+# token exchange and Graph calls) and requests (Mattermost, via
+# `mattermostdriver`, which raises its own named exceptions only for the
+# status codes it maps and lets a connection failure surface as the
+# underlying `requests` exception unchanged).
+_NETWORK_EXCEPTIONS = tuple(
+    exc_type
+    for exc_type in (
+        TelegramNetworkError,
+        aiohttp.ClientConnectorError,
+        aiohttp.ClientOSError,
+        aiohttp.ServerDisconnectedError,
+        httpx.ConnectError,
+        RequestsConnectionError,
+        RequestsTimeout,
+    )
+    if exc_type is not None
+)
+
+_MATTERMOST_AUTH_ERRORS = tuple(
+    exc_type
+    for exc_type in (MattermostNoAccessTokenProvided, MattermostNotEnoughPermissions)
+    if exc_type is not None
+)
+
+
+def _slack_failure_reason(exc: SlackApiError) -> str:
+    """`auth_failed` for a rejected token, `platform_error` for everything else
+    Slack refuses a call for (rate limits, a missing scope, an outage). Both
+    arrive as the same `SlackApiError`, so the code inside the response — not
+    the exception's type — is what tells them apart.
+
+    Getting this right is the point of the whole rewrite: a revoked or rotated
+    bot token is the most common bridge failure in the field, and reporting it
+    as `platform_error` sends an operator to check Slack's status page instead
+    of their own token.
+    """
+    response = getattr(exc, "response", None)
+    code = response.get("error") if response is not None else None
+    if code in _SLACK_AUTH_ERROR_CODES:
+        return "auth_failed"
+    return "platform_error"
 
 
 def _failure_reason(exc: BaseException) -> str:
     """An enumerated reason for a bridge failure.
 
     Not the exception's message, which routinely carries a workspace name or a
-    token fragment. Matched on the class name so no adapter has to be imported.
+    token fragment. Classified by type — and, where a library folds several
+    outcomes into one exception class, by what the exception itself carries —
+    rather than by matching words in the class name: the substring match this
+    replaced read "SlackApiError" as containing "api" and reported a revoked
+    Slack token as `platform_error`, and treated a stray `KeyError` as
+    `config_invalid` on the same line that made `ValueError` mean that.
+
+    `KeyError` and `sqlalchemy.exc.DBAPIError` are deliberately left
+    unclassified and fall through to `unknown`. A `KeyError` here is adapter
+    code reading a platform payload that no longer has the shape it expects —
+    a bug in Switch, not a value the operator typed into their connection
+    config. A `DBAPIError` is Switch's own database, not the messaging
+    platform, so `platform_error` would misname it exactly as badly as the
+    substring match used to.
     """
-    name = type(exc).__name__.lower()
-    if any(word in name for word in ("auth", "unauthorized", "forbidden", "token")):
+    if isinstance(exc, BridgeCredentialError):
         return "auth_failed"
-    if any(word in name for word in ("timeout", "connection", "socket", "dns")):
-        return "network"
-    if isinstance(exc, ValueError | KeyError):
-        return "config_invalid"
-    if any(word in name for word in ("api", "http", "server", "gateway")):
+
+    if SlackApiError is not None and isinstance(exc, SlackApiError):
+        return _slack_failure_reason(exc)
+
+    if DiscordLoginFailure is not None and isinstance(exc, DiscordLoginFailure):
+        return "auth_failed"
+
+    if isinstance(exc, _MATTERMOST_AUTH_ERRORS):
+        return "auth_failed"
+
+    if TelegramInvalidToken is not None and isinstance(exc, TelegramInvalidToken):
+        return "auth_failed"
+
+    if isinstance(exc, _TELEGRAM_DEFINITE_REFUSALS):
         return "platform_error"
+
+    if isinstance(exc, _NETWORK_EXCEPTIONS):
+        return "network"
+
+    # These four are each a platform's own SDK saying it was reached and it
+    # refused — never Switch's homeserver or database, which speak neither
+    # vendor's exception language, so the label stays accurate even though the
+    # check is broad.
+    if isinstance(exc, BridgeOperationError):
+        return "platform_error"
+    if DiscordException is not None and isinstance(exc, DiscordException):
+        return "platform_error"
+    if RequestsHTTPError is not None and isinstance(exc, RequestsHTTPError):
+        return "platform_error"
+    if TelegramError is not None and isinstance(exc, TelegramError):
+        return "platform_error"
+
+    if isinstance(exc, ValueError):
+        return "config_invalid"
+
     return "unknown"
-
-
-def _age_days(moment: object) -> float:
-    """How old a row is, in days, for reporting. Zero if unknown."""
-    if not isinstance(moment, datetime):
-        return 0.0
-    anchored = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - anchored).total_seconds() / 86400.0, 0.0)
-
-
-def _seconds_since(moment: object) -> float:
-    """Seconds since a timestamp column, or -1 when it is not one — so "could
-    not tell" is distinguishable from "just now"."""
-    if not isinstance(moment, datetime):
-        return -1.0
-    anchored = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - anchored).total_seconds(), 0.0)
 
 
 def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
@@ -145,6 +301,11 @@ class CollaborationBridgeLifecycleService:
         # How many times each bridge has failed to come up since this
         # process started. See `_note_connect_failure`.
         self._connect_failures: dict[str, int] = {}
+        # bridge_id -> a monotonic reading taken when its connect attempt
+        # began. Spans `start()` and the task it schedules, because those are
+        # two halves of one attempt from the operator's side. See
+        # `_connect_duration_ms`.
+        self._connect_started: dict[str, float] = {}
         # Read off the row at start, so reporting never depends on what the
         # BridgeCore exposes.
         self._bridge_facts: dict[str, tuple[str, object]] = {}
@@ -519,122 +680,166 @@ class CollaborationBridgeLifecycleService:
         return bridge
 
     async def start(self, bridge_id: str) -> None:
-        # Two steps, because this is the point where the bridge's tenant is
-        # not yet known: the exemption answers which tenant the id is in
-        # (`db/tenant_lookup.py`), and the row itself is then read scoped to
-        # it. Reached both from boot, with nothing bound, and from an HTTP
-        # request, where what is bound is the caller's tenant and not
-        # necessarily the bridge's — so this deliberately does not inherit.
-        tenant_id = await tenant_of_collaboration_bridge(
-            self._session_factory, bridge_id
-        )
-        if tenant_id is None:
-            raise ValueError(f"Bridge not found: {bridge_id}")
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            bridge = await self._bridge_store.get(session, bridge_id)
-        if bridge is None:
-            raise ValueError(f"Bridge not found: {bridge_id}")
+        """Start a bridge, reporting a failure even before one is ever run.
 
-        adapter_cls = self._adapter_registry.get(bridge.type)
-        config_cls = self._config_registry.get(bridge.type)
-        if adapter_cls is None or config_cls is None:
-            raise ValueError(f"Unknown bridge type: {bridge.type}")
+        Everything here runs before `_run_bridge` is scheduled, so a raise
+        anywhere in this method previously produced no `bridge_connected`
+        event of either outcome — not a failure, because nothing downstream
+        reports one, and not a success, because none happened. An attempt that
+        failed harder than any other was then counted in neither the
+        numerator nor the denominator of the connect success rate. The `try`
+        below reports the failure and re-raises unchanged, so the caller
+        (an HTTP handler, `start_all`, `restart`) sees exactly what it did
+        before.
 
-        # Registration refuses a conflicting bridge, but rows predating that
-        # check still exist, and start_all would otherwise walk into the bind
-        # error one of them causes. Say which bridge holds it instead.
-        wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
-        if wanted is not None:
-            for other_id, held in self._held_resources.items():
-                if held == wanted and other_id != bridge_id:
-                    raise ValueError(
-                        f"Cannot start bridge {bridge_id} ({bridge.type}): "
-                        f"{wanted} is already held by bridge {other_id}. Only "
-                        "one of them can run; delete one, or give it a "
-                        "different listen_port."
-                    )
-
-        typed_config = config_cls.model_validate(bridge.connection_config or {})
-        adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
-        adapter.set_service_url_persister(
-            lambda service_url: self._persist_service_url(
-                bridge_id, tenant_id, service_url
+        Once `_run_bridge` is scheduled this method returns without waiting
+        on it, so there is no window where both this method and that task's
+        own exception handler could report the same attempt — they run one
+        after the other, never together.
+        """
+        # `bridge_platform` is required on every `bridge_connected` event, but
+        # a bridge whose row cannot even be read has no platform to name —
+        # `none` is what `normalise_platform` gives an id it does not
+        # recognise, not a guess.
+        platform = "none"
+        # Before the first statement that can fail, so a bridge that never gets
+        # past reading its own row still reports how long that took.
+        self._connect_started[bridge_id] = time.monotonic()
+        try:
+            # Two steps, because this is the point where the bridge's tenant
+            # is not yet known: the exemption answers which tenant the id is
+            # in (`db/tenant_lookup.py`), and the row itself is then read
+            # scoped to it. Reached both from boot, with nothing bound, and
+            # from an HTTP request, where what is bound is the caller's
+            # tenant and not necessarily the bridge's — so this deliberately
+            # does not inherit.
+            tenant_id = await tenant_of_collaboration_bridge(
+                self._session_factory, bridge_id
             )
-        )
-        adapter.set_channel_team_persister(
-            lambda channel_id, team_id: self._persist_channel_team(
-                bridge_id, tenant_id, channel_id, team_id
+            if tenant_id is None:
+                raise ValueError(f"Bridge not found: {bridge_id}")
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge = await self._bridge_store.get(session, bridge_id)
+            if bridge is None:
+                raise ValueError(f"Bridge not found: {bridge_id}")
+            platform = normalise_platform(bridge.type)
+
+            adapter_cls = self._adapter_registry.get(bridge.type)
+            config_cls = self._config_registry.get(bridge.type)
+            if adapter_cls is None or config_cls is None:
+                raise ValueError(f"Unknown bridge type: {bridge.type}")
+
+            # Registration refuses a conflicting bridge, but rows predating
+            # that check still exist, and start_all would otherwise walk into
+            # the bind error one of them causes. Say which bridge holds it
+            # instead.
+            wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
+            if wanted is not None:
+                for other_id, held in self._held_resources.items():
+                    if held == wanted and other_id != bridge_id:
+                        raise ValueError(
+                            f"Cannot start bridge {bridge_id} ({bridge.type}): "
+                            f"{wanted} is already held by bridge {other_id}. "
+                            "Only one of them can run; delete one, or give it "
+                            "a different listen_port."
+                        )
+
+            typed_config = config_cls.model_validate(bridge.connection_config or {})
+            adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+            adapter.set_service_url_persister(
+                lambda service_url: self._persist_service_url(
+                    bridge_id, tenant_id, service_url
+                )
             )
-        )
-        adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
+            adapter.set_channel_team_persister(
+                lambda channel_id, team_id: self._persist_channel_team(
+                    bridge_id, tenant_id, channel_id, team_id
+                )
+            )
+            adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
-        callback_endpoint = self._callback_ingress.endpoint_for(bridge.type, bridge_id)
-        adapter.set_callback_endpoint(callback_endpoint)
-        self._callback_endpoints[bridge_id] = callback_endpoint
+            callback_endpoint = self._callback_ingress.endpoint_for(
+                bridge.type, bridge_id
+            )
+            adapter.set_callback_endpoint(callback_endpoint)
+            self._callback_endpoints[bridge_id] = callback_endpoint
 
-        gateway_warning = gateway_url_warning(
-            self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes
-        )
-        if gateway_warning:
-            logger.warning(
-                "%s (bridge %s, %s)", gateway_warning, bridge_id, bridge.type
+            gateway_warning = gateway_url_warning(
+                self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes
+            )
+            if gateway_warning:
+                logger.warning(
+                    "%s (bridge %s, %s)", gateway_warning, bridge_id, bridge.type
+                )
+
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge_client_record = await self._client_store.get(
+                    session, bridge.client_id
+                )
+            if bridge_client_record is None:
+                raise ValueError(f"Bridge client not found: {bridge.client_id}")
+
+            bridge_core = BridgeCore(
+                bridge_id=bridge_id,
+                bridge_tenant_id=tenant_id,
+                bridge_type=bridge.type,
+                bridge_display_name=bridge.display_name,
+                adapter=adapter,
+                room_store=self._room_store,
+                external_user_store=self._external_user_store,
+                bridge_message_map_store=self._bridge_message_map_store,
+                session_request_post_store=self._session_request_post_store,
+                agent_store=self._agent_store,
+                client_store=self._client_store,
+                room_service=self._room_service,
+                client_lifecycle=self._client_lifecycle,
+                matrix_admin=self._matrix_admin,
+                session_factory=self._session_factory,
+                matrix_server_name=self._config.matrix_server_name,
+                bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
+                max_attachment_bytes=self._config.agent_media_max_bytes,
+                session_demo_enabled=self._config.session_demo_enabled,
+                gateway_public_url=self._config.gateway_public_url,
             )
 
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            bridge_client_record = await self._client_store.get(
-                session, bridge.client_id
+            bridge_client = BridgeClient(
+                bridge_core=bridge_core,
+                client_id=bridge_client_record.id,
+                tenant_id=bridge_client_record.tenant_id,
+                matrix_user_id=bridge_client_record.matrix_user_id,
+                display_name=bridge_client_record.display_name,
+                session_factory=self._session_factory,
+                client_store=self._client_store,
+                config=BridgeClientConfig(bridge_id=bridge_id),
+                transport_factory=self._client_factory.transport_for,
             )
-        if bridge_client_record is None:
-            raise ValueError(f"Bridge client not found: {bridge.client_id}")
 
-        bridge_core = BridgeCore(
-            bridge_id=bridge_id,
-            bridge_tenant_id=tenant_id,
-            bridge_type=bridge.type,
-            bridge_display_name=bridge.display_name,
-            adapter=adapter,
-            room_store=self._room_store,
-            external_user_store=self._external_user_store,
-            bridge_message_map_store=self._bridge_message_map_store,
-            session_request_post_store=self._session_request_post_store,
-            agent_store=self._agent_store,
-            client_store=self._client_store,
-            room_service=self._room_service,
-            client_lifecycle=self._client_lifecycle,
-            matrix_admin=self._matrix_admin,
-            session_factory=self._session_factory,
-            matrix_server_name=self._config.matrix_server_name,
-            bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
-            max_attachment_bytes=self._config.agent_media_max_bytes,
-            session_demo_enabled=self._config.session_demo_enabled,
-            gateway_public_url=self._config.gateway_public_url,
-        )
+            # Stashed rather than passed: `_run_bridge`'s signature is what
+            # the tenant-binding tests patch.
+            self._bridge_facts[bridge_id] = (bridge.type, bridge.created_at)
+            task = asyncio.create_task(
+                self._run_bridge(bridge_id, tenant_id, bridge_core, bridge_client)
+            )
+            self._bridges[bridge_id] = bridge_core
+            self._tasks[bridge_id] = task
+            self._started.add(bridge_id)
+            if wanted is not None:
+                self._held_resources[bridge_id] = wanted
 
-        bridge_client = BridgeClient(
-            bridge_core=bridge_core,
-            client_id=bridge_client_record.id,
-            tenant_id=bridge_client_record.tenant_id,
-            matrix_user_id=bridge_client_record.matrix_user_id,
-            display_name=bridge_client_record.display_name,
-            session_factory=self._session_factory,
-            client_store=self._client_store,
-            config=BridgeClientConfig(bridge_id=bridge_id),
-            transport_factory=self._client_factory.transport_for,
-        )
-
-        # Stashed rather than passed: `_run_bridge`'s signature is what the
-        # tenant-binding tests patch.
-        self._bridge_facts[bridge_id] = (bridge.type, bridge.created_at)
-        task = asyncio.create_task(
-            self._run_bridge(bridge_id, tenant_id, bridge_core, bridge_client)
-        )
-        self._bridges[bridge_id] = bridge_core
-        self._tasks[bridge_id] = task
-        self._started.add(bridge_id)
-        if wanted is not None:
-            self._held_resources[bridge_id] = wanted
-
-        logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
+            logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
+        except Exception as exc:
+            self._note_connect_failure(bridge_id)
+            emit_safely(
+                self._telemetry,
+                "bridge_connected",
+                {
+                    "bridge_platform": platform,
+                    "outcome": "failure",
+                    "failure_reason": _failure_reason(exc),
+                    "duration_ms": self._connect_duration_ms(bridge_id),
+                },
+            )
+            raise
 
     async def _persist_service_url(
         self, bridge_id: str, tenant_id: str, service_url: str
@@ -755,6 +960,7 @@ class CollaborationBridgeLifecycleService:
                             "bridge_platform": normalise_platform(platform),
                             "outcome": "failure",
                             "failure_reason": _failure_reason(exc),
+                            "duration_ms": self._connect_duration_ms(bridge_id),
                         },
                     )
 
@@ -766,6 +972,23 @@ class CollaborationBridgeLifecycleService:
         signal separating "hard to set up" from "nobody tried it until March".
         """
         self._connect_failures[bridge_id] = self._connect_failures.get(bridge_id, 0) + 1
+
+    def _connect_duration_ms(self, bridge_id: str) -> float:
+        """How long this bridge's connect attempt took, in whole milliseconds.
+
+        Spent on read: an attempt has exactly one outcome, and the next one
+        starts its own clock in `start()`. Monotonic rather than the wall
+        clock, so an NTP step mid-connect cannot produce a negative number or
+        an hour that never passed.
+
+        `-1` when no reading was taken, which should not happen — every path to
+        an outcome goes through `start()` — but reporting `0` would assert the
+        connect was instantaneous, which is the one thing it certainly was not.
+        """
+        started = self._connect_started.pop(bridge_id, None)
+        if started is None:
+            return UNKNOWN_AGE
+        return round((time.monotonic() - started) * 1000)
 
     async def _report_connector_up(
         self, bridge_id: str, platform: str, configured_at: object
@@ -782,6 +1005,7 @@ class CollaborationBridgeLifecycleService:
                 "bridge_platform": normalise_platform(platform),
                 "outcome": "success",
                 "failure_reason": "none",
+                "duration_ms": self._connect_duration_ms(bridge_id),
             },
         )
 
@@ -814,7 +1038,7 @@ class CollaborationBridgeLifecycleService:
                 "seconds_since_install": (
                     elapsed_since_install if elapsed_since_install is not None else -1.0
                 ),
-                "seconds_since_configured": _seconds_since(configured_at),
+                "seconds_since_configured": seconds_since(configured_at),
                 "is_first_connector": not self._any_connector_before(bridge_id),
                 "failed_attempts_before_success": self._connect_failures.pop(
                     bridge_id, 0
@@ -943,7 +1167,7 @@ class CollaborationBridgeLifecycleService:
                 "connector_removed",
                 {
                     "bridge_platform": normalise_platform(bridge.type),
-                    "age_days": _age_days(bridge.created_at),
+                    "age_days": age_days(bridge.created_at),
                     # A connector removed having never connected is a failed
                     # setup; one removed after months of service is a
                     # decision. Reporting both as "removed" would hide the

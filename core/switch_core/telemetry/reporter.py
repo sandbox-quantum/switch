@@ -90,6 +90,18 @@ class SnapshotReporter:
         """Collect and report one snapshot, plus any room that just went live."""
         counts = await collect_usage(self._session_factory, now=now)
 
+        # Emitted right after collection, before `newly_active_rooms` runs:
+        # per-tenant failures in either call are contained inside
+        # `snapshot.py`, but if something broader than one tenant takes
+        # `newly_active_rooms` down entirely, the snapshot already collected
+        # here must still go out rather than being discarded along with it.
+        self._telemetry.emit(
+            "usage_snapshot",
+            **counts.as_event_properties(
+                session_live_count=int(self._live_session_count())
+            ),
+        )
+
         # Skipped entirely on the first pass — see the module docstring.
         active = (
             await newly_active_rooms(self._session_factory, since=since, now=now)
@@ -98,13 +110,6 @@ class SnapshotReporter:
         )
 
         logger.info("Usage snapshot: %s", summarise(counts, active))
-
-        self._telemetry.emit(
-            "usage_snapshot",
-            **counts.as_event_properties(
-                session_live_count=int(self._live_session_count())
-            ),
-        )
 
         for room in active:
             self._telemetry.emit(

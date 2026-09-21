@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from switch_core.telemetry.ages import UNKNOWN_AGE, age_days, age_hours
 from switch_core.telemetry.catalogue import CATALOGUE, TelemetryCatalogueError, validate
 
 
@@ -37,10 +38,39 @@ class TestTheRemovalEventsExist:
                 "channel_type": "channel_public",
                 "created_by_kind": "user",
                 "age_days": 12.5,
-                "was_ever_active": True,
+                "was_ever_active": "true",
                 "agent_count": 3,
             },
         )
+
+    def test_room_deletion_reports_unknown_rather_than_a_guess(self) -> None:
+        """A failed activity lookup is not evidence the room was never used —
+        it must say so rather than reporting `false`."""
+        validate(
+            "room_deleted",
+            {
+                "bridge_platform": "unknown",
+                "channel_type": "channel_public",
+                "created_by_kind": "user",
+                "age_days": 12.5,
+                "was_ever_active": "unknown",
+                "agent_count": 3,
+            },
+        )
+
+    def test_was_ever_active_is_no_longer_a_boolean(self) -> None:
+        """Locks in the tri-state: a bare `True`/`False` must be refused so a
+        caller cannot silently smuggle a boolean back in."""
+        payload = {
+            "bridge_platform": "slack",
+            "channel_type": "channel_public",
+            "created_by_kind": "user",
+            "age_days": 12.5,
+            "was_ever_active": True,
+            "agent_count": 3,
+        }
+        with pytest.raises(TelemetryCatalogueError, match="expected one of"):
+            validate("room_deleted", payload)  # type: ignore[arg-type]
 
     def test_agent_deletion_carries_what_it_was(self) -> None:
         validate(
@@ -61,7 +91,21 @@ class TestTheRemovalEventsExist:
             {
                 "bridge_platform": "teams",
                 "age_days": 90.0,
-                "was_ever_connected": False,
+                "was_ever_connected": "false",
+                "room_count": 0,
+            },
+        )
+
+    def test_connector_removal_reports_unknown_rather_than_a_guess(self) -> None:
+        """A failed read of the durable milestone record is not evidence the
+        connector never connected — collapsing it into `false` would misfile a
+        lookup failure as a failed setup."""
+        validate(
+            "connector_removed",
+            {
+                "bridge_platform": "teams",
+                "age_days": 90.0,
+                "was_ever_connected": "unknown",
                 "room_count": 0,
             },
         )
@@ -75,7 +119,7 @@ class TestTheRemovalEventsExist:
                     "channel_type": "channel_public",
                     "created_by_kind": "user",
                     "age_days": 1.0,
-                    "was_ever_active": True,
+                    "was_ever_active": "true",
                     "agent_count": 1,
                     "room_name": "incident-response",
                 },
@@ -152,18 +196,37 @@ class TestAutoSessionIsAnAgentType:
 
 
 class TestAgeIsReportedInDays:
-    def test_a_fresh_row_is_near_zero(self) -> None:
-        from switch_core.room_service import _age_days
+    """One implementation, tested once.
 
-        assert _age_days(datetime.now(UTC)) < 0.01
+    There were eight copies of this arithmetic across the modules that emit a
+    removal, and they disagreed on the only case that matters — half reported
+    `0.0` for a timestamp they could not read and half reported `-1`. The
+    duplication was the defect; a test per copy would only have pinned it.
+    """
+
+    def test_a_fresh_row_is_near_zero(self) -> None:
+        assert 0 <= age_days(datetime.now(UTC)) < 0.01
 
     def test_an_old_row_reports_its_age(self) -> None:
-        from switch_core.room_service import _age_days
+        assert 9.9 < age_days(datetime.now(UTC) - timedelta(days=10)) < 10.1
 
-        assert 9.9 < _age_days(datetime.now(UTC) - timedelta(days=10)) < 10.1
+    def test_hours_are_the_same_elapsed_time_in_a_different_unit(self) -> None:
+        moment = datetime.now(UTC) - timedelta(days=1)
+        assert 23.9 < age_hours(moment) < 24.1
 
-    def test_an_unreadable_timestamp_is_zero_rather_than_a_crash(self) -> None:
-        from switch_core.room_service import _age_days
+    @pytest.mark.parametrize("unreadable", [None, "yesterday", 0, object()])
+    def test_an_unreadable_timestamp_is_negative_rather_than_a_crash(
+        self, unreadable: object
+    ) -> None:
+        """`-1` rather than `0`: "could not tell" must stay distinguishable
+        from "created just now", per docs/old/telemetry-events.md. Pinning `0`
+        here would have locked in the opposite — a lookup failure silently
+        reporting as a genuine, very fresh row."""
+        assert age_days(unreadable) == UNKNOWN_AGE
+        assert age_hours(unreadable) == UNKNOWN_AGE
 
-        assert _age_days(None) == 0.0
-        assert _age_days("yesterday") == 0.0
+    def test_a_clock_stepped_backwards_does_not_look_like_unknown(self) -> None:
+        """The wall clock is unavoidable here — these ages span restarts — so a
+        row stamped in the future must clamp to zero rather than going negative
+        and colliding with the sentinel."""
+        assert age_days(datetime.now(UTC) + timedelta(days=1)) == 0.0
