@@ -37,6 +37,20 @@ it('provides credentials only for the exact GitHub HTTPS host', () => {
   expect(gitHubCredentialResponse('erase', 'protocol=https\nhost=github.com\n', token)).toBe('');
 });
 
+it('accepts repeated Git capability and authentication challenge fields', () => {
+  const extensions =
+    'capability[]=authtype\ncapability[]=state\nwwwauth[]=Basic realm="GitHub"\nwwwauth[]=Bearer\n';
+  expect(
+    gitHubCredentialResponse('get', `${extensions}protocol=https\nhost=github.com\n\n`, token)
+  ).toBe(`username=x-access-token\npassword=${token}\n\n`);
+  for (const fields of [
+    'protocol=https\nhost=other.invalid\nhost[]=github.com\n',
+    'protocol=https\nhost=github.com\nhost=other.invalid\n',
+    'protocol=http\nprotocol[]=https\nhost=github.com\n',
+  ])
+    expect(gitHubCredentialResponse('get', extensions + fields, token)).toBe('');
+});
+
 it('keeps raw and common transport encodings out of redacted output', () => {
   const secrets = githubRedactions(token);
   for (const value of secrets) expect(redactHostedText(value, secrets)).toBe('[REDACTED]');
