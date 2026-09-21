@@ -27,6 +27,7 @@ export interface BuildSharedHostConfigInput {
     shellSetup?: string;
     binaryPath?: string;
     mcpRuntime: string;
+    mcpRuntimePath?: string;
     codexConfig: string;
     skill: string;
     context: string;
@@ -91,6 +92,7 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       credentialsPath: input.execution.credentialsPath,
       inheritEnv: [...input.execution.inheritEnv],
       mcpRuntime: input.execution.mcpRuntime,
+      ...(input.execution.mcpRuntimePath ? { mcpRuntimePath: input.execution.mcpRuntimePath } : {}),
       codexConfig: input.execution.codexConfig,
       skill: input.execution.skill,
       context: input.execution.context,

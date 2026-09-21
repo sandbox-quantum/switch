@@ -3,7 +3,7 @@
 This directory is the trusted launcher contract for the first hosted-agent EC2
 backend. The AMI is built ahead of time and pins Node.js 24, the provider CLI,
 the built `@switch-console/agent-providers` bootstrap artifacts and the
-published Switch runtime. The instance profile can call only
+built Switch MCP runtime. The instance profile can call only
 `secretsmanager:GetSecretValue` for this assignment's one secret (and the KMS
 decrypt operation constrained to that secret). The launcher makes no EC2,
 IAM, KMS, S3 or secret-list calls.
@@ -17,11 +17,16 @@ Then run the installer while baking the AMI:
     install.sh /path/to/runtime-build <node-sha256> <provider-sha256> \
       @sandboxaq/switch-agent-runtime@<exact-version>
 
-The runtime manifest is verified before its bundles are installed. The Node and
+The runtime manifest is verified before its three bundles are installed. The Node and
 provider executables must match image-pipeline SHA256 pins. The installer writes
-those digests, both bundle digests and the exact MCP runtime version into the
+those digests, all bundle digests and the exact MCP runtime package identity into the
 root-only runtime configuration. The launcher rehashes every artifact at each
 start and binds that configuration fingerprint into the retained-disk marker.
+The baked MCP entrypoint is fixed at
+`/opt/switch/agent-providers/switch-agent-runtime.mjs`; neither assignment metadata
+nor the secret deployment document can select a command or path. The package identity
+remains in the deployment contract so an older runtime configuration without the
+optional baked path continues to launch the exact version through `npx`.
 
 The installer creates the unprivileged
 `switch-agent` account, installs the launcher and systemd unit, checks the

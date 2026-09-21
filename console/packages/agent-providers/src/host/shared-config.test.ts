@@ -1,5 +1,5 @@
 import { expect, it, vi, afterEach } from 'vitest';
-import { executionEnvironment } from './shared-config';
+import { executionEnvironment, mcpRuntimeCommand } from './shared-config';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -21,4 +21,23 @@ it('preserves host and configured environment, including shell setup output', as
 
 it('fails before provider startup if shell setup fails', async () => {
   await expect(executionEnvironment(process.cwd(), {}, 'false', [])).rejects.toThrow();
+});
+
+it('keeps the published package launch when no baked runtime is selected', () => {
+  expect(mcpRuntimeCommand({ mcpRuntime: '@sandboxaq/switch-agent-runtime@1.0.0' })).toEqual({
+    command: 'npx',
+    args: ['-y', '@sandboxaq/switch-agent-runtime@1.0.0'],
+  });
+});
+
+it('launches a selected baked runtime with the current Node executable', () => {
+  expect(
+    mcpRuntimeCommand({
+      mcpRuntime: '@sandboxaq/switch-agent-runtime@1.0.0',
+      mcpRuntimePath: '/opt/switch/agent-providers/switch-agent-runtime.mjs',
+    })
+  ).toEqual({
+    command: process.execPath,
+    args: ['/opt/switch/agent-providers/switch-agent-runtime.mjs'],
+  });
 });

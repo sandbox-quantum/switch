@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -47,12 +48,14 @@ def config() -> worker.WorkerConfig:
             agent_group="switch-agent",
             path="/opt/switch/node/bin:/usr/bin:/bin",
             mcp_runtime="@sandboxaq/switch-agent-runtime@0.4.2",
+            mcp_runtime_path="/opt/switch/agent-providers/switch-agent-runtime.mjs",
             allow_initial_format=True,
             artifact_sha256={
                 "node": "1" * 64,
                 "bootstrap": "2" * 64,
                 "sharedHostDaemon": "3" * 64,
                 "provider": "4" * 64,
+                "mcpRuntime": "5" * 64,
             },
         ),
     )
@@ -151,6 +154,10 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn(parsed.provider_credential, serialized)
         self.assertNotIn("switch-value", serialized)
         self.assertEqual(environment["SWITCH_HOST_BOOT_ID"], BOOT_1)
+        self.assertEqual(
+            environment["SWITCH_HOSTED_MCP_RUNTIME_PATH"],
+            "/opt/switch/agent-providers/switch-agent-runtime.mjs",
+        )
         altered = json.loads(secret())
         altered["assignment"]["generation"] = 8
         with self.assertRaisesRegex(worker.WorkerError, "does not match"):
@@ -159,6 +166,141 @@ class WorkerTests(unittest.TestCase):
         insecure["switchCredentials"]["env"]["SWITCH_API_ENDPOINT"] = "http://switch.invalid/api"
         with self.assertRaisesRegex(worker.WorkerError, "endpoint is invalid"):
             worker.parse_secret_document(json.dumps(insecure), config())
+
+    def test_runtime_config_requires_a_fixed_baked_path_and_matching_hash(self):
+        assignment = {
+            "version": 1,
+            "installationId": "installation-1",
+            "agentId": "agent-1",
+            "generation": 7,
+            "assignmentSecretId": "arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
+            "dataVolumeId": VOLUME,
+            "dataDevice": "/dev/sdf",
+            "mountPath": "/data",
+        }
+        runtime = {
+            "version": 1,
+            "nodePath": "/opt/switch/node/bin/node",
+            "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
+            "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
+            "providerBinaryPath": "/opt/switch/claude/bin/claude",
+            "agentUser": "switch-agent",
+            "agentGroup": "switch-agent",
+            "path": "/opt/switch/node/bin:/usr/bin:/bin",
+            "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2",
+            "allowInitialFormat": True,
+            "artifactSha256": {
+                "node": "1" * 64,
+                "bootstrap": "2" * 64,
+                "sharedHostDaemon": "3" * 64,
+                "provider": "4" * 64,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            assignment_path = Path(temporary) / "assignment.json"
+            runtime_path = Path(temporary) / "runtime.json"
+            assignment_path.write_text(json.dumps(assignment))
+
+            runtime["mcpRuntimePath"] = str(worker.BAKED_MCP_RUNTIME_PATH)
+            runtime_path.write_text(json.dumps(runtime))
+            with self.assertRaisesRegex(worker.WorkerError, "configured together"):
+                worker.load_worker_config(assignment_path, runtime_path)
+
+            del runtime["mcpRuntimePath"]
+            runtime["artifactSha256"]["mcpRuntime"] = "5" * 64
+            runtime_path.write_text(json.dumps(runtime))
+            with self.assertRaisesRegex(worker.WorkerError, "configured together"):
+                worker.load_worker_config(assignment_path, runtime_path)
+
+            runtime["mcpRuntimePath"] = "/tmp/runtime.mjs"
+            runtime_path.write_text(json.dumps(runtime))
+            with self.assertRaisesRegex(worker.WorkerError, "path is not fixed"):
+                worker.load_worker_config(assignment_path, runtime_path)
+
+    def test_legacy_runtime_config_without_a_baked_artifact_remains_valid(self):
+        assignment = {
+            "version": 1,
+            "installationId": "installation-1",
+            "agentId": "agent-1",
+            "generation": 7,
+            "assignmentSecretId": "arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
+            "dataVolumeId": VOLUME,
+            "dataDevice": "/dev/sdf",
+            "mountPath": "/data",
+        }
+        runtime = {
+            "version": 1,
+            "nodePath": "/opt/switch/node/bin/node",
+            "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
+            "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
+            "providerBinaryPath": "/opt/switch/claude/bin/claude",
+            "agentUser": "switch-agent",
+            "agentGroup": "switch-agent",
+            "path": "/opt/switch/node/bin:/usr/bin:/bin",
+            "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2",
+            "allowInitialFormat": True,
+            "artifactSha256": {
+                "node": "1" * 64,
+                "bootstrap": "2" * 64,
+                "sharedHostDaemon": "3" * 64,
+                "provider": "4" * 64,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            assignment_path = Path(temporary) / "assignment.json"
+            runtime_path = Path(temporary) / "runtime.json"
+            assignment_path.write_text(json.dumps(assignment))
+            runtime_path.write_text(json.dumps(runtime))
+
+            parsed = worker.load_worker_config(assignment_path, runtime_path)
+
+        self.assertIsNone(parsed.runtime.mcp_runtime_path)
+
+    def test_tampered_baked_runtime_fails_checksum_verification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = {}
+            hashes = {}
+            for name in ("node", "bootstrap", "sharedHostDaemon", "provider", "mcpRuntime"):
+                path = Path(temporary) / name
+                path.write_bytes(f"trusted-{name}".encode())
+                path.chmod(0o444)
+                paths[name] = str(path)
+                hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            runtime = worker.RuntimeConfig(
+                node_path=paths["node"],
+                bootstrap_path=paths["bootstrap"],
+                shared_host_daemon_path=paths["sharedHostDaemon"],
+                provider_binary_path=paths["provider"],
+                agent_user="switch-agent",
+                agent_group="switch-agent",
+                path="/usr/bin:/bin",
+                mcp_runtime="@sandboxaq/switch-agent-runtime@0.4.2",
+                mcp_runtime_path=paths["mcpRuntime"],
+                allow_initial_format=True,
+                artifact_sha256=hashes,
+            )
+            configured = worker.WorkerConfig(
+                installation_id="installation-1",
+                secret_id="arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
+                secret_region="eu-west-1",
+                agent_id="agent-1",
+                generation=7,
+                volume_id=VOLUME,
+                device_path="/dev/sdf",
+                runtime=runtime,
+            )
+            Path(paths["mcpRuntime"]).chmod(0o644)
+            Path(paths["mcpRuntime"]).write_text("tampered")
+            Path(paths["mcpRuntime"]).chmod(0o444)
+            completed = subprocess.CompletedProcess(
+                [paths["node"], "--version"], 0, "v24.1.0\n", ""
+            )
+            with (
+                mock.patch.object(worker, "ROOT_UID", os.getuid()),
+                mock.patch.object(worker.subprocess, "run", return_value=completed),
+            ):
+                with self.assertRaisesRegex(worker.WorkerError, "checksum"):
+                    worker.verify_pinned_runtime(configured)
 
     def test_optional_github_contract_is_strict_and_never_enters_launch(self):
         legacy = worker.parse_secret_document(secret(), config())

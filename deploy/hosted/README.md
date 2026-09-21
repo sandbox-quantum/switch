@@ -39,7 +39,7 @@ blind deletion of ownership locks is not that workflow.
    prerequisites. The runtime artifact must include this branch's reviewed
    bootstrap and ownership identity support; an older released runtime is insufficient.
    After installing the console workspace dependencies, build self-contained files:
-   `node deploy/hosted/build-runtime.mjs /path/to/runtime-output`. Copy the two
+   `node deploy/hosted/build-runtime.mjs /path/to/runtime-output`. Copy the three
    `.mjs` files and SHA256 manifest to the worker installer's documented location;
    pin and verify those hashes as part of the AMI build.
    Validate the AMI has the configured root-device name, exactly one EBS root mapping,
