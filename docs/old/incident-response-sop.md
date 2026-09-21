@@ -15,6 +15,12 @@ recalled, and where a behaviour is surprising enough to be worth confirming, the
 file it lives in is named. If a claim here has since gone stale, the commit is
 the thing to diff against.
 
+**The instruction text this design needs is in a companion document** —
+[`incident-response-instructions.md`](incident-response-instructions.md). Every
+block, labelled with the field it goes in: the agent's procedure and output
+contract, the hub and war-room instructions, both roles, the four documents and
+the references. This document is the argument; that one is the configuration.
+
 - [Scope](#scope)
 - [The SOP, and the one place Switch appears in it](#the-sop-and-the-one-place-switch-appears-in-it)
 - [Mapping the SOP onto rooms](#mapping-the-sop-onto-rooms)
