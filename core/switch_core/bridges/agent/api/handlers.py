@@ -88,6 +88,7 @@ from switch_core.bridges.agent.protocol.connections import (
     RoomOccupiedError,
     Scope,
     SupersededConnectionError,
+    SupersededControlError,
     SupersededReattachError,
     UnfencedBeatError,
     UnknownConnectionError,
@@ -970,7 +971,13 @@ async def connection_subscribe(
     "one room at a time" stops being a convention and becomes a guarantee.
     """
     try:
-        conn = protocol.connections.require(agent.id, req.connection_id)
+        conn = protocol.connections.require_current(
+            agent.id, req.connection_id, generation=req.generation
+        )
+    except SupersededControlError as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1018,7 +1025,13 @@ async def connection_unsubscribe(
 ) -> dict[str, Any]:
     """Release a room, returning coverage to any all-scope connection."""
     try:
-        conn = protocol.connections.require(agent.id, req.connection_id)
+        conn = protocol.connections.require_current(
+            agent.id, req.connection_id, generation=req.generation
+        )
+    except SupersededControlError as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -119,6 +119,12 @@ class ConnectionSubscribeRequest(BaseModel):
     # Evict whichever connection currently holds the room. Off by default: the
     # usual cause of a collision is a stale process, and rejecting surfaces it.
     takeover: bool = False
+    # The incarnation the caller believes it holds. A connection id alone says
+    # nothing about *which* client is on it, so without this a client that has
+    # already been displaced can still rewrite the winner's rooms. Optional
+    # because a client built before the fence sends none, which keeps the
+    # unchecked behaviour it has always had.
+    generation: int | None = None
 
 
 class ConnectionBeatRequest(BaseModel):

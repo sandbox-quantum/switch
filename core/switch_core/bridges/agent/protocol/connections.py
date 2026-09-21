@@ -157,6 +157,30 @@ class SupersededReattachError(ConnectionError_):
         self.current = current
 
 
+class SupersededControlError(ConnectionError_):
+    """A room-control request from a client that no longer holds the connection.
+
+    Claiming and releasing rooms resolve the connection by id, and an id
+    survives a takeover — so the loser of one can still reach the connection and
+    rewrite the winner's room set, evicting whoever holds the room it claims.
+    The fenced open cannot help: this happens before it, and refusing the open
+    afterwards does not undo it. So the room surface is fenced on the same
+    incarnation, and refused before the membership check and before any change.
+    """
+
+    code = "taken_over"
+
+    def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
+        super().__init__(
+            f"connection {connection_id} has been reopened since incarnation "
+            f"{presented} and is now at {current}; another client holds it, so "
+            "this room request was refused and no room was claimed or released"
+        )
+        self.connection_id = connection_id
+        self.presented = presented
+        self.current = current
+
+
 class UnfencedBeatError(ConnectionError_):
     """A tick carrying no incarnation, from a client whose holder sends one."""
 
@@ -628,6 +652,28 @@ class ConnectionRegistry:
         if not conn.is_alive(time.monotonic()):
             self.close(connection_id, HEARTBEAT_LAPSED)
             raise UnknownConnectionError(connection_id)
+        return conn
+
+    def require_current(
+        self, agent_id: str, connection_id: str, *, generation: int | None
+    ) -> Connection:
+        """Resolve a connection the caller must still be the client on.
+
+        `require` answers "does this connection exist", which is the wrong
+        question for anything that mutates it: a connection id is stable across
+        a takeover, so a displaced client still resolves the connection that was
+        taken from it and would go on changing the winner's state. Naming the
+        incarnation turns the lookup into a claim, refused if it has moved on.
+
+        `None` makes no claim and keeps the unchecked lookup, for clients built
+        before the fence. Callers must use this before touching the connection,
+        and before any other check, so a refusal costs the holder nothing.
+        """
+        conn = self.require(agent_id, connection_id)
+        if generation is not None and generation != conn.stream_generation:
+            raise SupersededControlError(
+                connection_id, presented=generation, current=conn.stream_generation
+            )
         return conn
 
     def get(self, connection_id: str) -> Connection | None:

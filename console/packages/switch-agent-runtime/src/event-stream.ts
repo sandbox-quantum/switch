@@ -270,6 +270,9 @@ export class SwitchEventStream {
   async repoint(roomId: string): Promise<void> {
     this.rooms = [roomId];
     await this.subscribe(roomId);
+    // Not if the claim revealed we no longer hold the connection: reopening is
+    // a takeover, and standing down only to reattach would undo it.
+    if (this.halt.signal.aborted) return;
     this.reopen();
   }
 
@@ -368,8 +371,22 @@ export class SwitchEventStream {
     const resp = await this.post('connection/subscribe', {
       connection_id: this.deps.connectionId,
       room_id: roomId,
+      // Claimed against the incarnation we hold, because this runs *before*
+      // the reopen and so before the open's own check. A connection id
+      // outlives a takeover: without this a client that has already been
+      // displaced would rewrite the winner's rooms — and evict whoever holds
+      // the room it asks for — and being refused the open afterwards would
+      // come too late to undo any of it.
+      generation: this.generation,
     });
     if (!resp.ok) {
+      const body = await resp.text();
+      if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+        // Not this connection's client any more. Terminal, like every other
+        // door onto a takeover: there is nothing to repoint.
+        this.standDown();
+        return;
+      }
       // 409 means another live connection of this agent already holds the room
       // — usually a stale session. Loud: quietly carrying on would leave us
       // attached to a stream that will never deliver that room's events.

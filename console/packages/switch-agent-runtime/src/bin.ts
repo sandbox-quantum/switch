@@ -1371,7 +1371,13 @@ async function unsubscribeRoom(roomId: string): Promise<void> {
         Authorization: `Bearer ${API_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ connection_id: CONNECTION_ID, room_id: roomId }),
+      // Fenced like every other write to the connection: a client that has
+      // been displaced must not go on releasing the winner's rooms.
+      body: JSON.stringify({
+        connection_id: CONNECTION_ID,
+        room_id: roomId,
+        generation: streamGeneration,
+      }),
     });
   } catch (err) {
     process.stderr.write(`switch: unsubscribe failed for ${roomId}: ${err}\n`);

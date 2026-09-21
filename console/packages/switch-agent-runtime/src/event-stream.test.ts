@@ -681,6 +681,54 @@ describe('the heartbeat', () => {
 });
 
 describe('a connection another client takes over', () => {
+  it('stands down when the room it repoints to is refused, without reopening', async () => {
+    // `repoint` claims the room *before* it reopens, so the open's own fence
+    // is too late to protect the winner: by the time it refuses, a displaced
+    // client has already rewritten the winner's rooms. The claim carries the
+    // incarnation for that reason, and a refusal ends this client.
+    const opens: string[] = [];
+    const subscribes: (number | null)[] = [];
+    const fetchMock = vi.fn(async (url: string, init: { body?: string }) => {
+      if (String(url).includes('/events')) {
+        opens.push(String(url));
+        return {
+          ok: true,
+          status: 200,
+          body: openForever(),
+          text: async (): Promise<string> => '',
+        };
+      }
+      if (String(url).includes('connection/subscribe')) {
+        const sent = JSON.parse(init.body ?? '{}') as { generation: number | null };
+        subscribes.push(sent.generation);
+        return {
+          ok: false,
+          status: 409,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: { code: 'taken_over', message: 'not your connection' } }),
+        };
+      }
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    const evicted: Eviction[] = [];
+    const { stream, abort } = makeStream(fetchMock, {
+      rooms: ['!old'],
+      onEvicted: (e) => evicted.push(e),
+    });
+    await flush();
+    const opensBefore = opens.length;
+
+    await stream.repoint('!new');
+    await flush();
+
+    // The claim named the incarnation the frame gave us, not nothing.
+    expect(subscribes).toEqual([0]);
+    expect(evicted.map((e) => e.code)).toEqual([EVICTION_TAKEN_OVER]);
+    // No reopen: coming back would be the takeover the refusal just denied.
+    expect(opens.length).toBe(opensBefore);
+    abort.abort();
+  });
+
   it('halts instead of reopening, because reopening would be a takeover back', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (url: string) =>
