@@ -1024,6 +1024,12 @@ package that contains them, and the package before the room that attaches it.
    types. Slug `pagerduty`, with the instructions from
    [block 8](#8-the-pagerduty-reference-type). Do this before the references —
    a reference needs a type that already exists.
+
+   This step exists only because `pagerduty` is not a built-in type. If G27 is
+   taken up it disappears, and the instructions in block 8 become the ones under
+   code review rather than a block of prose each deployment retypes and can
+   edit. That matters here more than it looks: block 8 is where the read-only
+   boundary is written.
 5. **Create the two references** — PagerDuty and the runbooks — with the
    instructions from [block 9](#9-the-two-references). Gateway → Resources, or
    `create_reference`. Set read visibility so the responder's owner can reach
