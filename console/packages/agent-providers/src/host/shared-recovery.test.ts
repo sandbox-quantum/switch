@@ -437,6 +437,7 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
         status: 'applied',
         code: null,
         message: null,
+        command: null,
       });
     }
     return original(url, options);

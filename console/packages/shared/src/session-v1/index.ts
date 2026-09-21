@@ -8,6 +8,7 @@ export {
   eventBytes,
   hostEventSchema,
   parseHostEvent,
+  roomMessageReceiptSchema,
   serverEventSchema,
   snapshotSchema,
 } from './validation';

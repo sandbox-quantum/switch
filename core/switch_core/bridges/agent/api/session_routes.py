@@ -166,9 +166,14 @@ class RoomMessage(HostLease):
     sequence: int = Field(ge=1)
     missed_count: int = Field(default=0, ge=0)
     gap_reason: str | None = None
+    include_command: bool = False
 
 
-@router.post("/{session_id}/room-message")
+# Declared without a response model: the receipt for a host that asked to be
+# handed the command carries a field the plain status does not, and a response
+# model would filter it back out. A host that did not ask is answered with the
+# status shape it already parses strictly.
+@router.post("/{session_id}/room-message", response_model=None)
 async def room_message(
     session_id: str,
     body: RoomMessage,
@@ -187,6 +192,7 @@ async def room_message(
         body.sequence,
         body.missed_count,
         body.gap_reason,
+        body.include_command,
         buffer,
     )
 

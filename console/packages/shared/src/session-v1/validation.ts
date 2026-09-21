@@ -238,6 +238,12 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     }),
   ]),
 });
+// The receipt for a host that asked to be handed the command it just caused.
+// The command is set only when this submission created it; on any other status
+// the command endpoint remains the way to reach it.
+export const roomMessageReceiptSchema = commandStatusSchema.extend({
+  command: commandSchema.nullable(),
+});
 
 export function eventBytes(event: unknown): number {
   return new TextEncoder().encode(JSON.stringify(event)).byteLength;

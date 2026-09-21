@@ -136,6 +136,7 @@ async def test_a_text_file_relayed_from_a_bridge_reaches_the_session(session_fac
         sequence,
         0,
         None,
+        False,
         buffer,
     )
     command = (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[

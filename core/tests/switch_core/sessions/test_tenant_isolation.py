@@ -180,6 +180,7 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
                 1,
                 0,
                 None,
+                False,
                 EventBuffer(),
             ),
             lambda: authority.bind_connection(

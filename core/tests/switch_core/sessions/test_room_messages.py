@@ -64,6 +64,7 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         sequence,
         0,
         None,
+        False,
     )
     receipt = await service.submit_room_message(*args, buffer)
     assert receipt.status == "accepted"
@@ -77,7 +78,7 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
     ).command_id == receipt.command_id
     with pytest.raises(SessionError, match="verified addressed"):
         await service.submit_room_message(
-            *args[:5], "forged", sequence, 0, None, buffer
+            *args[:5], "forged", sequence, 0, None, False, buffer
         )
     with pytest.raises(SessionError, match="does not own"):
         await service.submit_room_message(
@@ -156,6 +157,7 @@ async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_fac
             sequence,
             missed_count,
             gap_reason,
+            False,
             buffer,
         )
         pending = await service.pending(
@@ -198,6 +200,7 @@ async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factor
                 sequence,
                 0,
                 None,
+                False,
                 buffer,
             )
             for session_id, generation in (
@@ -232,12 +235,54 @@ async def test_internal_room_admission_preserves_thread_context(session_factory)
         sequence,
         0,
         None,
+        False,
         buffer,
     )
     assert result.status == "accepted"
     pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
     assert pending[0].origin.surface == "switch-web"
     assert "thread_id thread-demo" in pending[0].body.text
+
+
+@pytest.mark.asyncio
+async def test_admission_hands_back_the_command_it_created_without_settling_it(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    sequence = buffer.enqueue("agent-demo", "room-demo", event())
+    args = (
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        epoch,
+        "room-demo",
+        "message",
+        sequence,
+        0,
+        None,
+    )
+    receipt = await service.submit_room_message(*args, True, buffer)
+    assert receipt.status == "accepted"
+    assert receipt.command is not None
+    assert receipt.command.command_id == receipt.command_id
+    assert receipt.command.body.text.endswith("Run the check")
+
+    # Handing the command over is not delivering it: the endpoint still serves
+    # it until a result is reported, which is how a host that never saw this
+    # response recovers.
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert [command.command_id for command in pending] == [receipt.command_id]
+    assert pending[0] == receipt.command
+
+    # A repeat of the same delivery is a receipt, not work to run again.
+    repeat = await service.submit_room_message(*args, True, EventBuffer())
+    assert repeat.status == "dispatched"
+    assert repeat.command is None
+
+    # A host that did not ask is answered with the shape it already parses.
+    plain = await service.submit_room_message(*args, False, EventBuffer())
+    assert "command" not in plain.model_dump()
 
 
 @pytest.mark.asyncio
@@ -293,6 +338,7 @@ async def test_room_attachment_is_copied_durably_with_caption_and_missing_file_n
         sequence,
         0,
         None,
+        False,
         buffer,
     )
     command = (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[
@@ -449,6 +495,7 @@ async def test_room_join_requires_opt_in_and_deduplicates(session_factory, liste
         sequence,
         0,
         None,
+        False,
         buffer,
     )
     if not listening:

@@ -3,11 +3,11 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   commandSchema,
-  commandStatusSchema,
+  roomMessageReceiptSchema,
   serverEventSchema,
   snapshotSchema,
 } from '@switch-console/shared/session-v1';
-import type { Session } from '@switch-console/shared/session-v1';
+import type { Command, Session } from '@switch-console/shared/session-v1';
 import type { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
@@ -388,6 +388,7 @@ export async function runSharedHost(
     };
     let roomBinding: string | null = null;
     let heldForDecision = false;
+    let servedOnAdmission = false;
     while (!executionSignal.aborted) {
       await flush();
       if (rooms && options.roomConnection) {
@@ -414,13 +415,14 @@ export async function runSharedHost(
           await flush();
         }
       }
+      const admitted: Command[] = [];
       if (
         host.snapshot().session.status === 'ready' ||
         host.snapshot().session.status === 'running'
       ) {
         for (const event of rooms?.pending() ?? []) {
           try {
-            const receipt = commandStatusSchema.parse(
+            const receipt = roomMessageReceiptSchema.parse(
               await request(`${sessionPath}/room-message`, {
                 ...hostLease,
                 room_id: event.roomId,
@@ -428,8 +430,10 @@ export async function runSharedHost(
                 sequence: event.sequence,
                 missed_count: event.missed,
                 gap_reason: event.gap?.reason ?? null,
+                include_command: true,
               })
             );
+            if (receipt.command) admitted.push(receipt.command);
             if (receipt.status === 'unknown' || receipt.status === 'rejected')
               await host.notice(
                 `Room message ${event.messageId}: ${receipt.message ?? receipt.status}. It was not resent.`
@@ -447,7 +451,16 @@ export async function runSharedHost(
           await rooms!.acknowledge(event);
         }
       }
-      const commands = await request(`${sessionPath}/commands`, hostLease);
+      // A command handed back by its own admission needs no fetching — but
+      // never twice running, or a steady stream of room messages would keep an
+      // interrupt or a control command waiting behind it indefinitely.
+      // Anything skipped here is still served by the next fetch, because the
+      // server holds a command open until its result is reported.
+      const servedLocally: boolean = admitted.length > 0 && !servedOnAdmission;
+      servedOnAdmission = servedLocally;
+      const commands = servedLocally
+        ? admitted
+        : await request(`${sessionPath}/commands`, hostLease);
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
       for (const value of commands) {
         executionSignal.throwIfAborted();

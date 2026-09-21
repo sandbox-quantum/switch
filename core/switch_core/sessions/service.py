@@ -62,6 +62,7 @@ from switch_core.sessions.contract import (
     RequestOpened,
     RequestSettled,
     RequestSubmitting,
+    RoomMessageReceipt,
     ServerBody,
     ServerEvent,
     Session,
@@ -90,6 +91,13 @@ class SessionError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _receipt(status: CommandStatus, command: Command | None) -> RoomMessageReceipt:
+    return RoomMessageReceipt(
+        **status.model_dump(),
+        command=command if status.status == "accepted" else None,
+    )
 
 
 def _stored_snapshot(row: SdkSession) -> Snapshot:
@@ -605,6 +613,7 @@ class SessionAuthority:
         sequence: int,
         missed_count: int,
         gap_reason: str | None,
+        include_command: bool,
         buffer: EventBuffer,
     ) -> CommandStatus:
         command_id = str(
@@ -648,7 +657,8 @@ class SessionAuthority:
                         "ROOM_MESSAGE_RESERVED",
                         "This room message belongs to another session.",
                     )
-                return CommandStatus.model_validate(previous.status)
+                status = CommandStatus.model_validate(previous.status)
+                return _receipt(status, None) if include_command else status
             try:
                 candidates = buffer.read_from(agent_id, sequence - 1, limit=1)
             except CursorExpiredError as error:
@@ -817,7 +827,8 @@ class SessionAuthority:
             )
             if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
                 raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
-            return await self._accept(db, row, command, bridge.id if bridge else None)
+            status = await self._accept(db, row, command, bridge.id if bridge else None)
+            return _receipt(status, command) if include_command else status
 
     async def _accept(
         self, db: AsyncSession, row: SdkSession, command: Command, bridge_id: str | None

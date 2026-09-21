@@ -9,7 +9,9 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import (
     get_collab_lifecycle as host_lifecycle,
 )
+from switch_core.bridges.agent.dependencies import get_event_buffer
 from switch_core.bridges.agent.dependencies import get_session_factory as host_factory
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import Agent, User
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
@@ -18,6 +20,7 @@ from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionError
 
 from .test_authority import answer, opened, setup
+from .test_room_messages import event
 
 
 async def test_http_identity_is_server_supplied_and_host_is_fenced(session_factory):
@@ -118,3 +121,51 @@ def test_room_message_accepts_an_existing_host_without_context_metadata():
     )
     assert request.missed_count == 0
     assert request.gap_reason is None
+    assert request.include_command is False
+
+
+async def test_room_message_carries_the_command_only_for_a_host_that_asked(
+    session_factory,
+):
+    _, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    sequence = buffer.enqueue("agent-demo", "room-demo", event())
+    app = FastAPI()
+    app.include_router(host_router, prefix="/host")
+    app.add_exception_handler(SessionError, session_error_response)
+
+    async def refresh(session_id):
+        return None
+
+    app.dependency_overrides[host_factory] = lambda: session_factory
+    app.dependency_overrides[host_lifecycle] = lambda: SimpleNamespace(
+        refresh_sdk_session=refresh
+    )
+    app.dependency_overrides[get_event_buffer] = lambda: buffer
+    app.dependency_overrides[get_agent_from_scope] = lambda: Agent(id="agent-demo")
+    body = {
+        "host_id": "host-demo",
+        "epoch": epoch,
+        "room_id": "room-demo",
+        "message_id": "message",
+        "sequence": sequence,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        asked = await client.post(
+            "/host/sessions/session-demo/room-message",
+            json={**body, "include_command": True},
+        )
+        assert asked.status_code == 200
+        payload = asked.json()
+        assert payload["status"] == "accepted"
+        # Serialized without a response model, so the camelCase the host parses
+        # has to survive on its own.
+        assert payload["command"]["contractVersion"] == 1
+        assert payload["command"]["commandId"] == payload["commandId"]
+        assert payload["command"]["body"]["type"] == "message.send"
+
+        plain = await client.post("/host/sessions/session-demo/room-message", json=body)
+        assert plain.status_code == 200
+        assert "command" not in plain.json()
