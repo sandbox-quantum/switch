@@ -9,6 +9,7 @@ const fetchAuthConfig = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
+const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
@@ -29,6 +30,10 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
   managedServerHostBlocked,
+}));
+// Reads this install's own workspace rows, and through them the database client.
+vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+  reconcileServerWorkspaces,
 }));
 // Writes to the app's log file, which a test has no business creating.
 vi.mock('@main/lib/logger', () => ({
@@ -193,6 +198,58 @@ describe('an action a server whose host has gone down cannot take', () => {
       outcome: 'failure',
       failure_reason: 'invalid_credentials',
     });
+  });
+});
+
+/**
+ * Signing in is the first moment the gateway will say which workspaces the
+ * account belongs to — before it, the server's only workspace is the
+ * placeholder its registration created.
+ */
+describe('reading the account’s workspaces once it is signed in', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getServer.mockResolvedValue(server({}));
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('matches the workspaces after a sign-in that succeeded', async () => {
+    passwordLogin.mockResolvedValue({ success: true, value: { id: 'u1' } });
+
+    await switchServersController.passwordLogin({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(reconcileServerWorkspaces).toHaveBeenCalledWith('srv');
+  });
+
+  it('does not after one that failed', async () => {
+    passwordLogin.mockResolvedValue({ success: false, error: { kind: 'invalid_credentials' } });
+
+    await switchServersController.passwordLogin({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(reconcileServerWorkspaces).not.toHaveBeenCalled();
+  });
+
+  // The sign-in itself worked; reporting it as a failure would send the user
+  // back to a form with nothing left to do.
+  it('still reports the sign-in when the workspaces cannot be read', async () => {
+    passwordLogin.mockResolvedValue({ success: true, value: { id: 'u1' } });
+    reconcileServerWorkspaces.mockRejectedValue(new Error('gateway too old'));
+
+    const result = await switchServersController.passwordLogin({
+      serverId: 'srv',
+      email: 'dev@example.com',
+      password: 'hunter2',
+    });
+
+    expect(result.success).toBe(true);
   });
 });
 

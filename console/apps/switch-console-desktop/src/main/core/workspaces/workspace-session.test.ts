@@ -135,6 +135,25 @@ describe('withWorkspaceSession', () => {
     expect(switchTenant).not.toHaveBeenCalled();
   });
 
+  /**
+   * The same row on a server that turns out to hold several. The call would
+   * still succeed — the gateway answers for whatever the session last selected
+   * — and would answer with another workspace's rooms and agents under this
+   * one's name. There is no way to tell which is meant, so it is refused rather
+   * than guessed.
+   */
+  it('refuses a tenant-less workspace on a server holding several', async () => {
+    workspace('ws-stale', null);
+    workspace('ws-b', 'tenant-b');
+    const ran = vi.fn();
+
+    await expect(withWorkspaceSession('ws-stale', ran)).rejects.toThrow(
+      /has not been matched to one of the 2/
+    );
+    expect(ran).not.toHaveBeenCalled();
+    expect(switchTenant).not.toHaveBeenCalled();
+  });
+
   it('runs calls on the same tenant at the same time', async () => {
     workspace('ws-a', 'tenant-a');
     const first = deferred<void>();
