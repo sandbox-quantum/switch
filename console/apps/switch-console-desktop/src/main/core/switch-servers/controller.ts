@@ -672,7 +672,7 @@ export const switchServersController = createRPCController({
 
   /**
    * Search a bridge's own user directory so the signed-in user can find
-   * themselves before they have ever posted in the workspace (CHOO-2137).
+   * themselves before they have ever posted in the chat workspace (CHOO-2137).
    */
   searchBridgeDirectory: async (params: {
     serverId: string;

@@ -2,7 +2,7 @@ import { getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getLocationAgentsInWorkspace } from './getAgents';
 
 export type DiscoveredLocationAgent = {
@@ -55,10 +55,10 @@ export async function discoverLocationAgents(params: {
       )
     : new Set<string>();
 
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
-    const definitions = await behavior.discoverDefinitions(workspace.fs);
-    const local = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
+    const definitions = await behavior.discoverDefinitions(workdir.fs);
+    const local = await behavior.discoverLocal(workdir.fs, workdir.homeFs);
     const credentialled = new Map(
       local.filter((l) => l.switchAgentId !== null).map((l) => [l.name, l.apiEndpoint])
     );
@@ -71,6 +71,6 @@ export async function discoverLocationAgents(params: {
       alreadyAgent: existing.has(def.name),
     }));
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

@@ -25,7 +25,7 @@ const claudeRepoAgents = getPlugin('claude').behavior.repoAgents ?? null;
 
 function sync(pluginFs = createPluginFs(dir)) {
   return syncAgentConfig({
-    workspaceFs: pluginFs,
+    workdirFs: pluginFs,
     repoAgents: claudeRepoAgents,
     name: NAME,
     description: DESCRIPTION,
@@ -42,7 +42,7 @@ describe('syncAgentConfig', () => {
     await writeAgentConfigFile(pluginFs, NAME, { instructions: 'be terse' });
 
     const result = await syncAgentConfig({
-      workspaceFs: pluginFs,
+      workdirFs: pluginFs,
       repoAgents: null,
       name: NAME,
       description: DESCRIPTION,
