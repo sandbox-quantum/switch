@@ -61,7 +61,6 @@ vi.mock('./servers-store', () => ({
   getServer,
   addServer,
   deleteSessionCookie: vi.fn(),
-  getActiveServerId: vi.fn(),
   listServers: vi.fn(),
   removeServer: vi.fn(),
   renameServer: vi.fn(),

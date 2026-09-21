@@ -49,7 +49,16 @@ vi.mock('./getAgents', () => ({
   ),
 }));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+}));
+
+const mockServer = vi.hoisted(() => ({
+  id: 'srv-b',
+  name: 'Server B',
+  apiUrl: 'https://b.example.com',
+}));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(mockServer),
 }));
 vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({
@@ -73,11 +82,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: h.GatewayError,
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: vi.fn(async () => ({
-    id: 'srv-b',
-    name: 'Server B',
-    apiUrl: 'https://b.example.com',
-  })),
+  getServer: vi.fn(async () => mockServer),
   findServerByEndpoint: vi.fn(async (endpoint: string) =>
     endpoint === 'https://a.example.com'
       ? { id: 'srv-a', name: 'Server A', apiUrl: 'https://a.example.com' }

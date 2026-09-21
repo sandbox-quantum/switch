@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
 import { agents, locations, switchServers } from '@main/db/schema';
 import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
+import { isWithdrawnWorkspace } from '@shared/core/workspaces/workspaces';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -333,11 +334,33 @@ describe('reconcile-workspaces', () => {
     await reconcileServerWorkspaces('srv-1');
 
     const found = await listWorkspacesForServer('srv-1');
-    expect(found.some((w) => w.tenantId === 't-gone')).toBe(true);
+    const gone = found.find((w) => w.tenantId === 't-gone');
+    expect(gone).toBeDefined();
+    // The role is what the switcher reads to say so before the click, rather
+    // than leaving the log file as the only place it is said.
+    expect(gone!.role).toBeNull();
+    expect(isWithdrawnWorkspace(gone!)).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no longer a member'), {
       server: 'srv-1',
       workspace: expect.any(String),
     });
+  });
+
+  it('restores the role when a withdrawn membership is granted again', async () => {
+    await createTenantWorkspace('srv-1', {
+      id: 't-back',
+      slug: 't-back',
+      name: 'Research',
+      role: 'admin',
+    });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-back', 'Research')]);
+    await reconcileServerWorkspaces('srv-1');
+
+    const back = (await listWorkspacesForServer('srv-1')).find((w) => w.tenantId === 't-back');
+    expect(isWithdrawnWorkspace(back!)).toBe(false);
   });
 
   // An account in no workspace at all is a server the user cannot use; saying
@@ -351,6 +374,28 @@ describe('reconcile-workspaces', () => {
     const found = await listWorkspacesForServer('srv-1');
     expect(found).toEqual([before]);
     expect(warn).toHaveBeenCalled();
+  });
+
+  /**
+   * The short-circuit for "no memberships" used to return before the withdrawal
+   * pass, so the one case where every row has been withdrawn was the one case
+   * that never marked any. The switcher and the first-run picker went on
+   * offering them, and the refusal only arrived after the click.
+   */
+  it('marks every row withdrawn when the account is left in no workspace', async () => {
+    const held = await createTenantWorkspace('srv-1', {
+      id: 't-gone',
+      slug: 't-gone',
+      name: 'Research',
+      role: 'member',
+    });
+    fetchTenants.mockResolvedValue([]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(found.find((w) => w.id === held.id)!.role).toBeNull();
+    expect(found.find((w) => w.id === held.id)!.tenantId).toBe('t-gone');
   });
 
   it('is idempotent across launches', async () => {

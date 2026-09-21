@@ -12,6 +12,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import {
+  clearWorkspaceRole,
   createTenantWorkspace,
   discardEmptyWorkspace,
   listWorkspacesForServer,
@@ -76,12 +77,19 @@ async function tenantToAdopt(
   return null;
 }
 
-/** Say so when a workspace is still held locally for a membership that has gone. */
-function reportWithdrawnMemberships(
+/**
+ * Mark the workspaces still held locally for a membership that has gone.
+ *
+ * The row is kept — deleting it would silently detach its agents — so the mark
+ * is what stops it reading as a workspace the user can still open. A log line
+ * alone would leave the switcher listing it exactly like the others, and the
+ * only sign would be the gateway refusing the call after the click.
+ */
+async function markWithdrawnMemberships(
   serverId: string,
   local: Workspace[],
   tenants: RemoteTenant[]
-): void {
+): Promise<void> {
   for (const workspace of local) {
     if (!workspace.tenantId) continue;
     if (tenants.some((tenant) => tenant.id === workspace.tenantId)) continue;
@@ -89,6 +97,7 @@ function reportWithdrawnMemberships(
       'workspaces: this account is no longer a member of a workspace held locally; calls scoped to it will be refused',
       { server: serverId, workspace: workspace.id }
     );
+    if (workspace.role !== null) await clearWorkspaceRole(workspace.id);
   }
 }
 
@@ -138,15 +147,19 @@ const inFlight = new Map<string, Promise<void>>();
 async function reconcileOneServer(serverId: string): Promise<void> {
   const server = await requireServer(serverId);
   const tenants = await fetchTenants(server);
+  const local = await listWorkspacesForServer(serverId);
+  // Marked before the short-circuit below, not after it: an account that is in
+  // nothing has had every membership withdrawn, and that is precisely the case
+  // where a row still claiming one would go on being offered as somewhere to
+  // work.
+  await markWithdrawnMemberships(serverId, local, tenants);
+
   if (tenants.length === 0) {
     log.warn('workspaces: the gateway reports no workspace membership for this account', {
       server: serverId,
     });
     return;
   }
-
-  const local = await listWorkspacesForServer(serverId);
-  reportWithdrawnMemberships(serverId, local, tenants);
 
   const claimed = new Map(
     local

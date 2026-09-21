@@ -1,74 +1,184 @@
-/**
- * The store mirrors a list the main process owns, and the reconcile moves that
- * list without a window having asked. These cover the seam that carries such a
- * change across, which is otherwise only exercised by a running app.
- */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Workspace } from '@shared/core/workspaces/workspaces';
 
-const list = vi.hoisted(() => vi.fn<() => Promise<unknown[]>>(async () => []));
-const getActiveId = vi.hoisted(() => vi.fn<() => Promise<string | null>>(async () => null));
+const list = vi.hoisted(() => vi.fn());
+const getActiveId = vi.hoisted(() => vi.fn());
+const setActive = vi.hoisted(() => vi.fn());
 const subscribers = vi.hoisted(() => new Map<string, (data: unknown) => void>());
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { workspaces: { list, getActiveId } },
   events: {
     on: (event: { name: string }, cb: (data: unknown) => void) => {
       subscribers.set(event.name, cb);
       return () => subscribers.delete(event.name);
     },
   },
+  rpc: { workspaces: { list, getActiveId, setActive } },
 }));
 
 const { WorkspacesStore } = await import('./workspaces-store');
 const { workspacesChangedChannel } = await import('@shared/core/workspaces/workspaceEvents');
 
-function workspace(id: string, name: string) {
+function workspace(id: string, serverId: string, name = id): Workspace {
   return {
     id,
-    serverId: 'srv-1',
+    serverId,
     name,
     tenantId: `tenant-${id}`,
-    slug: name.toLowerCase(),
-    role: 'member' as const,
+    slug: id,
+    role: 'member',
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   };
 }
 
-describe('WorkspacesStore', () => {
-  beforeEach(() => {
-    subscribers.clear();
-    list.mockReset().mockResolvedValue([]);
-    getActiveId.mockReset().mockResolvedValue(null);
-  });
+/** A store holding the given workspaces, scoped to one of them. */
+async function loaded(workspaces: Workspace[], activeId: string | null) {
+  list.mockResolvedValue(workspaces);
+  getActiveId.mockResolvedValue(activeId);
+  const store = new WorkspacesStore();
+  await store.refresh();
+  return store;
+}
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  subscribers.clear();
+  setActive.mockResolvedValue(undefined);
+});
+
+/** Fire the main process's "the list moved" event at whoever subscribed. */
+function announceChange(): void {
+  const notify = subscribers.get(workspacesChangedChannel.name);
+  expect(notify, 'nothing subscribed to the workspaces-changed event').toBeDefined();
+  notify!(undefined);
+}
+
+describe('keeping up with the main process', () => {
+  /**
+   * The reconcile adds and matches rows without a window having asked — the
+   * boot sweep, and every sign-in. Nothing else would tell an open window, so a
+   * membership gained since the last launch would stay invisible for the whole
+   * session.
+   */
   it('re-reads the list when the main process says it changed', async () => {
-    const store = new WorkspacesStore();
-    list.mockResolvedValue([workspace('ws-1', 'Acme')]);
-    await store.refresh();
+    const store = await loaded([workspace('ws-a', 'srv-1')], 'ws-a');
 
-    list.mockResolvedValue([workspace('ws-1', 'Acme'), workspace('ws-2', 'Skunkworks')]);
-    subscribers.get(workspacesChangedChannel.name)!(undefined);
+    list.mockResolvedValue([workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')]);
+    announceChange();
+
     await vi.waitFor(() => expect(store.workspaces).toHaveLength(2));
   });
 
   /**
-   * The reconcile drops the placeholder a server was registered with once every
+   * The sweep drops the placeholder a server was registered with once every
    * membership has a row of its own. A window still listing it offers a
-   * workspace that no longer exists, and the only thing it can report on the
-   * click is that the switch failed — not that the row went.
+   * workspace that is not there, and the only thing it can report on the click
+   * is that the switch failed — not that the row went.
    */
   it('drops a workspace the main process no longer has', async () => {
-    const store = new WorkspacesStore();
-    list.mockResolvedValue([workspace('ws-1', 'Acme'), workspace('ws-2', 'Skunkworks')]);
-    getActiveId.mockResolvedValue('ws-1');
-    await store.refresh();
+    const store = await loaded([workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')], 'ws-a');
 
-    list.mockResolvedValue([workspace('ws-2', 'Skunkworks')]);
-    getActiveId.mockResolvedValue('ws-2');
-    subscribers.get(workspacesChangedChannel.name)!(undefined);
+    list.mockResolvedValue([workspace('ws-b', 'srv-1')]);
+    getActiveId.mockResolvedValue('ws-b');
+    announceChange();
 
-    await vi.waitFor(() => expect(store.byId('ws-1')).toBeNull());
-    expect(store.activeId).toBe('ws-2');
+    await vi.waitFor(() => expect(store.byId('ws-a')).toBeNull());
+    expect(store.activeId).toBe('ws-b');
+  });
+});
+
+describe('what the window is scoped to', () => {
+  it('reads the server off the workspace rather than holding its own', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2')], 'ws-b');
+
+    expect(store.active?.id).toBe('ws-b');
+    expect(store.activeServerId).toBe('srv-2');
+  });
+
+  // Every install has this moment: the list arrives before anything has chosen.
+  it('is scoped to nothing while no workspace is selected', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1')], null);
+
+    expect(store.active).toBeNull();
+    expect(store.activeServerId).toBeNull();
+  });
+
+  /**
+   * Removing a server takes its workspaces with it, leaving the stored
+   * selection naming one that is gone. Reading that as a selection would scope
+   * the window to a server that is no longer there.
+   */
+  it('is scoped to nothing when the selection names a workspace that has gone', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1')], 'ws-removed');
+
+    expect(store.active).toBeNull();
+    expect(store.activeServerId).toBeNull();
+  });
+
+  it('moves the scope when a workspace is chosen', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')], 'ws-a');
+
+    await store.setActive('ws-b');
+
+    expect(setActive).toHaveBeenCalledWith('ws-b');
+    expect(store.activeId).toBe('ws-b');
+  });
+
+  /**
+   * A switch that failed quietly would leave the sidebar listing one
+   * workspace's rooms under another one's name — indistinguishable from the
+   * rooms having disappeared.
+   */
+  it('raises and stays put when the selection cannot be saved', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1')], 'ws-a');
+    setActive.mockRejectedValue(new Error('database is locked'));
+
+    await expect(store.setActive('ws-b')).rejects.toThrow('database is locked');
+    expect(store.activeId).toBe('ws-a');
+  });
+});
+
+describe('the workspace a server-routed view acts in', () => {
+  it('is the active one when the window is scoped to that server', async () => {
+    const store = await loaded(
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-1'), workspace('ws-c', 'srv-2')],
+      'ws-b'
+    );
+
+    expect(store.onServerInScope('srv-1')?.id).toBe('ws-b');
+  });
+
+  // A server with one workspace has nothing to choose between, so a page for it
+  // works whether or not the window is scoped there.
+  it('falls back to the only workspace on another server', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1'), workspace('ws-c', 'srv-2')], 'ws-a');
+
+    expect(store.onServerInScope('srv-2')?.id).toBe('ws-c');
+  });
+
+  // Addressing the wrong one answers with somebody else's rooms while looking
+  // entirely correct, so the view has to render the absence instead.
+  it('answers nothing for another server with several workspaces', async () => {
+    const store = await loaded(
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2'), workspace('ws-c', 'srv-2')],
+      'ws-a'
+    );
+
+    expect(store.onServerInScope('srv-2')).toBeNull();
+    expect(store.idOnServerInScope('srv-2')).toBeNull();
+  });
+
+  it('answers nothing for a server whose registration left it with none', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(store.idOnServerInScope('srv-2')).toBeNull();
+  });
+
+  // Every page routed by server reads this before its server is known.
+  it('answers nothing before a server has been chosen', async () => {
+    const store = await loaded([workspace('ws-a', 'srv-1')], 'ws-a');
+
+    expect(store.idOnServerInScope(null)).toBeNull();
   });
 });

@@ -26,7 +26,6 @@ import { hostUnreachable, requireReachableServer, requireServer } from './requir
 import {
   addServer,
   deleteSessionCookie,
-  getActiveServerId,
   getServer,
   listServers,
   removeServer,
@@ -123,8 +122,6 @@ export const switchServersController = createRPCController({
   renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
-
-  getActiveServerId: (): Promise<string | null> => getActiveServerId(),
 
   setActiveServer: (serverId: string): Promise<void> => setActiveServerId(serverId),
 

@@ -56,7 +56,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const { setCloseGuard } = useModalContext();
 
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
-  const workspaceId = workspacesStore.soleIdOnServer(serverId || null);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
   const isAdmin = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
 
