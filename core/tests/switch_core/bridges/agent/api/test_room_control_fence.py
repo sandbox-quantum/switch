@@ -47,7 +47,7 @@ class _Protocol:
         self.membership_checks.append(room_id)
 
 
-def _attach(protocol: _Protocol) -> Any:
+def _attach_declaring(protocol: _Protocol, declaration: ClientDeclaration) -> Any:
     return protocol.connections.open(
         agent_id=AGENT_ID,
         connection_id=CONN_ID,
@@ -55,9 +55,14 @@ def _attach(protocol: _Protocol) -> Any:
         delivery_filter="all",
         spawn_capable=False,
         cursor=0,
-        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        declaration=declaration,
         expected_generation=None,
     )
+
+
+def _attach(protocol: _Protocol) -> Any:
+    """A client speaking the revision that carries the incarnation."""
+    return _attach_declaring(protocol, ClientDeclaration(speaks=PROTOCOL_VERSION))
 
 
 def _request(room_id: str, generation: int | None) -> ConnectionSubscribeRequest:
@@ -135,6 +140,22 @@ async def test_a_displaced_client_cannot_release_the_winners_room() -> None:
 
 
 @pytest.mark.asyncio
+async def test_releasing_without_an_incarnation_is_refused_too() -> None:
+    """Each handler answers for itself, so each is asked."""
+    protocol = _Protocol()
+    _attach(protocol)
+    conn = _attach(protocol)
+    await _call(connection_subscribe, protocol, ROOM_B, conn.stream_generation)
+
+    with pytest.raises(HTTPException) as caught:
+        await _call(connection_unsubscribe, protocol, ROOM_B, None)
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail["code"] == "unfenced"
+    assert conn.rooms == {ROOM_B}
+
+
+@pytest.mark.asyncio
 async def test_no_room_holder_is_evicted_by_a_refused_claim() -> None:
     """The sharpest edge: claiming is what evicts, so a refusal must not.
 
@@ -178,11 +199,38 @@ async def test_the_current_client_is_admitted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_client_claiming_nothing_is_still_admitted() -> None:
-    """Old clients send no incarnation and keep the unchecked behaviour."""
+async def test_a_client_claiming_nothing_is_refused_once_the_holder_is_fenced() -> None:
+    """Claiming nothing must not be the way past the claim.
+
+    The displaced client here is one that never saw the first frame of its
+    stream, so it has no incarnation to name — and that window is exactly when
+    it can be displaced without knowing it. Reading its silence as "too old to
+    fence" would leave the whole check optional at the caller's discretion.
+    """
     protocol = _Protocol()
     _attach(protocol)
     conn = _attach(protocol)
+    held = conn.stream_generation
+
+    with pytest.raises(HTTPException) as caught:
+        await _call(connection_subscribe, protocol, ROOM_A, None)
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail["code"] == "unfenced"
+    assert conn.rooms == set()
+    assert conn.stream_generation == held
+    assert protocol.membership_checks == []
+
+
+@pytest.mark.asyncio
+async def test_a_holder_too_old_to_be_fenced_keeps_the_unchecked_behaviour() -> None:
+    """The declaration read is the holder's, so who cannot be fenced stays served.
+
+    A client built before the incarnation existed has nothing to name, and
+    refusing it would lock it out of its own rooms rather than close a hole.
+    """
+    protocol = _Protocol()
+    conn = _attach_declaring(protocol, ClientDeclaration())
 
     result = await _call(connection_subscribe, protocol, ROOM_A, None)
 

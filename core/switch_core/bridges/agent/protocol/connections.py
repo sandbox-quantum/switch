@@ -58,9 +58,10 @@ PROTOCOL_VERSION = _SERVER_AGENT_PROTOCOL.speaks
 PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts
 
 # The revision from which a client carries the connection incarnation on every
-# heartbeat. A client that declares it and then ticks without one is refused
-# rather than trusted: an unfenceable tick is only honest from a client that
-# never had an incarnation to send.
+# heartbeat and every room request. A client that declares it and then sends one
+# without an incarnation is refused rather than trusted: naming nothing is only
+# honest from a client that never had an incarnation to name, and otherwise it
+# is the way past the check.
 FENCED_PROTOCOL_REVISION = 2
 
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
@@ -180,6 +181,31 @@ class SupersededControlError(ConnectionError_):
         self.connection_id = connection_id
         self.presented = presented
         self.current = current
+
+
+class UnfencedControlError(ConnectionError_):
+    """A room request carrying no incarnation, from a holder that sends one.
+
+    Accepting silence is only honest for a client too old to have an
+    incarnation to send. A client speaking the fenced revision has one by the
+    first frame of its stream, so an unfenced request from it is either one sent
+    before that frame arrived or one that withheld it — and the first is exactly
+    the window a displaced client's repoint would slip through, claiming nothing
+    and so being checked against nothing.
+    """
+
+    code = "unfenced"
+
+    def __init__(self, connection_id: str, *, speaks: int) -> None:
+        super().__init__(
+            f"connection {connection_id} is held by a client speaking "
+            f"agent-protocol {speaks}, which names the connection incarnation on "
+            "every room request; this one named none, so it could not be fenced "
+            "and no room was claimed or released — wait for the first frame of "
+            "the stream and send the incarnation it gives you"
+        )
+        self.connection_id = connection_id
+        self.speaks = speaks
 
 
 class UnfencedBeatError(ConnectionError_):
@@ -655,8 +681,8 @@ class ConnectionRegistry:
         """
         conn = self.require(agent_id, connection_id)
         if generation is None:
-            speaks = conn.declaration.speaks
-            if speaks is not None and speaks >= FENCED_PROTOCOL_REVISION:
+            speaks = self._fenced_holder(conn)
+            if speaks is not None:
                 raise UnfencedBeatError(connection_id, speaks=speaks)
         elif generation != conn.stream_generation:
             raise SupersededConnectionError(
@@ -690,16 +716,40 @@ class ConnectionRegistry:
         taken from it and would go on changing the winner's state. Naming the
         incarnation turns the lookup into a claim, refused if it has moved on.
 
-        `None` makes no claim and keeps the unchecked lookup, for clients built
-        before the fence. Callers must use this before touching the connection,
-        and before any other check, so a refusal costs the holder nothing.
+        `None` makes no claim, and is read the same way an unfenced tick is:
+        accepted from a holder too old to have an incarnation to send, refused
+        once the holder speaks a revision that carries one. Claiming nothing
+        would otherwise be the way past the claim — a displaced client that
+        never saw its first frame has no incarnation to name, and that is
+        precisely when its repoint would reach the winner's rooms.
+
+        Callers must use this before touching the connection, and before any
+        other check, so a refusal costs the holder nothing.
         """
         conn = self.require(agent_id, connection_id)
-        if generation is not None and generation != conn.stream_generation:
+        if generation is None:
+            speaks = self._fenced_holder(conn)
+            if speaks is not None:
+                raise UnfencedControlError(connection_id, speaks=speaks)
+        elif generation != conn.stream_generation:
             raise SupersededControlError(
                 connection_id, presented=generation, current=conn.stream_generation
             )
         return conn
+
+    @staticmethod
+    def _fenced_holder(conn: Connection) -> int | None:
+        """The holder's revision, when it is one that carries the incarnation.
+
+        The declaration on the connection is the holder's, not the caller's, so
+        this answers "should this connection's client have named an
+        incarnation" — which is the question, since the caller may not be that
+        client at all.
+        """
+        speaks = conn.declaration.speaks
+        if speaks is not None and speaks >= FENCED_PROTOCOL_REVISION:
+            return speaks
+        return None
 
     def get(self, connection_id: str) -> Connection | None:
         return self._by_id.get(connection_id)

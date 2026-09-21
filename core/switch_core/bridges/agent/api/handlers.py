@@ -91,6 +91,7 @@ from switch_core.bridges.agent.protocol.connections import (
     SupersededControlError,
     SupersededReattachError,
     UnfencedBeatError,
+    UnfencedControlError,
     UnknownConnectionError,
     evicted_session_warning,
 )
@@ -974,7 +975,7 @@ async def connection_subscribe(
         conn = protocol.connections.require_current(
             agent.id, req.connection_id, generation=req.generation
         )
-    except SupersededControlError as exc:
+    except (SupersededControlError, UnfencedControlError) as exc:
         raise HTTPException(
             status_code=409, detail={"code": exc.code, "message": str(exc)}
         ) from exc
@@ -1028,7 +1029,7 @@ async def connection_unsubscribe(
         conn = protocol.connections.require_current(
             agent.id, req.connection_id, generation=req.generation
         )
-    except SupersededControlError as exc:
+    except (SupersededControlError, UnfencedControlError) as exc:
         raise HTTPException(
             status_code=409, detail={"code": exc.code, "message": str(exc)}
         ) from exc

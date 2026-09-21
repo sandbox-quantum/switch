@@ -729,6 +729,48 @@ describe('a connection another client takes over', () => {
     abort.abort();
   });
 
+  it('does not claim a room before the frame that names its incarnation', async () => {
+    // Claiming nothing is how a client too old to have an incarnation gets
+    // through, so a claim sent in the window before the first frame would go
+    // through the same door — and that window is exactly when this client may
+    // already have been displaced without knowing it.
+    let announce: () => void = () => {};
+    const subscribes: (number | null)[] = [];
+    const fetchMock = vi.fn(async (url: string, init: { body?: string }) => {
+      if (String(url).includes('/events'))
+        return {
+          ok: true,
+          status: 200,
+          // Attached, but silent: the server has not said which incarnation
+          // this socket is yet.
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              announce = () => controller.enqueue(connected());
+            },
+          }),
+          text: async (): Promise<string> => '',
+        };
+      if (String(url).includes('connection/subscribe')) {
+        const sent = JSON.parse(init.body ?? '{}') as { generation: number | null };
+        subscribes.push(sent.generation);
+      }
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    const { stream, abort } = makeStream(fetchMock, { rooms: ['!old'] });
+    await flush();
+
+    const repointed = stream.repoint('!new');
+    await flush();
+
+    expect(subscribes).toEqual([]);
+
+    announce();
+    await repointed;
+
+    expect(subscribes).toEqual([0]);
+    abort.abort();
+  });
+
   it('halts instead of reopening, because reopening would be a takeover back', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (url: string) =>

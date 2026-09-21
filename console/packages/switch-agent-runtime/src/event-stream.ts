@@ -368,6 +368,14 @@ export class SwitchEventStream {
   }
 
   private async subscribe(roomId: string): Promise<void> {
+    // Not before the stream has told us which incarnation we are. Claiming
+    // nothing is how a client too old to have one gets through, so sending it
+    // in the window before the first frame would put us through the same door
+    // — and that window is exactly when we might already have been displaced
+    // without knowing it. A server too old to carry an incarnation still sends
+    // the frame, so waiting costs such a client nothing.
+    await Promise.race([this.fence.reached, until(this.deps.signal, this.halt.signal)]);
+    if (this.halt.signal.aborted) return;
     const resp = await this.post('connection/subscribe', {
       connection_id: this.deps.connectionId,
       room_id: roomId,
