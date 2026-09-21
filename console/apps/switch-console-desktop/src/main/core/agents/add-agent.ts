@@ -10,7 +10,8 @@ import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import { entryPointOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
-import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
@@ -164,7 +165,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       message: `No Switch server with id ${params.serverId}`,
     });
   }
-  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
 
   // Before minting an identity: the gateway's uniqueness check is scoped to the
   // Switch server, so it cannot see a name already taken in this directory. Two
@@ -215,15 +216,17 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     }
   }
 
-  const registered = await registerAgentIdentity(server, {
-    name: params.name,
-    description: params.description,
-    displayName: params.displayName,
-    repoDir: params.dir,
-    autoSession: params.autoSession,
-    agentType: knownAgentTypeForProvider(params.providerId),
-    iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
-  });
+  const registered = await withWorkspaceSession(targetWorkspace.id, (target) =>
+    registerAgentIdentity(target, {
+      name: params.name,
+      description: params.description,
+      displayName: params.displayName,
+      repoDir: params.dir,
+      autoSession: params.autoSession,
+      agentType: knownAgentTypeForProvider(params.providerId),
+      iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
+    })
+  );
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
   const behavior = getPlugin(params.providerId).behavior.repoAgents;

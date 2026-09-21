@@ -136,7 +136,7 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   // Names already taken on the server, so a clash is refused before anything
   // is created rather than reported by the server afterwards.
-  const remoteAgents = useWorkspaceAgents(workspacesStore.soleIdOnServer(pickState.serverId));
+  const remoteAgents = useWorkspaceAgents(workspacesStore.idOnServerInScope(pickState.serverId));
   const takenNames = useMemo(
     () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
     [remoteAgents.data]
@@ -580,7 +580,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         {canConfigureAgent && (
           <AgentSettingsSection
             form={form}
-            workspaceId={workspacesStore.soleIdOnServer(pickState.serverId)}
+            workspaceId={workspacesStore.idOnServerInScope(pickState.serverId)}
             onAddServer={() => showAddServerModal({})}
             onOpenMessagingApps={() => {
               onClose();

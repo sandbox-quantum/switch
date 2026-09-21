@@ -45,7 +45,10 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: vi.fn(async () => h.server),
 }));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+}));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(h.server),
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => {
   class GatewayError extends Error {

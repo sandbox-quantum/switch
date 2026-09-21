@@ -51,12 +51,18 @@ export function SaveTemplateModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+
   const save = async () => {
+    if (workspaceId === null) {
+      setError('This server’s workspace is not known yet.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       const saved = await rpc.workspaces.saveTemplate({
-        workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+        workspaceId,
         name: name.trim(),
         description: description.trim(),
         kind,

@@ -27,8 +27,25 @@ export type Workspace = {
   tenantId: string | null;
   /** The gateway's slug for the workspace; null alongside a null `tenantId`. */
   slug: string | null;
-  /** Null alongside a null `tenantId`, where the notion does not apply yet. */
+  /**
+   * Null alongside a null `tenantId`, where the notion does not apply yet — and
+   * null beside a tenant id once the membership has been withdrawn, which is
+   * what {@link isWithdrawnWorkspace} reads.
+   */
   role: WorkspaceRole | null;
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * Whether this account has lost its membership of a workspace still held here.
+ *
+ * The row is kept so the agents registered through it stay attached to
+ * something, but nothing scoped to it can be answered any more: the gateway
+ * refuses a session selecting a tenant the account does not belong to. Views
+ * say so rather than offering it, so the refusal is read before the click
+ * rather than after it.
+ */
+export function isWithdrawnWorkspace(workspace: Workspace): boolean {
+  return workspace.tenantId !== null && workspace.role === null;
+}

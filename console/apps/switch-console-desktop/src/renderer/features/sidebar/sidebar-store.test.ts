@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import type { Agent } from '@shared/core/agents/agents';
+import type { Workspace } from '@shared/core/workspaces/workspaces';
 import {
   agentExpandKey,
   agentRoomGroupKey,
@@ -13,6 +14,16 @@ import {
 } from './sidebar-store';
 
 type SidebarLocationManager = ConstructorParameters<typeof SidebarStore>[0];
+
+/**
+ * Scope the window to a server, the way choosing one of its workspaces does.
+ * The sidebar reads the active server off the active workspace, so setting it
+ * directly would be setting a value nothing owns.
+ */
+function scopeToServer(serverId: string | null): void {
+  workspacesStore.workspaces = serverId ? [{ id: `ws-${serverId}`, serverId } as Workspace] : [];
+  workspacesStore.activeId = serverId ? `ws-${serverId}` : null;
+}
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: {
@@ -273,7 +284,7 @@ describe('SidebarStore active-server scoping', () => {
   }
 
   afterEach(() => {
-    switchServersStore.activeServerId = null;
+    scopeToServer(null);
     agentsStore.byLocation.clear();
   });
 
@@ -286,7 +297,7 @@ describe('SidebarStore active-server scoping', () => {
     );
     linkAgent('a', 'server-1');
     linkAgent('b', 'server-2');
-    switchServersStore.activeServerId = 'server-1';
+    scopeToServer('server-1');
 
     expect(store.orderedLocations.map((p) => p.id)).toEqual(['a']);
     expect(store.isEmpty).toBe(false);
@@ -310,7 +321,7 @@ describe('SidebarStore active-server scoping', () => {
       locationManager([{ id: 'a', createdAt: '2026-01-01T00:00:00.000Z' }])
     );
     linkAgent('a', null);
-    switchServersStore.activeServerId = 'server-1';
+    scopeToServer('server-1');
 
     expect(store.orderedLocations).toEqual([]);
     expect(store.isEmpty).toBe(true);
@@ -328,13 +339,13 @@ describe('SidebarStore active-server scoping', () => {
       { locationId: 'shared', serverId: 'server-2' } as Agent,
     ]);
 
-    switchServersStore.activeServerId = 'server-1';
+    scopeToServer('server-1');
     expect(store.orderedLocations.map((p) => p.id)).toEqual(['shared']);
 
-    switchServersStore.activeServerId = 'server-2';
+    scopeToServer('server-2');
     expect(store.orderedLocations.map((p) => p.id)).toEqual(['shared']);
 
-    switchServersStore.activeServerId = 'server-3';
+    scopeToServer('server-3');
     expect(store.orderedLocations).toEqual([]);
   });
 
@@ -347,7 +358,7 @@ describe('SidebarStore active-server scoping', () => {
       { locationId: 'shared', serverId: 'server-2', providerId: 'codex' } as Agent,
     ]);
 
-    switchServersStore.activeServerId = 'server-2';
+    scopeToServer('server-2');
     expect(store.locationProviderId('shared')).toBe('codex');
   });
 });
@@ -413,7 +424,7 @@ describe('SidebarStore filters', () => {
 
   afterEach(() => {
     agentsStore.byLocation.clear();
-    switchServersStore.activeServerId = null;
+    scopeToServer(null);
   });
 
   it('returns all locations unfiltered when no filter is active', () => {

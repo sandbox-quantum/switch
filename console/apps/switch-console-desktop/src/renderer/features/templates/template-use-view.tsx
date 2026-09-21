@@ -146,6 +146,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
         id: detail.id,
         name: detail.name,
         source: 'server',
+        workspaceId,
         ...(serverId ? { serverId } : {}),
       };
     }
@@ -246,7 +247,7 @@ type SlotSetup = {
 const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
-  const workspaceId = workspacesStore.soleIdOnServer(serverId);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
@@ -685,7 +686,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const blockedReason: string | null =
     phase !== 'form'
       ? null
-      : loaded === null
+      : loaded === null || workspaceId === null
         ? 'Loading…'
         : missing.length > 0
           ? `Fill in ${missing.map(paramLabel).join(', ')}`
@@ -730,6 +731,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   }, [parsed, editedAgents, templateParams, values, slots, agents.data]);
   const [allowingHandoffs, setAllowingHandoffs] = useState(false);
   const allowHandoffs = useCallback(async () => {
+    if (workspaceId === null) return;
     const byName = new Map((agents.data ?? []).map((a) => [a.name, a]));
     setAllowingHandoffs(true);
     try {
@@ -752,7 +754,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           return next;
         });
         await rpc.workspaces.updateAddressingPolicy({
-          workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+          workspaceId,
           agentId: target.id,
           policy: { rules },
         });
@@ -763,14 +765,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     } finally {
       setAllowingHandoffs(false);
     }
-  }, [agents.data, handoffBlocked, serverId, workspaceId, queryClient]);
+  }, [agents.data, handoffBlocked, workspaceId, queryClient]);
 
   // ── Create ──────────────────────────────────────────────────────────────
   const setSlot = (i: number, patch: Partial<AgentSlot>) =>
     setSlots((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)));
 
   const createAll = async () => {
-    if (!loaded || blockedReason !== null) return;
+    if (!loaded || workspaceId === null || blockedReason !== null) return;
     setPhase('creating');
     setCreateError(null);
     setFieldErrors({});
@@ -843,7 +845,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         if (switchAgentId && slot.entry.addressing) {
           setSlot(i, { step: 'policy' });
           await rpc.workspaces.updateAddressingPolicy({
-            workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+            workspaceId,
             agentId: switchAgentId,
             policy:
               slot.entry.addressing === 'owner-agents'
@@ -923,7 +925,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       try {
         for (const [roomId, ids] of joinsByRoom) {
           await rpc.workspaces.addRoomAgents({
-            workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+            workspaceId,
             roomId,
             agentIds: [...new Set(ids)],
             direction: 'agents_to_room',
@@ -1006,11 +1008,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       }
       const result =
         createdRoom.current ??
-        (await rpc.workspaces.createRoomFromTemplate(
-          workspacesStore.requireSoleIdOnServer(serverId),
-          coreYaml,
-          inputs
-        ));
+        (await rpc.workspaces.createRoomFromTemplate(workspaceId, coreYaml, inputs));
       createdRoom.current = result;
       setRoomStatus('created');
       // The room exists whether or not the sidebar refreshes.

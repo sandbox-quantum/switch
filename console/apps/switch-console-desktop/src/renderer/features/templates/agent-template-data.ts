@@ -74,14 +74,32 @@ export async function loadAgentTemplateByOrigin(
     if (!bundled) throw new Error(`This Console no longer bundles "${origin.name}".`);
     return agentTemplateFromContent(origin.name, bundled.yamlText, bundled.instructions, origin);
   }
-  if (!origin.serverId)
-    throw new Error(`"${origin.name}" came from a server this Console does not know.`);
-  const workspaceId = workspacesStore.requireSoleIdOnServer(origin.serverId);
   const detail = await rpc.workspaces.getTemplateDetail({
-    workspaceId,
+    workspaceId: templateWorkspaceId(origin),
     templateId: origin.id,
   });
   return agentTemplateFromContent(origin.name, detail.definition, null, origin);
+}
+
+/**
+ * The workspace to ask for a server template, from what the origin recorded.
+ *
+ * A registry belongs to a workspace, so an origin naming only a server is
+ * answerable exactly while that server holds one. Where it holds several the
+ * window's own workspace is not an answer: it would load a different template
+ * of the same id, or none, and offer it as this agent's.
+ */
+function templateWorkspaceId(origin: AgentTemplateOrigin): string {
+  if (origin.workspaceId) return origin.workspaceId;
+  if (!origin.serverId)
+    throw new Error(`"${origin.name}" came from a server this Console does not know.`);
+  const onServer = workspacesStore.onServer(origin.serverId);
+  if (onServer.length === 1) return onServer[0]!.id;
+  if (onServer.length === 0)
+    throw new Error(`The workspace "${origin.name}" came from is not known yet.`);
+  throw new Error(
+    `"${origin.name}" was recorded before this Console kept which workspace a template came from, and its Switch server now has ${onServer.length}. Open it from that workspace's template list instead.`
+  );
 }
 
 /** Resolve a listing entry (bundled or from the server's registry) into the agent it describes. */
@@ -103,6 +121,7 @@ export async function loadAgentTemplate(
     id: detail.id,
     name: detail.name,
     source: 'server',
+    workspaceId,
     ...(serverId ? { serverId } : {}),
   });
 }
