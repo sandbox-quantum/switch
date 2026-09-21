@@ -11,10 +11,12 @@ for real.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
 import pytest_asyncio
+import yaml
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -49,12 +51,14 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
+    PLACEHOLDER_RE,
     ExistingReferenceById,
     ParamSpec,
     RoomYamlService,
     interpolate,
     resolve_params,
 )
+from switch_core.template_lint import lint_template
 
 
 class _AnyStr:
@@ -1684,3 +1688,92 @@ async def test_check_entity_params_ignores_plain_params(env):
         inputs={"label": "anything"},
     )
     await svc.check_entity_params(parsed)
+
+
+# ── shipped examples ─────────────────────────────────────────────────────────
+#
+# examples/room-templates/ is what a reader copies before they read anything
+# else, so a broken one there is worse than a broken one anywhere in the tree.
+
+EXAMPLES_DIR = Path(__file__).resolve().parents[3] / "examples" / "room-templates"
+
+EXAMPLE_BUILTINS = {
+    "$creator": "alice",
+    "$creator_email": "alice@example.com",
+    "$date": "2026-01-01",
+    "$timestamp": "1767225600",
+}
+
+SAMPLE_BY_PARAM_TYPE: dict[str, Any] = {
+    "string": "sample",
+    "number": 3,
+    "boolean": True,
+    "agent": "claude-code.alice",
+    "bridge": "Sample app",
+    "room": "sample-room",
+    "user": "alice",
+}
+
+
+def _example_paths() -> list[Path]:
+    paths = sorted(EXAMPLES_DIR.glob("*.template.yaml"))
+    assert paths, f"no example templates under {EXAMPLES_DIR}"
+    return paths
+
+
+def _sample_inputs(text: str) -> dict[str, Any]:
+    """A value for every param the example leaves without a default."""
+    declared = yaml.safe_load(text).get("params") or {}
+    inputs: dict[str, Any] = {}
+    for name, raw in declared.items():
+        spec = ParamSpec.model_validate(raw)
+        if spec.default is not None:
+            continue
+        if spec.type == "enum":
+            assert spec.enum, f"param {name!r} is an enum with no choices"
+            inputs[name] = spec.enum[0]
+        else:
+            inputs[name] = SAMPLE_BY_PARAM_TYPE[spec.type]
+    return inputs
+
+
+def _strings(node: Any) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        return [s for v in node.values() for s in _strings(v)]
+    if isinstance(node, list):
+        return [s for item in node for s in _strings(item)]
+    return []
+
+
+@pytest.mark.parametrize("path", _example_paths(), ids=lambda p: p.name)
+def test_example_template_parses(env, path):
+    text = path.read_text()
+    spec, kickoff = _svc(env).parse(
+        text, inputs=_sample_inputs(text), builtins=EXAMPLE_BUILTINS
+    )
+    assert spec.agents, "an example with no agents provisions an empty channel"
+    assert kickoff, "an example with no kickoff provisions a room nobody starts"
+
+
+@pytest.mark.parametrize("path", _example_paths(), ids=lambda p: p.name)
+def test_example_template_leaves_no_placeholder_behind(env, path):
+    """A misspelled ``{placeholder}`` is left verbatim rather than rejected, so
+    it would reach a room as literal braces in its name. Catch it here."""
+    text = path.read_text()
+    parsed = _svc(env).parse_template(
+        text, inputs=_sample_inputs(text), builtins=EXAMPLE_BUILTINS
+    )
+    rendered = _strings(parsed.spec.model_dump()) + [parsed.kickoff or ""]
+    leftover = sorted(
+        {m.group(0) for s in rendered for m in PLACEHOLDER_RE.finditer(s)}
+    )
+    assert not leftover, f"{path.name}: undeclared placeholder(s) {leftover}"
+
+
+@pytest.mark.parametrize("path", _example_paths(), ids=lambda p: p.name)
+def test_example_template_lints_clean(path):
+    result = lint_template(path.read_text())
+    findings = [f"{f.code}: {f.message}" for f in result.errors + result.warnings]
+    assert not findings, f"{path.name}: {findings}"

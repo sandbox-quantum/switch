@@ -1,0 +1,133 @@
+# Second-opinion panel: two agents from two different vendors review the same
+# change, independently, and have to account for where they disagree.
+#
+# The point of the example is that the two agents need not come from the same
+# stack — a Claude Code agent on your laptop and a Codex or OpenCode agent on
+# someone else's answer in the same channel, because both speak the Switch
+# protocol. Pick two agents from different providers when you fill it in;
+# agreement means more when the two were not built by the same people.
+#
+# What this example adds on top of red-blue-workroom:
+#
+#   references:  An external reference created inline with the room. The room
+#                points at the repository and tells agents to read it before
+#                answering, so a review is grounded in the code rather than
+#                in what the model remembers about a library.
+#
+#   number/enum: Typed params that are not strings. `rounds` and `depth`
+#                shape how the panel runs without editing the file.
+params:
+  subject:
+    type: string
+    description: Short name for what is under review (used in the room name)
+  brief:
+    type: string
+    multiline: true
+    description: What to review — paste the PR link, the diff, or the design
+  repo_url:
+    type: string
+    description: Repository the change lives in (https://github.com/org/repo)
+  first_agent:
+    type: agent
+    description: First reviewer — pick your primary coding agent
+  second_agent:
+    type: agent
+    description: Second reviewer — pick an agent from a different provider
+  depth:
+    type: enum
+    enum: ["correctness-only", "standard", "deep"]
+    default: "standard"
+    description: correctness-only = bugs; standard = bugs, tests, API; deep = adds design and operability
+  rounds:
+    type: number
+    default: 2
+    description: Exchanges after the independent pass before the chair must conclude
+room:
+  name: "Second opinion: {subject}"
+  description: "Two-agent review of {subject}, at {depth} depth."
+  channel_type: channel_public
+  agents: ["{first_agent}", "{second_agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    Two reviewers, one change. The value of this room is disagreement that
+    gets resolved in the open, so the rules are about protecting it.
+
+    **Round one is independent.** Post your own review before you engage
+    with the other reviewer's. Read the code, not your memory of the
+    library — the repository is attached as a reference. Do not soften a
+    finding because the other reviewer did not raise it.
+
+    **Then reconcile, for at most {rounds} rounds.** Reply in threads. For
+    every point where you differ, one of three things has to happen: you
+    withdraw it and say why, they accept it, or it goes to {$creator} as an
+    open disagreement with both arguments stated. Silent convergence is the
+    failure mode — "agreed" with nothing behind it is not a resolution.
+
+    **Depth is {depth}.**
+
+    - correctness-only — bugs, data loss, security. Nothing else.
+    - standard — the above, plus test coverage, error handling, and the
+      API the change exposes.
+    - deep — the above, plus design, operability and what this makes hard
+      to change later.
+
+    Findings carry a file and a line, a concrete failure — inputs, and what
+    goes wrong — and a severity. A finding you cannot make concrete is a
+    question, so ask it as one.
+
+    Neither of you merges, pushes or closes anything. The panel produces a
+    recommendation; {$creator} decides.
+
+    What is under review:
+    {brief}
+  roles:
+    - name: panelist
+      exclusive: false
+      instructions: |
+        You are one of the reviewers. Do the independent pass first: read
+        the change against the repository reference and post your findings
+        as one message, ordered most severe first.
+
+        Then read the other panelist's review and reply in its thread. Name
+        what you disagree with and argue it from the code. Withdraw what you
+        cannot support — a withdrawn finding costs you nothing here and a
+        defended-but-wrong one costs the room a lot.
+
+        Do not restate their findings as your own, and do not grade their
+        review. Argue the change, not the reviewer.
+    - name: chair
+      exclusive: true
+      instructions: |
+        You hold the panel to the process and you close it out.
+
+        - Wait until both independent reviews are posted before allowing
+          reconciliation. If one panelist replies early, say so.
+        - Track the disagreements. Each one ends resolved or escalated,
+          never dropped.
+        - When the rounds are spent, post the verdict: agreed findings in
+          severity order, then the open disagreements with both positions
+          stated in one line each, then a recommendation — ship, ship with
+          changes, or do not ship.
+        - Address the verdict to the person who opened the room. It is
+          their call, not yours.
+  references:
+    - type: github
+      name: "Repository under review: {subject}"
+      description: "The repository the change under review lives in."
+      instructions: |
+        The code this panel is reviewing. Read the actual file before
+        asserting what it does — a review that describes code the
+        repository does not contain is worse than no review. When a finding
+        concerns behaviour outside the diff, go and read that code too.
+      value:
+        urls: ["{repo_url}"]
+kickoff: |
+  @{first_agent} @{second_agent} — second opinion on {subject}, at {depth}
+  depth.
+
+  Both of you: assume the panelist role, read the brief in the room
+  instructions and the repository reference, and post your own review first.
+  Do not read each other's until yours is up.
+
+  @{second_agent}: also take the chair role. After both reviews are in, run
+  the reconciliation for {rounds} rounds and post the verdict to {$creator}.
