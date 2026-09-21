@@ -13,6 +13,7 @@ import time
 import uuid
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api.handlers import session_end_reporter
 from switch_core.bridges.agent.protocol.connections import (
@@ -217,3 +218,56 @@ async def _settle() -> None:
 
     for _ in range(3):
         await asyncio.sleep(0)
+
+
+class TestTelemetryNeverPreventsBoot:
+    """A missing identity row disabled reporting; it must not stop the server.
+
+    The row is seeded by a migration boot runs first, so its absence means a
+    schema older than the code or a row deleted by hand. Either way, refusing
+    to serve over analytics is the one thing this subsystem must never do.
+    """
+
+    async def test_an_unreadable_identity_disables_rather_than_raises(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from sqlalchemy import delete
+
+        from switch_core.db.models import DeploymentIdentity
+        from switch_core.telemetry.setup import build_telemetry
+
+        async with session_factory() as session:
+            await session.execute(delete(DeploymentIdentity))
+            await session.commit()
+
+        service, installed_at, http = await build_telemetry(
+            _config(telemetry_enabled=True),  # type: ignore[arg-type]
+            session_factory,
+            "1.0.0",
+        )
+
+        assert service.enabled is False
+        assert installed_at is None
+        assert http is None
+
+    async def test_it_reports_nothing_rather_than_an_empty_deployment(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Off, not "on with a blank id" — the relay drops a payload it cannot
+        attribute, silently and with a 200, so sending would look like working."""
+        from sqlalchemy import delete
+
+        from switch_core.db.models import DeploymentIdentity
+        from switch_core.telemetry.setup import build_telemetry
+
+        async with session_factory() as session:
+            await session.execute(delete(DeploymentIdentity))
+            await session.commit()
+
+        service, _, _ = await build_telemetry(
+            _config(telemetry_enabled=True),  # type: ignore[arg-type]
+            session_factory,
+            "1.0.0",
+        )
+        service.emit("deployment_started", tenant_count=1)
+        await service.aclose()

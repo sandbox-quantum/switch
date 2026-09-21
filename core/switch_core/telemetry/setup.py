@@ -41,7 +41,37 @@ async def build_telemetry(
     installed, rather than minting one on the day it opted in and looking
     brand new.
     """
-    generated_id, installed_at = await load_deployment_identity(session_factory)
+    try:
+        generated_id, installed_at = await load_deployment_identity(session_factory)
+    except Exception:
+        # Never fatal. The row is seeded by a migration that boot runs before
+        # this, so its absence means a schema older than the code or a row
+        # deleted by hand — and in either case refusing to serve would take
+        # the whole deployment down over analytics, which is the one thing
+        # this subsystem must never be able to do. Reported at error, because
+        # it is a real misconfiguration, and reporting is switched off rather
+        # than run against an identity invented on the spot: a fresh id per
+        # boot would make one deployment look like a population of installs,
+        # which is worse than no data.
+        logger.error(
+            "Could not read the deployment identity, so product telemetry is "
+            "disabled for this run. Its row is seeded by the telemetry "
+            "bookkeeping migration — check that migrations have been applied.",
+            exc_info=True,
+        )
+        return (
+            _service(
+                config,
+                NullSink(),
+                client_id="",
+                version=version,
+                session_factory=session_factory,
+                installed_at=None,
+                enabled=False,
+            ),
+            None,
+            None,
+        )
 
     # `DEPLOYMENT_ID` wins where an operator set one. Both this and the
     # operational export send `flint.client_id`, and a deployment reporting
@@ -61,10 +91,10 @@ async def build_telemetry(
             _service(
                 config,
                 NullSink(),
-                client_id,
-                version,
-                session_factory,
-                installed_at,
+                client_id=client_id,
+                version=version,
+                session_factory=session_factory,
+                installed_at=installed_at,
             ),
             installed_at,
             None,
@@ -87,7 +117,14 @@ async def build_telemetry(
         config.telemetry_endpoint,
     )
     return (
-        _service(config, sink, client_id, version, session_factory, installed_at),
+        _service(
+            config,
+            sink,
+            client_id=client_id,
+            version=version,
+            session_factory=session_factory,
+            installed_at=installed_at,
+        ),
         installed_at,
         http_client,
     )
@@ -96,14 +133,20 @@ async def build_telemetry(
 def _service(
     config: SwitchConfig,
     sink: TelemetrySink,
+    *,
     client_id: str,
     version: str | None,
     session_factory: async_sessionmaker[AsyncSession],
     installed_at: datetime | None,
+    enabled: bool | None = None,
 ) -> TelemetryService:
+    """`enabled` overrides the setting, for the one case that has to: an
+    identity we could not read means reporting is off for this run whatever
+    the operator asked for, because every event would carry no deployment and
+    the relay drops those in silence."""
     return TelemetryService(
         sink=sink,
-        enabled=config.telemetry_enabled,
+        enabled=config.telemetry_enabled if enabled is None else enabled,
         client_id=client_id,
         service_name=config.service_name,
         version=version,
