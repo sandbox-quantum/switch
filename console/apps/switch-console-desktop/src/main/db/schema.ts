@@ -10,9 +10,12 @@ import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 // Data model (Switch Console rework — diverges from upstream; see
 // agents/architecture/data-model.md for the full map):
 //
+//   switch_servers — a registered Switch gateway
+//     └─ workspaces — what the window is scoped to; one active at a time
+//
 //   locations — a working directory on a host (this machine or an SSH host)
 //     └─ agents    — a Switch agent identity (one provider each; many per
-//          │         location)
+//          │         location; belongs to one workspace)
 //          └─ sessions  — an instantiation/run of an agent (was "conversation";
 //          │              one session == one terminal, folded in)
 //               └─ messages
@@ -83,10 +86,11 @@ export const appSettings = sqliteTable(
 /**
  * A Switch server: a gateway Switch Console can connect to. Switch Console is
  * multi-server — many gateways (a local dev one, a deployed pilot one) can be
- * registered, and the UI works against one "active" server at a time (the
- * active id is tracked in `kv` under `activeSwitchServerId`). The session JWT
- * minted by the gateway is NOT stored here — it lives in the encrypted secrets
- * store keyed by server id — so this table holds only non-secret connection
+ * registered. What the window is scoped to is a workspace on one of them, not
+ * the server itself, so the active selection names a workspace (`kv`,
+ * `activeWorkspaceId`) and the server is read from it. The session JWT minted
+ * by the gateway is NOT stored here — it lives in the encrypted secrets store
+ * keyed by server id — so this table holds only non-secret connection
  * metadata.
  */
 export const switchServers = sqliteTable(
@@ -127,17 +131,67 @@ export const switchServers = sqliteTable(
 );
 
 /**
+ * A workspace: the unit everything in the window is scoped to. A server hosts
+ * one or more of them, and exactly one workspace is active at a time (tracked
+ * in `kv` under `activeWorkspaceId`). Switching workspace swaps the whole
+ * window — agents, rooms, sidebar — the way switching server used to.
+ *
+ * `tenantId` is the workspace's id on the gateway, and is null when the server
+ * reports no tenancy: there the workspace *is* the whole server, which is every
+ * server registered before multi-tenancy and every self-hosted install that
+ * never turns it on. Workspaces are discovered from the gateway rather than
+ * created by hand, so a server that gains tenancy later fills in the ids on its
+ * next reconcile without the user doing anything.
+ *
+ * `slug` is the gateway's handle for the workspace; null alongside a null
+ * `tenantId`. The (server, tenant) pair is unique so a reconcile can upsert on
+ * it, with tenant-less rows excluded from the index — SQLite treats NULLs as
+ * distinct, which is what lets the one-per-server legacy row coexist.
+ */
+export const workspaces = sqliteTable(
+  'workspaces',
+  {
+    id: text('id').primaryKey(),
+    serverId: text('server_id')
+      .notNull()
+      .references(() => switchServers.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** The workspace's id on the gateway; null when the server has no tenancy. */
+    tenantId: text('tenant_id'),
+    /** The gateway's slug for the workspace; null when it has no tenancy. */
+    slug: text('slug'),
+    /**
+     * The caller's role in the workspace as the gateway last reported it
+     * (`owner` / `admin` / `member`). Null for a tenant-less workspace, where
+     * the notion does not apply.
+     */
+    role: text('role'),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text('updated_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    serverIdIdx: index('idx_workspaces_server_id').on(table.serverId),
+    serverTenantIdx: uniqueIndex('idx_workspaces_server_tenant').on(table.serverId, table.tenantId),
+  })
+);
+
+/**
  * A Switch agent: an agent identity bound to a single provider, living at a
  * location. Many agents may share a location (e.g. a Claude Code and a Codex
  * agent in the same repo). `switchAgentId` / `apiEndpoint` are populated when
  * the location dir is configured as a Switch agent (detected from
  * `.claude/settings.local.json`); they are null for a plain local agent.
  *
- * `serverId` binds the agent to the one registered Switch server it belongs to.
- * It is resolved by matching the detected `apiEndpoint` against the registered
- * servers' origins. It is nullable: an agent whose server is not (or no longer)
- * registered is shown as "unlinked" rather than guessed, and removing a server
- * sets its agents' `serverId` to null instead of deleting them.
+ * `workspaceId` binds the agent to the one workspace it belongs to. It is
+ * resolved by matching the detected `apiEndpoint` against the registered
+ * servers' origins and then the server's active workspace. It is nullable: an
+ * agent whose workspace is not (or no longer) registered is shown as "unlinked"
+ * rather than guessed, and removing a workspace sets its agents' `workspaceId`
+ * to null instead of deleting them.
  */
 export const agents = sqliteTable(
   'agents',
@@ -154,7 +208,7 @@ export const agents = sqliteTable(
     providerId: text('provider_id').$type<AgentProviderId>().notNull(),
     switchAgentId: text('switch_agent_id'),
     apiEndpoint: text('api_endpoint'),
-    serverId: text('server_id').references(() => switchServers.id, { onDelete: 'set null' }),
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
     status: text('status'),
     // When set, Switch Console launches this agent's CLI with its auto-approve /
     // "bypass permissions" flag (e.g. `--dangerously-skip-permissions`).
@@ -176,7 +230,7 @@ export const agents = sqliteTable(
   },
   (table) => ({
     locationIdIdx: index('idx_agents_location_id').on(table.locationId),
-    serverIdIdx: index('idx_agents_server_id').on(table.serverId),
+    workspaceIdIdx: index('idx_agents_workspace_id').on(table.workspaceId),
   })
 );
 
@@ -381,6 +435,8 @@ export type AppSecretRow = typeof appSecrets.$inferSelect;
 export type AppSecretInsert = typeof appSecrets.$inferInsert;
 export type SwitchServerRow = typeof switchServers.$inferSelect;
 export type SwitchServerInsert = typeof switchServers.$inferInsert;
+export type WorkspaceRow = typeof workspaces.$inferSelect;
+export type WorkspaceInsert = typeof workspaces.$inferInsert;
 export type RemoteHostRow = typeof remoteHosts.$inferSelect;
 export type RemoteHostInsert = typeof remoteHosts.$inferInsert;
 export type RemoteHostReachabilityRow = typeof remoteHostReachability.$inferSelect;

@@ -351,6 +351,13 @@
       "when": 1789049588650,
       "tag": "0049_shared_sdk_host",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790000000000,
+      "tag": "0050_workspaces",
+      "breakpoints": true
     }
   ]
 }
