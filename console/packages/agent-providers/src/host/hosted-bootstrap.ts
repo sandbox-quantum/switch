@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { buildSharedHostConfig } from './build-shared-config';
 import { redactHostedText } from './hosted-log';
+import { currentHostedMachineIdentity } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { superviseSharedHost } from './supervisor';
@@ -404,6 +405,12 @@ export async function prepareHostedDeployment(
   }
   providerEnvironment[variable] = providerCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
+  const machine = currentHostedMachineIdentity();
+  if (machine) {
+    providerEnvironment.SWITCH_HOST_INSTANCE_ID = machine.instanceId;
+    providerEnvironment.SWITCH_HOST_BOOT_ID = machine.bootId;
+    providerEnvironment.SWITCH_HOST_ASSIGNMENT_GENERATION = String(machine.assignmentGeneration);
+  }
   return {
     root,
     configPath,
