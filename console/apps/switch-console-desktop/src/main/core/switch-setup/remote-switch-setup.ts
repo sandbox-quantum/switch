@@ -7,20 +7,27 @@ import { sshConnectionIdForHost } from '@main/core/locations/location-transport'
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { startTimer } from '@main/core/telemetry/duration';
-import type { TelemetryConnectorFailure } from '@main/core/telemetry/events';
+import type {
+  TelemetryConnectorFailure,
+  TelemetryConnectorUpdateTrigger,
+} from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import {
+  commandFailureCode,
   CONNECTOR_UNSUPPORTED_RESULT,
   type ConnectorRun,
   connectorFailed,
+  type ConnectorRunResult,
   connectorSucceeded,
   connectorUnsupported,
   declaresNoConnector,
   EXEC_TIMEOUT_MS,
   FilesConnectorUnimplementedError,
+  HostCliMissingError,
+  marketplaceFailed,
   marketplaceMatchesSource,
   runReportedOperation,
   type SwitchSetupResult,
@@ -49,8 +56,6 @@ const COMMAND_NOT_FOUND = 127;
 function connectorVersion(artifact: string): string {
   return artifactVersion(artifact as ArtifactName);
 }
-
-type RunResult = { code: number; stdout: string; stderr: string };
 
 /**
  * Join path segments for the remote host, which is POSIX regardless of what
@@ -154,16 +159,18 @@ export class RemoteSwitchSetupService {
     };
   }
 
-  private async run(bin: string, args: string[]): Promise<RunResult> {
+  private async run(bin: string, args: string[]): Promise<ConnectorRunResult> {
     try {
       const { stdout, stderr } = await this.ctx.exec(bin, args, { timeout: EXEC_TIMEOUT_MS });
-      return { code: 0, stdout, stderr };
+      return { code: 0, stdout, stderr, notFound: false };
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+      const code = e.code ?? 1;
       const result = {
-        code: e.code ?? 1,
+        code,
         stdout: e.stdout ?? '',
         stderr: e.stderr ?? e.message ?? '',
+        notFound: code === COMMAND_NOT_FOUND,
       };
       // A shell reports 127 when the binary is not on PATH. For "is this agent
       // type's connector installed?" that is the answer, not a fault: a host
@@ -276,9 +283,12 @@ export class RemoteSwitchSetupService {
     marketplaceSource: string,
     rules: SwitchSetupCliRules
   ): Promise<void> {
-    const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
+    const listed = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
+    // No binary on the host means no marketplace to repair and no plugin to
+    // install; every command after this one would fail the same way.
+    if (listed.notFound) throw new HostCliMissingError(bin);
     const existing = rules
-      .parseMarketplaceList(parseJsonLoose(stdout))
+      .parseMarketplaceList(parseJsonLoose(listed.stdout))
       .find((m) => m.name === marketplaceName);
     if (existing) {
       if (marketplaceMatchesSource(existing, marketplaceSource)) return;
@@ -445,12 +455,15 @@ export class RemoteSwitchSetupService {
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
-      return connectorFailed(`Could not add marketplace: ${String(err)}`, 'marketplace_failed');
+      return marketplaceFailed(err, `Could not add marketplace: ${String(err)}`);
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
     return res.code === 0
       ? connectorSucceeded()
-      : connectorFailed(res.stderr.trim() || 'Install failed.', 'install_command_failed');
+      : connectorFailed(
+          res.stderr.trim() || 'Install failed.',
+          commandFailureCode(res, 'install_command_failed')
+        );
   }
 
   /**
@@ -458,7 +471,10 @@ export class RemoteSwitchSetupService {
    * below resolves against whatever marketplace is registered, so a stale source
    * would otherwise fail it after the uninstall has already succeeded.
    */
-  async update(agentId: string): Promise<SwitchSetupResult> {
+  async update(
+    agentId: string,
+    trigger: TelemetryConnectorUpdateTrigger
+  ): Promise<SwitchSetupResult> {
     if (declaresNoConnector(agentId)) return CONNECTOR_UNSUPPORTED_RESULT;
     const elapsed = startTimer();
     const { run, wasReinstall } = await this.runUpdateReported(agentId);
@@ -467,6 +483,7 @@ export class RemoteSwitchSetupService {
       target: 'remote',
       outcome: run.result.success ? 'success' : 'failure',
       was_reinstall: wasReinstall,
+      trigger,
       failure_reason: run.failure,
       duration_ms: elapsed(),
     });
@@ -503,7 +520,7 @@ export class RemoteSwitchSetupService {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
       return {
-        run: connectorFailed(`Could not add marketplace: ${String(err)}`, 'marketplace_failed'),
+        run: marketplaceFailed(err, `Could not add marketplace: ${String(err)}`),
         wasReinstall: false,
       };
     }
@@ -515,7 +532,10 @@ export class RemoteSwitchSetupService {
         run:
           res.code === 0
             ? connectorSucceeded()
-            : connectorFailed(res.stderr.trim() || 'Update failed.', 'update_command_failed'),
+            : connectorFailed(
+                res.stderr.trim() || 'Update failed.',
+                commandFailureCode(res, 'update_command_failed')
+              ),
         wasReinstall: false,
       };
     }
@@ -527,7 +547,7 @@ export class RemoteSwitchSetupService {
       return {
         run: connectorFailed(
           removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
-          'uninstall_command_failed'
+          commandFailureCode(removed, 'uninstall_command_failed')
         ),
         wasReinstall: true,
       };
@@ -540,7 +560,7 @@ export class RemoteSwitchSetupService {
           : connectorFailed(
               added.stderr.trim() ||
                 'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
-              'install_command_failed'
+              commandFailureCode(added, 'install_command_failed')
             ),
       wasReinstall: true,
     };

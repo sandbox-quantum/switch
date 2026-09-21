@@ -341,7 +341,7 @@ export async function updateStep(
 ): Promise<StepInstallResult> {
   if (step.kind === 'agent-plugin') {
     const service = await getRemoteSwitchSetupService(sshHost);
-    const result = await service.update(stepAgentId(step));
+    const result = await service.update(stepAgentId(step), 'user');
     return result.success
       ? { ok: true }
       : { ok: false, error: result.message ?? 'Could not update the Switch connector.' };

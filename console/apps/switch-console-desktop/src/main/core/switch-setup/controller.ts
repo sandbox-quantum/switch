@@ -57,6 +57,19 @@ export const switchSetupController = createRPCController({
               blockedReason: `Switch Console cannot manage this agent type on ${sshHost}.`,
             };
           }
+          // A status that could not be read is not a status. `installed` is
+          // false on such a row because it is false on every field of it, and
+          // reporting that as "the connector is not installed" states as fact
+          // the one thing the read failed to establish — then offers to install
+          // something that may already be there. The local list says why; this
+          // is the same answer for the same condition.
+          if (status.refreshError !== null) {
+            return {
+              agentId: status.agentId,
+              available: false,
+              blockedReason: `Its Switch connector status could not be read on ${sshHost}: ${status.refreshError}`,
+            };
+          }
           return status.installed
             ? { agentId: status.agentId, available: true, blockedReason: null }
             : {
@@ -70,6 +83,6 @@ export const switchSetupController = createRPCController({
   getStatus: (agentId: string) => switchSetupService.getStatus(agentId),
   checkForUpdates: (agentId: string) => switchSetupService.checkForUpdates(agentId),
   install: (agentId: string) => switchSetupService.install(agentId),
-  update: (agentId: string) => switchSetupService.update(agentId),
+  update: (agentId: string) => switchSetupService.update(agentId, 'user'),
   uninstall: (agentId: string) => switchSetupService.uninstall(agentId),
 });

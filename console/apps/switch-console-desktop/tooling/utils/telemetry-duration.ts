@@ -1,4 +1,16 @@
-import type { TelemetryDurationMs } from './events';
+import type { TelemetryDurationMs } from '@main/core/telemetry/events';
+
+/**
+ * Duration helpers for tests.
+ *
+ * Under `tooling/` rather than beside the emitter, because the brand on
+ * `TelemetryDurationMs` is only worth having if nothing else can apply it:
+ * `durationMs` below is exactly the cast `startTimer()` exists to be the one
+ * holder of. Here, `switch-console/no-tooling-imports` makes importing it from
+ * the main or preload process a lint error, and `@tooling` is not aliased in
+ * `electron.vite.config.ts` at all — so a call site reaching for it fails twice
+ * over, rather than compiling and minting a duration no clock produced.
+ */
 
 /**
  * A duration for a test that needs a specific number.

@@ -35,7 +35,7 @@ vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
-import { aDurationMs } from '@main/core/telemetry/duration.testing';
+import { aDurationMs } from '@tooling/utils/telemetry-duration';
 import { getRemoteSwitchSetupService } from './remote-switch-setup';
 
 const SSH_HOST = 'agent-host';
@@ -321,7 +321,7 @@ describe('RemoteSwitchSetupService.update', () => {
     mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch-legacy'));
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    const result = await service.update('codex');
+    const result = await service.update('codex', 'user');
 
     expect(result.success).toBe(true);
     const seen = calls();
@@ -342,7 +342,7 @@ describe('RemoteSwitchSetupService.update', () => {
     });
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    const result = await service.update('codex');
+    const result = await service.update('codex', 'user');
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/Could not add marketplace/);
@@ -369,7 +369,7 @@ describe('RemoteSwitchSetupService.update', () => {
     mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    const result = await service.update('codex');
+    const result = await service.update('codex', 'user');
 
     expect(result.success).toBe(true);
     // The marketplace is repaired first: the re-add resolves against it, so a
@@ -392,7 +392,7 @@ describe('RemoteSwitchSetupService.update', () => {
     });
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    const result = await service.update('codex');
+    const result = await service.update('codex', 'user');
 
     expect(calls().slice(-2)).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
     expect(result).toEqual({
@@ -419,13 +419,14 @@ describe('RemoteSwitchSetupService.update', () => {
     });
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    await service.update('codex');
+    await service.update('codex', 'user');
 
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
       agent_type: 'codex',
       target: 'remote',
       outcome: 'failure',
       was_reinstall: true,
+      trigger: 'user',
       failure_reason: 'uninstall_command_failed',
       duration_ms: aDurationMs,
     });
@@ -440,13 +441,14 @@ describe('RemoteSwitchSetupService.update', () => {
     });
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    await service.update('codex');
+    await service.update('codex', 'user');
 
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
       agent_type: 'codex',
       target: 'remote',
       outcome: 'failure',
       was_reinstall: true,
+      trigger: 'user',
       failure_reason: 'install_command_failed',
       duration_ms: aDurationMs,
     });
@@ -456,13 +458,14 @@ describe('RemoteSwitchSetupService.update', () => {
     mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    await service.update('codex');
+    await service.update('codex', 'user');
 
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
       agent_type: 'codex',
       target: 'remote',
       outcome: 'success',
       was_reinstall: true,
+      trigger: 'user',
       failure_reason: 'none',
       duration_ms: aDurationMs,
     });
@@ -497,7 +500,7 @@ describe('RemoteSwitchSetupService transport failures', () => {
 
   it('reports an update that threw, with nothing removed', async () => {
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    const result = await service.update('codex');
+    const result = await service.update('codex', 'user');
 
     expect(result.success).toBe(false);
     expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
@@ -507,7 +510,57 @@ describe('RemoteSwitchSetupService transport failures', () => {
       // Everything that can throw runs before the remove-then-add, so the flag
       // is false and the pair is not counted as a half-finished reinstall.
       was_reinstall: false,
+      trigger: 'user',
       failure_reason: 'error',
+      duration_ms: aDurationMs,
+    });
+  });
+});
+
+/**
+ * A host that simply does not have the agent installed.
+ *
+ * Told apart from a transport failure by the shell's own answer: 127 is "no such
+ * command", which the driver already recognises well enough to keep it out of
+ * the warning log. Every command a marketplace-driven connector runs goes
+ * through that binary, so without a code of its own the whole condition lands
+ * under whichever verb ran first — `marketplace_failed` on an install, which
+ * reads as a broken plugin source on a host whose only problem is that nobody
+ * installed the agent.
+ */
+describe('RemoteSwitchSetupService when the agent CLI is not on the host', () => {
+  beforeEach(() => {
+    mocks.resolveCommandPath.mockResolvedValue(null);
+    mocks.exec.mockImplementation(() =>
+      Promise.reject(Object.assign(new Error('codex: command not found'), { code: 127 }))
+    );
+  });
+
+  it('says so on install', async () => {
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    await service.install('codex');
+
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      failure_reason: 'host_cli_missing',
+      duration_ms: aDurationMs,
+    });
+  });
+
+  it('says so on update', async () => {
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    await service.update('codex', 'user');
+
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      // Nothing was removed, because nothing could run at all.
+      was_reinstall: false,
+      trigger: 'user',
+      failure_reason: 'host_cli_missing',
       duration_ms: aDurationMs,
     });
   });

@@ -8,9 +8,9 @@ vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: vi.fn(async () => '1
 vi.mock('./consent', () => ({ isTelemetryAllowed: vi.fn() }));
 vi.mock('./install-id', () => ({ getInstallId: vi.fn(async () => 'install-abc') }));
 
+import { durationMs } from '@tooling/utils/telemetry-duration';
 import { log } from '@main/lib/logger';
 import { isTelemetryAllowed } from './consent';
-import { durationMs } from './duration.testing';
 import { telemetryService, trackEvent } from './telemetry-service';
 
 const fetchMock = vi.fn();

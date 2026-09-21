@@ -8,7 +8,10 @@ import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { startTimer } from '@main/core/telemetry/duration';
-import type { TelemetryConnectorFailure } from '@main/core/telemetry/events';
+import type {
+  TelemetryConnectorFailure,
+  TelemetryConnectorUpdateTrigger,
+} from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
@@ -16,14 +19,18 @@ import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type
 import { createPluginFs } from '../providers/plugin-fs';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import {
+  commandFailureCode,
   CONNECTOR_UNSUPPORTED_RESULT,
   type ConnectorRun,
   connectorFailed,
+  type ConnectorRunResult,
   connectorSucceeded,
   connectorUnsupported,
   declaresNoConnector,
   EXEC_TIMEOUT_MS,
   FilesConnectorUnimplementedError,
+  HostCliMissingError,
+  marketplaceFailed,
   marketplaceMatchesSource,
   runReportedOperation,
   type SwitchSetupResult,
@@ -35,8 +42,6 @@ import {
   type InstalledPlugin,
   type SwitchSetupCliRules,
 } from './switch-setup-cli-dialect';
-
-export type { SwitchSetupStatus } from './connector-run';
 
 /**
  * The version stamped into a file-based connector install, and the one it is
@@ -58,7 +63,10 @@ function installFailureMessage(raw: string): string {
   return raw || 'Install failed.';
 }
 
-type RunResult = { code: number; stdout: string; stderr: string };
+/** A shell that cannot find the binary fails the spawn rather than the command. */
+function isCommandNotFound(err: { code?: number | string }): boolean {
+  return err.code === 'ENOENT';
+}
 
 /** Parse CLI JSON, yielding null rather than throwing on unparseable output. */
 function parseJsonOrNull(stdout: string): unknown {
@@ -124,13 +132,23 @@ class SwitchSetupService {
   }
 
   /** Run a CLI command, capturing output and exit code without throwing. */
-  private async run(bin: string, args: string[]): Promise<RunResult> {
+  private async run(bin: string, args: string[]): Promise<ConnectorRunResult> {
     try {
       const { stdout, stderr } = await this.ctx.exec(bin, args, { timeout: EXEC_TIMEOUT_MS });
-      return { code: 0, stdout, stderr };
+      return { code: 0, stdout, stderr, notFound: false };
     } catch (err: unknown) {
-      const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
-      return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? '' };
+      const e = err as {
+        stdout?: string;
+        stderr?: string;
+        code?: number | string;
+        message?: string;
+      };
+      return {
+        code: typeof e.code === 'number' ? e.code : 1,
+        stdout: e.stdout ?? '',
+        stderr: e.stderr ?? e.message ?? '',
+        notFound: isCommandNotFound(e),
+      };
     }
   }
 
@@ -202,11 +220,15 @@ class SwitchSetupService {
     marketplaceSource: string,
     rules: SwitchSetupCliRules
   ): Promise<void> {
-    const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
+    const listed = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
+    // No binary means no marketplace to repair and no plugin to install; every
+    // command after this one would fail the same way. Said here so the caller
+    // does not have to read it off whichever verb happened to run first.
+    if (listed.notFound) throw new HostCliMissingError(bin);
     // An unreadable listing yields no entries; the add below is idempotent, so
     // attempting it is safer than treating an unparseable listing as fatal.
     const existing = rules
-      .parseMarketplaceList(parseJsonOrNull(stdout))
+      .parseMarketplaceList(parseJsonOrNull(listed.stdout))
       .find((m) => m.name === marketplaceName);
     if (existing) {
       if (marketplaceMatchesSource(existing, marketplaceSource)) return;
@@ -463,12 +485,15 @@ class SwitchSetupService {
         rules
       );
     } catch (err) {
-      return connectorFailed(installFailureMessage(String(err)), 'marketplace_failed');
+      return marketplaceFailed(err, installFailureMessage(String(err)));
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
     return res.code === 0
       ? connectorSucceeded()
-      : connectorFailed(installFailureMessage(res.stderr.trim()), 'install_command_failed');
+      : connectorFailed(
+          installFailureMessage(res.stderr.trim()),
+          commandFailureCode(res, 'install_command_failed')
+        );
   }
 
   /**
@@ -482,8 +507,15 @@ class SwitchSetupService {
    * The marketplace is repaired first, exactly as `install` does. The re-add
    * resolves against whatever marketplace is registered, so a stale source would
    * otherwise fail it — after the uninstall has already succeeded.
+   *
+   * `trigger` is required rather than defaulted: the once-per-install catch-up
+   * reaches this through the same door as the Update button, and a default would
+   * quietly file it as whichever of the two the default happened to be.
    */
-  async update(agentId: string): Promise<SwitchSetupResult> {
+  async update(
+    agentId: string,
+    trigger: TelemetryConnectorUpdateTrigger
+  ): Promise<SwitchSetupResult> {
     if (declaresNoConnector(agentId)) return CONNECTOR_UNSUPPORTED_RESULT;
     const elapsed = startTimer();
     const { run, wasReinstall } = await this.runUpdateReported(agentId);
@@ -492,6 +524,7 @@ class SwitchSetupService {
       target: 'local',
       outcome: run.result.success ? 'success' : 'failure',
       was_reinstall: wasReinstall,
+      trigger,
       failure_reason: run.failure,
       duration_ms: elapsed(),
     });
@@ -548,7 +581,7 @@ class SwitchSetupService {
       );
     } catch (err) {
       return {
-        run: connectorFailed(`Could not add marketplace: ${String(err)}`, 'marketplace_failed'),
+        run: marketplaceFailed(err, `Could not add marketplace: ${String(err)}`),
         wasReinstall: false,
       };
     }
@@ -560,7 +593,10 @@ class SwitchSetupService {
         run:
           res.code === 0
             ? connectorSucceeded()
-            : connectorFailed(res.stderr.trim() || 'Update failed.', 'update_command_failed'),
+            : connectorFailed(
+                res.stderr.trim() || 'Update failed.',
+                commandFailureCode(res, 'update_command_failed')
+              ),
         wasReinstall: false,
       };
     }
@@ -570,7 +606,7 @@ class SwitchSetupService {
       return {
         run: connectorFailed(
           removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
-          'uninstall_command_failed'
+          commandFailureCode(removed, 'uninstall_command_failed')
         ),
         wasReinstall: true,
       };
@@ -583,7 +619,7 @@ class SwitchSetupService {
           : connectorFailed(
               added.stderr.trim() ||
                 'Update failed: the plugin was removed but could not be reinstalled. Install it again from Settings → Agents.',
-              'install_command_failed'
+              commandFailureCode(added, 'install_command_failed')
             ),
       wasReinstall: true,
     };
@@ -615,7 +651,10 @@ class SwitchSetupService {
     const res = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
     return res.code === 0
       ? connectorSucceeded()
-      : connectorFailed(res.stderr.trim() || 'Uninstall failed.', 'uninstall_command_failed');
+      : connectorFailed(
+          res.stderr.trim() || 'Uninstall failed.',
+          commandFailureCode(res, 'uninstall_command_failed')
+        );
   }
 }
 

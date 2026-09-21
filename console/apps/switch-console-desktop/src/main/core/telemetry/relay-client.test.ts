@@ -1,6 +1,6 @@
+import { durationMs } from '@tooling/utils/telemetry-duration';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TelemetryConfig } from './config';
-import { durationMs } from './duration.testing';
 import {
   buildOtlpPayload,
   postTelemetryEvent,

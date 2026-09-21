@@ -1,6 +1,6 @@
+import { aDurationMs } from '@tooling/utils/telemetry-duration';
 import { describe, expect, it, vi } from 'vitest';
 import { startTimer } from './duration';
-import { aDurationMs } from './duration.testing';
 
 const SLEEP_MS = 20;
 
@@ -32,6 +32,23 @@ describe('timing an operation', () => {
 
     expect(first).toBeGreaterThanOrEqual(SLEEP_MS - 5);
     expect(elapsed()).toBeGreaterThanOrEqual(first + SLEEP_MS - 5);
+  });
+
+  it('is the span, not the time of day', ({ onTestFinished }) => {
+    // The one property every assertion elsewhere is blind to. `aDurationMs`
+    // accepts any non-negative integer, so `Math.round(performance.now())` —
+    // milliseconds since the process started, which is a large number that only
+    // grows — satisfies every other test in this file and every call-site
+    // assertion in the suite. Only a clock held still says what is subtracted
+    // from what.
+    const now = vi.spyOn(performance, 'now');
+    onTestFinished(() => now.mockRestore());
+
+    now.mockReturnValue(1_000_000.4);
+    const elapsed = startTimer();
+    now.mockReturnValue(1_004_200.6);
+
+    expect(elapsed()).toBe(4200);
   });
 });
 
@@ -70,12 +87,22 @@ describe('the duration matcher', () => {
     expect({ duration_ms: elapsed() }).toEqual({ duration_ms: aDurationMs });
   });
 
-  it('accepts a zero-length operation', () => {
+  it('accepts a zero-length operation', ({ onTestFinished }) => {
     // A fast operation legitimately rounds to 0, so the matcher must not
     // require a positive number.
+    //
+    // Restored through the hook rather than after the assertion: a failing
+    // expectation throws, and a frozen clock left behind would be inherited by
+    // whatever ran next in this file.
     const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    onTestFinished(() => now.mockRestore());
+
     const elapsed = startTimer();
+
+    // Both halves: that the timer really produces 0 for a span of no time, and
+    // that the matcher takes it. Asserting only the second would pass against a
+    // timer that returned the clock reading instead of the span.
+    expect(elapsed()).toBe(0);
     expect({ duration_ms: elapsed() }).toEqual({ duration_ms: aDurationMs });
-    now.mockRestore();
   });
 });

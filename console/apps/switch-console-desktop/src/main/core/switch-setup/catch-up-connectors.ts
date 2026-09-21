@@ -57,7 +57,7 @@ async function catchUpOne(agentId: string): Promise<Step> {
 
   if (!status.updateAvailable) return 'nothing-to-do';
 
-  const result = await switchSetupService.update(agentId);
+  const result = await switchSetupService.update(agentId, 'catch_up');
   if (!result.success) {
     log.warn('catchUpConnectors: update failed', {
       event: 'connector_catch_up_failed',

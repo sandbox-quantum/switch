@@ -47,6 +47,68 @@ export type SwitchSetupStatus = {
 /** Every command a connector driver runs is bounded by this. */
 export const EXEC_TIMEOUT_MS = 120_000;
 
+/**
+ * What a driver's command came back with, and whether the shell could find the
+ * binary at all.
+ *
+ * `notFound` is separate from a non-zero code because it is not a verdict on
+ * what was asked: the host's CLI is not on the machine, so nothing was asked of
+ * anything.
+ */
+export type ConnectorRunResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+  notFound: boolean;
+};
+
+/**
+ * The host's own CLI is not installed.
+ *
+ * Its own error class because `ensureMarketplace` reports failure by throwing,
+ * and without one the driver cannot tell "the marketplace would not register"
+ * from "there is no CLI here to register it with".
+ */
+export class HostCliMissingError extends Error {
+  constructor(binaryName: string) {
+    super(`${binaryName} is not installed, so its Switch connector cannot be managed.`);
+    this.name = 'HostCliMissingError';
+  }
+}
+
+/**
+ * The code for a command that did not succeed.
+ *
+ * Every command a marketplace-driven connector runs goes through the host's own
+ * binary, so a shell reporting that binary absent says the same thing whichever
+ * command it was refusing: the agent is not installed. Filing that under the
+ * verb that happened to run first reports "the marketplace would not register"
+ * against a machine that has no CLI to register one with — and sends whoever
+ * reads it at the marketplace repository. It is the commonest way this fails and
+ * the cheapest to act on, so it gets its own code rather than a share of three.
+ */
+export function commandFailureCode(
+  res: { notFound: boolean },
+  whenPresent: TelemetryConnectorFailure
+): TelemetryConnectorFailure {
+  return res.notFound ? 'host_cli_missing' : whenPresent;
+}
+
+/**
+ * The failure a marketplace repair came back with.
+ *
+ * `ensureMarketplace` reports by throwing, so the error's class is the only
+ * thing separating "the marketplace would not register" from "there is no CLI
+ * here to register one with". The second answers with its own message —
+ * prefixing it with "could not add marketplace" would name the wrong thing to
+ * fix — which is why the caller's wording is passed in rather than built here.
+ */
+export function marketplaceFailed(err: unknown, message: string): ConnectorRun {
+  return err instanceof HostCliMissingError
+    ? connectorFailed(err.message, 'host_cli_missing')
+    : connectorFailed(message, 'marketplace_failed');
+}
+
 /** Whether a registered marketplace entry points at the expected source. */
 export function marketplaceMatchesSource(entry: RegisteredMarketplace, source: string): boolean {
   return entry.source === source;
@@ -116,13 +178,18 @@ export class FilesConnectorUnimplementedError extends Error {
 /**
  * Run a connector operation so that it always comes back as a result.
  *
- * The drivers resolve a binary over SSH and build a remote filesystem before
- * they reach anything that returns a `ConnectorRun`, and both of those reject on
- * a transport failure rather than reporting absence. Without this the rejection
- * escapes the entry point: no event is emitted for an attempt the user
- * definitely made, and the renderer gets a stack instead of a message. `error`
- * is the residue that has no better name — everything with one is classified
- * before it gets here.
+ * A driver resolves the host binary before it reaches anything that returns a
+ * `ConnectorRun`, and resolving rejects on a transport failure rather than
+ * reporting absence — a dead SSH channel is not evidence the binary is missing.
+ * Without this the rejection escapes the entry point: no event is emitted for an
+ * attempt the user definitely made, and the renderer gets a stack instead of a
+ * message. `error` is the residue that has no better name — everything with one
+ * is classified before it gets here.
+ *
+ * Not everything that can fail over the wire lands here. A file-based connector
+ * builds its filesystem *inside* `runFiles`, so a channel that dies there is the
+ * write failing and is reported as such; only what happens before a driver can
+ * name an outcome reaches this.
  */
 export async function runReportedOperation(
   logPrefix: string,

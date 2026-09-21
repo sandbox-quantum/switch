@@ -161,6 +161,16 @@ export type TelemetryConnectorFailure =
   | 'none'
   /** The agent declares a connector but nothing could be resolved to manage it. */
   | 'unsupported'
+  /**
+   * The agent's own CLI is not on the machine, so there is nothing to drive.
+   *
+   * Every command a marketplace-driven connector runs goes through that binary,
+   * so the first one fails and the rest are consequences. Without this the
+   * whole condition landed under whichever verb ran first — `marketplace_failed`
+   * for an install, `uninstall_command_failed` for a removal — which reads as a
+   * fault in the marketplace rather than as an agent nobody installed.
+   */
+  | 'host_cli_missing'
   /** The plugin marketplace could not be registered or re-pointed at its source. */
   | 'marketplace_failed'
   | 'install_command_failed'
@@ -174,6 +184,22 @@ export type TelemetryConnectorFailure =
   | 'files_unimplemented'
   /** The operation threw instead of returning a result. */
   | 'error';
+
+/**
+ * Who asked for a connector update.
+ *
+ * `catch_up` is the once-per-install sweep that brings every installed
+ * connector to the version this build ships. It goes through the same service
+ * method as the Update button, so without this the two are one number — and
+ * `duration_ms` makes that worse rather than better: the sweep runs unattended
+ * at launch, several connectors at a time, and its latencies and its failures
+ * would be read as the ones people are waiting through.
+ *
+ * The same reasoning as `TelemetryAgentRemoveTrigger`, which exists because a
+ * server teardown deleting a dozen agents looked identical to a dozen people
+ * giving up on them.
+ */
+export type TelemetryConnectorUpdateTrigger = 'user' | 'catch_up';
 
 /**
  * How long an operation took, in whole milliseconds.
@@ -470,6 +496,7 @@ export type TelemetryEventMap = {
     target: 'local' | 'remote';
     outcome: TelemetryOutcome;
     was_reinstall: boolean;
+    trigger: TelemetryConnectorUpdateTrigger;
     failure_reason: TelemetryConnectorFailure;
     duration_ms: TelemetryDurationMs;
   };
@@ -723,6 +750,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'target',
     'outcome',
     'was_reinstall',
+    'trigger',
     'failure_reason',
     'duration_ms',
   ],

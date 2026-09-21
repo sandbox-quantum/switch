@@ -39,7 +39,7 @@ vi.mock('@main/lib/logger', () => ({
 }));
 
 import { ARTIFACT_VERSIONS } from '@switch-console/shared';
-import { aDurationMs } from '@main/core/telemetry/duration.testing';
+import { aDurationMs } from '@tooling/utils/telemetry-duration';
 import { switchSetupService } from './switch-setup-service';
 
 const CLI_AGENT = {
@@ -700,7 +700,7 @@ describe('switchSetupService with the codex dialect', () => {
       return base(bin, args);
     });
 
-    const result = await switchSetupService.update('codex');
+    const result = await switchSetupService.update('codex', 'user');
 
     expect(result.success).toBe(true);
     const seen = calls();
@@ -722,7 +722,7 @@ describe('switchSetupService with the codex dialect', () => {
       return Promise.resolve({ stdout: '', stderr: '' });
     });
 
-    const result = await switchSetupService.update('codex');
+    const result = await switchSetupService.update('codex', 'user');
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/Could not add marketplace/);
@@ -749,7 +749,7 @@ describe('switchSetupService with the codex dialect', () => {
   it('updates by removing then re-adding, in that order', async () => {
     mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
 
-    const result = await switchSetupService.update('codex');
+    const result = await switchSetupService.update('codex', 'user');
 
     expect(result.success).toBe(true);
     // The marketplace is repaired first: the re-add resolves against it, so a
@@ -771,7 +771,7 @@ describe('switchSetupService with the codex dialect', () => {
       return Promise.resolve({ stdout: '', stderr: '' });
     });
 
-    const result = await switchSetupService.update('codex');
+    const result = await switchSetupService.update('codex', 'user');
 
     expect(calls().slice(-2)).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
     expect(result).toEqual({
@@ -980,7 +980,7 @@ describe('why a connector operation failed', () => {
       return base(bin, args);
     });
 
-    await switchSetupService.update('claude');
+    await switchSetupService.update('claude', 'user');
 
     expect(reported('connector_updated')).toMatchObject({
       outcome: 'failure',
@@ -1002,7 +1002,7 @@ describe('why a connector operation failed', () => {
       return base(bin, args);
     });
 
-    await switchSetupService.update('codex');
+    await switchSetupService.update('codex', 'user');
 
     expect(reported('connector_updated')).toMatchObject({
       outcome: 'failure',
@@ -1025,7 +1025,7 @@ describe('why a connector operation failed', () => {
       return base(bin, args);
     });
 
-    await switchSetupService.update('codex');
+    await switchSetupService.update('codex', 'user');
 
     expect(reported('connector_updated')).toMatchObject({
       outcome: 'failure',
@@ -1056,6 +1056,49 @@ describe('why a connector operation failed', () => {
     expect(reported('connector_installed')).toMatchObject({
       outcome: 'success',
       failure_reason: 'none',
+    });
+  });
+
+  /**
+   * The agent's own CLI not being installed is not a marketplace fault.
+   *
+   * Every command goes through that binary, so the first one fails and the rest
+   * are consequences — and the first one is the marketplace listing. Reported as
+   * `marketplace_failed` the whole condition reads as a broken plugin source and
+   * sends whoever acts on it at the wrong repository, when what is missing is the
+   * agent.
+   */
+  describe('when the agent CLI is not on the machine', () => {
+    /** What a spawn of a binary that does not exist rejects with. */
+    function enoent() {
+      return () =>
+        Promise.reject(Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }));
+    }
+
+    beforeEach(() => {
+      mocks.resolveCommandPath.mockResolvedValue(null);
+      mocks.exec.mockImplementation(enoent());
+    });
+
+    it.each([
+      ['install', 'connector_installed'],
+      ['update', 'connector_updated'],
+      ['uninstall', 'connector_uninstalled'],
+    ] as const)('says so on %s', async (verb, event) => {
+      await (verb === 'update'
+        ? switchSetupService.update('claude', 'user')
+        : switchSetupService[verb]('claude'));
+
+      expect(reported(event)).toMatchObject({
+        outcome: 'failure',
+        failure_reason: 'host_cli_missing',
+      });
+    });
+
+    it('says which binary in the message the user reads', async () => {
+      const result = await switchSetupService.install('claude');
+
+      expect(result.message).toContain('claude');
     });
   });
 });
