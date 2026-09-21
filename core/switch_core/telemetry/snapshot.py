@@ -38,13 +38,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
     Agent,
+    ApiKey,
     Client,
     ClientRoom,
     CollaborationBridge,
+    Document,
     Message,
     MessageAttachment,
+    Package,
+    Reference,
     Room,
+    RoomGroup,
     User,
+    room_documents,
+    room_references,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -104,6 +111,13 @@ class UsageCounts:
     turn_agent_to_human_1d: int = 0
     turn_agent_to_agent_1d: int = 0
     attachment_count_1d: int = 0
+    reference_count: int = 0
+    reference_attached_count: int = 0
+    document_count: int = 0
+    document_attached_count: int = 0
+    package_count: int = 0
+    room_group_count: int = 0
+    api_key_count: int = 0
 
     def as_event_properties(self, *, session_live_count: int) -> dict[str, float]:
         """Flatten to exactly the properties `usage_snapshot` declares."""
@@ -141,6 +155,13 @@ class UsageCounts:
             "turn_agent_to_human_1d": self.turn_agent_to_human_1d,
             "turn_agent_to_agent_1d": self.turn_agent_to_agent_1d,
             "attachment_count_1d": self.attachment_count_1d,
+            "reference_count": self.reference_count,
+            "reference_attached_count": self.reference_attached_count,
+            "document_count": self.document_count,
+            "document_attached_count": self.document_attached_count,
+            "package_count": self.package_count,
+            "room_group_count": self.room_group_count,
+            "api_key_count": self.api_key_count,
         }
         for platform in PLATFORMS:
             properties[f"connector_{platform}_count"] = self.connector_counts[platform]
@@ -389,6 +410,8 @@ async def collect_tenant_counts(
         elif client_type == AGENT_CLIENT_TYPE:
             counts.message_from_agent_1d += count
 
+    await _collect_resource_counts(session, tenant_id, counts)
+
     await _collect_turns(session, tenant_id, counts, day_ago)
 
     counts.attachment_count_1d += await _scalar(
@@ -402,6 +425,52 @@ async def collect_tenant_counts(
             Message.sent_at >= day_ago,
         ),
     )
+
+
+async def _collect_resource_counts(
+    session: AsyncSession, tenant_id: str, counts: UsageCounts
+) -> None:
+    """What the tenant has built up, and how much of it is actually in a room.
+
+    The attached figures are the point. A library of references nobody ever
+    attached and one attached to every room are the same number under
+    `reference_count`, and they mean opposite things about whether the feature
+    is working.
+    """
+    for table, name in (
+        (Reference, "reference_count"),
+        (Document, "document_count"),
+        (Package, "package_count"),
+        (RoomGroup, "room_group_count"),
+        (ApiKey, "api_key_count"),
+    ):
+        setattr(
+            counts,
+            name,
+            getattr(counts, name)
+            + await _scalar(
+                session,
+                select(func.count())
+                .select_from(table)
+                .where(table.tenant_id == tenant_id),
+            ),
+        )
+
+    for junction, column, name in (
+        (room_references, "reference_id", "reference_attached_count"),
+        (room_documents, "document_id", "document_attached_count"),
+    ):
+        setattr(
+            counts,
+            name,
+            getattr(counts, name)
+            + await _scalar(
+                session,
+                select(func.count(distinct(junction.c[column]))).where(
+                    junction.c.tenant_id == tenant_id
+                ),
+            ),
+        )
 
 
 async def _collect_turns(

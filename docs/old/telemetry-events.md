@@ -275,6 +275,13 @@ never invisible.
 | `turn_agent_to_human_1d` | number | person messages answering an agent |
 | `turn_agent_to_agent_1d` | number | agent messages answering another agent |
 | `attachment_count_1d` | number | attachments in 24h |
+| `reference_count` | number | references the tenant owns |
+| `reference_attached_count` | number | of those, attached to at least one room |
+| `document_count` | number | documents |
+| `document_attached_count` | number | of those, attached to at least one room |
+| `package_count` | number | packages |
+| `room_group_count` | number | room groups |
+| `api_key_count` | number | API keys |
 
 Per-platform counts are separate properties rather than one map because the
 platform set is closed and small, and because Amplitude charts a property far
@@ -651,6 +658,32 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check
   `was_ever_connected`: it reads the durable record, so a connector that worked
   months ago and was down at removal still reports true.
+
+**Resources, keys and groups** — `bridges/resource/service.py`, and the
+gateway routes under `/gateway`
+
+- `reference_created` / `reference_attached_to_room` / `reference_deleted` —
+  make a reference, attach it to a room, delete it. Only the four built-in
+  types are named; a user-defined type reports as `other`, because its slug is
+  free text somebody chose.
+- `document_created` / `document_attached_to_room` / `document_deleted` —
+  `scope` is `library` for one in the shared library and `room` for one an
+  agent authored inside a room.
+- `package_created` / `package_attached_to_room` / `package_deleted`. The
+  attach carries how many references and documents came with it.
+- `api_key_created` / `api_key_revoked` — mint and delete a key. The label is
+  never sent, only what the key is *for*.
+- `room_group_created` / `room_group_deleted` — the delete carries how many
+  rooms were filed under it, read before the delete.
+- `invitation_sent` / `invitation_accepted` — invite someone to a tenant and
+  accept it. Accepting an invitation you already hold reports nothing, because
+  nobody joined.
+
+**Creating is intent; attaching is use.** Both are reported, and the distance
+between them is the signal: a library of references nobody ever attached says
+something quite different from one attached constantly. The snapshot carries
+`reference_count` and `reference_attached_count` side by side for the same
+reason.
 
 **What a pass has not proved**
 

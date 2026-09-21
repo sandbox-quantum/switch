@@ -405,6 +405,7 @@ async def run(config: SwitchConfig) -> None:
         package_store=package_store,
         room_link_store=room_link_store,
         session_factory=session_factory,
+        telemetry=telemetry,
     )
     # Once per tenant, not once for the deployment: `reference_types` is
     # scoped, so "every stored type a built-in shadows" is a question asked of

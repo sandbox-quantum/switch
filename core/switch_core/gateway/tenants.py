@@ -36,6 +36,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import _session_response
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_agent_store,
     get_api_key_store,
     get_client_lifecycle,
@@ -58,9 +59,24 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantMembershipResponse,
 )
+from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
+
+
+def _age_hours(created_at: object) -> float:
+    """How long an invitation sat before it was accepted. Zero if unknown.
+
+    Hours rather than days: the interesting range is "immediately" to "a
+    couple of days", and a figure that reads 0.1 for most of it says less than
+    one that reads 2.4.
+    """
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 3600.0, 0.0)
+
 
 router = APIRouter()
 
@@ -325,6 +341,7 @@ async def create_invitation(
         created_by=user.id,
     )
     await session.commit()
+    emit_safely(current_telemetry(), "invitation_sent", {})
     return InvitationCreateResponse(token=token, **_invitation_fields(invitation))
 
 
@@ -415,6 +432,15 @@ async def accept_invitation(
             role = invitation.role
             await user_store.add_membership(
                 session, tenant_id=tenant_id, user_id=caller.id, role=role
+            )
+            # Only on the branch that actually joined someone. A caller who
+            # was already a member takes the `else` below and has accepted
+            # nothing — reporting it there would count re-clicking a link as
+            # onboarding.
+            emit_safely(
+                current_telemetry(),
+                "invitation_accepted",
+                {"age_hours": _age_hours(invitation.created_at)},
             )
         else:
             role = existing_role

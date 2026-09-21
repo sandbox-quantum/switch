@@ -117,6 +117,23 @@ ACTOR_KIND = one_of("user", "agent", "system")
 
 OUTCOME = one_of("success", "failure")
 
+# A reference's kind. The four Switch ships, plus `other` for the
+# user-defined types an owner can register — their slugs are free text chosen
+# by whoever made them, so the type itself can never go on the wire, only
+# whether it is one of ours.
+REFERENCE_TYPE = one_of("google_drive", "confluence", "github", "jira", "other")
+
+# Where a document lives. A room document is scoped to one room and never in
+# the library; a library one can be attached to many.
+DOCUMENT_SCOPE = one_of("library", "room")
+
+# What a key is for. `agent` authenticates a registered agent, `registration`
+# mints new ones, `bootstrap` is the deployment-wide key, `other` is anything
+# a later type introduces.
+API_KEY_TYPE = one_of("agent", "registration", "bootstrap", "other")
+
+VISIBILITY = one_of("private", "public")
+
 # Why a bridge failed, shared by the connect and disconnect events because one
 # classifier (`bridges/collaboration/lifecycle_service._failure_reason`) feeds
 # both. `none` belongs only to the success case and is stripped where the event
@@ -179,6 +196,17 @@ _SNAPSHOT_COUNTS = (
     "turn_agent_to_human_1d",
     "turn_agent_to_agent_1d",
     "attachment_count_1d",
+    # What a deployment has built up, as opposed to what it did today. These
+    # are stock rather than flow: a reference nobody attached is still a
+    # reference somebody made, and the gap between the two is the interesting
+    # part — hence the `*_attached_count` figures beside them.
+    "reference_count",
+    "reference_attached_count",
+    "document_count",
+    "document_attached_count",
+    "package_count",
+    "room_group_count",
+    "api_key_count",
 )
 
 # Every milestone answers "how long after install did this first happen", so
@@ -330,6 +358,34 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         # `none` on success, so the property set stays exact either way.
         "failure_reason": BRIDGE_FAILURE_REASON,
     },
+    # ── Resources, keys and groups ───────────────────────────────────────────
+    # Creating one is intent; attaching it to a room is use. Both are reported
+    # because the distance between them is the signal — a library of
+    # references nobody ever attached says something quite different from one
+    # that is attached constantly.
+    "reference_created": {
+        "reference_type": REFERENCE_TYPE,
+        "read_visibility": VISIBILITY,
+        "created_by_kind": ACTOR_KIND,
+    },
+    "reference_attached_to_room": {"reference_type": REFERENCE_TYPE},
+    "reference_deleted": {"reference_type": REFERENCE_TYPE, "age_days": NUMBER},
+    "document_created": {
+        "scope": DOCUMENT_SCOPE,
+        "created_by_kind": ACTOR_KIND,
+        "has_instructions": BOOLEAN,
+    },
+    "document_attached_to_room": {},
+    "document_deleted": {"scope": DOCUMENT_SCOPE, "age_days": NUMBER},
+    "package_created": {"created_by_kind": ACTOR_KIND},
+    "package_attached_to_room": {"reference_count": NUMBER, "document_count": NUMBER},
+    "package_deleted": {"age_days": NUMBER},
+    "api_key_created": {"key_type": API_KEY_TYPE},
+    "api_key_revoked": {"key_type": API_KEY_TYPE, "age_days": NUMBER},
+    "room_group_created": {"has_parent": BOOLEAN},
+    "room_group_deleted": {"room_count": NUMBER, "age_days": NUMBER},
+    "invitation_sent": {},
+    "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {
         "bridge_platform": BRIDGE_PLATFORM,
         # The deliberate-shutdown reasons, plus every failure reason
