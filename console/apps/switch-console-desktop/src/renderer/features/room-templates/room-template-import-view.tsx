@@ -12,7 +12,6 @@ import {
   type TemplateAccess,
   visibilityOf,
 } from '@renderer/features/templates/template-visibility';
-import { forgetTemplateSummary } from '@renderer/features/templates/templates-view';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -287,14 +286,13 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       const saved = await rpc.switchServers.updateTemplate({
         serverId,
         templateId: editingTemplate.id,
-        ...(name.trim() !== editingTemplate.name ? { name: name.trim() } : {}),
-        ...(description.trim() !== editingTemplate.description
+        ...(name.trim() !== editingTemplate.name.trim() ? { name: name.trim() } : {}),
+        ...(description.trim() !== editingTemplate.description.trim()
           ? { description: description.trim() }
           : {}),
         ...(yamlText !== initialYaml ? { content: yamlText } : {}),
         ...(access !== editingTemplate.access ? visibilityOf(access) : {}),
       });
-      forgetTemplateSummary(serverId, saved.id);
       toast({ title: `"${saved.name}" saved`, description: `Version ${saved.version}.` });
       appState.navigation.navigate('templateDetail', { serverId, templateId: saved.id });
     } catch (e) {

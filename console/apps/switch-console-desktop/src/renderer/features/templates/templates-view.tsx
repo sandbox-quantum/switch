@@ -110,17 +110,14 @@ function summaryLine(s: TemplateSummary): string {
 }
 
 // The listing endpoint returns no document text, and the summary line
-// needs the document. Each card fetches its own once and keeps it until
-// the template is edited or removed.
+// needs the document. Each card fetches its own once per version of the
+// template and keeps it for the session.
 const summaryCache = new Map<string, Promise<TemplateSummary>>();
 
-/** Drop a card's remembered summary, after the template's document changed. */
-export function forgetTemplateSummary(serverId: string, templateId: string): void {
-  summaryCache.delete(`${serverId}:${templateId}`);
-}
-
 function fetchSummary(serverId: string, item: TemplateListEntry): Promise<TemplateSummary> {
-  const key = `${serverId}:${item.id}`;
+  // The version is part of the key, so an edit made elsewhere refreshes the
+  // card as soon as the listing reports it.
+  const key = `${serverId}:${item.id}:${item.server?.version ?? 0}`;
   let pending = summaryCache.get(key);
   if (!pending) {
     pending = (async () => {

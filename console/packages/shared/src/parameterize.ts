@@ -114,9 +114,9 @@ function quoteUnquotedBraces(text: string): string {
     .join('\n');
 }
 
-/** `|`, `>`, and their chomping and indentation variants (`|-`, `>+`, `|2`). */
+/** `|`, `>`, and their chomping and indentation variants in either order (`|-`, `>+`, `|2`, `|2-`). */
 function isBlockHeader(val: string): boolean {
-  return /^[|>][-+]?\d*$/.test(val.trim());
+  return /^[|>](?:[-+]?\d*|\d*[-+]?)$/.test(val.trim());
 }
 
 function needsQuoting(val: string): boolean {

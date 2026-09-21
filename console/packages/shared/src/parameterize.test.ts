@@ -146,4 +146,13 @@ describe('parameterize: block scalars', () => {
     expect(out).toContain('    - Respond with: {"ok": true}');
     expect(out).toContain("  topic: '{agent_a}'");
   });
+
+  it('recognises an indented block header with the chomping sign after the indent', () => {
+    const yaml = ['room:', '  name: r', '  instructions: |2-', '     - Ask agent-alpha.', '  topic: agent-alpha'].join(
+      '\n'
+    );
+    const out = parameterize(yaml, [{ key: 'a', value: 'agent-alpha' }]);
+    expect(out).toContain('     - Ask {a}.');
+    expect(out).toContain("  topic: '{a}'");
+  });
 });
