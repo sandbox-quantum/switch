@@ -184,5 +184,61 @@
       },
       "include_tags": true
     }
+  },
+  {
+    "name": "[Switch] agents are losing events",
+    "type": "metric alert",
+    "query": "sum(last_10m):sum:switch.agent.events_dropped{service:switch-core} by {reason}.as_count() > 20",
+    "message": "{{value}} buffered event(s) were discarded before an agent read them in ten minutes, reason {{reason.name}}.\n\n`overflow` means an agent is not keeping up with what is being sent to it \u2014 its buffer filled and the oldest went. `retention` means it was away longer than the window and its backlog aged out; a handful after a restart is ordinary, a steady rate is an agent that is not really connected.\n\nThe agent is told it missed events when it next reads, so nothing is pretending this did not happen \u2014 but only this counter says how often.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "thresholds": {
+        "critical": 20,
+        "warning": 5
+      },
+      "include_tags": true
+    }
+  },
+  {
+    "name": "[Switch] messages are failing to send",
+    "type": "metric alert",
+    "query": "sum(last_10m):sum:switch.messages.send_failures{service:switch-core}.as_count() > 5",
+    "message": "{{value}} send(s) raised before the row was committed in ten minutes.\n\nThese are messages that were never written, so they will not be delivered and will not appear in any room. `switch.messages.sent` counts only what persisted, which means without this the symptom is an absence \u2014 and an absence looks exactly like a quiet room.\n\nUsually the database. Check the database health monitor first; if that is green, look for a constraint or a tenant binding failing on one particular path.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "thresholds": {
+        "critical": 5,
+        "warning": 1
+      },
+      "include_tags": true
+    }
+  },
+  {
+    "name": "[Switch] a server-side connector is not running",
+    "type": "metric alert",
+    "query": "min(last_10m):min:switch.health.check{service:switch-core,check:connectors} < 1",
+    "message": "A server-side connector this deployment is configured to run is not running.\n\nThe agents it hosts are unreachable \u2014 they will not answer in any room and nothing else reports it, because connectors are started fire-and-forget at boot and each failure is logged and stepped over.\n\nThe boot log names which one and why. It does not retry, so it needs restarting rather than waiting.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 120,
+      "thresholds": {
+        "critical": 1
+      },
+      "include_tags": true
+    }
   }
 ]

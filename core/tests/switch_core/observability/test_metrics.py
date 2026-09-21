@@ -191,9 +191,8 @@ def test_install_and_uninstall_swap_the_sink():
 def test_histogram_boundaries_are_upper_bound_inclusive(registry: MetricsRegistry):
     """OpenTelemetry's bucket i is `(bounds[i-1], bounds[i]]`.
 
-    The exact bound is the case worth pinning: `bisect_left` puts it in the
-    lower bucket and `bisect_right` would put it in the higher one, and every
-    value that is not a boundary looks identical either way.
+    The exact bound is the case worth pinning: every other value looks the
+    same whether the search is left- or right-biased.
     """
     for value in (5.0, 10.0, 10.0001):
         registry.observe(HTTP_REQUEST_DURATION, {"route": "/x", "method": "GET"}, value)
@@ -209,12 +208,7 @@ def test_histogram_boundaries_are_upper_bound_inclusive(registry: MetricsRegistr
 def test_two_observers_claiming_one_series_is_reported(
     registry: MetricsRegistry, caplog
 ):
-    """Duplicate points with identical attributes are rejected by a receiver.
-
-    Sums and histograms already complain when a series goes wrong; before this
-    the one metric kind with no guard was the one collected from several
-    independent sources.
-    """
+    """Duplicate points with identical attributes are rejected by a receiver."""
     registry.register_observer(lambda: [GaugeReading(AGENTS, 1.0, {})])
     registry.register_observer(lambda: [GaugeReading(AGENTS, 2.0, {})])
 

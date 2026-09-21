@@ -166,56 +166,34 @@ class SwitchConfig(BaseSettings):
     tenant_id: str = "default"
 
     # ── Observability ────────────────────────────────────────────────────────
-    # The OTLP/HTTP collector everything is reported to, as a base URL with no
-    # path: signals are appended as `/v1/metrics` and `/v1/logs`, which is the
-    # convention `OTEL_EXPORTER_OTLP_ENDPOINT` follows, so an operator who has
-    # configured any other OTLP client already knows what to set here.
-    #
-    # Unset is the default and means the server reports nothing anywhere. That
-    # is the whole switch: a deployment opts in by naming a collector, and
-    # until it does, no measurement leaves the process.
+    # The OTLP/HTTP collector, as a base URL with no path: signals are appended
+    # as `/v1/metrics` and `/v1/logs`, the `OTEL_EXPORTER_OTLP_ENDPOINT`
+    # convention. Unset — the default — means nothing leaves the process.
     otlp_endpoint: str | None = None
 
-    # Per-signal, because the two do not cost the same. Metrics are the point
-    # of the exercise and are on as soon as a collector is named. Logs are off
-    # because they already go to the container's output where a cluster's own
-    # collector can read them, and sending a second copy over the network is a
-    # volume decision that belongs to whoever pays for it.
-    #
-    # There is deliberately no traces setting. Nothing produces spans yet, so a
-    # flag here would be one a deployment could turn on and see no difference
-    # from — a configuration surface that lies about what it controls. It comes
-    # back when there is something for it to switch off (CHOO-2807).
+    # Logs are off because they already reach the container's output; a second
+    # copy over the network is a volume decision for whoever pays for it.
+    # No traces setting: nothing produces spans, and a flag that changes
+    # nothing is a configuration surface that lies about what it controls.
     otlp_metrics_enabled: bool = True
     otlp_logs_enabled: bool = False
 
-    # `key=value` pairs, comma-separated, sent on every OTLP request. The relay
-    # Switch reports to is unauthenticated and needs none; a deployment
-    # pointing at its own collector usually needs an API key here.
+    # `key=value` pairs, comma-separated, on every OTLP request. Usually an API
+    # key for a collector that authenticates.
     otlp_headers: str | None = None
 
     otlp_timeout_seconds: float = 10.0
     otlp_export_interval_seconds: float = 60.0
 
-    # Which deployment a measurement came from: a UUID, stable across restarts,
-    # chosen by the operator and set once.
+    # Which deployment a measurement came from. Required whenever reporting is
+    # on, because the collector drops payloads without one in silence and with
+    # a 200 — a deployment that omitted it would look configured and appear in
+    # no dashboard. Not generated per process: a fresh id each restart makes
+    # one deployment look like an endless population of installs.
     #
-    # Not optional when reporting is on, and not defaulted. The collector
-    # requires it and drops payloads that arrive without one — in silence, with
-    # a 200 — so a deployment that omitted it would look configured, log
-    # nothing wrong, and appear in no dashboard. Better to refuse to start.
-    #
-    # Not generated per process either: a fresh id on every restart would make
-    # one deployment look like an unbounded population of one-off installs.
-    #
-    # **Both streams use this one value.** Product telemetry resolves the same
-    # id (`telemetry/deployment.py`) and prefers this when it is set, so a
-    # deployment reporting both operational metrics and product usage appears
-    # downstream as one subject rather than two. Where it is unset — which the
-    # validator below permits only when no collector is named — product
-    # telemetry falls back to an id generated once into the database, which
-    # also carries the install date that the activation metrics are measured
-    # from and which no environment variable can supply.
+    # Both streams use this value, so a deployment reporting metrics and usage
+    # is one subject downstream. Product telemetry falls back to an id in the
+    # database, which also carries the install date no env var can supply.
     deployment_id: str | None = None
 
     # ── Product telemetry ────────────────────────────────────────────────────
@@ -537,18 +515,11 @@ class SwitchConfig(BaseSettings):
     @model_validator(mode="after")
     def _validate_observability(self) -> "SwitchConfig":
         if self.otlp_endpoint is None:
-            # Nothing else in the block means anything without a collector, and
-            # a deployment that has set an interval but no endpoint has not
-            # half-configured reporting — it has not configured it.
             return self
 
         if self.otlp_endpoint != self.otlp_endpoint.strip():
-            # `urlsplit` puts a trailing space inside the host rather than the
-            # path, so this passes every check below and then percent-encodes
-            # into a hostname that resolves nowhere. The export failure that
-            # follows is loud but names a connection problem, not the stray
-            # character that caused it — and a value pasted out of a wrapped
-            # YAML line is exactly where this comes from.
+            # A trailing space lands inside the host, not the path, so it
+            # passes every check below and then resolves nowhere.
             raise ValueError(
                 "OTLP_ENDPOINT has leading or trailing whitespace: "
                 f"{self.otlp_endpoint!r}."
@@ -564,10 +535,8 @@ class SwitchConfig(BaseSettings):
                 f"OTLP_ENDPOINT must include a host, got {self.otlp_endpoint!r}."
             )
         if parts.path.strip("/"):
-            # The signal path is appended, so a value that already carries one
-            # would be posted to `/v1/logs/v1/metrics`. Worth catching by hand:
-            # the endpoint most people have seen written down is the full logs
-            # URL, and pasting it here is the obvious mistake.
+            # The signal path is appended, so a full URL becomes
+            # `/v1/logs/v1/metrics`. Pasting one is the obvious mistake.
             raise ValueError(
                 "OTLP_ENDPOINT is the collector's base URL and the signal path "
                 "is appended to it, so it must have no path of its own. Got "
@@ -575,9 +544,7 @@ class SwitchConfig(BaseSettings):
             )
         if parts.query or parts.fragment:
             # Resolving the signal path against the base discards both, so a
-            # credential or routing parameter put here would never be sent and
-            # nothing would say so. Some OTLP-compatible endpoints are written
-            # down with an api-key query parameter, which is how this arrives.
+            # credential written here would silently never be sent.
             raise ValueError(
                 "OTLP_ENDPOINT must not carry a query string or fragment — the "
                 "signal path is resolved against it and both are discarded, so "
@@ -599,8 +566,7 @@ class SwitchConfig(BaseSettings):
             if value <= 0:
                 raise ValueError(f"{name} must be greater than 0, got {value!r}.")
 
-        # Parsed here so a malformed header is a startup error rather than a
-        # `ValueError` from inside the export loop every interval.
+        # So a malformed header is a startup error, not one per interval.
         self._parse_otlp_headers()
         return self
 

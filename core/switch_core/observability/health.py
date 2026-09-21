@@ -1,34 +1,18 @@
 """Readiness: what has to be true for this server to be worth sending traffic to.
 
-Two routes, because they answer different questions and Kubernetes does
-different things with the answers.
+``/health`` stays a cheap always-ok reply. Besides the kubelet's liveness
+probe, the gateway Deployment and the setup Job wait on it at boot, so anything
+it checked would become a boot-ordering dependency for them.
 
-``/health`` is liveness, and it stays exactly what it was — a cheap, always-ok
-reply. It is not only the kubelet's liveness probe: the gateway Deployment and
-the setup Job both wait on it before they start, so tightening it would change
-boot ordering and could deadlock a deploy on a dependency that is not up yet.
+``/health/ready`` is the real one, and **what gates it is deliberately narrow.**
+switch-core runs as a single replica with `Recreate`, so a failing readiness
+probe does not shift traffic to a healthy pod — it empties the Service. Only
+the database gates, because without it every request is an error anyway. A
+crashed bridge is reported and alerted on but never fatal.
 
-``/health/ready`` is readiness, and it is new.
-
-**What gates readiness is deliberately narrow.** switch-core runs as a single
-replica with a `Recreate` strategy, because it holds live sessions in memory and
-cannot be scaled out. So a failing readiness probe does not shift traffic to a
-healthy pod — there is no other pod. It empties the Service and takes the whole
-deployment off the air. That makes readiness worth failing only where *not*
-serving is genuinely better than serving: the database, without which every
-request is an error anyway.
-
-A crashed collaboration bridge is a real fault, and it is reported here and
-alerted on — but it must not fail readiness. Taking Switch offline entirely
-because Slack's adapter died would turn one broken bridge into every broken
-bridge.
-
-The checks run on their own schedule rather than per request. The kubelet asks
-every ten seconds and the metrics exporter asks once a minute; both read the
-same cached answer, so neither adds a database round trip to the other's
-budget. The cache carries the time it was taken, and a cache that has stopped
-being refreshed is itself reported as a failure — which is also how a wedged
-event loop shows up here.
+The checks run on their own schedule; the kubelet and the metrics exporter read
+one cached answer. The cache carries its age, and one nobody is refreshing
+reports itself as a failure — which is also how a wedged event loop surfaces.
 """
 
 from __future__ import annotations
@@ -47,16 +31,12 @@ from switch_core.observability.metrics import GaugeReading, MetricsRegistry
 
 logger = logging.getLogger(__name__)
 
-# How long a database round trip may take before the database counts as
-# unreachable. Generous next to a healthy `SELECT 1`, and well under the
-# kubelet's own probe timeout, so a slow answer is reported by us rather than
-# cut off by the probe with no detail at all.
+# Generous next to a healthy `SELECT 1`, and under the kubelet's own timeout so
+# a slow answer is reported here rather than cut off with no detail.
 DATABASE_TIMEOUT_SECONDS = 5.0
 
-# A cached result older than this is treated as no result. Set against the
-# refresh interval rather than the probe interval: it has to allow a refresh to
-# be slow without the answer flapping, while still catching a refresher that
-# has stopped entirely.
+# Multiples of the refresh interval: enough that a slow refresh does not make
+# the answer flap, few enough to catch a refresher that has stopped.
 _STALENESS_MULTIPLIER = 4
 
 
@@ -64,17 +44,15 @@ _STALENESS_MULTIPLIER = 4
 class CheckOutcome:
     name: str
     healthy: bool
-    # What is wrong, in a sentence an operator reading a 503 can act on. Empty
-    # when the check passed — there is nothing to say about a working thing.
+    # What is wrong, for an operator reading a 503. Empty when it passed.
     detail: str
 
 
 @dataclass(frozen=True)
 class HealthCheck:
     name: str
-    # Whether a failure should take the server out of service. See the module
-    # docstring: on a single-replica deployment this is a much bigger decision
-    # than it looks.
+    # Whether a failure takes the server out of service. On a single-replica
+    # deployment that is a bigger decision than it looks — see the docstring.
     gates_readiness: bool
     probe: Callable[[], Awaitable[CheckOutcome]]
 
@@ -101,11 +79,9 @@ class ReadinessReport:
 def database_check(session_factory: async_sessionmaker) -> HealthCheck:
     """One round trip, on an unbound session.
 
-    `SELECT 1` deliberately, rather than counting a real table. Every scoped
-    table is behind row-level security, and a read with no tenant bound raises
-    under the restricted runtime role while passing in development — so a
-    health check written against real data would be the one thing that works
-    everywhere except production.
+    `SELECT 1` rather than a real table: every scoped table is behind row-level
+    security, and an unbound read raises under the restricted runtime role
+    while passing in development.
     """
 
     async def probe() -> CheckOutcome:
@@ -137,12 +113,10 @@ def database_check(session_factory: async_sessionmaker) -> HealthCheck:
 def message_listener_check(is_connected: Callable[[], bool]) -> HealthCheck:
     """Whether room delivery is actually happening.
 
-    The listener holds a Postgres `LISTEN`, and every room's fan-out is woken
-    through it. When it is down nothing is delivered to anyone — the API still
-    answers, rooms still accept writes, and no message moves. It reconnects
-    itself with backoff, which is why this does not gate readiness: restarting
-    the pod would not fix it any faster, and would drop every live session to
-    find that out.
+    Every room's fan-out is woken through this `LISTEN`. When it is down the
+    API still answers and rooms still accept writes while no message moves. It
+    reconnects itself, so restarting the pod would not fix it faster and would
+    drop every live session to find out.
     """
 
     async def probe() -> CheckOutcome:
@@ -166,9 +140,8 @@ def bridges_check(
 ) -> HealthCheck:
     """Whether every configured collaboration bridge still has a live task.
 
-    A bridge that raises is dropped from the running set and its exception is
-    logged and discarded, so without this the only evidence is a line in a log
-    nobody is reading. Reported, never gating — see the module docstring.
+    A bridge that raises is dropped from the running set with its exception
+    logged and discarded. Reported, never gating.
     """
 
     async def probe() -> CheckOutcome:
@@ -189,6 +162,34 @@ def bridges_check(
     return HealthCheck(name="bridges", gates_readiness=False, probe=probe)
 
 
+def connectors_check(
+    running: Callable[[], int], configured: Callable[[], int]
+) -> HealthCheck:
+    """Whether every server-side connector this process meant to run is running.
+
+    Started fire-and-forget, with each failure logged and stepped over, so one
+    that never came up is a dead agent host with no other trace. Reported,
+    never gating.
+    """
+
+    async def probe() -> CheckOutcome:
+        live = running()
+        expected = configured()
+        if live >= expected:
+            return CheckOutcome(name="connectors", healthy=True, detail="")
+        return CheckOutcome(
+            name="connectors",
+            healthy=False,
+            detail=(
+                f"{expected - live} of {expected} server-side connector(s) are "
+                "not running. The agents they host are unreachable; the boot "
+                "log names which failed and why."
+            ),
+        )
+
+    return HealthCheck(name="connectors", gates_readiness=False, probe=probe)
+
+
 class HealthMonitor:
     """Runs the checks on an interval and holds the latest answer."""
 
@@ -203,9 +204,8 @@ class HealthMonitor:
             try:
                 outcomes.append(await check.probe())
             except Exception as error:
-                # A check that raises is a failed check. Swallowing it would
-                # report the dependency as healthy on the grounds that we could
-                # not find out, which is the exact inversion of the point.
+                # A check that raises is a failed check: reporting healthy
+                # because we could not find out inverts the whole point.
                 logger.exception("Health check %s raised", check.name)
                 outcomes.append(
                     CheckOutcome(
@@ -226,9 +226,8 @@ class HealthMonitor:
     def current(self) -> ReadinessReport:
         """The last answer, or a failing one when there is not a fresh answer.
 
-        Never optimistic. "Nobody has checked" and "the checker has stopped"
-        both mean the server cannot vouch for itself, and a probe that answers
-        ok on that basis is worse than no probe.
+        Never optimistic: "nobody has checked" and "the checker has stopped"
+        both mean the server cannot vouch for itself.
         """
         latest = self._latest
         if latest is None:
@@ -272,8 +271,8 @@ class HealthMonitor:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # `refresh` already handles a failing check; reaching here means
-                # the monitor itself is broken, and it must not stop looping.
+                # `refresh` handles a failing check; reaching here means the
+                # monitor itself is broken, and it must not stop looping.
                 logger.exception("Health monitor refresh raised; continuing.")
             await asyncio.sleep(self._interval_seconds)
 

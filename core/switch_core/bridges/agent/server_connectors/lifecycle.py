@@ -57,6 +57,10 @@ class ServerSideConnectorLifecycleService:
         self._connector_registry: dict[str, type[ServerSideConnector]] = {}
         self._config_registry: dict[str, type[ServerSideConnectorConfig]] = {}
         self._cores: dict[str, ConnectorCore] = {}
+        # What this process means to be running. `_cores` alone cannot answer
+        # "is anything missing": a connector that failed to start never
+        # entered it, and `start_all` logs each failure and steps over it.
+        self._expected: set[str] = set()
 
     def register_connector_type(
         self,
@@ -93,6 +97,7 @@ class ServerSideConnectorLifecycleService:
 
         logger.info("Starting %d server-side connectors", len(connectors))
         for record in connectors:
+            self._expected.add(record.id)
             try:
                 await self.start(record.id)
             except Exception:
@@ -202,12 +207,26 @@ class ServerSideConnectorLifecycleService:
         )
         await core.start()
         self._cores[connector_id] = core
+        self._expected.add(connector_id)
 
     async def stop(self, connector_id: str) -> None:
+        self._expected.discard(connector_id)
         core = self._cores.pop(connector_id, None)
         if core is None:
             return
         await core.stop()
+
+    def expected_count(self) -> int:
+        """Connectors this process means to be running."""
+        return len(self._expected)
+
+    def running_count(self) -> int:
+        """Of those, how many actually are.
+
+        Short of `expected_count` is an agent host that is not there, which is
+        otherwise only a line in the boot log.
+        """
+        return sum(1 for connector_id in self._expected if connector_id in self._cores)
 
     async def stop_all(self) -> None:
         logger.info("Stopping all %d server-side connectors", len(self._cores))

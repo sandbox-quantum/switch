@@ -532,6 +532,108 @@
         "width": 4,
         "height": 3
       }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Things that are lost.** Each of these is a message or an event that existed and did not arrive. They are counted rather than only logged because every one of them is invisible from the outside: a send that never persisted looks like a quiet room, and an agent told it missed events has no way to tell anyone else.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 41,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Sends that never persisted, per second",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messages.send_failures{$env,$service} by {kind}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 43,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent events dropped per second, by cause",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.events_dropped{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 43,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent connections expired per second (heartbeat lapsed)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.connections_expired{$env,$service}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 47,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Server-side connectors running",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "avg:switch.connectors.running{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 47,
+        "width": 6,
+        "height": 4
+      }
     }
   ]
 }

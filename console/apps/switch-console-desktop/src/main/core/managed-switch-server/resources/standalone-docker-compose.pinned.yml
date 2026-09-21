@@ -227,6 +227,27 @@ services:
       SLACK_APP_CLIENT_ID: ${SLACK_APP_CLIENT_ID:-}
       SLACK_APP_CLIENT_SECRET: ${SLACK_APP_CLIENT_SECRET:-}
       SLACK_APP_SIGNING_SECRET: ${SLACK_APP_SIGNING_SECRET:-}
+      # Observability and log format. Forwarded because this service names
+      # every variable it passes, so without them here, setting any of these
+      # in `.env` does nothing and the Helm chart is the only way to turn
+      # reporting on at all.
+      #
+      # Bare keys, not `${VAR:-}`. The default form sets the variable to an
+      # empty string, and an empty string is not the same as unset to a
+      # settings class that validates: `LOG_FORMAT=""` fails its check and the
+      # container never starts, so every standalone deployment that had not
+      # set these would break. A bare key takes the value from `.env` when it
+      # is there and is left out of the container entirely when it is not.
+      LOG_FORMAT:
+      SERVICE_NAME:
+      ENVIRONMENT:
+      OTLP_ENDPOINT:
+      DEPLOYMENT_ID:
+      OTLP_METRICS_ENABLED:
+      OTLP_LOGS_ENABLED:
+      OTLP_HEADERS:
+      OTLP_EXPORT_INTERVAL_SECONDS:
+      OTLP_TIMEOUT_SECONDS:
     depends_on:
       postgres:
         condition: service_healthy

@@ -50,6 +50,7 @@ from switch_core.observability.catalogue import (
     DELIVERY_LAG,
     MESSAGES_DELIVERED,
     MESSAGES_SENT,
+    SEND_FAILURES,
 )
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -87,18 +88,16 @@ logger = logging.getLogger(__name__)
 # delivered in bounded steps instead of one unbounded read.
 _DELIVERY_PAGE = 200
 
-# The msgtypes that make an `m.room.message` a file rather than text. Used only
-# to label a metric, so a msgtype nobody listed is counted as a message — which
-# is what it is.
+# What makes an `m.room.message` a file rather than text.
 _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
 
 
 def _sent_kind(event_type: str, content: dict[str, object]) -> str:
     """A bounded label for what was sent.
 
-    Four values, from a field that is not bounded at all: `send_event` takes
-    whatever event type its caller passes, and putting that straight into an
-    attribute would let a caller mint metric series.
+    `send_event` takes whatever event type its caller passes, so four values
+    rather than the field itself: an attribute a caller chooses is a series a
+    caller can mint.
     """
     if event_type in EPHEMERAL:
         return "ephemeral"
@@ -120,13 +119,10 @@ def _delivered_kind(event: InboundEvent) -> str:
 def _age_ms(sent_at: object) -> float | None:
     """How long ago a row was written, in milliseconds.
 
-    None when the value is not a datetime this can subtract, rather than a
-    guess: a wrong lag reading is worse than a missing one, because it is the
-    number an alert would fire on.
-
-    Clamped at zero. The timestamp is the database's `now()` and the
-    subtraction is against this process's clock, so a small negative is
-    ordinary clock skew rather than a message delivered before it was sent.
+    None rather than a guess when the value cannot be subtracted: this is the
+    number an alert fires on. Clamped at zero because the timestamp is the
+    database's clock and the subtraction is against this process's, so a small
+    negative is skew rather than a delivery before its send.
     """
     if not isinstance(sent_at, datetime):
         return None
@@ -293,9 +289,8 @@ class PostgresTransport:
                     except Exception:
                         # One room's failure is not the other rooms' problem,
                         # and this loop is the only delivery this client has.
-                        # Counted as well as logged: swallowing is what keeps
-                        # the loop alive, and it is also what makes a room that
-                        # has stopped delivering invisible.
+                        # Counted as well as logged: swallowing it is what
+                        # makes a stalled room invisible.
                         metrics().increment(DELIVERY_FAILURES, {})
                         logger.error(
                             "Delivery failed for client %s in room %s",
@@ -569,27 +564,32 @@ class PostgresTransport:
             metrics().increment(MESSAGES_SENT, {"kind": kind})
             return result
 
-        room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            message = Message(
-                room_id=room_id,
-                transport_event_id=result.event_id,
-                sender_id=self.user_id,
-                sender_client_id=self.client_id,
-                sender_name=sender_name,
-                event_type=event_type,
-                msgtype=text_field(content.get("msgtype")),
-                body=text_field(content.get("body")),
-                formatted_body=text_field(content.get("formatted_body")),
-                thread_root_event_id=thread_root_of(content),
-                content=content,
-            )
-            await self._message_store.create(session, message, attachments_in(content))
-            await session.commit()
-        # Counted after the commit, because the commit is what sending means
-        # here. Counted before it, a database outage would draw an unbroken
-        # send rate on the dashboard while nothing was being written at all —
-        # and there is no paired failure counter to contradict it.
+        try:
+            room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                message = Message(
+                    room_id=room_id,
+                    transport_event_id=result.event_id,
+                    sender_id=self.user_id,
+                    sender_client_id=self.client_id,
+                    sender_name=sender_name,
+                    event_type=event_type,
+                    msgtype=text_field(content.get("msgtype")),
+                    body=text_field(content.get("body")),
+                    formatted_body=text_field(content.get("formatted_body")),
+                    thread_root_event_id=thread_root_of(content),
+                    content=content,
+                )
+                await self._message_store.create(
+                    session, message, attachments_in(content)
+                )
+                await session.commit()
+        except Exception:
+            # `MESSAGES_SENT` is recorded only after the commit, so without
+            # this a database outage reads as silence — and so does a quiet
+            # room.
+            metrics().increment(SEND_FAILURES, {"kind": kind})
+            raise
         metrics().increment(MESSAGES_SENT, {"kind": kind})
         return result
 

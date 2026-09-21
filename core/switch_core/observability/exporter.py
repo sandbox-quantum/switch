@@ -16,9 +16,8 @@ from switch_core.observability.otlp import (
 
 logger = logging.getLogger(__name__)
 
-# Consecutive failed exports before the complaint is escalated. One failure is
-# a flaky network and says nothing; a run of them means the dashboards have
-# been blank for long enough that somebody is about to be misled by them.
+# One failure is a flaky network; a run of them means the dashboards have been
+# blank long enough to mislead someone.
 _FAILURES_BEFORE_ERROR = 3
 
 
@@ -42,10 +41,9 @@ class MetricsExporter:
     async def flush_once(self) -> None:
         """Post everything recorded since the previous flush.
 
-        The interval window is closed before the request is made, not after it
-        succeeds: a failed post loses that interval rather than folding it into
-        the next one, which would otherwise report a minute's traffic as though
-        it had happened in a second.
+        The window closes before the request, not after it succeeds: a failed
+        post loses that interval rather than folding a minute's traffic into
+        the next one.
         """
         end_nanos = now_nanos()
         start_nanos = self._interval_start_nanos
@@ -83,17 +81,16 @@ class MetricsExporter:
     async def run_forever(self) -> None:
         """Flush on the interval. Survives everything but cancellation.
 
-        A metrics exporter that can take the server down with it is worse than
-        no metrics exporter, so the only exception it re-raises is the one that
-        means "stop".
+        An exporter that can take the server down with it is worse than no
+        exporter.
         """
         while True:
             try:
                 await asyncio.sleep(self._interval_seconds)
                 await self.flush_once()
             except asyncio.CancelledError:
-                # One last window, so a clean shutdown reports what it did
-                # rather than discarding its final minute.
+                # One last window, so a clean shutdown reports its final
+                # interval rather than discarding it.
                 await self._flush_on_shutdown()
                 raise
             except Exception:
@@ -103,6 +100,6 @@ class MetricsExporter:
         try:
             await self.flush_once()
         except Exception:
-            # Already shutting down; a failure here has nowhere useful to go
-            # and must not displace whatever is actually stopping the process.
+            # Already shutting down; this must not displace whatever is
+            # actually stopping the process.
             logger.warning("Final metrics flush failed.", exc_info=True)

@@ -157,10 +157,9 @@ _RUNTIME_STATE_SWEEP_INTERVAL = 5.0
 # promptly rather than at the next unrelated request.
 _CONNECTION_SWEEP_INTERVAL = 2.0
 
-# How long a shutdown is given after uvicorn is told to stop before the
-# process is killed regardless. It is a safety net against a client that will
-# not stop, not a target — but it is also the entire window the lifespan's
-# teardown runs in, so see `_shutdown` before shortening it.
+# The window the lifespan's teardown runs in before the process is killed
+# regardless. Anything with a deadline of its own must fit inside it — see
+# `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
 
 
@@ -188,9 +187,9 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
     clients were never given the chance to beat, so the honest reading is "we
     were not listening", not "they went away".
 
-    This runs on a fixed short interval and is therefore also the process's
-    most sensitive witness to the loop being blocked at all, so every round's
-    oversleep is reported — not only the ones large enough to skip a sweep.
+    Its short fixed interval also makes it the most sensitive witness to the
+    loop being blocked, so every round's oversleep is reported — not only the
+    ones large enough to skip a sweep.
     """
     while True:
         started = time.monotonic()
@@ -631,16 +630,14 @@ async def run(config: SwitchConfig) -> None:
         "telegram", TelegramAdapter, TelegramConnectionConfig
     )
 
-    # Liveness. Deliberately unconditional and deliberately cheap: besides the
-    # kubelet's liveness probe, the gateway Deployment and the setup Job both
-    # wait on this before they start, so anything it checked would become a
-    # boot-ordering dependency for them. Readiness is /health/ready below.
+    # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
+    # wait on it at boot, so anything it checked would become a boot-ordering
+    # dependency for them. Readiness is /health/ready below.
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    # Set by the lifespan. Readiness is answerable only once the monitor that
-    # answers it is running, and before that the honest answer is "no".
+    # Set by the lifespan; before that the honest answer is "no".
     observability: Observability | None = None
 
     @agent_bridge_app.get("/health/ready")
@@ -674,6 +671,8 @@ async def run(config: SwitchConfig) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_configured=collab_lifecycle.expected_count,
         clients_running=client_lifecycle.running_count,
+        connectors_running=connector_lifecycle.running_count,
+        connectors_configured=connector_lifecycle.expected_count,
         agents_connected=lambda: len(connections.live_agent_ids()),
         pool_stats=lambda: pool_stats(engine),
     )
@@ -726,8 +725,7 @@ async def run(config: SwitchConfig) -> None:
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, telemetry_http)
                 await observability.aclose()
-                # Cleared so a probe landing during teardown gets the honest
-                # "no health check has completed" 503 rather than the last
+                # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.
                 observability = None
 
@@ -1225,12 +1223,8 @@ async def _shutdown(
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 
-    # `should_exit` above starts uvicorn's own shutdown, which runs the
-    # lifespan's teardown — including the observability handle's final flush.
-    # This sleep is the whole budget that teardown gets before the process is
-    # killed out from under it, so anything with a deadline of its own must fit
-    # inside it: see `observability.logs.SHUTDOWN_FLUSH_SECONDS`, which is set
-    # against this number.
+    # `should_exit` starts uvicorn's shutdown, which runs the lifespan's
+    # teardown; this sleep is all the time that teardown gets.
     await asyncio.sleep(_FORCED_EXIT_GRACE_SECONDS)
     logger.info("Forcing exit")
     os._exit(0)

@@ -1,19 +1,14 @@
 """The OTLP/HTTP wire format, and the one place anything leaves the deployment.
 
-Hand-built JSON posted with ``httpx`` rather than the OpenTelemetry SDK, for
-the same reason Switch Console hand-builds its own (see
-``console/.../telemetry/relay-client.ts``): everything this deployment sends is
-visible in one file, and an SDK brings its own batching, retry and identity
-behaviour that would then have to be argued down. Switch is self-hosted by
-people who are entitled to read exactly what their server reports and to whom.
-The cost is that the wire format is ours to keep correct, which is what
-``test_otlp.py`` is for.
+Hand-built JSON over ``httpx`` rather than the OpenTelemetry SDK, following
+Switch Console's telemetry client: everything a deployment sends is visible in
+one file, which matters for something self-hosted. The cost is owning the wire
+format, which is what ``test_otlp.py`` is for.
 
-The encoding is protobuf's canonical JSON mapping, and its one sharp edge is
-that 64-bit integers are **strings** — timestamps, histogram counts and bucket
-counts. A receiver that parses strictly rejects a payload that sends them as
-numbers, and the relay answers 200 either way, so nothing here would ever see
-it happen. Doubles stay numbers.
+Its sharp edge is protobuf's JSON mapping of 64-bit integers as **strings** —
+timestamps, histogram counts, bucket counts. A strict receiver rejects a
+payload that sends them as numbers and the relay answers 200 either way.
+Doubles stay numbers.
 """
 
 from __future__ import annotations
@@ -31,17 +26,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# True while this task is inside an export request.
-#
-# Sending anything costs an HTTP call, and an HTTP client logs — `httpcore`
-# emits a line per connection at DEBUG, which is a supported log level here.
-# Shipping those lines would mean each export generating the records the next
-# export has to send, for ever. The log handler reads this and declines to
-# queue anything emitted inside the window.
-#
-# A context variable rather than a flag because it has to be exactly this
-# task's window: another request logging at the same moment is in its own
-# context and must still be shipped.
+# True while this task is inside an export request, so the log handler can
+# decline to ship what the export itself logs. A context variable rather than a
+# flag: it must be this task's window, not the process's.
 _exporting: ContextVar[bool] = ContextVar("switch_otlp_exporting", default=False)
 
 
@@ -58,18 +45,12 @@ def _exporting_window() -> Iterator[None]:
         _exporting.reset(token)
 
 
-# OTLP's own enum, sent as an integer. Delta rather than cumulative: Datadog
-# reads delta sums and histograms directly, whereas a cumulative series has to
-# be differenced at query time and reads as a permanently climbing line until
-# it is. Delta also means this process keeps no running totals, so a restart
-# loses one interval rather than resetting every counter to zero.
+# Delta rather than cumulative: Datadog reads it directly, and a restart loses
+# one interval instead of resetting a climbing series to zero.
 AGGREGATION_TEMPORALITY_DELTA = 1
 
-# OpenTelemetry's default explicit bucket boundaries, in milliseconds. Kept as
-# the library's defaults rather than tuned to Switch: a bound set chosen for
-# today's latencies silently stops answering the question the day they change,
-# and these already straddle the range that matters (a fast local query to a
-# request nobody should be waiting on).
+# OpenTelemetry's defaults, in milliseconds. Left untuned: bounds chosen for
+# today's latencies stop answering the question the day they change.
 DEFAULT_LATENCY_BOUNDS_MS: tuple[float, ...] = (
     5.0,
     10.0,
@@ -95,8 +76,8 @@ class OtlpSendError(RuntimeError):
 
 
 def _otlp_value(value: AttributeValue) -> dict[str, Any]:
-    # `bool` before the numbers: it is a subclass of `int` and would otherwise
-    # serialise as 1/0, turning a yes/no into something a receiver will average.
+    # `bool` first: it subclasses `int`, and as 1/0 a yes/no becomes something
+    # a receiver will average.
     if isinstance(value, bool):
         return {"boolValue": value}
     if isinstance(value, int | float):
@@ -105,12 +86,7 @@ def _otlp_value(value: AttributeValue) -> dict[str, Any]:
 
 
 def otlp_attributes(values: Mapping[str, AttributeValue]) -> list[dict[str, Any]]:
-    """Attributes in OTLP's key/value shape, ordered so payloads are comparable.
-
-    Sorted by key because an unordered dict makes two identical payloads
-    compare unequal, which is only ever felt in a test diff — but it is felt
-    there constantly.
-    """
+    """Attributes in OTLP's key/value shape, sorted so payloads compare equal."""
     return [{"key": key, "value": _otlp_value(values[key])} for key in sorted(values)]
 
 
@@ -119,9 +95,9 @@ class OtlpResource:
     """What this process calls itself to the collector, and to Datadog beyond it.
 
     ``service_version`` is ``None`` when switch-core cannot read its own
-    version (see :mod:`switch_core.version`); it is then omitted rather than
-    sent as a placeholder, so a dashboard filtered by version shows the record
-    missing instead of attributing it to a release nobody built.
+    version, and is then omitted rather than placeheld — a dashboard filtered
+    by version should show the record missing, not attribute it to a release
+    nobody built.
     """
 
     service_name: str
@@ -132,17 +108,14 @@ class OtlpResource:
     def attributes(self) -> dict[str, AttributeValue]:
         values: dict[str, AttributeValue] = {
             "service.name": self.service_name,
-            # The relay's guard. It requires a canonical UUID on every payload
-            # and drops what arrives without one, in silence and with a 200 —
-            # so an absent id is not a degraded send, it is no send at all.
-            # `SwitchConfig` refuses to start with export on and this unset.
+            # The relay's guard: it drops payloads without one, in silence and
+            # with a 200. `SwitchConfig` refuses to start without it.
             "flint.client_id": self.deployment_id,
         }
         if self.service_version:
             values["service.version"] = self.service_version
         if self.environment:
-            # Datadog's unified service tagging reads `deployment.environment`
-            # from OTLP and maps it onto `env`.
+            # Datadog maps this onto `env`.
             values["deployment.environment"] = self.environment
         return values
 
@@ -181,9 +154,8 @@ def _number_data_point(
         "attributes": otlp_attributes(point.attributes),
         "startTimeUnixNano": str(start_nanos),
         "timeUnixNano": str(end_nanos),
-        # `asDouble` rather than `asInt`: OTLP's int64 is a JSON string, which
-        # invites a receiver to treat a count as text and makes it useless to
-        # average. Every value here is exact as a double.
+        # `asDouble`, not `asInt`: int64 is a JSON string, which invites a
+        # receiver to treat a count as text.
         "asDouble": point.value,
     }
 
@@ -212,8 +184,7 @@ def _encode_metric(
         "description": metric.description,
     }
     if metric.kind == "gauge":
-        # A gauge is the current reading and carries no interval, so it gets no
-        # start time and no temporality.
+        # A reading, not an interval: no start time, no temporality.
         encoded["gauge"] = {
             "dataPoints": [
                 {
@@ -342,11 +313,9 @@ def now_nanos() -> int:
 class OtlpClient:
     """Posts payloads to an OTLP/HTTP collector. One client, reused.
 
-    No retry, deliberately. A metric interval lost to a flaky network is lost;
-    retrying would queue work behind a collector that is already struggling and
-    turn an observability outage into a memory leak in the thing being
-    observed. The loss is visible — the series has a hole — which is the
-    property that matters.
+    No retry: it would queue work behind a struggling collector and turn an
+    observability outage into a memory leak in the thing being observed. A lost
+    interval leaves a visible hole, which is the property that matters.
     """
 
     def __init__(
@@ -360,19 +329,13 @@ class OtlpClient:
         self._timeout_seconds = timeout_seconds
         self._headers = {
             "Content-Type": "application/json",
-            # Sent in place of whatever httpx would otherwise volunteer, so the
-            # collector's operators can see which client their traffic is from.
             "User-Agent": "switch-core",
             **headers,
         }
         self._client = client
 
     def url_for(self, signal: str) -> str:
-        """The endpoint for a signal, by OTLP's own base-plus-path convention.
-
-        The same rule ``OTEL_EXPORTER_OTLP_ENDPOINT`` follows, so an operator
-        who has configured any other OTLP client already knows what to set.
-        """
+        """The endpoint for a signal, by the `OTEL_EXPORTER_OTLP_ENDPOINT` rule."""
         return urljoin(self._base_endpoint.rstrip("/") + "/", f"v1/{signal}")
 
     async def post(self, signal: str, payload: Mapping[str, Any]) -> None:
@@ -400,10 +363,8 @@ class OtlpClient:
 def _raise_on_partial_rejection(url: str, response: httpx.Response) -> None:
     """OTLP allows a 200 to carry a count of records the receiver would not take.
 
-    It is the only channel through which a rejection becomes visible at all —
-    a collector that drops a record for failing its own guard still answers
-    200 — so the small body is worth one parse. A response that is not JSON is
-    not worth a second failure on top of the first.
+    The only channel through which a rejection is visible at all, since a
+    collector that drops a record still answers 200.
     """
     try:
         body = response.json()
