@@ -8,8 +8,7 @@ import { importAgentConfig } from '@main/core/agents/import-agent-config';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { fetchAgentDetail } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
-import { requireWorkspace } from '@main/core/workspaces/workspaces-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import type { Agent } from '@shared/core/agents/agents';
 
 export async function adoptSubagent(
@@ -28,10 +27,9 @@ export async function adoptSubagent(
   }
   if (local.some((agent) => agent.name === name))
     throw new Error('This subagent name is already linked to a different Switch identity.');
-  const workspace = await requireWorkspace(parent.workspaceId);
-  const server = await getServer(workspace.serverId);
-  if (!server) throw new Error('The subagent’s Switch server is missing.');
-  const remote = await fetchAgentDetail(server, switchAgentId);
+  const remote = await withWorkspaceSession(parent.workspaceId, (server) =>
+    fetchAgentDetail(server, switchAgentId)
+  );
   if (remote.id !== switchAgentId)
     throw new Error('Switch returned a different subagent identity.');
   // Every agent has a config file; a subagent's comes from its own definition.

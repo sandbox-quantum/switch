@@ -7,7 +7,6 @@ import {
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
-  server: vi.fn(async () => ({ id: 'server', gatewayUrl: 'https://example.test' })),
   snapshot: vi.fn(),
   room: vi.fn(),
   create: vi.fn(async () => ({ success: true })),
@@ -25,12 +24,14 @@ vi.mock('./getAgentById', () => ({
     id: 'local',
     switchAgentId: 'agent',
     serverId: 'server',
+    workspaceId: 'workspace',
     providerId: 'codex',
     autoApprove: false,
   }),
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: mocks.server,
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchRoomDetail: mocks.room,

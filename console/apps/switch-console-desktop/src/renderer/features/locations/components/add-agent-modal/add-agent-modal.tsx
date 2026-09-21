@@ -13,6 +13,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -23,7 +24,7 @@ import {
   useShowModal,
   type BaseModalProps,
 } from '@renderer/lib/modal/modal-provider';
-import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -137,7 +138,7 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   // Names already taken on the server, so a clash is refused before anything
   // is created rather than reported by the server afterwards.
-  const remoteAgents = useRemoteAgents(pickState.serverId);
+  const remoteAgents = useWorkspaceAgents(workspacesStore.soleIdOnServer(pickState.serverId));
   const takenNames = useMemo(
     () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
     [remoteAgents.data]
@@ -386,9 +387,13 @@ export const AddAgentModal = observer(function AddAgentModal({
         setSubmitState('idle');
         return;
       }
-      if (form.addressingPolicy !== null && result.agent.switchAgentId) {
-        await rpc.switchServers.updateAddressingPolicy({
-          serverId: pickState.serverId,
+      if (
+        form.addressingPolicy !== null &&
+        result.agent.switchAgentId &&
+        result.agent.workspaceId
+      ) {
+        await rpc.workspaces.updateAddressingPolicy({
+          workspaceId: result.agent.workspaceId,
           agentId: result.agent.switchAgentId,
           policy: form.addressingPolicy,
         });
@@ -599,7 +604,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         {canConfigureAgent && (
           <AgentSettingsSection
             form={form}
-            serverId={pickState.serverId}
+            workspaceId={workspacesStore.soleIdOnServer(pickState.serverId)}
             onAddServer={() => showAddServerModal({})}
             onOpenMessagingApps={() => {
               onClose();

@@ -16,13 +16,14 @@ import { PaletteAgentItem } from '@renderer/features/command-palette/palette-age
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { ThemeContext } from '@renderer/lib/providers/theme-provider';
 import { AGENTS_METADATA_QUERY_KEY } from '@renderer/lib/stores/use-agents';
-import { remoteAgentsQueryKey } from '@renderer/lib/stores/use-remote-agents';
+import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import type { Agent } from '@shared/core/agents/agents';
 import type { SearchItem } from '@shared/core/search';
 import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
 
 const LOCATION_ID = 'loc-1';
 const SERVER_ID = 'server-1';
+const WORKSPACE_ID = 'workspace-1';
 const SWITCH_AGENT_ID = 'switch-agent-1';
 const AGENT_NAME = 'reviewer';
 
@@ -33,7 +34,7 @@ const AGENT: Agent = {
   providerId: 'claude',
   switchAgentId: SWITCH_AGENT_ID,
   apiEndpoint: 'https://switch.example',
-  workspaceId: 'workspace-1',
+  workspaceId: WORKSPACE_ID,
   serverId: SERVER_ID,
   status: null,
   autoApprove: false,
@@ -104,7 +105,7 @@ async function rowAvatarSrc(options: {
     // test has no main process to answer.
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: Infinity } },
   });
-  client.setQueryData(remoteAgentsQueryKey(SERVER_ID), [remoteAgent(options.iconUrl)]);
+  client.setQueryData(workspaceAgentsQueryKey(WORKSPACE_ID), [remoteAgent(options.iconUrl)]);
   // The provider mark beside the name reads its artwork from here. Seeded empty
   // so it resolves to nothing rather than reaching for a main process the test
   // does not have; the mark itself is the sidebar's, already covered there.

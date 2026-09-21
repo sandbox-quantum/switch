@@ -20,6 +20,7 @@ import { switchServersController } from './core/switch-servers/controller';
 import { telemetryController } from './core/telemetry/controller';
 import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
+import { workspacesController } from './core/workspaces/controller';
 
 export const rpcRouter = createRPCRouter({
   sdkHost: sdkHostController,
@@ -37,6 +38,7 @@ export const rpcRouter = createRPCRouter({
   switchRooms: switchRoomsController,
   switchServers: switchServersController,
   agentTypes: agentTypesController,
+  workspaces: workspacesController,
   localSwitchServer: localSwitchServerController,
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,

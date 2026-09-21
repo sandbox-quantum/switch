@@ -40,11 +40,10 @@ import { controllerConnectionId } from '@main/core/switch-rooms/session-connecti
 import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { getServer } from '@main/core/switch-servers/servers-store';
+import { workspaceServer } from '@main/core/workspaces/workspace-session';
 import { log } from '@main/lib/logger';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { Session } from '@shared/core/sessions/sessions';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { JournalUnavailableError } from './host-journal';
 import { currentSnapshot } from './transcripts';
 
@@ -66,7 +65,7 @@ function launchSettled(snapshot: Snapshot): boolean {
 }
 
 export class SharedAgentRuntime implements AgentRuntimeProvider {
-  private server: SwitchServer | null = null;
+  private workspaceId: string | null = null;
   private starting: Promise<void> | null = null;
   private opened: Promise<void> | null = null;
   private startupError: string | null = null;
@@ -136,12 +135,11 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   ): Promise<void> {
     this.startupStage = 'Preparing the session on its host…';
     const agent = await getAgentById(session.agentId);
-    if (!agent?.switchAgentId || !agent.serverId)
-      throw new Error('Link this agent to a Switch server before starting a session.');
-    this.server = await getServer(agent.serverId);
-    if (!this.server) throw new Error('The agent’s Switch server is missing.');
+    if (!agent?.switchAgentId || !agent.workspaceId)
+      throw new Error('Link this agent to a Switch workspace before starting a session.');
+    this.workspaceId = agent.workspaceId;
     this.startupStage = 'Waiting for the Switch server to be ready…';
-    await ensureServerSessionReady(this.server);
+    await ensureServerSessionReady(await workspaceServer(agent.workspaceId));
     this.startupStage = 'Preparing the session on its host…';
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport);
@@ -339,7 +337,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   }
 
   async restart(session: Session): Promise<void> {
-    await this.resolveServer();
+    await this.resolveWorkspace();
     if (this.starting) await this.starting;
     this.setStartupError(null);
     this.starting = this.open(session, undefined, true, true, () => {});
@@ -364,11 +362,12 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     if (!joined) throw new Error('The session is no longer recorded in Console.');
     await stopSharedSession(joined.row.agentId, this.params.sessionId);
   }
-  private async resolveServer(): Promise<void> {
-    if (this.server) return;
+  private async resolveWorkspace(): Promise<string> {
+    if (this.workspaceId) return this.workspaceId;
     const session = await loadSessionWithAgent(this.params.sessionId);
-    this.server = session?.serverId ? await getServer(session.serverId) : null;
-    if (!this.server) throw new Error('The session’s Switch server is missing.');
+    if (!session?.workspaceId) throw new Error('The session’s Switch workspace is missing.');
+    this.workspaceId = session.workspaceId;
+    return this.workspaceId;
   }
 }
 

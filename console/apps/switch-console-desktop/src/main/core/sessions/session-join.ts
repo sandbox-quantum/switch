@@ -10,6 +10,10 @@ export type SessionWithAgent = {
   /** The owning agent's `name` — the session's identity source. The creds slug
    * and `--agent` launch name derive from it, read live, not from a frozen tag. */
   name: string;
+  /** The workspace the owning agent belongs to; null for an agent not linked to
+   * Switch. This is what a call about the session is addressed with — a server
+   * can host several workspaces and answers for only the selected one. */
+  workspaceId: string | null;
   /** The server hosting the agent's workspace; null once that server has been
    * removed, which leaves the agent's endpoint and token pointing at something
    * that no longer exists. */
@@ -29,6 +33,7 @@ export async function loadSessionWithAgent(
       locationId: agents.locationId,
       providerId: agents.providerId,
       name: agents.name,
+      workspaceId: agents.workspaceId,
       serverId: workspaces.serverId,
     })
     .from(sessions)
@@ -43,6 +48,7 @@ export async function loadSessionWithAgent(
     locationId: joined.locationId,
     providerId: joined.providerId,
     name: joined.name,
+    workspaceId: joined.workspaceId,
     serverId: joined.serverId,
   };
 }

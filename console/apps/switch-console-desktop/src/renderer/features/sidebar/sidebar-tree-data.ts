@@ -88,14 +88,14 @@ export function agentSessions(entry: AgentEntry): SessionStore[] {
   );
 }
 
-/** Every agent on the active server that has a Switch identity, as
+/** Every agent in the active scope that has a Switch identity, as
  * membership-lookup keys. Unfiltered on purpose — see
  * {@link agentsInActiveScope}. */
-export function switchIdentities(): { serverId: string; switchAgentId: string }[] {
-  const identities: { serverId: string; switchAgentId: string }[] = [];
+export function switchIdentities(): { workspaceId: string; switchAgentId: string }[] {
+  const identities: { workspaceId: string; switchAgentId: string }[] = [];
   for (const { agent } of agentsInActiveScope()) {
-    if (agent.serverId && agent.switchAgentId) {
-      identities.push({ serverId: agent.serverId, switchAgentId: agent.switchAgentId });
+    if (agent.workspaceId && agent.switchAgentId) {
+      identities.push({ workspaceId: agent.workspaceId, switchAgentId: agent.switchAgentId });
     }
   }
   return identities;
@@ -164,13 +164,13 @@ export async function refreshSidebarRoomStateAfterOnboarding(): Promise<void> {
  * lettered picture with nothing explaining why.
  */
 async function giveExistingAgentsAnIcon(): Promise<void> {
-  const serverIds = new Set(switchIdentities().map((identity) => identity.serverId));
-  for (const serverId of serverIds) {
+  const workspaceIds = new Set(switchIdentities().map((identity) => identity.workspaceId));
+  for (const workspaceId of workspaceIds) {
     try {
-      reportBackfill(serverId, await rpc.switchServers.backfillAgentIcons(serverId));
+      reportBackfill(workspaceId, await rpc.workspaces.backfillAgentIcons(workspaceId));
     } catch (cause) {
-      log.warn('could not give existing agents their icons', { serverId, cause });
-      reportOnce(serverId, 'failed', {
+      log.warn('could not give existing agents their icons', { workspaceId, cause });
+      reportOnce(workspaceId, 'failed', {
         title: 'Agent icons could not be saved',
         description:
           'Your agents show a generated icon here, but the Switch server has not stored it — so they keep their old picture in Slack and the other chat apps.',
@@ -181,13 +181,14 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
 }
 
 /**
- * What each server was last told to the user about, so an unresolved condition
- * is not re-announced on every refresh.
+ * What each workspace was last told to the user about, so an unresolved
+ * condition is not re-announced on every refresh.
  *
  * The caller runs on first paint, window focus, sign-in, the background
- * reconcile, the retry button and every membership-changing mutation. A server
- * that is signed out or too old to store icons fails all of them, which turned
- * one standing problem into a toast every few seconds (CHOO-2344).
+ * reconcile, the retry button and every membership-changing mutation. A
+ * workspace whose server is signed out or too old to store icons fails all of
+ * them, which turned one standing problem into a toast every few seconds
+ * (CHOO-2344).
  *
  * Keyed by outcome, not a bare "said something already": if the situation
  * changes — a signed-out server starts answering and turns out to be too old —
@@ -196,15 +197,15 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
  */
 const reportedBackfill = new Map<string, string>();
 
-function reportOnce(serverId: string, outcome: string, notice: Parameters<typeof toast>[0]) {
-  if (reportedBackfill.get(serverId) === outcome) return;
-  reportedBackfill.set(serverId, outcome);
+function reportOnce(workspaceId: string, outcome: string, notice: Parameters<typeof toast>[0]) {
+  if (reportedBackfill.get(workspaceId) === outcome) return;
+  reportedBackfill.set(workspaceId, outcome);
   toast(notice);
 }
 
-function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
+function reportBackfill(workspaceId: string, outcome: AgentIconBackfill): void {
   if (outcome.kind === 'unsupported') {
-    reportOnce(serverId, 'unsupported', {
+    reportOnce(workspaceId, 'unsupported', {
       title: 'This Switch server does not support agent icons yet',
       description:
         'Your agents show a generated icon here, but it cannot be saved, so they keep their old picture in Slack and the other chat apps. Updating the server fixes it.',
@@ -213,7 +214,7 @@ function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
     return;
   }
   if (outcome.kind === 'partial') {
-    reportOnce(serverId, `partial:${outcome.failed}`, {
+    reportOnce(workspaceId, `partial:${outcome.failed}`, {
       title: `${outcome.failed} agent${outcome.failed === 1 ? '' : 's'} kept the old icon`,
       description:
         'Their icon could not be saved to the Switch server, so it will not show in Slack or the other chat apps.',
@@ -221,5 +222,5 @@ function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
     });
     return;
   }
-  reportedBackfill.delete(serverId);
+  reportedBackfill.delete(workspaceId);
 }

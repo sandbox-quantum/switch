@@ -3,6 +3,7 @@ import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import type { TelemetryEventMap } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { forgetServerSession } from '@main/core/workspaces/workspace-session';
 import {
   clearActiveWorkspaceOnServer,
   ensureServerWorkspace,
@@ -256,6 +257,7 @@ export async function removeServer(id: string): Promise<void> {
   // Deleting the server takes its workspaces with it and unlinks their agents,
   // both by foreign key: workspaces cascade, agents are set null.
   await db.delete(switchServers).where(eq(switchServers.id, id));
+  forgetServerSession(id);
 
   // Removing an already-absent server is not a server being removed.
   if (server) trackEvent('server_removed', { server_kind: serverKindOf(server) });
