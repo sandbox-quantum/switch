@@ -67,8 +67,9 @@ The flow, compressed:
    coordination**. At the top severity a dedicated war-room channel is created
    and the responders are pulled into it.
 5. Updates go out on a clock — hourly at the top severity, every four hours at
-   the next — as a five-field situation report posted to both the alert channel
-   and the stakeholder channel.
+   the next, **until the issue is mitigated** — as a five-field situation report
+   posted to both the alert channel and the stakeholder channel. The SOP sets no
+   cadence for the lowest severity.
 6. On-call acts on their own authority (roll back, roll forward, emergency fix)
    and escalates if it is not resolved in about an hour, up a four-tier ladder.
 7. Recovery is confirmed in PagerDuty, a postmortem is written, and a review is
@@ -193,7 +194,8 @@ not a conversation. It belongs in the war room as an attached document.
 | **Customer incident declared** | On-call addresses the responder agent in the hub. The agent looks up who is on call, **builds the war room**, and posts the incident banner in the hub. |
 | Responders assemble | Already done — the agent invited them when it built the room. Public channel, so anyone else can walk in. |
 | Investigation | Threads per hypothesis. The agent answers lookups, drafts SITREPs, keeps the timeline. |
-| Situation report due | A scheduled nudge addresses the agent; it drafts from the room and a human posts it. The SITREP goes in the hub, under the incident's banner thread. |
+| Situation report due | The agent's poll notices the posted deadline has passed; it drafts from the room and a human sends it. The SITREP goes in the hub, under the incident's banner thread. |
+| **Mitigated** | A human says so. The update clock stops — this is the stopping condition, not recovery or resolution. The room stays open. |
 | Escalation at ~1h | A human decision. Switch's part is that the ladder is *in the room* as a document, so nobody has to find it. |
 | Recovery confirmed | The room stays open — the postmortem is written from it. |
 | Postmortem written | Drafted from the room's own timeline into the seeded postmortem document. |
@@ -210,8 +212,11 @@ Two properties of that table are the design:
 
 ### Cadence, and the thing that nudges
 
-The SOP puts situation reports on a clock: hourly at the top severity, every four
-hours below it. Something has to remember.
+The SOP puts situation reports on a clock: hourly at sev0, every four hours at
+sev1, in both cases **until the issue is mitigated** — not until it is resolved,
+and not until the postmortem is written. It sets no cadence at sev2 at all.
+Something has to remember all three of those facts, including the stopping
+condition, which is the one an automated clock is most likely to miss.
 
 **Switch cannot.** There is no scheduling primitive exposed to a room: no cron,
 no timers, nothing that wakes an agent on a clock. Switch runs periodic work
@@ -325,7 +330,8 @@ Its `instructions` carry three things:
 **PagerDuty** (MCP)
 - Service ids: <one per service in the severity table>
 - Escalation policy id: <...>
-- Severity map: sev0 → P1, sev1 → P2, sev2 → P3
+- Severity map: sev0 → P0, sev1 → P1, sev2 → P2 (confirm against the
+  priority scheme actually configured in PagerDuty)
 - On-call lookup: the schedule attached to the escalation policy above
 
 **Rooms / bridge**
@@ -489,8 +495,9 @@ room:
       did it. The postmortem is written from it.
     - Say what you do not know. During an incident a confident wrong answer
       costs more than silence.
-    - Cadence for {severity}: sev0 updates hourly, sev1 every four hours, sev2
-      on change only. You will be nudged; if a nudge is late, say so.
+    - Cadence for {severity}: sev0 hourly, sev1 every four hours, in both cases
+      until a human says the issue is mitigated. sev2 has no cadence. You keep
+      the next deadline posted here; if it passes without an update, say so.
 
     ## Escalation
 
@@ -545,6 +552,8 @@ room:
         - **Started** — time, and the suspected trigger (a deploy, a config
           change, unknown).
         - **Progress** — diagnostics run, actions tried, current state.
+          (The source SOP calls this field "Progress" in one place and "Done"
+          in another. Pick one and keep it; this design uses Progress.)
         - **Ask** — what help is needed, from whom. Say "none" explicitly if
           none.
 

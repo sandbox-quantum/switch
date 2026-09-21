@@ -184,6 +184,13 @@ and it survives your session ending, a missed timer and a broken workflow.
 hour. If an update goes out late, the next one is due a full interval after it —
 never compress the next window to catch up to a wall clock.
 
+**The clock stops at mitigation, not at resolution.** A human says when the issue
+is mitigated. When they do, post that the update cadence has ended and stop
+posting deadlines — the room stays open for the write-up, but it does not need
+hourly reports about something that has stopped hurting. If nobody has said it
+and the room has plainly gone quiet because the problem is over, ask rather than
+assuming.
+
 **Layer 2 — your own standing timer. This is the working mechanism.**
 
 Keep **one** durable recurring job, not one per incident. It is a *poll*, not an
@@ -400,7 +407,8 @@ session. It takes these values from here and never from a message.
 - Service ids: <one per service in the severity table>
 - Escalation policy id: <...>
 - On-call lookup: the schedule attached to that escalation policy
-- Severity map: sev0 → P1, sev1 → P2, sev2 → P3
+- Severity map: sev0 → P0, sev1 → P1, sev2 → P2 (confirm against the
+  priority scheme actually configured in PagerDuty)
 - War-room threshold: sev0 and sev1. Below that, no room.
 - Name mapping: PagerDuty user → chat handle — <map, or where it lives>
 
@@ -429,15 +437,20 @@ war room being created on the wrong bridge.
 - Escalation contacts by tier: <role names, never individuals>
 
 **Cadence**
-- sev0: situation report hourly
-- sev1: every four hours
-- sev2: on change only
+- sev0: situation report hourly, **until the issue is mitigated** — not until it
+  is resolved, and not until the postmortem is written
+- sev1: every four hours, same stopping condition
+- sev2: the SOP defines no update cadence. Do not invent one; report on change
+  and when asked. <Decide whether you want one and record it here.>
 - The interval runs from the last update **sent**, not from the top of the hour
 - The responder posts the next deadline in the room and keeps it current
 - The responder polls its own timer every ~10 minutes while any incident is open
 - Dead-man's switch: <the external job that addresses the responder periodically
   to prove it is alive, and where it is configured>
 - On a severity change the interval changes with it, from that moment
+- **Mitigated ≠ resolved.** Mitigation stops the update clock; resolution is a
+  separate human action in PagerDuty, and the postmortem comes after that. A
+  human says when the issue is mitigated — the responder never decides it.
 
 ## How to declare
 
@@ -526,8 +539,13 @@ situation-report draft, or a catch-up if you have just arrived.
 
 ## Cadence
 
-<severity>: situation reports <hourly | every four hours | on change only>,
-measured from the last one **sent** rather than from the top of the hour.
+<severity>: situation reports <hourly | every four hours>, measured from the last
+one **sent** rather than from the top of the hour, and running **until the issue
+is mitigated** rather than until it is resolved.
+
+Mitigated is a call a human makes and says out loud in this room. Say it — the
+clock does not stop on its own, and nobody wants hourly updates on an incident
+that stopped hurting two hours ago.
 
 `@responder` drafts; a human sends. The draft appearing here is not the update
 going out — somebody has to post it to the hub and to the stakeholder channel.
