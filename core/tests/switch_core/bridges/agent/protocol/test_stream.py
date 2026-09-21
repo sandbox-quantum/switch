@@ -360,7 +360,13 @@ async def test_subscription_change_is_announced() -> None:
     await _take(stream, 1)
 
     registry.claim_room(conn, ROOM_B)
+    frames = await _take(stream, 1)
+    assert frames[0][0] == "subscription_changed"
+    assert sorted(frames[0][1]["rooms"]) == sorted([ROOM_A, ROOM_B])
 
+    # And on the way out, which is how a supervisor learns a session left a
+    # room rather than inferring it from a set that only ever grows.
+    registry.release_room(conn, ROOM_A)
     frames = await _take(stream, 1)
     assert frames[0][0] == "subscription_changed"
     assert frames[0][1]["rooms"] == [ROOM_B]

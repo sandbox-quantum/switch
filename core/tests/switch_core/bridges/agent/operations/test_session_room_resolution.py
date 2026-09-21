@@ -1,0 +1,250 @@
+"""Which room an operation acts on, once a connection can carry several.
+
+Every implicit-room operation — `post_message`, `assume_role`, `read_context`
+and twenty others — funnels through `bound_rooms`, so this is the only place
+the rule is written and the only place it needs proving. A caller that named
+its session is answered from that session; everything else keeps resolving
+from its connection exactly as before.
+
+The distinction has no visible effect while each connection carries one
+session, which is why it is worth pinning now: the moment two sessions share
+one, resolving from the connection would hand each of them both rooms and turn
+every room-scoped call into "several rooms, pick one".
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from switch_core.bridges.agent.operations import definitions
+from switch_core.bridges.agent.operations.callctx import (
+    CallContext,
+    CallerSession,
+    call_context,
+)
+from switch_core.bridges.agent.operations.context import (
+    bound_rooms,
+    init_operations_protocol,
+    require_connected_room,
+)
+from switch_core.bridges.agent.protocol.connections import (
+    PROTOCOL_VERSION,
+    ClientDeclaration,
+    ConnectionRegistry,
+)
+
+AGENT = "agent-1"
+CONNECTION = "connection-1"
+ROOM_A = "room-a"
+ROOM_B = "room-b"
+HOST = "host-1"
+EPOCH = "epoch-1"
+
+
+def _caller(session_id: str, room_id: str | None) -> CallContext:
+    return CallContext(
+        agent_id=AGENT,
+        session_key=CONNECTION,
+        session=CallerSession(
+            id=session_id, host_id=HOST, epoch=EPOCH, room_id=room_id
+        ),
+    )
+
+
+class _AbsentSessionStore:
+    """The table a pre-connection caller falls back to, holding nothing.
+
+    Reaching it at all is the failure this file guards against: a caller with a
+    session has already been answered, and one with a live connection covering
+    a room is answered by the connection.
+    """
+
+    async def get_connected_room(self, *_a: Any, **_kw: Any) -> None:
+        raise AssertionError("resolution fell through to the agent_sessions table")
+
+
+@pytest.fixture
+def registry():
+    @asynccontextmanager
+    async def session_factory():
+        yield SimpleNamespace()
+
+    registry = ConnectionRegistry()
+    init_operations_protocol(
+        SimpleNamespace(
+            connections=registry,
+            agent_session_store=_AbsentSessionStore(),
+            session_factory=session_factory,
+        )
+    )
+    yield registry
+    init_operations_protocol(None)  # type: ignore[arg-type]
+
+
+def _open(registry: ConnectionRegistry) -> Any:
+    return registry.open(
+        agent_id=AGENT,
+        connection_id=CONNECTION,
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_on_one_connection_resolve_different_rooms(
+    registry,
+) -> None:
+    """The whole reason the binding moved off the connection.
+
+    One connection, two sessions, two rooms — and each call resolves the room
+    of the session that made it. Read from the connection, both would see both
+    rooms and neither could act.
+    """
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_A)
+    registry.claim_room(connection, ROOM_B)
+    assert connection.rooms == {ROOM_A, ROOM_B}
+
+    with call_context(_caller("session-a", ROOM_A)):
+        assert await require_connected_room() == ROOM_A
+    with call_context(_caller("session-b", ROOM_B)):
+        assert await require_connected_room() == ROOM_B
+
+
+@pytest.mark.asyncio
+async def test_a_sessions_room_wins_over_what_its_connection_covers(registry) -> None:
+    """Not a fallback — the session is the answer, and is asked first.
+
+    A connection that has drifted from the session's binding (a takeover, a
+    reattach that claimed nothing yet) must not quietly redirect the caller's
+    next `post_message` into the wrong room.
+    """
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_B)
+
+    with call_context(_caller("session-a", ROOM_A)):
+        assert await bound_rooms() == {ROOM_A}
+
+
+@pytest.mark.asyncio
+async def test_a_session_bound_to_no_room_is_connected_to_nothing(registry) -> None:
+    """Said plainly, rather than borrowed from the connection."""
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_A)
+
+    with call_context(_caller("session-a", None)):
+        assert await bound_rooms() == set()
+        with pytest.raises(ValueError, match="Not connected to a room"):
+            await require_connected_room()
+
+
+@pytest.mark.asyncio
+async def test_a_caller_with_no_session_still_reads_its_connection(registry) -> None:
+    """Unchanged for every caller that has not moved to the session selector."""
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_A)
+
+    with call_context(
+        CallContext(agent_id=AGENT, session_key=CONNECTION, session=None)
+    ):
+        assert await require_connected_room() == ROOM_A
+
+
+# ── moving a session between rooms ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_connecting_vacates_only_the_callers_own_room(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving one session must not unsubscribe its siblings.
+
+    `claim_room` no longer clears the connection, so something has to drop the
+    room the caller left — and it has to drop that one only. Dropping the
+    connection's whole set would silently take every other session on it out of
+    its room.
+    """
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_A)
+    registry.claim_room(connection, ROOM_B)
+
+    bound: list[tuple[str, str]] = []
+
+    class _Authority:
+        def __init__(self, _factory: Any) -> None: ...
+
+        async def bind_room(
+            self, _agent: str, session_id: str, _host: str, _epoch: str, room_id: str
+        ) -> None:
+            bound.append((session_id, room_id))
+
+    monkeypatch.setattr(definitions, "SessionAuthority", _Authority)
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", ROOM_A)):
+        await definitions.connect_to_room("room-c", include_general_instructions=False)
+
+    assert bound == [("session-a", "room-c")]
+    # ROOM_A vacated because this caller was in it; ROOM_B untouched because
+    # its session did not move.
+    assert connection.rooms == {ROOM_B, "room-c"}
+
+
+def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:
+    room = SimpleNamespace(id=room_id, name="Room C", description="A room")
+    profile = {
+        "connection_model": "session_addressable",
+        "message_exchange": True,
+        "pre_invocation_mediation": [],
+        "post_invocation_mediation": [],
+        "event_reporting": [],
+        "task_protocol": {"can_delegate": False, "can_accept": False},
+    }
+
+    @asynccontextmanager
+    async def session_factory():
+        yield SimpleNamespace(commit=_nothing, get=_nothing)
+
+    async def _nothing(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    def _returning(value: Any):
+        async def _get(*_a: Any, **_kw: Any) -> Any:
+            return value
+
+        return _get
+
+    return SimpleNamespace(
+        connections=registry,
+        agent_session_store=_AbsentSessionStore(),
+        session_factory=session_factory,
+        agent_store=SimpleNamespace(
+            get=_returning(
+                SimpleNamespace(id=AGENT, name="agent-1", integration_profile=profile)
+            )
+        ),
+        room_store=SimpleNamespace(
+            get=_returning(SimpleNamespace(id=room_id, name="Room C", bridge_id=None))
+        ),
+        require_room_member=_returning(room),
+        list_participants=_returning([]),
+        list_room_resources=_returning(
+            {
+                "reference_types": {},
+                "references": [],
+                "documents": [],
+                "packages": [],
+                "linked_rooms": [],
+            }
+        ),
+        list_room_roles=_returning([]),
+    )

@@ -16,6 +16,7 @@ from typing import Any
 
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
+    caller_session,
     connected_room,
     get_agent_id,
     get_protocol,
@@ -32,6 +33,7 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.rooms_yaml import GroupSpec
+from switch_core.sessions.service import SessionAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,38 @@ def claim_room_on_caller_connection(
         evicted.id,
     )
     return evicted.id
+
+
+def rooms_on_caller_connection(
+    protocol: ProtocolService, agent_id: str, connection_id: str
+) -> set[str]:
+    """The rooms claimed by the connection underneath this caller.
+
+    For a caller that is the only session on its connection these are its own
+    rooms, which is what makes this the right answer to "where was I" for a
+    caller with no session identity to ask instead.
+    """
+    connection = protocol.connections.get(connection_id)
+    if connection is None or connection.agent_id != agent_id:
+        return set()
+    return set(connection.rooms)
+
+
+def release_room_on_caller_connection(
+    protocol: ProtocolService, agent_id: str, connection_id: str, room_id: str
+) -> None:
+    """Drop a room the caller has left from the connection underneath it.
+
+    The counterpart of the claim, and the reason `claim_room` no longer clears:
+    a connection's rooms are the union of its sessions', so the only thing
+    entitled to remove one is the session that was in it. Leaving the room
+    claimed would keep this agent's slot occupied and keep delivering the
+    room's events to a session that has moved on.
+    """
+    connection = protocol.connections.get(connection_id)
+    if connection is None or connection.agent_id != agent_id:
+        return
+    protocol.connections.release_room(connection, room_id)
 
 
 async def bind_room_for_connectionless_caller(
@@ -256,9 +290,26 @@ async def connect_to_room(
     key = session_key()
     if not key:
         raise ValueError("MCP session has no session id; cannot connect to room")
+
+    # Where the caller was, read before the claim makes it where it is. Its own
+    # room, not its connection's: under a connection shared by several sessions
+    # those also include its siblings', which it has no business vacating.
+    caller = caller_session()
+    previous = (
+        {caller.room_id}
+        if caller is not None and caller.room_id is not None
+        else rooms_on_caller_connection(protocol, agent_id, key)
+    )
     evicted_connection_id = claim_room_on_caller_connection(
         protocol, agent_id, key, room.id
     )
+    for departed in previous - {room.id}:
+        release_room_on_caller_connection(protocol, agent_id, key, departed)
+
+    if caller is not None:
+        await SessionAuthority(protocol.session_factory).bind_room(
+            agent_id, caller.id, caller.host_id, caller.epoch, room.id
+        )
 
     await bind_room_for_connectionless_caller(
         protocol,

@@ -5,10 +5,13 @@ operation that resolves a room implicitly resolves it from a connection — and
 why a connection covering more than one room has nowhere to go. Naming the
 session is the step that makes the session addressable in its own right.
 
-Nothing changes yet. While a session owns at most one connection the session
-selector is answered with that connection, so the two selectors produce the
-same key and every existing caller behaves identically. This file is the proof
-of that equivalence, and of the refusals that keep the selector from being a
+The two selectors still agree on the connection, and must: that equivalence is
+what lets a caller move from one to the other without anything else changing,
+and it is the first thing proven below. What only the session selector can
+answer is *which room this caller is in* — the connection knows the rooms it
+covers, not which of its sessions meant which.
+
+The rest of the file is the refusals, which keep the selector from being a
 cheaper way in than the connection it stands for.
 """
 
@@ -22,7 +25,7 @@ from fastapi import FastAPI, HTTPException
 
 from switch_core.bridges.agent.api.operations import (
     SESSION_SELECTOR_HEADERS,
-    resolve_session_key,
+    resolve_caller,
     router,
 )
 from switch_core.bridges.agent.auth import get_agent_from_scope
@@ -34,7 +37,7 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.service import SessionAuthority, SessionError
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.sessions.test_authority import setup
 
@@ -83,7 +86,7 @@ async def _resolve(
     host_id: str | None,
     epoch: str | None,
 ) -> str | None:
-    return await resolve_session_key(
+    key, _ = await resolve_caller(
         agent_id=AGENT,
         protocol=protocol,  # type: ignore[arg-type]
         factory=session_factory,
@@ -92,6 +95,7 @@ async def _resolve(
         host_id=host_id,
         epoch=epoch,
     )
+    return key
 
 
 @pytest.mark.asyncio
@@ -121,6 +125,47 @@ async def test_both_selectors_resolve_to_the_same_key(session_factory) -> None:
     )
 
     assert by_connection == by_session == CONNECTION
+
+
+@pytest.mark.asyncio
+async def test_the_session_selector_also_answers_with_its_room(session_factory) -> None:
+    """The extra thing naming a session buys, and the reason it is one read.
+
+    A room-scoped operation needs the caller's room; the connection selector
+    cannot supply it once a connection carries several sessions. Resolving it
+    here, in the fenced read that resolved the connection, is what keeps that
+    from costing a query per operation.
+    """
+    epoch, protocol = await _bound(session_factory)
+    service = SessionAuthority(session_factory)
+    await service.bind_room(AGENT, SESSION, HOST, epoch, ROOM)
+
+    _, caller = await resolve_caller(
+        agent_id=AGENT,
+        protocol=protocol,  # type: ignore[arg-type]
+        factory=session_factory,
+        connection_id=None,
+        session_id=SESSION,
+        host_id=HOST,
+        epoch=epoch,
+    )
+
+    assert caller is not None
+    assert (caller.id, caller.host_id, caller.epoch) == (SESSION, HOST, epoch)
+    assert caller.room_id == ROOM
+
+    # A connection selector names no session, so it carries no room either —
+    # such a caller keeps resolving from the connection as it always has.
+    _, none_named = await resolve_caller(
+        agent_id=AGENT,
+        protocol=protocol,  # type: ignore[arg-type]
+        factory=session_factory,
+        connection_id=CONNECTION,
+        session_id=None,
+        host_id=None,
+        epoch=None,
+    )
+    assert none_named is None
 
 
 @pytest.mark.asyncio
@@ -223,7 +268,7 @@ async def test_another_agents_session_is_refused(session_factory) -> None:
     epoch, protocol = await _bound(session_factory)
 
     with pytest.raises(SessionError) as caught:
-        await resolve_session_key(
+        await resolve_caller(
             agent_id="agent-intruder",
             protocol=protocol,  # type: ignore[arg-type]
             factory=session_factory,

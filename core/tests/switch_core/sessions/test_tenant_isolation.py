@@ -191,7 +191,7 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
                 "connection",
                 ConnectionRegistry(),
             ),
-            lambda: authority.room_connection(
+            lambda: authority.session_binding(
                 "tenant-b", "session-demo", "host-demo", epoch
             ),
             lambda: authority.snapshot("session-demo", "tenant-b"),

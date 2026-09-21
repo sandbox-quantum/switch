@@ -445,9 +445,18 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         expected_generation=None,
     )
     connections.claim_room(connection, "room-demo")
-    assert await service.bind_connection(
-        "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
-    ) == ["room-demo"]
+    # Binding a connection says nothing about which room the session is in —
+    # the connection may be carrying several sessions, or may have just
+    # reattached carrying none. `bind_room` is what puts it in one.
+    assert (
+        await service.bind_connection(
+            "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
+        )
+        == []
+    )
+    await service.bind_room(
+        "agent-demo", "session-demo", "host-demo", epoch, "room-demo"
+    )
     snapshot = await service.snapshot("session-demo", "owner")
     assert snapshot.session.room_ids == ["room-demo"]
     ready = snapshot.session.model_copy(
@@ -513,14 +522,18 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         len(await service.pending("agent-demo", "session-demo", "host-demo", epoch))
         == 1
     )
+    # The session's room and its connection's are two different facts, and
+    # control delivery follows the connection. Dropping the room from the
+    # connection takes away the route without retiring the binding, so a rebind
+    # still reports the room the session is in — and the command still has
+    # nowhere to go.
     connections.release_room(connection, "room-demo")
-    assert (
-        await service.bind_connection(
-            "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
-        )
-        == []
-    )
-    assert (await service.snapshot("session-demo", "owner")).session.room_ids == []
+    assert await service.bind_connection(
+        "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
+    ) == ["room-demo"]
+    assert (await service.snapshot("session-demo", "owner")).session.room_ids == [
+        "room-demo"
+    ]
     with pytest.raises(SessionError, match="command was not queued"):
         await service.submit_room_control(
             "agent-demo",

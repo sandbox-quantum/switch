@@ -356,13 +356,22 @@ def test_what_a_connection_cannot_be_fenced_by_follows_its_current_holder() -> N
 # ── Room slots ──────────────────────────────────────────────────────────────
 
 
-def test_single_scope_holds_one_room_at_a_time() -> None:
+def test_a_connection_accumulates_the_rooms_claimed_on_it() -> None:
+    """A connection holds the union of its sessions' rooms, and only drops one
+    when the session in it says so.
+
+    "One room at a time" belongs to a session, not to the connection carrying
+    it: clearing here would mean a second session connecting silently
+    unsubscribed the first.
+    """
     registry = ConnectionRegistry()
     conn = _open(registry, "c1", scope="single")
 
     registry.claim_room(conn, ROOM_A)
     registry.claim_room(conn, ROOM_B)
+    assert conn.rooms == {ROOM_A, ROOM_B}
 
+    registry.release_room(conn, ROOM_A)
     assert conn.rooms == {ROOM_B}
 
 

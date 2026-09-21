@@ -78,7 +78,9 @@ def connected(protocol: _Protocol) -> None:
 
 @pytest.fixture
 def caller():
-    token = set_call_context(CallContext(agent_id=AGENT, session_key=CONN))
+    token = set_call_context(
+        CallContext(agent_id=AGENT, session_key=CONN, session=None)
+    )
     yield
     reset_call_context(token)
 
@@ -86,7 +88,9 @@ def caller():
 @pytest.fixture
 def unbound_caller():
     """A caller with no connection at all, so no room can be defaulted."""
-    token = set_call_context(CallContext(agent_id=AGENT, session_key=None))
+    token = set_call_context(
+        CallContext(agent_id=AGENT, session_key=None, session=None)
+    )
     yield
     reset_call_context(token)
 

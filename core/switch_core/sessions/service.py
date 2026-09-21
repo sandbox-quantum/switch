@@ -6,6 +6,7 @@ import logging
 import secrets
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import get_args
 
@@ -91,6 +92,20 @@ class SessionError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class SessionBinding:
+    """What a session is bound to: a room connection, and at most one room.
+
+    `room_id` is None for a session that has not connected to a room — and
+    also for the transitional case of one bound to several, which no caller
+    can resolve implicitly and which a room-scoped operation reports rather
+    than guessing at.
+    """
+
+    connection_id: str
+    room_id: str | None
 
 
 def _receipt(status: CommandStatus, command: Command | None) -> RoomMessageReceipt:
@@ -1409,35 +1424,34 @@ class SessionAuthority:
                 raise SessionError(
                     "FENCING_REQUIRED", "Another SDK session owns this room connection."
                 )
-            rooms = sorted(connection.rooms)
-            for room_id in rooms:
+            for room_id in sorted(connection.rooms):
                 if await db.get(ClientRoom, (agent.client_id, room_id)) is None:
                     raise SessionError(
                         "NOT_AUTHORIZED", "The agent is no longer a room member."
                     )
             row.connection_id = connection_id
-            snapshot = _stored_snapshot(row)
-            if snapshot.session.room_ids != rooms:
-                await self._append(
-                    db,
-                    row,
-                    SessionUpsert(
-                        type="session.upsert",
-                        session=snapshot.session.model_copy(update={"room_ids": rooms}),
-                    ),
-                )
-            return rooms
+            # The session's rooms, not the connection's. A connection may carry
+            # several sessions' rooms and a reattached one carries none, so
+            # deriving the session's from it would hand this session its
+            # siblings' rooms on the first and forget its own on the second.
+            return list(_stored_snapshot(row).session.room_ids)
 
-    async def room_connection(
+    async def session_binding(
         self, agent_id: str, session_id: str, host_id: str, epoch: str
-    ) -> str:
-        """The room connection a live session is bound to.
+    ) -> SessionBinding:
+        """What a live session is bound to: its room connection, and its room.
 
-        The read half of `bind_connection`, for a caller that names its session
-        rather than the connection underneath it. The selector buys nothing on
-        its own: it passes the same `host_id` + `epoch` fence that binding did,
-        so a session belonging to another agent, another tenant, or a
-        superseded generation of this host is refused rather than resolved.
+        The read half of `bind_connection` and `bind_room`, for a caller that
+        names its session rather than the connection underneath it. The
+        selector buys nothing on its own: it passes the same `host_id` +
+        `epoch` fence that binding did, so a session belonging to another
+        agent, another tenant, or a superseded generation of this host is
+        refused rather than resolved.
+
+        Both facts come back together because they are read together. A
+        room-scoped call needs the room, and asking for it separately would
+        mean a second fenced round trip per operation for an answer this one
+        already has in hand.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
@@ -1449,7 +1463,57 @@ class SessionAuthority:
                     "NO_ROOM_CONNECTION",
                     f"Session {session_id} has bound no room connection.",
                 )
-            return row.connection_id
+            rooms = _stored_snapshot(row).session.room_ids
+            return SessionBinding(
+                connection_id=row.connection_id,
+                room_id=rooms[0] if len(rooms) == 1 else None,
+            )
+
+    async def bind_room(
+        self, agent_id: str, session_id: str, host_id: str, epoch: str, room_id: str
+    ) -> None:
+        """Record which room this session is working in.
+
+        A session's room, not its connection's. Several sessions of one agent
+        may share a controller connection, so the connection holds the union of
+        their rooms and can no longer say which one any particular caller
+        meant; this is where that is written down, and `session_binding` reads
+        it back.
+
+        Durable and event-sourced rather than held in the connection registry,
+        so a session that reattaches to a new connection is still in the room
+        it was in, and a supervisor watching the session's stream learns the
+        room from Switch rather than from the agent's tool result.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            if (
+                await db.get(ClientRoom, (await self._client_id(db, agent_id), room_id))
+                is None
+            ):
+                raise SessionError(
+                    "NOT_AUTHORIZED", "The agent is not a member of that room."
+                )
+            snapshot = _stored_snapshot(row)
+            if snapshot.session.room_ids == [room_id]:
+                return
+            await self._append(
+                db,
+                row,
+                SessionUpsert(
+                    type="session.upsert",
+                    session=snapshot.session.model_copy(update={"room_ids": [room_id]}),
+                ),
+            )
+
+    async def _client_id(self, db: AsyncSession, agent_id: str) -> str:
+        client_id = await db.scalar(select(Agent.client_id).where(Agent.id == agent_id))
+        if client_id is None:
+            raise SessionError("NOT_FOUND", f"Unknown agent {agent_id}.")
+        return client_id
 
     async def upload_attachment(
         self,

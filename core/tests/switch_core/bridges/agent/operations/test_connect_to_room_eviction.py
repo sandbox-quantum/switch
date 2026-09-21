@@ -142,7 +142,9 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 
 
 async def _connect_as(connection_id: str) -> dict[str, Any]:
-    token = set_call_context(CallContext(agent_id=AGENT, session_key=connection_id))
+    token = set_call_context(
+        CallContext(agent_id=AGENT, session_key=connection_id, session=None)
+    )
     try:
         return await definitions.connect_to_room(
             ROOM, include_general_instructions=False

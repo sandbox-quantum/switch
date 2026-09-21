@@ -771,9 +771,12 @@ class ConnectionRegistry:
     ) -> Connection | None:
         """Subscribe a connection to a room, claiming its slot.
 
-        At most one connection per agent may act in a room. A `single`
-        connection subscribing to a new room drops the previous one, so "one
-        room at a time" is enforced here rather than left to the client.
+        At most one connection per agent may act in a room, which is what the
+        eviction below enforces. "One room at a time" is *not* enforced here:
+        it is a property of a session, and a connection may carry several
+        sessions working in different rooms, so a connection's rooms are the
+        union of its sessions'. Whoever moves a session out of a room calls
+        `release_room` for it — see `connect_to_room`, which does both.
 
         Returns the connection that was evicted, if any.
         """
@@ -786,8 +789,6 @@ class ConnectionRegistry:
             claimant.wake.set()
             evicted = claimant
 
-        if conn.scope == "single":
-            conn.rooms.clear()
         conn.rooms.add(room_id)
         conn.wake.set()
         return evicted
