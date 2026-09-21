@@ -25,8 +25,9 @@ and the host point is emitted by benchmark code.
 Within one process, use monotonic — it cannot step. Across the process
 boundary (``core_commit`` → ``provider_dispatch`` spans Python and Node) the
 two monotonic scales share no origin that is safe to assume, so those spans are
-computed from the wall clock and the residual error is reported rather than
-hidden; see `LatencyReport.cross_process`.
+computed from the wall clock, and a drift diagnostic is reported beside them
+rather than the caveat being left implicit; see `LatencyReport.cross_process`
+and `ClockResidual`, which says what that diagnostic does and does not cover.
 """
 
 from __future__ import annotations
@@ -185,6 +186,11 @@ class TraceCollector:
         First, not last: a retried admission is a second `admission_received`
         for the same message, and the latency being measured is the one the
         room actually waited for.
+
+        Keeping only the first is right for latency and wrong as a record of
+        what happened, so it is not the only view. Anything that needs to know a
+        point occurred more than once must ask `repeats`; this one cannot tell
+        it apart from a point that occurred exactly once.
         """
         out: dict[str, dict[str, TraceRecord]] = {}
         for record in self._records:
@@ -192,6 +198,33 @@ class TraceCollector:
             if record.point not in points:
                 points[record.point] = record
         return out
+
+    def repeats(self, point: str) -> dict[str, int]:
+        """Correlations for which `point` was recorded more than once.
+
+        Maps the correlation to how many times it occurred. Empty is the
+        expected answer everywhere the topology is meant to deliver a message
+        exactly once.
+
+        This exists because a duplicate is otherwise the one failure this
+        harness cannot see. The dispatch waiter is satisfied by the first
+        record, ingestion accepts every record it is given, and the latency
+        view keeps the first and discards the rest — so a message executed
+        twice is scored as a message executed once, with a healthy latency and
+        no loss. For work handed to a provider, that is worse than dropping it:
+        the run would report a clean result for a topology doing the turn
+        twice, which is exactly the regression a change to takeover and
+        recovery is most likely to introduce.
+        """
+        counts: dict[str, int] = {}
+        for record in self._records:
+            if record.point == point:
+                counts[record.correlation] = counts.get(record.correlation, 0) + 1
+        return {
+            correlation: count
+            for correlation, count in sorted(counts.items())
+            if count > 1
+        }
 
     def write_jsonl(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -331,13 +364,22 @@ class ClockResidual:
     unrelated origins, so subtracting one from the other yields the gap between
     those origins and says nothing about elapsed time.
 
-    What can go wrong with the wall clock is that it steps or slews while the
-    run is in progress, and that *is* measurable — within a single process,
-    where both scales are available over the same interval. Comparing the two
-    elapsed times between that process's first and last record bounds the error
-    the reported spans could be carrying. A figure near zero means the wall
-    clock behaved like a monotonic one for the length of the run, which is the
-    condition the cross-process spans rely on.
+    One thing that can go wrong with the wall clock is that it steps or slews
+    while the run is in progress, and that *is* measurable — within a single
+    process, where both scales are available over the same interval. Comparing
+    the two elapsed times between that process's first and last record is what
+    this reports.
+
+    **It is a diagnostic, not an error bound.** A figure near zero says every
+    process saw its own wall clock advance at the rate its monotonic clock did,
+    so none of them stepped mid-run. It says nothing about whether two processes
+    agreed on what time it was: a constant offset between them drifts not at
+    all and would be invisible here, while passing straight into every
+    cross-process span as a fixed bias. What limits that offset is that the
+    processes share one machine and one system clock, which is an assumption
+    about the deployment rather than something these records prove. A run split
+    across hosts would need real clock synchronisation before its cross-process
+    spans meant anything.
     """
 
     processes: int
@@ -371,7 +413,7 @@ def clock_residual(collector: TraceCollector) -> ClockResidual:
     if not drifts:
         raise ValueError(
             "no process recorded two points far enough apart to measure clock "
-            "drift, so the cross-process spans have no error bound"
+            "drift, so there is no check on whether a wall clock stepped mid-run"
         )
     return ClockResidual(
         processes=len(drifts),

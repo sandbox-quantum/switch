@@ -202,9 +202,15 @@ def score(
     would bury a delivery failure in a measurement complaint; dropping it
     without a count would make a workload the topology could not serve look
     like one it served quickly.
+
+    Delivering a message twice is counted too, and separately. It is the
+    opposite failure and it does not show up in any of the other figures: an
+    extra dispatch adds no latency, loses nothing, and leaves the counts of
+    sent and served messages agreeing with each other.
     """
     correlations = set(posted.markers.values()) - undelivered
     scoped = collector.subset(correlations)
+    duplicated = scoped.repeats(PROVIDER_DISPATCH)
     populations = (
         ("cold", posted.cold & correlations),
         ("warm", correlations - posted.cold),
@@ -228,6 +234,7 @@ def score(
         rooms=rooms,
         messages=len(posted.markers),
         undelivered=tuple(sorted(undelivered)),
+        duplicated=tuple(sorted(duplicated.items())),
         resources=resources,
         latencies=tuple(latencies),
         residual=clock_residual(scoped),
@@ -243,6 +250,10 @@ class WorkloadResult:
     #: Correlations that never reached a provider, named rather than counted so
     #: a loss can be traced to the room and message it happened in.
     undelivered: tuple[str, ...]
+    #: Correlations dispatched to a provider more than once, with how many
+    #: times. A message executed twice is a correctness failure that costs no
+    #: latency and loses nothing, so it is reported on its own or not at all.
+    duplicated: tuple[tuple[str, int], ...]
     resources: ResourceReport
     latencies: tuple[LatencyReport, ...]
     residual: ClockResidual
@@ -314,6 +325,7 @@ def render(results: list[WorkloadResult]) -> str:
         out.append(
             f"rooms/sessions {result.rooms} · messages {result.messages} · "
             f"never delivered {len(result.undelivered)} · "
+            f"delivered twice {len(result.duplicated)} · "
             f"wall {resources.wall_seconds:.1f}s · samples {resources.samples}"
         )
         out.append(
@@ -340,6 +352,17 @@ def render(results: list[WorkloadResult]) -> str:
             # someone has to go and read the room's journals about, and a bare
             # count gives them nowhere to start.
             out.extend(f"  not served: {lost}" for lost in result.undelivered)
+        if result.duplicated:
+            out.append(
+                f"SERVED TWICE: {len(result.duplicated)} of {result.messages} "
+                "messages were dispatched to a provider more than once; the work "
+                "was done repeatedly and the latency above is over the first "
+                "dispatch of each"
+            )
+            out.extend(
+                f"  served {count}x: {correlation}"
+                for correlation, count in result.duplicated
+            )
         if result.unmeasured:
             out.append(
                 f"UNMEASURED: {len(result.unmeasured)} correlations lacked a point; "

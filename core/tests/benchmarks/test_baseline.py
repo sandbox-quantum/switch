@@ -5,9 +5,10 @@ threshold, because there is no agreed one to assert: the deliverable is a set
 of figures for the topology as it stands today, so that the same harness run
 against the changed topology has something to be compared with. What *is*
 asserted is that the run happened — every span has both its ends, and every
-message arrived wherever the topology is capable of delivering it — because a
-benchmark that quietly measured half its workload would report a flattering
-number rather than a failure. Where the topology is *not* capable, the messages
+message arrived exactly once wherever the topology is capable of delivering it
+— because a benchmark that quietly measured half its workload, or measured the
+first of two executions of the same work, would report a flattering number
+rather than a failure. Where the topology is *not* capable, the messages
 it drops are counted and printed rather than asserted away: today one agent is
 refused more than `MAX_CONNECTIONS_PER_AGENT` inbound connections, so a session
 count above that is a ceiling the baseline exists to record.
@@ -143,11 +144,16 @@ async def test_baseline_scales_with_session_count(
         # what has to hold.
         wanted = result.rooms + 1
         assert result.resources.peak_streams >= min(wanted, MAX_CONNECTIONS_PER_AGENT)
-        # Below the cap every message must arrive; a loss there is a defect,
-        # not a measurement. At or above it, the loss is the ceiling itself and
-        # is reported rather than asserted away.
+        # Below the cap every message must arrive exactly once. A loss there is
+        # a defect rather than a measurement, and so is a repeat: a message
+        # dispatched twice had its work done twice. At or above the cap the
+        # loss is the ceiling itself and is reported rather than asserted away,
+        # and a repeat is left unasserted with it — hosts refused a connection
+        # retry for the rest of the run, so a redelivery there would be a
+        # finding to investigate rather than a gate this run can hold.
         if wanted <= MAX_CONNECTIONS_PER_AGENT:
             assert result.undelivered == (), result.undelivered
+            assert result.duplicated == (), result.duplicated
 
 
 async def test_baseline_concurrent_delivery(
@@ -168,8 +174,11 @@ async def test_baseline_concurrent_delivery(
     print("\n" + publish([result], tmp_path / "baseline-concurrent.md"))
     assert result.unmeasured == ()
     # Ten sessions plus the watcher is well inside what the server admits, so
-    # arriving together must not cost a message.
+    # arriving together must neither cost a message nor serve one twice. The
+    # second is the likelier failure of the two here: messages arriving
+    # together is the case where two hosts can race for the same room.
     assert result.undelivered == (), result.undelivered
+    assert result.duplicated == (), result.duplicated
 
 
 async def test_baseline_recovers_from_a_lost_host(
@@ -255,6 +264,11 @@ async def test_baseline_recovers_from_a_lost_host(
         "was dispatched the next message"
     )
     assert result.unmeasured == ()
+    # The case likeliest to execute a message twice, and the reason the figure
+    # is collected at all: the host is killed at a point where it may already
+    # have dispatched, and a replacement then takes the room over. Recovering
+    # by redoing work that was already done is not recovery.
+    assert result.duplicated == (), result.duplicated
 
 
 async def _await_spawnable(

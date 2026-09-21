@@ -55,9 +55,14 @@ export function createBenchAdapter(): ProviderAdapter {
     },
     startSession: async (input) => {
       live.add(input.sessionId);
-      emit(input.sessionId, { type: 'session.started', nativeSessionId: randomUUID() });
+      // One id, announced and returned. A real provider's session has a single
+      // native identity, and resuming one is how a host recovers a session it
+      // did not start. Minting a different id in the event and the return value
+      // would leave the benchmark unable to exercise that path faithfully.
+      const nativeSessionId = randomUUID();
+      emit(input.sessionId, { type: 'session.started', nativeSessionId });
       emit(input.sessionId, { type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: input.sessionId, nativeSessionId: randomUUID() };
+      return { provider: 'claude', sessionId: input.sessionId, nativeSessionId };
     },
     sendTurn: async (input: ProviderSendTurnInput) => {
       const marker = benchMarker(input.text);

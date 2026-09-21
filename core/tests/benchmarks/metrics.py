@@ -12,6 +12,14 @@ figure that is cumulative rather than sampled — which is the better measure
 here anyway: total CPU seconds consumed while serving a fixed workload is
 comparable between revisions, where an instantaneous percentage taken at an
 arbitrary moment is not.
+
+**The sampler must never run those subprocesses on the event loop.** The Switch
+server being measured runs on the same loop as the driver, so a synchronous
+`ps` or `lsof` there is not merely slow: it suspends request handling for its
+whole duration, and that suspension lands inside the latency spans being
+reported. It also scales with the thing under study — more processes make the
+scan more expensive — so the topology with more processes would be charged for
+being harder to observe, which is precisely the comparison this exists to make.
 """
 
 from __future__ import annotations
@@ -153,12 +161,43 @@ def established_connections(port: int) -> int:
     return len(inbound)
 
 
+@dataclass(frozen=True, slots=True)
+class OsSample:
+    """One reading of the operating system's view, taken off the event loop."""
+
+    processes: dict[int, ProcessSample]
+    connections: int
+
+
+@dataclass
+class _CpuSpan:
+    """A process's cumulative CPU counter, as first and last seen.
+
+    `baseline` is what the process had already consumed before this workload
+    began, and is zero for one that first appeared during it — everything such
+    a process has ever used, it used here. `latest` is the newest reading. The
+    difference is what the workload is charged, and it survives the process
+    exiting, which is the whole point of keeping it.
+    """
+
+    baseline: float
+    latest: float
+
+    @property
+    def consumed(self) -> float:
+        return self.latest - self.baseline
+
+
 class ResourceSampler:
     """Polls the process tree and the server's port for the life of a workload.
 
     Sampling rather than reading once at the end, because the peak matters: a
     topology that briefly holds fifty processes and then collapses to one costs
     the machine fifty, and an end-of-run reading would report one.
+
+    The `ps` and `lsof` calls are made in a worker thread. They must not run on
+    the loop: the server under measurement is on it, so the scan would suspend
+    the request handling whose latency is being reported.
     """
 
     def __init__(
@@ -178,8 +217,8 @@ class ResourceSampler:
         self._count_streams = count_streams
         self._interval = interval_seconds
         self._peak_streams = 0
-        self._first: dict[int, ProcessSample] = {}
-        self._last: dict[int, ProcessSample] = {}
+        self._cpu: dict[int, _CpuSpan] = {}
+        self._settled_cpu = 0.0
         self._peak_rss_kib = 0
         self._peak_processes = 0
         self._peak_connections = 0
@@ -195,7 +234,7 @@ class ResourceSampler:
         itself to be measured.
         """
         started = time.monotonic()
-        self.sample()
+        await self.sample()
         task = asyncio.create_task(self._poll())
         try:
             yield
@@ -205,7 +244,7 @@ class ResourceSampler:
                 await task
             except asyncio.CancelledError:
                 pass
-            self.sample()
+            await self.sample()
             self._last_report = self.report(label, time.monotonic() - started)
 
     @property
@@ -217,41 +256,78 @@ class ResourceSampler:
     async def _poll(self) -> None:
         while True:
             await asyncio.sleep(self._interval)
-            self.sample()
+            await self.sample()
 
-    def sample(self) -> None:
+    async def sample(self) -> None:
+        """Take one reading, keeping the expensive half off the event loop."""
+        # Read on the loop, where the registry is mutated, so the count cannot
+        # be taken while the structure behind it is being changed. It is an
+        # in-process lookup and costs nothing worth offloading.
+        streams = self._count_streams()
+        collected = await asyncio.to_thread(self._collect)
+        self._absorb(collected, streams)
+
+    def _collect(self) -> OsSample:
+        """The blocking half: every subprocess this module runs. Thread-safe."""
         tree = {pid for root in self._root_pids for pid in descendants(root)}
-        processes = sample_processes(tree)
-        connections = established_connections(self._port)
-        if not self._first:
-            self._first = processes
-        self._last = processes
-        self._samples += 1
-        self._peak_processes = max(self._peak_processes, len(processes))
-        self._peak_connections = max(self._peak_connections, connections)
-        self._peak_streams = max(self._peak_streams, self._count_streams())
-        self._peak_rss_kib = max(
-            self._peak_rss_kib, sum(s.rss_kib for s in processes.values())
+        return OsSample(
+            processes=sample_processes(tree),
+            connections=established_connections(self._port),
         )
 
-    def report(self, label: str, wall_seconds: float) -> ResourceReport:
-        """Total the run, attributing CPU only where both ends were observed.
+    def _absorb(self, collected: OsSample, streams: int) -> None:
+        """Fold one reading into the running totals. Cheap, and on the loop."""
+        initial = self._samples == 0
+        self._samples += 1
+        self._peak_processes = max(self._peak_processes, len(collected.processes))
+        self._peak_connections = max(self._peak_connections, collected.connections)
+        self._peak_streams = max(self._peak_streams, streams)
+        self._peak_rss_kib = max(
+            self._peak_rss_kib,
+            sum(s.rss_kib for s in collected.processes.values()),
+        )
+        for pid, sample in collected.processes.items():
+            span = self._cpu.get(pid)
+            if span is None:
+                # Anything already running when sampling began was running
+                # before this workload and is not charged for it; anything that
+                # appeared later exists only because of it, so all of its CPU
+                # counts, including whatever it burned starting up before the
+                # first sample that saw it.
+                self._cpu[pid] = _CpuSpan(
+                    baseline=sample.cpu_seconds if initial else 0.0,
+                    latest=sample.cpu_seconds,
+                )
+                continue
+            if sample.cpu_seconds < span.latest:
+                # A cumulative counter cannot fall. The kernel has reused the
+                # pid, so this is a different process: bank what the previous
+                # one used rather than letting the new one's lower reading
+                # subtract it away.
+                self._settled_cpu += span.consumed
+                self._cpu[pid] = _CpuSpan(baseline=0.0, latest=sample.cpu_seconds)
+                continue
+            span.latest = sample.cpu_seconds
 
-        A process that started after the first sample has no baseline to
-        subtract, so its whole lifetime counts; one that exited before the last
-        sample took its counter with it and contributes nothing. Neither is
-        guessed at, and the sample count is reported so a run too short to have
-        seen the peak is visible as such.
+    def report(self, label: str, wall_seconds: float) -> ResourceReport:
+        """Total the run over every process seen, not only the survivors.
+
+        CPU is accumulated per pid as it is observed, so a process that exited
+        before the run ended still contributes what it used. Totalling the final
+        sample instead would report zero for exactly the processes the harness
+        goes out of its way to create — the host killed in the recovery case,
+        and every host that failed and was replaced — and a topology that
+        churned more would look cheaper for it.
+
+        The sample count is reported so a run too short to have seen the peak is
+        visible as such.
         """
         if self._samples == 0:
             raise ValueError(
                 f"{label}: the sampler was never run, so there are no resource "
                 "figures for this workload"
             )
-        consumed = 0.0
-        for pid, end in self._last.items():
-            start = self._first.get(pid)
-            consumed += end.cpu_seconds - (start.cpu_seconds if start else 0.0)
+        consumed = self._settled_cpu + sum(span.consumed for span in self._cpu.values())
         return ResourceReport(
             label=label,
             wall_seconds=wall_seconds,
