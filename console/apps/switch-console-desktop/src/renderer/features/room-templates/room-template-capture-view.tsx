@@ -20,6 +20,8 @@ type CaptureStep = 'loading' | 'preview' | 'error';
 
 /** Candidate fields the user can promote to params. */
 type Candidate = {
+  /** Identity of the row. The key is what the user edits, so it cannot be the identity. */
+  id: number;
   /** Default param key — editable by the user. */
   key: string;
   /** Human label for the field, e.g. "Room name" */
@@ -31,7 +33,7 @@ type Candidate = {
 
 /** Parse the exported YAML to find parameterizable values. */
 function extractCandidates(yamlText: string): Candidate[] {
-  const candidates: Candidate[] = [];
+  const candidates: Omit<Candidate, 'id'>[] = [];
 
   const nameMatch = yamlText.match(/^\s*name:\s+(.+)$/m);
   if (nameMatch) {
@@ -76,7 +78,7 @@ function extractCandidates(yamlText: string): Candidate[] {
     }
   }
 
-  return candidates;
+  return candidates.map((c, id) => ({ ...c, id }));
 }
 
 // ── Parameterize row ────────────────────────────────────────────────────────
@@ -147,7 +149,6 @@ function RoundTripCheck({
               ? `${checkedCount} param${checkedCount > 1 ? 's' : ''}, ${allHaveDefaults ? 'all' : 'not all'} with defaults`
               : 'No params (literal export)'}
           </CheckItem>
-          <CheckItem ok>No secrets detected in output</CheckItem>
         </div>
       </div>
       <div>
@@ -197,7 +198,6 @@ const CapturePanel = observer(function CapturePanel() {
   const [step, setStep] = useState<CaptureStep>('loading');
   const [originalYaml, setOriginalYaml] = useState('');
   const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [parsed, setParsed] = useState<ParsedTemplate | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -217,12 +217,6 @@ const CapturePanel = observer(function CapturePanel() {
         if (cancelled) return;
         setOriginalYaml(yaml);
         setCandidates(extractCandidates(yaml));
-        try {
-          const p = await rpc.roomTemplates.parse({ yamlText: yaml });
-          if (!cancelled) setParsed(p);
-        } catch {
-          // Parse failure of the raw export is unexpected but not blocking.
-        }
         setStep('preview');
       } catch (e) {
         if (!cancelled) {
@@ -236,18 +230,21 @@ const CapturePanel = observer(function CapturePanel() {
     };
   }, [serverId, roomId]);
 
-  const handleToggle = useCallback((key: string) => {
-    setCandidates((prev) => prev.map((c) => (c.key === key ? { ...c, checked: !c.checked } : c)));
+  const handleToggle = useCallback((id: number) => {
+    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, checked: !c.checked } : c)));
     setSaved(false);
     setCopied(false);
   }, []);
 
-  const handleKeyChange = useCallback((oldKey: string, newKey: string) => {
-    setCandidates((prev) => prev.map((c) => (c.key === oldKey ? { ...c, key: newKey } : c)));
+  const handleKeyChange = useCallback((id: number, newKey: string) => {
+    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, key: newKey } : c)));
     setSaved(false);
     setCopied(false);
   }, []);
 
+  // The check reports on the document that is saved or copied, not on the
+  // raw export: a substitution can break a document the export parsed.
+  const [outputParsed, setOutputParsed] = useState<ParsedTemplate | null>(null);
   const { parameterizedYaml, parameterizeOk } = useMemo(() => {
     const checked = candidates.filter((c) => c.checked);
     if (checked.length === 0) return { parameterizedYaml: originalYaml, parameterizeOk: true };
@@ -258,6 +255,22 @@ const CapturePanel = observer(function CapturePanel() {
       return { parameterizedYaml: originalYaml, parameterizeOk: false };
     }
   }, [originalYaml, candidates]);
+  useEffect(() => {
+    if (step !== 'preview') return;
+    let cancelled = false;
+    setOutputParsed(null);
+    rpc.roomTemplates
+      .parse({ yamlText: parameterizedYaml })
+      .then((p) => {
+        if (!cancelled) setOutputParsed(p);
+      })
+      .catch(() => {
+        if (!cancelled) setOutputParsed(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [parameterizedYaml, step]);
 
   const handleSave = useCallback(async () => {
     const slug = (roomName ?? 'room').replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
@@ -318,7 +331,7 @@ const CapturePanel = observer(function CapturePanel() {
           <header>
             <h2 className="text-2xl font-semibold text-foreground">Capture as template</h2>
             <p className="mt-1 text-sm text-foreground-muted">
-              This room, packaged as a shareable file. Secrets and credentials are never captured.
+              This room, packaged as a shareable file.
             </p>
           </header>
 
@@ -329,10 +342,10 @@ const CapturePanel = observer(function CapturePanel() {
               <div className="space-y-2">
                 {candidates.map((c) => (
                   <CandidateRow
-                    key={c.key}
+                    key={c.id}
                     candidate={c}
-                    onToggle={() => handleToggle(c.key)}
-                    onKeyChange={(newKey) => handleKeyChange(c.key, newKey)}
+                    onToggle={() => handleToggle(c.id)}
+                    onKeyChange={(newKey) => handleKeyChange(c.id, newKey)}
                   />
                 ))}
               </div>
@@ -368,7 +381,11 @@ const CapturePanel = observer(function CapturePanel() {
 
       {/* Right sidebar */}
       <aside className="w-72 shrink-0 border-l border-border p-6">
-        <RoundTripCheck parsed={parsed} candidates={candidates} parameterizeOk={parameterizeOk} />
+        <RoundTripCheck
+          parsed={outputParsed}
+          candidates={candidates}
+          parameterizeOk={parameterizeOk}
+        />
       </aside>
     </div>
   );

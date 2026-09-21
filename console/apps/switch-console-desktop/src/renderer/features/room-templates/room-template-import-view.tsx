@@ -12,6 +12,7 @@ import {
   type TemplateAccess,
   visibilityOf,
 } from '@renderer/features/templates/template-visibility';
+import { forgetTemplateSummary } from '@renderer/features/templates/templates-view';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -281,16 +282,19 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       await rpc.agentTemplates.parseAgents({ yamlText });
       const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
       if (coreYaml) await rpc.roomTemplates.parse({ yamlText: coreYaml });
+      // Each field is sent only when changed, so saving one cannot put back
+      // another that someone else changed meanwhile.
       const saved = await rpc.switchServers.updateTemplate({
         serverId,
         templateId: editingTemplate.id,
-        name: name.trim(),
-        description: description.trim(),
-        // Sent only when changed, so a rename cannot put back a document
-        // someone else saved meanwhile.
+        ...(name.trim() !== editingTemplate.name ? { name: name.trim() } : {}),
+        ...(description.trim() !== editingTemplate.description
+          ? { description: description.trim() }
+          : {}),
         ...(yamlText !== initialYaml ? { content: yamlText } : {}),
         ...(access !== editingTemplate.access ? visibilityOf(access) : {}),
       });
+      forgetTemplateSummary(serverId, saved.id);
       toast({ title: `"${saved.name}" saved`, description: `Version ${saved.version}.` });
       appState.navigation.navigate('templateDetail', { serverId, templateId: saved.id });
     } catch (e) {

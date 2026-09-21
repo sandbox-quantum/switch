@@ -129,3 +129,21 @@ describe('parameterize', () => {
     expect(result).toMatch(/'.*\{name\}.*'/);
   });
 });
+
+describe('parameterize: block scalars', () => {
+  it('leaves the body of a | block alone, and still quotes a mapping value outside it', () => {
+    const yaml = [
+      'room:',
+      '  name: alpha-room',
+      '  instructions: |',
+      '    Room rules:',
+      '    - Ask agent-alpha for help when stuck.',
+      '    - Respond with: {"ok": true}',
+      '  topic: agent-alpha',
+    ].join('\n');
+    const out = parameterize(yaml, [{ key: 'agent_a', value: 'agent-alpha' }]);
+    expect(out).toContain('    - Ask {agent_a} for help when stuck.');
+    expect(out).toContain('    - Respond with: {"ok": true}');
+    expect(out).toContain("  topic: '{agent_a}'");
+  });
+});

@@ -82,21 +82,31 @@ export function parameterize(yamlText: string, substitutions: ParamSubstitution[
  * (`|`, `>`), are left alone.
  */
 function quoteUnquotedBraces(text: string): string {
+  // The indent of the `key: |` line whose block body is being walked, or
+  // null outside a block. Body lines are text, not YAML, and are left alone.
+  let blockIndent: number | null = null;
   return text
     .split('\n')
     .map((line) => {
+      const indent = line.match(/^ */)?.[0].length ?? 0;
+      if (blockIndent !== null) {
+        if (line.trim() === '' || indent > blockIndent) return line;
+        blockIndent = null;
+      }
       // mapping value: `  key: value`
       const kv = line.match(/^(\s*[^\s#][^:]*:\s+)(.+)$/);
       if (kv) {
         const [, prefix, val] = kv;
-        if (needsQuoting(val)) return `${prefix}${singleQuote(val)}`;
+        if (isBlockHeader(val)) blockIndent = indent;
+        else if (needsQuoting(val)) return `${prefix}${singleQuote(val)}`;
         return line;
       }
       // sequence item: `  - value`
       const li = line.match(/^(\s*-\s+)(.+)$/);
       if (li) {
         const [, prefix, val] = li;
-        if (needsQuoting(val)) return `${prefix}${singleQuote(val)}`;
+        if (isBlockHeader(val)) blockIndent = indent;
+        else if (needsQuoting(val)) return `${prefix}${singleQuote(val)}`;
         return line;
       }
       return line;
@@ -104,10 +114,14 @@ function quoteUnquotedBraces(text: string): string {
     .join('\n');
 }
 
+/** `|`, `>`, and their chomping and indentation variants (`|-`, `>+`, `|2`). */
+function isBlockHeader(val: string): boolean {
+  return /^[|>][-+]?\d*$/.test(val.trim());
+}
+
 function needsQuoting(val: string): boolean {
   if (!val.includes('{')) return false;
   if (val.startsWith("'") || val.startsWith('"')) return false;
-  if (val === '|' || val === '>') return false;
   return true;
 }
 
