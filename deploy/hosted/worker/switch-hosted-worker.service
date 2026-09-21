@@ -37,4 +37,4 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=cloud-init.target
