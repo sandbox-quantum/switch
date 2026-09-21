@@ -1,12 +1,9 @@
 """Assembles observability from config and the running process's own objects.
 
-Kept apart from ``main`` so that what is measured, and what it takes to measure
-it, can be read and tested without starting a server.
-
-Note what is *not* conditional on configuration: the health monitor always
-runs. Readiness is how Kubernetes decides whether to send this pod traffic, and
-it cannot depend on whether anyone happens to be collecting metrics. Only the
-export is gated.
+Apart from ``main`` so what is measured can be read and tested without starting
+a server. The health monitor always runs whatever the config says: readiness is
+how Kubernetes routes traffic, and cannot depend on whether anyone is
+collecting metrics. Only the export is gated.
 """
 
 from __future__ import annotations
@@ -60,14 +57,12 @@ from switch_core.observability.runtime import (
 
 logger = logging.getLogger(__name__)
 
-# How often the dependency checks are re-run. Matched to the kubelet's probe
-# period: a readiness answer older than the interval the kubelet asks on would
-# report a fault one probe later than it could have.
+# Matched to the kubelet's probe period; longer and a fault is reported one
+# probe later than it could have been.
 HEALTH_REFRESH_INTERVAL_SECONDS = 10.0
 
-# Logs ship far more often than metrics. A metric interval is a bucket and
-# nothing is lost by making it a minute; a log is read by someone looking at an
-# incident right now, and a minute behind is a minute of guessing.
+# Far shorter than the metric interval: a metric interval is a bucket, a log is
+# read by someone looking at an incident now.
 LOG_EXPORT_INTERVAL_SECONDS = 5.0
 
 
@@ -75,9 +70,8 @@ LOG_EXPORT_INTERVAL_SECONDS = 5.0
 class RuntimeProbes:
     """Live state, as callables over whatever holds it.
 
-    Callables rather than the services themselves so this module does not
-    depend on half the application to read four numbers off it — and so a test
-    can supply the numbers without constructing a bridge.
+    Callables rather than the services, so this module does not depend on half
+    the application and a test can supply the numbers without a bridge.
     """
 
     listener_connected: Callable[[], bool]
@@ -103,8 +97,8 @@ class Observability:
     _log_handler: OtlpLogHandler | None
 
     async def aclose(self) -> None:
-        # Detached first, so nothing logged during shutdown is queued for an
-        # exporter that is about to stop draining it.
+        # Detached first, so shutdown logging is not queued for an exporter
+        # about to stop draining it.
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
         for task in self._tasks:
@@ -184,7 +178,6 @@ def start_observability(
 
     http_client = httpx.AsyncClient()
     client = OtlpClient(
-        # Checked at startup: `observability_enabled` is exactly "this is set".
         base_endpoint=str(config.otlp_endpoint),
         timeout_seconds=config.otlp_timeout_seconds,
         headers=config.otlp_header_map,
@@ -214,7 +207,6 @@ def start_observability(
             config.service_name,
         )
     else:
-        # Worth saying: an endpoint is configured, so somebody expects data.
         logger.warning(
             "OTLP_ENDPOINT is set but OTLP_METRICS_ENABLED is false, so no "
             "metrics are being reported."
@@ -223,9 +215,8 @@ def start_observability(
     log_handler: OtlpLogHandler | None = None
     if config.otlp_logs_enabled:
         log_handler = OtlpLogHandler(capacity=DEFAULT_QUEUE_CAPACITY)
-        # The same filter the stderr handler carries. Without it a record
-        # reaching this handler has no tenant, request or agent on it — which
-        # is the entire reason for shipping logs rather than counting them.
+        # The same filter the stderr handler carries; without it a shipped
+        # record has no tenant, request or agent on it.
         log_handler.addFilter(LogContextFilter(config.tenant_id))
         logging.getLogger().addHandler(log_handler)
         tasks.append(

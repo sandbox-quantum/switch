@@ -115,11 +115,10 @@ def test_nothing_is_recorded_when_no_registry_is_installed():
 
 
 def test_an_inner_route_sharing_the_mounts_name_keeps_its_prefix(registry):
-    """The collision a `startswith` check silently allowed.
+    """An inner route whose name starts with the mount's own string.
 
-    `/gatewayish` under a `/gateway` mount starts with the mount's own string,
-    so a prefix test that asked "is it already prefixed?" answered yes and
-    dropped it — losing exactly the distinction this label exists to keep.
+    The case where asking "is the prefix already there?" answers yes and drops
+    it, losing the distinction this label exists to keep.
     """
     app = FastAPI()
     inner = FastAPI()
@@ -145,12 +144,7 @@ def test_an_unmounted_route_is_not_given_a_prefix(registry):
 
 
 def test_a_long_poll_is_counted_but_not_timed(registry):
-    """Its duration is the caller's chosen wait, not the server's speed.
-
-    Timing it would make this route's percentiles describe a client parameter,
-    and on a shared axis the tens of seconds it reports flatten every other
-    route into the floor.
-    """
+    """Its duration is the caller's chosen wait, not the server's speed."""
     app = FastAPI()
 
     @app.get("/agents/{agent_id}/events")
@@ -167,12 +161,10 @@ def test_a_long_poll_is_counted_but_not_timed(registry):
 
 
 def test_every_long_poll_is_untimed():
-    """Found by behaviour, not by hand — a list maintained by hand goes stale.
+    """Found by behaviour, because a hand-kept list goes stale.
 
-    A long poll here is an endpoint that takes the caller's own `timeout`, and
-    that is the property that makes its duration meaningless as latency. The
-    first version of this listed two routes and missed a third that had exactly
-    the same shape; this cannot miss the fourth.
+    A long poll is an endpoint taking the caller's own `timeout`, which is the
+    property that makes its duration meaningless as latency.
     """
     import inspect
 
@@ -198,11 +190,8 @@ def test_every_long_poll_is_untimed():
 def test_untimed_routes_are_real_routes():
     """Every untimed route must still exist under the name given.
 
-    Without this, renaming an endpoint would quietly put its long-poll
-    durations back into the latency histogram and nothing would say so. The
-    router is checked rather than a built app because constructing the real
-    one needs the whole dependency graph, and the prefix it is mounted under
-    is a constant of the app module.
+    The router rather than a built app: constructing the real one needs the
+    whole dependency graph, and the mount prefix is a constant of `app.py`.
     """
     from switch_core.bridges.agent.api.handlers import router
     from switch_core.observability.http import MCP_ROUTE, UNTIMED_ROUTES
@@ -220,11 +209,7 @@ def test_untimed_routes_are_real_routes():
 
 
 def test_mcp_traffic_is_labelled_rather_than_unmatched(registry):
-    """A mount sets no route, so without this every MCP call is a 404's twin.
-
-    That would hide the primary way agents use Switch, and mix its held-open
-    sessions into the same bucket as attacker-driven 404 paths.
-    """
+    """A mount sets no route, so without this every MCP call is a 404's twin."""
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse as StarletteJSON
     from starlette.routing import Route

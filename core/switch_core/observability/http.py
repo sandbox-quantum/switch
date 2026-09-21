@@ -1,18 +1,10 @@
 """ASGI middleware counting and timing every request.
 
-Plain ASGI rather than ``BaseHTTPMiddleware``, for the same reason
-:mod:`switch_core.request_context` is: that one runs the rest of the app in a
-separate task, and this needs to see what the router resolved in the scope the
-endpoint actually ran in.
+Plain ASGI rather than ``BaseHTTPMiddleware``, which runs the rest of the app
+in a separate task and would not see what the router resolved.
 
-The one thing worth being careful about is the label. A metric keyed by the
-request *path* is keyed by an unbounded value — every room id, every agent id,
-one series each — which is the cardinality failure the catalogue exists to
-prevent, and an HTTP middleware is where it would happen first. So the label is
-the route *template* the router matched, and anything unmatched is folded into
-a single bucket rather than reported by the path someone happened to ask for.
-That also closes the obvious griefing route: an unauthenticated 404 loop would
-otherwise mint a series per request.
+The label is the route *template*. The resolved path carries an id per request,
+so keying on it would mint a series per room, per agent, per 404.
 """
 
 from __future__ import annotations
@@ -24,45 +16,29 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from switch_core.observability.catalogue import HTTP_REQUEST_DURATION, HTTP_REQUESTS
 from switch_core.observability.metrics import metrics
 
-# Every request the router could not place, under one label. The path is
-# deliberately discarded: it is attacker-chosen on a public endpoint.
+# Every request the router could not place. The path is discarded: on a public
+# endpoint it is attacker-chosen.
 UNMATCHED_ROUTE = "unmatched"
 
 # A request whose response never started — the client went away mid-flight, or
 # the app raised before sending anything.
 NO_STATUS = "none"
 
-# The MCP surface is a mounted Starlette app, not FastAPI routes, and only
-# FastAPI sets `scope["route"]`. Without naming it here every MCP call — the
-# primary way agents use Switch — would be indistinguishable from a 404 in the
-# `unmatched` bucket. One label for the mount rather than per-tool: the tool is
-# in the body, and a label taken from a request body is a label a caller
-# chooses.
+# The MCP surface is a mounted Starlette app, and only FastAPI sets
+# `scope["route"]`, so without naming it here every MCP call is indistinguishable
+# from a 404. One label for the mount: the tool is in the request body, and a
+# label read from a body is a label the caller chooses.
 MCP_ROUTE = "/mcp"
 
-# Routes that are counted but not timed.
-#
-# An agent's event stream is held open deliberately until something happens or
-# the client's own timeout expires, so its duration measures how long the
-# caller asked to wait. Putting that in a latency histogram does two bad
-# things: it makes this route's percentiles describe a client's parameter
-# rather than the server's speed, and on a panel with a shared axis the tens
-# of seconds it reports flatten every other route into the floor.
-#
-# The request count still matters — these are the highest-volume endpoints
-# Switch serves — so they are counted, and only the timing is skipped.
-# `test_streaming_routes_exist` pins each of these against the real app, so
-# renaming an endpoint fails a test rather than silently restoring the noise.
+# Counted but not timed. These are held open until something happens or the
+# caller's own timeout expires, so their duration is a client's parameter rather
+# than this server's speed — and on a shared axis it flattens every other route.
+# `test_every_long_poll_is_untimed` derives this set from the router.
 UNTIMED_ROUTES = frozenset(
     {
         "/agents/{agent_id}/events",
         "/agents/{agent_id}/rooms/{room_id}/events",
         "/agents/{agent_id}/notifications",
-        # Every MCP call arrives through a mount, and a mount does not set the
-        # route a FastAPI route does — so all of it labels as `unmatched`,
-        # streamable-HTTP sessions included. Those are held open like any other
-        # stream. See `route_label`, which gives the mount its own name so this
-        # entry means what it says rather than silently covering 404s too.
         MCP_ROUTE,
     }
 )
@@ -71,27 +47,15 @@ UNTIMED_ROUTES = frozenset(
 def route_label(scope: Scope) -> str:
     """The matched route template, or a single bucket for everything else.
 
-    Starlette records what it matched in the scope, and for a request that
-    entered a mounted sub-app (the gateway is mounted under ``/gateway``) the
-    inner router overwrites it with its own route — whose ``path`` is relative
-    to the mount. The mount's own prefix is in ``root_path``, so the two are
-    concatenated here; without that, the gateway's ``/rooms`` and the agent
-    bridge's ``/rooms`` would be counted as one route.
-
-    Concatenated unconditionally rather than after checking whether the path
-    already carries the prefix. That check reads as a safe guard and is not
-    one: a route's path is always relative to its mount, so the prefix is never
-    already there — but an inner route whose name merely *starts with* the
-    mount's own string ("/gatewayish" under "/gateway") satisfies a
-    ``startswith`` test and loses its prefix, which is precisely the collision
-    this function exists to prevent.
+    A route's path is relative to its mount, and the mount's prefix is in
+    ``root_path``; without joining them the gateway's ``/rooms`` and the agent
+    bridge's ``/rooms`` are one route. Joined unconditionally — testing whether
+    the prefix is "already there" looks like a guard but silently drops it from
+    any inner route whose name starts with the mount's own string.
     """
     route = scope.get("route")
     path = getattr(route, "path", None)
     if not isinstance(path, str) or not path:
-        # Nothing matched, or something matched that does not record a route.
-        # A mount is the second case: the MCP app is reached through one, so it
-        # is named before everything else falls into the bucket.
         raw = scope.get("path", "")
         if raw == MCP_ROUTE or raw.startswith(f"{MCP_ROUTE}/"):
             return MCP_ROUTE
@@ -101,12 +65,7 @@ def route_label(scope: Scope) -> str:
 
 
 def status_class(status_code: int) -> str:
-    """ "2xx", "4xx", … — the question is "are we failing", not which code.
-
-    The exact code is in the access log and the trace. Keeping it out of the
-    metric divides the series count by however many codes a route can return,
-    for an answer no dashboard was asking.
-    """
+    """ "2xx", "4xx", … — the question is "are we failing", not which code."""
     return f"{status_code // 100}xx"
 
 
@@ -121,7 +80,6 @@ class MetricsMiddleware:
 
         registry = metrics()
         if not registry.enabled:
-            # Nothing configured: not even the clock is read.
             await self.app(scope, receive, send)
             return
 
@@ -133,10 +91,9 @@ class MetricsMiddleware:
                 seen_status.append(message["status"])
             await send(message)
 
-        # Starlette's error handler sits *outside* this middleware, so a request
-        # that raises past the app never sends a response through `send` here —
-        # the 500 is written above us. Without catching it, the one outcome a
-        # dashboard most needs would be the one recorded as "no status".
+        # Starlette's error handler sits outside this middleware, so a request
+        # that raises past the app sends nothing through `send` here — without
+        # catching it, the outcome a dashboard most needs reads as "no status".
         outcome = NO_STATUS
         try:
             await self.app(scope, receive, send_wrapper)
@@ -146,12 +103,10 @@ class MetricsMiddleware:
             outcome = "5xx"
             raise
         finally:
-            # `finally` rather than the two branches, so a cancelled request —
-            # the client hung up mid-response — is still counted, as the
+            # `finally` so a cancelled request is still counted, as the
             # unfinished thing it was.
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             method = scope.get("method", "GET")
-            # Read after the call: the router fills this in as it dispatches.
             route = route_label(scope)
 
             registry.increment(

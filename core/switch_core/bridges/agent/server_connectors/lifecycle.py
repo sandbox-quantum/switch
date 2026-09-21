@@ -41,11 +41,9 @@ class ServerSideConnectorLifecycleService:
         self._connector_registry: dict[str, type[ServerSideConnector]] = {}
         self._config_registry: dict[str, type[ServerSideConnectorConfig]] = {}
         self._cores: dict[str, ConnectorCore] = {}
-        # Connectors this process means to be running: every active one found
-        # at boot, plus any registered since, minus those deliberately stopped.
-        # `_cores` alone cannot answer "is anything missing", because a
-        # connector that failed to start never entered it — and `start_all`
-        # logs each failure and steps over it, so nothing else notices either.
+        # What this process means to be running. `_cores` alone cannot answer
+        # "is anything missing": a connector that failed to start never
+        # entered it, and `start_all` logs each failure and steps over it.
         self._expected: set[str] = set()
 
     def register_connector_type(
@@ -203,9 +201,8 @@ class ServerSideConnectorLifecycleService:
     def running_count(self) -> int:
         """Of those, how many actually are.
 
-        Short of `expected_count` means one failed to start or has been torn
-        down without being stopped — either way an agent host that is not
-        there, which is otherwise only a line in the boot log.
+        Short of `expected_count` is an agent host that is not there, which is
+        otherwise only a line in the boot log.
         """
         return sum(1 for connector_id in self._expected if connector_id in self._cores)
 

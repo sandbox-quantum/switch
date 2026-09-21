@@ -10,14 +10,11 @@ Point a deployment at it and read what arrives:
     OTLP_LOGS_ENABLED=true \
     just run
 
-It answers `/v1/metrics` and `/v1/logs` the way a real collector does and
-prints a readable summary of every payload. Nothing is stored and nothing is
-forwarded — this exists so that "is it reporting?" is a question you can
-answer on a laptop, without a Datadog account and without sending a
-deployment's data anywhere.
+It answers `/v1/metrics` and `/v1/logs` like a real collector and prints a
+summary of every payload. Nothing is stored or forwarded, so "is it reporting?"
+is answerable on a laptop without a Datadog account.
 
-`--raw` prints the full JSON instead of the summary, for checking the wire
-format by eye.
+`--raw` prints the full JSON instead, for checking the wire format by eye.
 """
 
 from __future__ import annotations
@@ -110,17 +107,15 @@ def _summarise_logs(payload: dict[str, Any]) -> list[str]:
 
 class Handler(BaseHTTPRequestHandler):
     raw = False
-    # Keep-alive, like a real collector. The default here is HTTP/1.0, where
-    # the response is delimited by closing the connection — which curl accepts
-    # and a pooling client such as httpx reports as "server disconnected
-    # without sending a response".
+    # Keep-alive, like a real collector. The default is HTTP/1.0, where closing
+    # the connection delimits the response — which curl accepts and a pooling
+    # client reports as "server disconnected without sending a response".
     protocol_version = "HTTP/1.1"
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's spelling
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
-        # Answer first: a collector that is slow to reply is indistinguishable
-        # from one that is broken, and the point here is to not be the problem.
+        # Answer first: a slow collector is indistinguishable from a broken one.
         reply = b'{"partialSuccess":{}}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -167,9 +162,8 @@ def main() -> None:
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     except OSError as error:
-        # Almost always a sink from a previous run still holding the port. A
-        # traceback here sends the reader into this file rather than into the
-        # one command that fixes it.
+        # Usually a sink from a previous run. A traceback would send the reader
+        # into this file rather than the command that fixes it.
         raise SystemExit(
             f"Cannot listen on port {args.port}: {error}\n"
             f"Something is already there — most likely an earlier sink. "

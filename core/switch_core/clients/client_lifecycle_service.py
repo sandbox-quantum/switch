@@ -271,8 +271,7 @@ class ClientLifecycleService:
     def running_count(self) -> int:
         """Clients believed to be running right now.
 
-        A crashed client removes itself from the registry, so this falling is
-        the only signal that one did — there is no failure counter to read.
+        A crashed client removes itself, so this falling is the only signal.
         """
         return len(self._clients)
 

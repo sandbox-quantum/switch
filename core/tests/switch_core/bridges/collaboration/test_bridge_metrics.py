@@ -1,13 +1,11 @@
-"""What a bridge reports about its own traffic (CHOO-2807).
+"""What a bridge reports about its own traffic.
 
-Inbound is counted at `_traced`, the one choke point every platform event goes
-through, and outbound at the relay call rather than at the top of the handler —
-a handler returns early for a puppet's own echo and for a room with no channel
-mapping, and neither is something anybody sent.
+Inbound at `_traced`, the choke point every platform event goes through;
+outbound at the relay rather than the top of the handler, which returns early
+for a puppet's own echo and for a room with no channel mapping.
 
-The failure counters matter more than the volume ones. A bridge handler that
-raises is a message a person sent that nobody received, and from the platform's
-side it looks exactly like a message nobody answered.
+The failure counters matter more than the volume ones: an inbound failure is a
+message a person sent that nobody received.
 """
 
 from __future__ import annotations

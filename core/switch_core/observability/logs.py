@@ -1,32 +1,23 @@
 """Shipping log records to the collector, alongside writing them to stderr.
 
-The server has always written Datadog-shaped JSON to its own output, and in
-this deployment nothing collects it: there is no log agent in the cluster, so
-those lines reach the container and stop. This is the other end of that.
+stderr is never replaced — this handler is additional, so `kubectl logs` keeps
+working and a collector outage costs a copy rather than the record.
 
-**stderr is not replaced.** The handler installed here is additional. `kubectl
-logs` keeps working, a log agent added later still reads the same stream, and
-a collector outage costs a copy rather than the record.
-
-Three things make a log exporter different from a metrics one:
+Three constraints shape it:
 
 **It must never block.** `logger.info` is called from anywhere, including the
-OS thread the Mattermost adapter dispatches on, and a network write inside it
-would stall whatever was logging. So the handler only enqueues, and a task
-drains.
+OS thread the Mattermost adapter dispatches on, so the handler only enqueues
+and a task drains.
 
 **It must never grow without bound.** A collector that stops answering while
-the server keeps logging is a memory leak in the observability of the thing it
-is observing. The queue is capped and drops the oldest, and says how many it
-dropped — a gap that announces itself, rather than one nobody can see.
+the server keeps logging would be a memory leak in the observability of the
+thing being observed. The queue is capped, drops the oldest, and reports how
+many.
 
-**It must not feed itself.** Export failures are logged, and if those lines
-were themselves queued for export a failing collector would generate exactly
-the traffic that is failing. Two things are therefore written to stderr and
-never shipped: records from this package, and anything logged while an export
-is in flight — which is how the HTTP client underneath the exporter is kept
-out, since it logs a line per connection at a level a deployment may well be
-running at.
+**It must not feed itself.** Export failures are logged, and the HTTP client
+underneath logs a line per connection at DEBUG. Shipping either would make a
+failing collector generate the traffic that is failing, so records from this
+package and anything logged during an export go to stderr only.
 """
 
 from __future__ import annotations
@@ -49,11 +40,9 @@ from switch_core.observability.otlp import (
 
 logger = logging.getLogger(__name__)
 
-# Records from this package are never shipped; see the module docstring.
 _SELF = "switch_core.observability"
 
-# OTLP's severity numbers. Python's levels are a different scale, and a
-# receiver that filters on severity is filtering on this one.
+# OTLP's own scale, which is what a receiver filters on — not Python's.
 _SEVERITY = (
     (logging.CRITICAL, 21, "FATAL"),
     (logging.ERROR, 17, "ERROR"),
@@ -62,25 +51,16 @@ _SEVERITY = (
     (logging.DEBUG, 5, "DEBUG"),
 )
 
-# How many records may wait to be sent. Roughly a minute of a busy server at
-# the interval below; past that the collector is not keeping up and the
-# alternative to dropping is growing.
+# Past this the collector is not keeping up, and the alternative to dropping
+# is growing.
 DEFAULT_QUEUE_CAPACITY = 10_000
 
-# Records per request. Large enough that a busy interval is one or two posts,
-# small enough that a single payload stays a reasonable size.
+# Records per request.
 DEFAULT_BATCH_SIZE = 500
 
-# How long a shutdown will keep draining the queue before giving up and
-# saying what is left. Shutdown is not the moment to block on a collector
-# that has stopped answering.
-#
-# Deliberately under `main._FORCED_EXIT_GRACE_SECONDS`, which is the whole
-# window the lifespan's teardown gets before the process is killed. Set above
-# it and this flush is not merely cut short — the line below that reports what
-# was lost never runs either, so the records disappear with nothing said. That
-# is the failure this module exists to prevent, and it is only visible by
-# running a real shutdown and reading the log.
+# Must stay under `main._FORCED_EXIT_GRACE_SECONDS`, the whole window teardown
+# gets before the process is killed. Longer and the flush is not merely cut
+# short — the line reporting what was lost never runs either.
 SHUTDOWN_FLUSH_SECONDS = 2.0
 
 
@@ -94,17 +74,9 @@ def severity_of(level: int) -> tuple[int, str]:
 def _is_own_traffic(record: logging.LogRecord) -> bool:
     """Whether shipping this record would help generate the next one.
 
-    Two sources, and the second is the one that bites. This package's own
-    loggers are the obvious case — an "export failed" line must not be queued
-    for the export that is failing. Matched on a dotted-name boundary rather
-    than a bare prefix, so a future ``switch_core.observability_extras`` is not
-    silently swallowed along with it.
-
-    The other source is the HTTP client underneath the exporter. `httpcore`
-    logs a line per connection at DEBUG, and DEBUG is a level a deployment may
-    legitimately be running at, so every export would manufacture the records
-    the next export has to send. Anything logged inside an export's own window
-    is dropped; see :func:`switch_core.observability.otlp.exporting_now`.
+    This package's own loggers, matched on a dotted-name boundary so a sibling
+    package is not swallowed with them; and anything logged inside an export's
+    window, which is how `httpcore`'s per-connection DEBUG lines stay out.
     """
     if record.name == _SELF or record.name.startswith(f"{_SELF}."):
         return True
@@ -145,14 +117,11 @@ class OtlpLogHandler(logging.Handler):
     def _convert(self, record: logging.LogRecord) -> LogRecord:
         number, text = severity_of(record.levelno)
         attributes: dict[str, AttributeValue] = {
-            # Datadog's standard attribute for the source logger, matching what
-            # the JSON written to stderr already uses.
             "logger.name": record.name,
             "logger.thread_name": record.threadName or "",
         }
-        # The fields the log context stamps — tenant, request, agent, user.
-        # They are the reason shipping logs is worth anything: without them a
-        # line cannot be tied to the request or the customer it belongs to.
+        # Tenant, request, agent, user: without these a shipped line cannot be
+        # tied to the request or the customer it belongs to.
         for field in CONTEXT_FIELDS:
             value = getattr(record, field, None)
             if value is not None:
@@ -213,9 +182,6 @@ class LogExporter:
     async def flush_once(self) -> None:
         batch, dropped = self._handler.take(self._batch_size)
         if dropped:
-            # Loud, and carried in the log stream that is still working. A
-            # dropped record is a hole in the evidence, and the one thing worse
-            # than the hole is not knowing it is there.
             logger.error(
                 "Dropped %d log record(s) waiting to be exported: the collector "
                 "is not keeping up with this server's log volume. Those lines "
@@ -244,33 +210,17 @@ class LogExporter:
                 logger.exception("Log export loop raised; continuing.")
 
     async def _flush_on_shutdown(self) -> None:
-        """Drain what is queued, not one batch of it.
+        """Drain the queue under a deadline, and report whatever did not go.
 
-        A single `flush_once` takes at most `batch_size` records off a queue
-        that holds twenty times that, so on a busy server — or after a
-        collector outage has been filling it — a shutdown would discard the
-        rest with no counter and no line saying so. That is the shape of
-        silent loss this module is written to avoid.
+        The deadline wraps the whole loop rather than being checked between
+        attempts: one post can take the full export timeout, which an operator
+        may raise, and overrunning the pod's grace period would take the line
+        below with it.
 
-        Bounded by a deadline rather than by the queue emptying, because
-        shutdown is not the moment to block on a collector that has stopped
-        answering: whatever is left is reported as lost and the process goes.
-
-        The deadline is enforced *during* a request, not only between them.
-        Checking it between iterations would bound the number of attempts and
-        not the time: a single post may take up to the configured export
-        timeout, which an operator is invited to raise for a distant
-        collector. Five seconds of attempts plus one unbounded attempt can run
-        past the pod's termination grace period, and a SIGKILL landing there
-        would take with it the very line below that exists to say what was
-        lost.
-
-        Written out rather than looping on :meth:`flush_once`, because the
-        accounting differs. A batch is removed from the queue *before* it is
-        posted, so a request abandoned at the deadline takes its records with
-        it and leaves `pending()` at zero — the queue looks drained and a count
-        taken from it reports nothing lost. Every record has to be accounted
-        for here: still queued, or taken and not confirmed.
+        Written out rather than looping on :meth:`flush_once` because the
+        accounting differs. A batch leaves the queue before it is posted, so
+        counting what is left would report nothing lost for records abandoned
+        mid-request.
         """
         lost = 0
         try:
@@ -287,20 +237,15 @@ class LogExporter:
                         )
                         sent = True
                     except OtlpSendError:
-                        # The collector refused this or could not be reached.
-                        # Feeding it the rest would spend what is left of the
-                        # shutdown budget losing them more slowly; stop, and
-                        # count everything below.
+                        # Feeding the rest to a collector that has already
+                        # refused would spend the budget losing them slower.
                         break
                     finally:
-                        # `finally` rather than `except`: cancellation at the
-                        # deadline is a BaseException and loses the batch just
-                        # as completely as a refused request does.
+                        # `finally`, not `except`: cancellation at the deadline
+                        # is a BaseException and loses the batch just the same.
                         if not sent:
                             lost += len(batch)
         except TimeoutError:
-            # Expected when the collector has stopped answering. Everything is
-            # reported together below, so both paths say the same thing.
             pass
         except Exception:
             logger.warning("Final log flush failed.", exc_info=True)

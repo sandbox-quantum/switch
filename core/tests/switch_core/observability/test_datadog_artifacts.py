@@ -1,14 +1,10 @@
 """The checked-in Datadog definitions must name metrics that exist.
 
-`deploy/observability/` holds a dashboard and ten monitors as JSON, and nothing
-else connects them to the code. A metric renamed in the catalogue leaves them
-syntactically valid and semantically empty: panels draw nothing, monitors
-evaluate no series, and — because a Datadog monitor over an absent series does
-not fire — the alerting goes quiet rather than loud. That is the failure this
-whole package exists to prevent, so it is pinned here.
+Nothing else connects `deploy/observability/` to the code. A renamed metric
+leaves the JSON valid and empty: panels draw nothing, and a monitor over an
+absent series does not fire — so the alerting goes quiet rather than loud.
 
-The same pattern as `bridges/agent/test_mcp_tool_surface.py`, which compares
-the three connector skills against the tools actually registered.
+Same pattern as `bridges/agent/test_mcp_tool_surface.py`.
 """
 
 from __future__ import annotations
@@ -29,13 +25,7 @@ _METRIC_REFERENCE = re.compile(r"\bswitch\.[a-z0-9_.]+\b")
 
 def _referenced_metrics(document: object) -> set[str]:
     """Every metric name mentioned anywhere in a JSON document."""
-    return {
-        name
-        for name in _METRIC_REFERENCE.findall(json.dumps(document))
-        # `switch.db.pool.in_use` and friends are metrics; `switch-core` is a
-        # service name and does not match, but a trailing word from prose
-        # might, so only exact catalogue-shaped names are considered below.
-    }
+    return set(_METRIC_REFERENCE.findall(json.dumps(document)))
 
 
 def _load(name: str) -> object:
@@ -55,15 +45,10 @@ def test_every_metric_referenced_exists(filename: str) -> None:
 
 
 def test_the_dashboard_covers_what_matters() -> None:
-    """Not every metric needs a panel, but the ones left out should be deliberate.
-
-    Listing the exceptions here means adding a metric without a panel is a
-    decision someone writes down, rather than something nobody notices.
-    """
+    """Not every metric needs a panel, but the ones left out should be deliberate."""
     referenced = _referenced_metrics(_load("dashboard.json"))
     deliberately_unpanelled = {
-        # A curiosity for a service like this one, not a signal. Kept emitted
-        # for the day someone is chasing a memory question.
+        # A curiosity rather than a signal; emitted for a memory question.
         "switch.runtime.gc_collections",
     }
     missing = sorted(set(CATALOGUE) - referenced - deliberately_unpanelled)
@@ -83,9 +68,7 @@ def test_monitors_are_individually_importable() -> None:
 
     for monitor in monitors:
         assert monitor["query"], monitor["name"]
-        # A placeholder that imports cleanly and notifies nobody is the
-        # failure mode the README warns about; keeping it uniform means one
-        # search finds every one of them.
+        # Uniform, so one search finds every placeholder before import.
         assert "@REPLACE-WITH-NOTIFICATION-HANDLE" in monitor["message"], monitor[
             "name"
         ]

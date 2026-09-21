@@ -199,12 +199,8 @@ async def test_dropped_records_are_reported_at_error(caplog):
 
 
 def test_records_logged_during_an_export_are_not_queued():
-    """The feedback loop: the exporter's own HTTP client logs.
-
-    `httpcore` emits a line per connection at DEBUG, and DEBUG is a level a
-    deployment may be running at — so without this each export manufactures
-    the records the next export has to send, for ever.
-    """
+    """The feedback loop: `httpcore` logs a line per connection at DEBUG, so
+    without this each export manufactures the records the next one sends."""
     from switch_core.observability.otlp import _exporting_window
 
     handler = OtlpLogHandler(capacity=10)
@@ -307,10 +303,8 @@ async def test_the_shutdown_deadline_bounds_a_single_hanging_request(
 ):
     """One post can outlast the whole budget, so the budget has to cut it off.
 
-    Checking the deadline only between attempts bounds how many are made, not
-    how long they take: an export timeout raised for a distant collector can
-    then run past the pod's termination grace period, and the SIGKILL that
-    follows takes the "never exported" line with it.
+    Checking only between attempts bounds how many are made, not how long they
+    take.
     """
     monkeypatch.setattr("switch_core.observability.logs.SHUTDOWN_FLUSH_SECONDS", 0.05)
 
@@ -337,9 +331,8 @@ async def test_the_deadline_holds_when_the_task_is_already_being_cancelled(
 ):
     """The real path: the drain runs inside `except CancelledError`.
 
-    `asyncio.timeout` cancels the task it is guarding, and here that task is
-    one already unwinding from a cancellation — so this pins that the two do
-    not interfere rather than assuming it.
+    `asyncio.timeout` cancels the task it guards, and here that task is already
+    unwinding from a cancellation.
     """
     monkeypatch.setattr("switch_core.observability.logs.SHUTDOWN_FLUSH_SECONDS", 0.05)
 

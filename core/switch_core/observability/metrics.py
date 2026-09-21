@@ -1,28 +1,20 @@
 """In-process metric aggregation, flushed to OTLP one interval at a time.
 
-**Why this is a module-level registry and not an injected service.** The house
-rule is that services are injected, and it holds for anything a request path
-depends on. Instrumentation is the exception, for the same reason logging is
-one: the points worth measuring are deep — a transport delivery loop, a bridge
-dispatch chokepoint, a pool event handler — and threading a registry through
-every constructor between here and there would change the shape of code that
-has nothing to do with observability, which is how instrumentation ends up not
-being added at all. :func:`install` is called once at startup, exactly like
-``configure_logging``, and :func:`metrics` returns whatever is installed.
+A module-level registry rather than an injected service, for the same reason
+logging is one: the points worth measuring are deep — a delivery loop, a bridge
+chokepoint, a pool handler — and threading a registry through every constructor
+in between is how instrumentation ends up not being added. :func:`install` runs
+once at startup, like ``configure_logging``.
 
-Nothing is installed by default, so an uninstrumented process — every test, and
-every deployment that has not configured an endpoint — gets a registry that
-records nothing and allocates nothing.
+Nothing is installed by default, so an unconfigured process records nothing and
+allocates nothing.
 
 Aggregation is **delta**: each collection returns what happened since the last
-one and resets. A restart therefore loses at most one interval instead of
-resetting a cumulative series to zero, which downstream reads as a counter
-rollback.
+and resets, so a restart loses one interval rather than reading downstream as a
+counter rollback.
 
-Recording is guarded by a lock because not every caller is on the event loop —
-the Mattermost adapter dispatches inbound events from an OS thread via
-``run_coroutine_threadsafe``, and a dict mutated from two threads mid-resize is
-the kind of bug that appears once a month in production and never in a test.
+Recording takes a lock because not every caller is on the event loop — the
+Mattermost adapter dispatches from an OS thread.
 """
 
 from __future__ import annotations
@@ -61,11 +53,9 @@ class GaugeReading:
     attributes: Mapping[str, AttributeValue]
 
 
-# An observer is asked for its readings on every collection, rather than
-# pushing them when they change. A pushed gauge keeps reporting its last value
-# after whatever was setting it has stopped — so a crashed bridge would go on
-# reporting the count it had when it died. A pulled one reports what is true
-# now, or is absent.
+# Pulled on every collection rather than pushed: a pushed gauge keeps reporting
+# its last value after whatever set it has stopped, so a crashed bridge would
+# report the count it had when it died.
 GaugeObserver = Callable[[], Iterable[GaugeReading]]
 
 # Run just before a collection, to record anything that must be sampled on the
@@ -80,10 +70,8 @@ def _series_key(attributes: Mapping[str, AttributeValue]) -> SeriesKey:
 def _validate(spec: MetricSpec, attributes: Mapping[str, AttributeValue]) -> None:
     """The catalogue is a contract; a call site that breaks it is a bug.
 
-    Raised rather than logged. A wrong attribute set is not a runtime condition
-    to degrade through — it is a typo or a copied call site, and it should fail
-    in the test that covers that code rather than quietly produce a series
-    nobody can group by.
+    Raised rather than logged: a wrong attribute set is a typo or a copied call
+    site, not a runtime condition to degrade through.
     """
     if spec.name not in CATALOGUE:
         raise ValueError(
@@ -107,8 +95,7 @@ class _Histogram:
 
     def __init__(self, bounds: Sequence[float]) -> None:
         self.bounds = bounds
-        # One more bucket than bounds: the last holds everything above the
-        # highest bound, which is where a pathological latency shows up.
+        # One more bucket than bounds: the last holds the overflow.
         self.buckets = [0] * (len(bounds) + 1)
         self.count = 0
         self.total = 0.0
@@ -177,11 +164,9 @@ class MetricsRegistry:
     def register_pre_collect(self, hook: PreCollectHook) -> None:
         """Add a callback run immediately before each collection.
 
-        For the counters whose source is itself cumulative — process CPU time,
-        garbage collections — where the delta this interval is only knowable by
-        differencing against the last reading. Such a source has to be sampled
-        on the collection's own schedule or the delta it reports covers a
-        different window than the interval it is attributed to.
+        For counters whose source is cumulative — CPU time, collection counts —
+        which must be differenced on the collection's own schedule or the delta
+        covers a different window than the interval it is attributed to.
         """
         with self._lock:
             self._pre_collect.append(hook)
@@ -189,9 +174,8 @@ class MetricsRegistry:
     def _admits(self, name: str, series: Mapping[SeriesKey, object]) -> bool:
         """Whether a new series may be added, complaining once if not.
 
-        Called with the lock held. Refusing loses the measurement, which is bad
-        — but accepting an unbounded attribute value is worse, and the warning
-        names the metric so the offending call site is one grep away.
+        Called with the lock held. Refusing loses a measurement; accepting an
+        unbounded attribute value is worse.
         """
         if len(series) < MAX_SERIES_PER_METRIC:
             return True
@@ -211,12 +195,9 @@ class MetricsRegistry:
         """Take everything recorded since the last call, and reset.
 
         Gauges are read here rather than stored, so an observer that raises
-        takes out its own readings and not the interval's. It is logged at
-        error: a gauge that has stopped reporting is a broken dashboard panel,
-        not a broken server.
+        loses its own readings and not the interval's.
         """
-        # Outside the lock: a hook records through the public methods, which
-        # take it themselves.
+        # Outside the lock: a hook records through the public methods.
         with self._lock:
             hooks = list(self._pre_collect)
         for hook in hooks:
@@ -296,11 +277,8 @@ def _collect_gauges(observers: Sequence[GaugeObserver]) -> list[MetricPayload]:
             _validate(reading.spec, reading.attributes)
             key = (reading.spec.name, _series_key(reading.attributes))
             if key in seen:
-                # Two observers claiming the same series puts two data points
-                # with identical attributes in one payload, which a receiver
-                # either rejects or silently picks one of. Sums and histograms
-                # already complain when a series goes wrong; this is the same
-                # guard for the one kind that had none.
+                # Two identical-attribute points in one payload is something a
+                # receiver either rejects or silently picks one of.
                 logger.error(
                     "Two gauge observers both reported %s with the same "
                     "attributes; keeping the first. One of them should not be "
@@ -329,9 +307,8 @@ def _collect_gauges(observers: Sequence[GaugeObserver]) -> list[MetricPayload]:
 class NullMetricsRegistry(MetricsRegistry):
     """What an unconfigured process gets: every call a no-op.
 
-    A subclass rather than a separate protocol so that ``metrics()`` has one
-    return type and no call site needs a ``None`` check — the thing the house
-    rule about optional parameters is getting at.
+    A subclass rather than a protocol so ``metrics()`` has one return type and
+    no call site needs a ``None`` check.
     """
 
     @property

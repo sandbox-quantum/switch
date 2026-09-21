@@ -95,11 +95,9 @@ class CollaborationBridgeLifecycleService:
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
-        # Bridges that were started and have not been stopped on purpose. A
-        # crash removes a bridge from `_bridges` and leaves it here, which is
-        # what makes "configured but no longer running" answerable at all —
-        # otherwise a crashed bridge is indistinguishable from one that was
-        # never set up, and the only evidence is a log line nobody reads.
+        # Started and not deliberately stopped. A crash removes a bridge from
+        # `_bridges` and leaves it here, which is what makes "configured but no
+        # longer running" answerable.
         self._started: set[str] = set()
         # The one listener every bridge that gets called back shares, and each
         # running bridge's place on it. Owned here rather than by an adapter
@@ -757,9 +755,8 @@ class CollaborationBridgeLifecycleService:
     def running_count(self) -> int:
         """Of those, how many still have a task that has not finished.
 
-        A bridge's task runs until shutdown, so a task that is *done* has
-        stopped serving whether it raised or returned — both are equally
-        invisible to anything that only checks membership of `_bridges`.
+        A bridge's task runs until shutdown, so a finished one has stopped
+        serving whether it raised or returned.
         """
         running = 0
         for bridge_id in self._started:

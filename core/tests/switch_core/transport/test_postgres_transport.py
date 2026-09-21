@@ -1450,12 +1450,9 @@ class TestWhatIsMeasured:
     async def test_a_send_that_never_persists_is_not_counted(
         self, session_factory: async_sessionmaker[AsyncSession], _registry
     ) -> None:
-        """The counter goes after the commit, and this is what proves it.
+        """The counter goes after the commit, and only a failing send proves it.
 
-        Counted before it, a database outage draws an unbroken send rate on
-        the dashboard while nothing is written — and there is no paired
-        failure counter to contradict it. Every happy-path assertion looks
-        identical either way, so only a failing send can tell the two apart.
+        Every happy-path assertion looks identical either way.
         """
         transport, _, _ = await self._receiving(session_factory)
 
