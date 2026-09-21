@@ -5,7 +5,11 @@ vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: () => import.meta.filename,
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({
-  getAgentById: async () => ({ id: 'agent', switchAgentId: 'remote-agent', serverId: 'server' }),
+  getAgentById: async () => ({
+    id: 'agent',
+    switchAgentId: 'remote-agent',
+    workspaceId: 'workspace',
+  }),
 }));
 vi.mock('@main/core/agents/agent-location', () => ({
   getAgentLocation: async () => ({ sshHost: 'host', dir: '/work' }),
@@ -16,8 +20,9 @@ vi.mock('@main/core/agents/connect-remote-agent', () => ({
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
   LocalExecutionContext: class {},
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
 vi.mock('./host-sessions', () => ({ listHostSessions: mocks.sessions }));
 const { sharedAgentDiagnostics, sharedAgentLogs } = await import('./diagnostics');

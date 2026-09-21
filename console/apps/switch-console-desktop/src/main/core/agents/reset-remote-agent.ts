@@ -6,7 +6,6 @@ import { manageAgentSidecar } from '@main/core/sdk-host/sidecar-management';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { getServer } from '@main/core/switch-servers/servers-store';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -19,10 +18,8 @@ import { startRemoteDiscovery } from './remote-watcher';
 
 export async function resetRemoteAgent(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
-  if (!agent?.serverId || !agent.switchAgentId)
+  if (!agent?.workspaceId || !agent.switchAgentId)
     throw new Error('The agent is not linked to Switch.');
-  const server = await getServer(agent.serverId);
-  if (!server) throw new Error('The agent’s Switch server is missing.');
   await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
   remoteSessionReconciler.stop(agentId);
   const remote = await listHostSessions(agentId);

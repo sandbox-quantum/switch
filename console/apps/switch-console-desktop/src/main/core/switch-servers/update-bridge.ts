@@ -15,7 +15,7 @@ import type {
  */
 export async function updateBridgeOnServer(
   server: SwitchServer,
-  params: Omit<UpdateBridgeParams, 'serverId'>
+  params: Omit<UpdateBridgeParams, 'workspaceId'>
 ): Promise<UpdateBridgeResult> {
   try {
     const bridge = await updateBridge(server, params.bridgeId, {
