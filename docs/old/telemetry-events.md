@@ -572,6 +572,92 @@ Against the real relay, the only proof is a staging deployment with reporting
 on for one interval, and the events appearing downstream. Nothing short of
 that tests the vendor's own filtering.
 
+
+### Every event, and how to make it fire
+
+Twenty-two events. Work down the list against a local sink
+(`python scripts/otlp_sink.py`) and each one prints as it arrives with all of
+its properties.
+
+Two things to set up first, or a third of the list cannot fire at all:
+
+- **Start from an empty database.** Milestones are armed only when the identity
+  migration runs against one with no rooms, agents or messages. On a database
+  that already has content `installed_at` is null and the six `first_*` events
+  are suppressed for good — correctly, but it means an upgraded dev box can
+  never be used to test them.
+- **Shorten the snapshot interval.** `TELEMETRY_SNAPSHOT_INTERVAL_HOURS=0.02`.
+  The first pass is 60s after boot and it polls every 5 minutes, so with the
+  default of 24h you would see one snapshot and nothing else.
+
+**At boot, with no action at all**
+
+- `deployment_installed` — fires once, on the first boot of a fresh install.
+  `main.py`, after the migration. Absent on an upgraded database, by design.
+- `deployment_started` — every boot. Same place.
+- `usage_snapshot` — 60s after boot, then each interval.
+  `telemetry/reporter.py` → `run_once`.
+
+**Rooms** — `room_service.py` throughout; gateway routes under `/gateway/rooms`
+
+- `room_created` — `POST /gateway/rooms`. Check `created_by_kind` is `user`
+  here, `agent` when an agent creates one through its MCP tool, and `system`
+  when Switch is invited to a channel on a bridged platform. Those three paths
+  are the whole point of the property; test at least the first two.
+- `first_room_created` — the same call, first time only, and only for a
+  user-created room.
+- `room_agents_added` — `POST /gateway/rooms/{id}/agents`. Adding an agent
+  already in the room correctly emits nothing.
+- `room_agents_removed` — `DELETE /gateway/rooms/{id}/agents/{agent_id}`.
+- `room_archived` — archiving from the gateway, and from an agent's
+  `archive_room` tool. Unarchiving emits nothing.
+- `room_deleted` — `DELETE /gateway/rooms/{id}`. Check `was_ever_active` is
+  true when someone had spoken in it: it is read before the delete, because the
+  cascade takes the messages.
+- `room_became_active` — **needs two snapshot passes.** Create a room with an
+  agent in it, have a human post, then wait for the pass *after* the one that
+  first saw it. Derived from the message table rather than emitted at send
+  time.
+- `first_room_active` — the same pass, once ever, user-created rooms only.
+
+**Agents** — `bridges/agent/protocol/service.py`
+
+- `agent_registered` — registering a new agent. `registration_path` should be
+  `gateway` from the dashboard or Console, `personal_key` from a user's own
+  registration key, `bootstrap` from the deployment-wide token. Re-registering
+  an existing agent correctly emits nothing.
+- `first_agent_registered` — the same call, first time only.
+- `agent_deleted` — `DELETE /gateway/agents/{id}`. Carries how old it was and
+  how many rooms it was in, both read before the row goes.
+
+**Sessions** — `bridges/agent/api/handlers.py`, and the connection registry
+
+- `agent_session_started` — an agent opening its event stream. A supervisor
+  reattaching to a connection it already had correctly emits nothing.
+- `first_session_started` — the same, once ever.
+- `agent_session_ended` — kill an agent and wait for the heartbeat sweep
+  (a few seconds). Reported through a listener on the registry, so every path
+  that closes a connection reports, not just the sweep.
+
+**Connectors** — `bridges/collaboration/lifecycle_service.py`
+
+- `bridge_connected` — a bridge reaching its platform. Also fires with
+  `outcome: failure` when it cannot; try bad credentials.
+- `connector_added` — the *first* successful connect for that bridge, ever.
+  Restarting a working bridge correctly emits nothing.
+- `first_connector_added` — the first connector on the deployment.
+- `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
+  one (`restart`), or a live bridge crashing.
+- `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check
+  `was_ever_connected`: it reads the durable record, so a connector that worked
+  months ago and was down at removal still reports true.
+
+**What a pass has not proved**
+
+Every event firing locally says the call sites are wired and the payloads are
+well-formed. It says nothing about whether the relay accepts them — that needs
+one event watched arriving downstream, which no local check can substitute for.
+
 ## Open questions
 
 - **Query cost at scale.** The snapshot is roughly fifteen queries per tenant,
