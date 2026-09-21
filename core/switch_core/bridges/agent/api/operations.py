@@ -22,14 +22,16 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_protocol
+from switch_core.bridges.agent.dependencies import get_protocol, get_session_factory
 from switch_core.bridges.agent.operations import all_operations, get_operation
 from switch_core.bridges.agent.operations.callctx import CallContext, call_context
 from switch_core.bridges.agent.protocol.connections import UnknownConnectionError
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent
+from switch_core.sessions.service import SessionAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,83 @@ async def call_operation(
 # ── HTTP router ──────────────────────────────────────────────────────────────
 
 
+SESSION_SELECTOR_HEADERS = (
+    "X-Switch-Session-Id",
+    "X-Switch-Session-Host-Id",
+    "X-Switch-Session-Epoch",
+)
+
+
+async def resolve_session_key(
+    *,
+    agent_id: str,
+    protocol: ProtocolService,
+    factory: async_sessionmaker[AsyncSession],
+    connection_id: str | None,
+    session_id: str | None,
+    host_id: str | None,
+    epoch: str | None,
+) -> str | None:
+    """Which thing owns this caller's room binding, from the selector it sent.
+
+    Two ways to say it. A connection selector names the connection directly; a
+    session selector names the session and is answered with the connection that
+    session bound, having passed the session fence on the way. While a session
+    owns at most one connection the two arrive at the same answer, which is the
+    property that lets callers move from one to the other without anything else
+    changing.
+
+    Neither is taken on trust, and neither is allowed to be approximately
+    right: a selector naming another agent's session or connection, an
+    incomplete selector, and two selectors that disagree are all refused rather
+    than resolved to something plausible.
+    """
+    named = [
+        header
+        for header, value in zip(
+            SESSION_SELECTOR_HEADERS, (session_id, host_id, epoch), strict=True
+        )
+        if value is not None
+    ]
+    if named and len(named) != len(SESSION_SELECTOR_HEADERS):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "the session selector is all of "
+                f"{', '.join(SESSION_SELECTOR_HEADERS)}; this request carried "
+                f"only {', '.join(named)}"
+            ),
+        )
+
+    bound = connection_id
+    if session_id is not None and host_id is not None and epoch is not None:
+        from_session = await SessionAuthority(factory).room_connection(
+            agent_id, session_id, host_id, epoch
+        )
+        if connection_id is not None and connection_id != from_session:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"session {session_id} is bound to connection {from_session}, "
+                    f"but this request also named connection {connection_id}; "
+                    "send one selector or the other"
+                ),
+            )
+        bound = from_session
+
+    if bound is None:
+        return None
+
+    # Derived, never taken on trust: a connection belonging to another agent,
+    # or to one that has already died, is refused rather than silently treated
+    # as no connection at all.
+    try:
+        protocol.connections.require(agent_id, bound)
+    except UnknownConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return bound
+
+
 router = APIRouter(prefix="/agents", tags=["operations"])
 
 
@@ -127,31 +206,39 @@ async def post_operation(
     operation: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     body: dict[str, Any] | None = None,
     connection_id: Annotated[str | None, Header(alias="x-switch-connection-id")] = None,
+    session_id: Annotated[str | None, Header(alias="x-switch-session-id")] = None,
+    host_id: Annotated[str | None, Header(alias="x-switch-session-host-id")] = None,
+    epoch: Annotated[str | None, Header(alias="x-switch-session-epoch")] = None,
 ) -> dict[str, Any]:
     """Run one operation. The body is the operation's arguments.
 
-    `X-Switch-Connection-Id` ties the call to an open connection, which is how
-    an operation that depends on the caller's room binding resolves it. It is
-    derived here from the header rather than trusted from the body, and the
-    connection is checked against the calling agent.
+    The caller says what it is bound to, and that is what an operation
+    depending on the caller's room binding resolves it from. Either
+    `X-Switch-Connection-Id`, naming an open connection, or the session
+    selector — `X-Switch-Session-Id` with `X-Switch-Session-Host-Id` and
+    `X-Switch-Session-Epoch` — naming the session that bound one. Both are
+    read from headers rather than the body, and both are checked against the
+    calling agent.
     """
-    if connection_id is not None:
-        # Derived, never taken on trust: a connection id belonging to another
-        # agent, or to one that has already died, is refused rather than
-        # silently treated as no connection at all.
-        try:
-            protocol.connections.require(agent.id, connection_id)
-        except UnknownConnectionError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session_key = await resolve_session_key(
+        agent_id=agent.id,
+        protocol=protocol,
+        factory=factory,
+        connection_id=connection_id,
+        session_id=session_id,
+        host_id=host_id,
+        epoch=epoch,
+    )
 
     try:
         result = await call_operation(
             operation=operation,
             arguments=body or {},
             agent_id=agent.id,
-            connection_id=connection_id,
+            connection_id=session_key,
         )
     except UnknownOperationError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

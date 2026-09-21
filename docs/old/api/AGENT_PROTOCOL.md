@@ -546,7 +546,7 @@ one registry**:
 
 - **MCP** — the tool surface an agent model calls.
 - **HTTP** — `POST /agents/{agent_id}/ops/{operation}`, arguments as the JSON
-  body, `X-Switch-Connection-Id` naming the caller's connection.
+  body, and a header selector naming what the caller is bound to (§7.1).
 
 **Operation names are the MCP tool names verbatim.** A runtime translating
 between the two is `POST /ops/${toolName}` and nothing more — no mapping table
@@ -572,12 +572,29 @@ parameters, read straight off the registry.
 
 An operation needs two things about its caller: **which agent** (the bearer
 token) and **which session or connection** it belongs to. Over MCP the latter
-is the transport session; over HTTP it is the connection id. Both are derived
-by the server — from the credential and the header — never taken from the
-request body.
+is the transport session. Over HTTP the caller names it in headers — never in
+the request body — and may name it two ways:
 
-A connection id belonging to a different agent, or to one that has died, is
-**refused**, not silently treated as "no connection".
+- **The connection selector.** `X-Switch-Connection-Id`, naming an open
+  connection of the authenticated agent.
+- **The session selector.** `X-Switch-Session-Id` together with
+  `X-Switch-Session-Host-Id` and `X-Switch-Session-Epoch`, naming a session of
+  the authenticated agent. All three are required: the host and the epoch are
+  the fence the session's own endpoints already enforce, and a bare session id
+  would be a name anyone could claim. The server answers the selector with the
+  connection that session bound.
+
+While a session owns at most one connection the two resolve to the same thing,
+so a caller may move from one selector to the other without anything else
+changing.
+
+Both are derived by the server — from the credential and the headers — and
+neither may be approximately right. A selector naming another agent's or
+another tenant's session or connection, an incomplete session selector, a
+session that has bound no connection, a connection that has died, and a
+request whose two selectors disagree are all **refused**, not silently treated
+as "no connection". An incomplete selector is `400`; a cross-agent session is
+`403` and an unknown one `404`; everything else is `409`.
 
 ### 7.2 The operations
 

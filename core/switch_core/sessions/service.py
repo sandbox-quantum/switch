@@ -1428,6 +1428,29 @@ class SessionAuthority:
                 )
             return rooms
 
+    async def room_connection(
+        self, agent_id: str, session_id: str, host_id: str, epoch: str
+    ) -> str:
+        """The room connection a live session is bound to.
+
+        The read half of `bind_connection`, for a caller that names its session
+        rather than the connection underneath it. The selector buys nothing on
+        its own: it passes the same `host_id` + `epoch` fence that binding did,
+        so a session belonging to another agent, another tenant, or a
+        superseded generation of this host is refused rather than resolved.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            if row.connection_id is None:
+                raise SessionError(
+                    "NO_ROOM_CONNECTION",
+                    f"Session {session_id} has bound no room connection.",
+                )
+            return row.connection_id
+
     async def upload_attachment(
         self,
         session_id: str,
