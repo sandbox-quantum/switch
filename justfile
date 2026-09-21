@@ -132,6 +132,12 @@ test *args:
 test-integration *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/integration -m integration {{ args }}
 
+# ── Run the connection-model benchmark (real Postgres, real socket) ────────────
+# Reports connection/process/CPU/RSS/latency figures for the revision it is run
+# on. It measures rather than asserts, so it is excluded from `just test`.
+bench *args:
+    uv run --project core pytest -c core/pyproject.toml core/tests/benchmarks -m benchmark -s {{ args }}
+
 # ── Gateway UI ─────────────────────────────────────────────────────────────────
 gateway-install:
     cd gateway && npm install
