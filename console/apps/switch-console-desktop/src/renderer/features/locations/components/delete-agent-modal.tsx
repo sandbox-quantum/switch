@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { removesProvisionedFiles } from './delete-agent-choices';
 
 export type DeleteAgentModalArgs = {
   /** Switch Console id of the agent to remove. */
@@ -28,8 +29,10 @@ type Props = BaseModalProps<DeleteAgentModalResult> & DeleteAgentModalArgs;
 
 export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose }: Props) {
   const [deleteInSwitch, setDeleteInSwitch] = useState(false);
-  const [removeProvisionedFiles, setRemoveProvisionedFiles] = useState(false);
+  const [chosen, setChosen] = useState(false);
+  const onThisMachine = sshHost === null;
   const filesPlace = dir ? (sshHost ? `${sshHost}:${dir}` : dir) : null;
+  const removeProvisionedFiles = removesProvisionedFiles({ sshHost, dir, chosen });
 
   return (
     <>
@@ -39,15 +42,23 @@ export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose 
       <DialogContentArea className="flex flex-col gap-4 pt-0">
         <p className="text-sm text-foreground-muted">
           <span className="font-medium text-foreground">{agentLabel}</span> will be removed from
-          Switch Console. Its working directory, the credentials stored there, and any running
-          sidecar are untouched unless you choose below.
+          Switch Console.{' '}
+          {onThisMachine
+            ? 'Its sessions stop, and the credentials and definition files Console provisioned for it are deleted. The working directory itself, and everything else in it, are left alone.'
+            : 'Its working directory, the credentials stored there, and any running sidecar are untouched unless you choose below.'}
         </p>
 
-        {filesPlace && (
+        {onThisMachine && filesPlace && (
+          <p className="text-xs text-foreground-muted">
+            Files removed from <code className="break-all">{filesPlace}</code>.
+          </p>
+        )}
+
+        {!onThisMachine && filesPlace && (
           <label className="group/field flex cursor-pointer items-start gap-2.5">
             <Checkbox
-              checked={removeProvisionedFiles}
-              onCheckedChange={(checked) => setRemoveProvisionedFiles(checked === true)}
+              checked={chosen}
+              onCheckedChange={(checked) => setChosen(checked === true)}
               className="mt-0.5"
             />
             <span className="flex flex-col gap-0.5">
@@ -56,10 +67,8 @@ export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose 
               </span>
               <span className="text-xs text-foreground-muted">
                 Removes the credentials and definition files provisioned in the working directory
-                and stops the agent{"'"}s sidecar.
-                {sshHost
-                  ? ' On a shared host these may belong to another install — an agent you loaded rather than created should usually keep them.'
-                  : ''}
+                and stops the agent{"'"}s sidecar. On a shared host these may belong to another
+                install — an agent you loaded rather than created should usually keep them.
               </span>
             </span>
           </label>

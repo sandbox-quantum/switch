@@ -8,15 +8,14 @@ import { localSwitchServerController } from './core/managed-switch-server/contro
 import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
 import { promptLibraryController } from './core/prompt-library/controller';
 import { providersController } from './core/providers/controller';
-import { ptyController } from './core/pty/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
 import { roomTemplatesController } from './core/room-templates/controller';
+import { sdkHostController } from './core/sdk-host/controller';
 import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
 import { appSettingsController } from './core/settings/controller';
 import { providerSettingsController } from './core/settings/provider-settings-controller';
-import { sidecarController } from './core/sidecar/controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
 import { switchSetupController } from './core/switch-setup/controller';
@@ -25,13 +24,13 @@ import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
 
 export const rpcRouter = createRPCRouter({
+  sdkHost: sdkHostController,
   providers: providersController,
   agents: agentsController,
   app: appController,
   appSettings: appSettingsController,
   providerSettings: providerSettingsController,
   update: updateController,
-  pty: ptyController,
   resourceMonitor: resourceMonitorController,
   promptLibrary: promptLibraryController,
   locations: locationsController,
@@ -46,7 +45,6 @@ export const rpcRouter = createRPCRouter({
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,
   roomTemplates: roomTemplatesController,
-  sidecar: sidecarController,
   telemetry: telemetryController,
   fs: createRPCNamespace({
     watch: filesController,

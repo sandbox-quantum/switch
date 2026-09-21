@@ -8,10 +8,9 @@ infrastructure names, personal addresses. It applies to test fixtures too.
 Switch Console is a cross-platform, local-first Electron app for orchestrating multiple AI
 coding agents in parallel. Each agent runs in its own session in its location's directory
 (there are no Git worktrees). An agent runs either locally or — when configured remote — on an
-SSH host, where it runs inside tmux next to an app-deployed sidecar so it keeps
-working and listening to its Switch rooms while the app is closed (CHOO-1059). It
-combines provider-agnostic CLI agent execution, session management,
-terminal sessions, MCP and skills, and packaging for desktop releases.
+SSH host — through a persistent SDK host. The supported providers are Claude Code,
+Codex, OpenCode, Antigravity ACP and Cursor. Local and SSH sessions use the same
+adapters, durable commands and transcript recovery. See [SDK sessions](docs/sdk-sessions.md).
 
 ## The name: display vs identity (CHOO-2008)
 
@@ -51,12 +50,6 @@ Still `switchdash`, deliberately — **do not "fix" these**:
 - `SWITCHDASH_*` environment variables and the `X-Switchdash-*` hook headers — baked
   into hook commands already written into users' own agent config files, and into
   sidecars already deployed on remote hosts
-
-The artifact-registry key was on this list and should not have been. The name is
-a lookup key inside each build, not something that crosses a wire: a sidecar is
-handed the resulting `speaks`/`accepts` numbers and never sees the name. It is
-now `switch-console` in `artifacts.yaml`, in `SIDECAR_CLIENT_ARTIFACT`, and as
-the `CHANGELOG.md` section that tracks it.
 
 One cost was accepted rather than avoided: because `APP_NAME_LOWER` moved, `apt` and
 `dnf` treat `switch-console` as a new package rather than an upgrade of `switchdash`,
@@ -100,7 +93,7 @@ Inside `apps/switch-console-desktop/`:
 - `scripts/` - Build and verification support scripts (sidecar bundle, postinstall,
   deeplink reset, compose sync). Releasing is a GitHub Actions workflow at the repo
   root, not a script here.
-- `src/main/` - Electron main process, RPC controllers, services, database, PTY.
+- `src/main/` - Electron main process, RPC controllers, services, database, SDK host.
 - `src/preload/` - Typed Electron preload bridge exposed to the renderer.
 - `src/renderer/` - React app organized around `app/`, `features/`, `lib/`, and tests.
 - `src/shared/` - Shared IPC primitives, provider metadata, events, MCP, skills, and types.
@@ -264,7 +257,7 @@ pnpm run reset
   imported operation or service functions.
 - Renderer RPC calls go through `rpc` from `src/renderer/lib/ipc.ts`.
 - Feature UI lives under `src/renderer/features/<feature>/`; shared renderer
-  primitives, stores, hooks, modal infrastructure, PTY, hotkeys, and UI live under
+  primitives, stores, hooks, modal infrastructure, hotkeys, and UI live under
   `src/renderer/lib/`.
 - New modals must be registered in `src/renderer/app/modal-registry.ts`.
 - New views must be registered in `src/renderer/app/view-registry.ts`.
@@ -291,9 +284,9 @@ flowchart LR
   Main --> Controllers[src/main/core controllers]
   Controllers --> Services[Domain services and providers]
   Services --> DB[(SQLite via Drizzle)]
-  Services --> PTY[PTY and terminal sessions]
+  Services --> SDK[Persistent SDK host]
   Services --> MCP[MCP and skills services]
-  PTY --> Agents[External CLI coding agents]
+  SDK --> Agents[Native provider adapters]
   Main --> Events[Typed events]
   Events --> Renderer
 ```
@@ -302,16 +295,16 @@ The app boots from `src/main/index.ts`, loads environment and database state,
 registers RPC controllers through `src/main/rpc.ts`, creates the Electron window,
 and exposes a typed preload API from `src/preload/index.ts`. The renderer is a
 React app that calls typed RPC methods, subscribes to typed events, and coordinates
-views, modals, command providers, project state, terminals, and session workflows.
+views, modals, command providers, project state, and session workflows.
 Shared IPC primitives, provider metadata, events, MCP types, skills types, and
 domain types live under `src/shared/`.
 
 Main-process work is split into domain modules under `src/main/core/`: agent hooks,
 agent runtime, agents (Switch agents), app, dependencies, execution context, fs,
 locations (an agent's working dir on a host — formerly the project/workspace split),
-managed Switch server, prompt library, providers (the CLI-provider registry), PTY,
-remote hosts, resource monitor, search, secrets, sessions, settings, sidecar, SSH,
-switch rooms, switch servers, switch setup, terminal shell, terminals, updates, and
+managed Switch server, prompt library, providers (the CLI-provider registry), SDK host,
+remote hosts, resource monitor, search, secrets, sessions, settings, SDK host, SSH,
+switch rooms, switch servers, switch setup, command shells, lifecycle scripts, updates, and
 view state. `agents` and `providers` are different things — see
 `agents/architecture/main-process.md`. Stateful main-process concerns use singleton
 services; expected failures should use the `Result<T, E>` pattern from the
@@ -341,7 +334,7 @@ line can mention it — the identity is ambient:
 Names come from a cache **pushed to** by the row mappers (`mapSessionRowToSession`,
 `mapAgentRowToAgent`) — never fetched on demand.
 
-At the boundaries that fail (sidecar launch, migrations, updater, PTY, RPC), log an
+At the boundaries that fail (sidecar launch, migrations, updater, SDK host, RPC), log an
 `event` plus an enumerated `stage`/`errorCode` rather than prose, so failures can be
 grepped and counted.
 
@@ -525,42 +518,17 @@ pnpm run lint
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
     writing it to a second location as well.
-- PTY environment passthrough must use the allowlist in `src/main/core/pty/pty-env.ts`.
-- Treat shell escaping and PTY spawning as security-sensitive.
+- SDK host environment passthrough must use the allowlist in `src/main/core/sdk-host/agent-env.ts`.
+- Treat shell escaping and provider process spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
 - Use `pnpm-lock.yaml` for dependency integrity and review dependency changes.
 
-## The Sidecar Mirrors Switch Console — Check Both
+## Shared SDK Host
 
-`src/sidecar/` is a second, headless implementation of what the desktop app does
-for a session: it starts sessions, keeps them connected to their room, and
-injects messages into their pane. It runs on the agent's VM with no Electron, no
-database and no renderer.
-
-**So whenever you add or change logic in the desktop app, ask whether the sidecar
-needs the same thing — and answer it in the same change.** Not "later": the
-sidecar has no UI, so when it lacks something the symptom is a remote session
-that quietly does less than a local one, and nobody notices until someone is
-debugging a VM.
-
-The pairs that must stay in step:
-
-| Desktop | Sidecar | Shared by |
-|---|---|---|
-| `agent-runtime/impl/local-agent-runtime.ts` (spawn env) | `sidecar/session-spawner.ts` + `sidecar/index.ts` | nothing — **the usual place to forget** |
-| `agent-hooks/hook-config-service.ts` + `ssh-agent-runtime.installRemoteHooks` | `sidecar/session-spawner.installHooks` | nothing — same failure mode: one side quietly installs fewer hooks |
-| `switch-rooms/auto-session-watcher.ts` | `sidecar/notification-watcher.ts` | nothing — two implementations of one watcher |
-| `switch-rooms/room-connection.ts` | — | shared: the sidecar constructs the same class |
-| protocol client (stream, heartbeat, cursor) | — | shared: `@sandboxaq/switch-agent-runtime` |
-
-Where a row says *shared*, a change lands in both for free — prefer putting
-logic there. Where it says *nothing*, you are editing one of two copies and the
-other will not follow you.
-
-Things that reach a session through its **environment** are the sharpest edge,
-because both sides build that separately. If you add a variable in
-`local-agent-runtime`, it almost certainly belongs in the sidecar's `switchEnv`
-too.
+`packages/agent-providers/src/host/` owns persistent execution on both local and
+SSH machines. `src/main/core/sdk-host/` deploys and connects to it. Changes to
+launch configuration, skills, MCP, environment and recovery must work on the
+execution machine. Never replace unknown command outcomes with retries.
 
 ## Versioned Artifacts — Bump Them
 
@@ -571,7 +539,6 @@ forgotten and someone will debug a build they think is newer than it is.
 
 | Artifact | Version lives in | Bump when |
 |---|---|---|
-| Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `../connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
 | Codex plugin | `../connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
 | OpenCode connector | `../connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
@@ -590,22 +557,8 @@ free to sit apart, and how far apart is a release decision rather than an
 invariant. The cost of the lag is real and worth stating in the PR — a change
 to `bin.ts` reaches no session until the tag is pushed and the pins follow.
 
-Two traps worth knowing rather than rediscovering:
-
-- **A sidecar major replaces every sidecar on sight, live sessions included.**
-  It is judged on the contract *Switch Console* speaks to, not on how much changed
-  inside. Changing how the sidecar talks to Switch is not a major.
-- **A *new* sidecar endpoint is a minor, not a major.** A major only achieves
-  anything if `MIN_SUPPORTED_SIDECAR_MAJOR` moves with it, and that kills every
-  older sidecar on sight — including one an older Switch Console on the same host
-  then kills right back, each replacing the other forever. The client owns the
-  detection instead: call the endpoint, and when an older sidecar 404s it, fail
-  the operation with a message naming the upgrade rather than continuing
-  without whatever the endpoint was for.
-- **Redeploy is decided by the bundle's content hash, not by the version.** So a
-  forgotten bump does not strand a VM on old code — but it does make the version
-  a lie, which is worse in its own way, because it is the number people reason
-  from when something misbehaves.
+SDK host deployment uses the bundle content hash. Preserve wire compatibility
+and durable command receipts across redeployment.
 
 ## Agent Guardrails
 
@@ -616,7 +569,7 @@ Two traps worth knowing rather than rediscovering:
   unless the task is explicitly about packaging, signing, or release behavior.
 - Do not dispatch release workflows, publish packages, or upload artifacts unless the
   user explicitly asks for release work.
-- Treat `src/main/core/pty/`, `src/main/db/`, and updater code as high risk and read
+- Treat `src/main/core/sdk-host/`, `src/main/db/`, and updater code as high risk and read
   the matching `agents/risky-areas/` page first.
 - Do not weaken shell quoting, spawn behavior, env allowlists, or secret redaction casually.
 - Prefer existing service, provider, RPC, modal, view, and store patterns over new abstractions.
@@ -635,7 +588,7 @@ Two traps worth knowing rather than rediscovering:
 - Access mounted locations through `asMounted(getLocationStore(id))`, not inline guards.
 - Session selectors live in `src/renderer/features/sessions/stores/session-selectors.ts`.
 - Location selectors live in `src/renderer/features/locations/stores/location-selectors.ts`.
-- For provider changes, update shared provider metadata, PTY env passthrough if needed,
+- For provider changes, update shared provider metadata, SDK host env passthrough if needed,
   hook/plugin integrations, renderer assumptions, and tests for non-standard behavior.
 - For MCP changes, keep canonical data in shared types and adapt provider formats at edges.
 - Run the local merge gate before merging:
@@ -668,7 +621,7 @@ pnpm run test
   install and "update available" means an install written by an older build.
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
   `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
-- Provider PTY behavior and env passthrough live under `src/main/core/pty/`.
+- SDK host deployment and env passthrough live under `src/main/core/sdk-host/`.
 - Provider event hooks and plugins live under `src/main/core/agent-hooks/`.
 - Modal definitions are centralized in `src/renderer/app/modal-registry.ts`.
 - View definitions and navigation guards are centralized in `src/renderer/app/view-registry.ts`.
@@ -677,11 +630,11 @@ pnpm run test
 - Per-location runtime settings can be supplied through `.switchdash.json`:
   `preservePatterns`, `scripts.setup`, `scripts.run`, `scripts.teardown`, and
   `shellSetup`.
-- Location settings such as `tmux` and `locationProvider` are DB-backed, not
+- Location settings such as `locationProvider` are DB-backed, not
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`,
+  `SWITCHDASH_REGISTER_DEEPLINK`,
   `SWITCHDASH_FAKE_UPDATE`, `SWITCHDASH_TELEMETRY_DEV`, and
   `SWITCHDASH_TELEMETRY_ENDPOINT`.
 - Telemetry in dev: a dev build sends nothing, so the emitter cannot be exercised by
@@ -694,8 +647,8 @@ pnpm run test
   `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009 pnpm run dev`.
 - **A hook command is built for the machine the session runs on, not for the one
   building it.** `writeHooks(fs, hooks, { platform })` takes the target
-  platform: `process.platform` locally and in the sidecar, the VM's `uname -s`
-  in `SshAgentRuntime.installRemoteHooks`. A `makeStdinHookCommand(...)` returns
+  platform: `process.platform` locally and in the sidecar, the execution host's platform
+  during SDK host setup. A `makeStdinHookCommand(...)` returns
   a builder, not a string, so nothing can freeze the wrong shell at import time.
   Getting this wrong is silent — the POSIX form ends in `|| true` and agents
   ignore hook exit codes, so the only symptom is a remote session whose provider
@@ -791,7 +744,7 @@ pnpm run test
 - [Config file rules](agents/conventions/config-files.md)
 - [Versioned schema conventions](agents/conventions/versioned-schemas.md)
 - [Database risk notes](agents/risky-areas/database.md)
-- [PTY risk notes](agents/risky-areas/pty.md)
+- [SDK session risk notes](agents/risky-areas/sdk-sessions.md)
 - [Updater risk notes](agents/risky-areas/updater.md)
 - [Contributing guide](../CONTRIBUTING.md) (repo root)
 - [Project README](README.md)

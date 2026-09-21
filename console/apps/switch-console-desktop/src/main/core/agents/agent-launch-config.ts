@@ -1,5 +1,4 @@
 import type { PluginFs, SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
-import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
 import { readAgentConfigFile } from './agent-config-file';
@@ -17,35 +16,12 @@ import { getAgentById } from './getAgentById';
  * it only reads a file.
  */
 
-/**
- * The agent's stored configuration, without reconciling it against the
- * provider's generated file.
- *
- * For the paths that only need to know what to launch with — spawning a
- * session, building a remote launch spec, reporting sidecar diagnostics. Those
- * run in the background and on a timer, and the reconciling read writes files
- * as part of reading, which is not something a status poll should do.
- *
- * Returns an empty config when the agent has no file yet, and when the working
- * directory cannot be reached: an agent that has never been configured and one
- * whose host is down both mean "nothing to specialize with", and failing the
- * launch over a missing optional file would be worse than launching with the
- * provider's own defaults. The failure is logged rather than swallowed.
- */
+/** Read launch settings from the execution host; transport failures must stop launch. */
 export async function readAgentConfigForLaunch(agentId: string): Promise<AgentConfigFile> {
-  try {
-    return await withAgentWorkspace(
-      agentId,
-      async (agent, fs) => (await readAgentConfigFile(fs, agent.name)) ?? {}
-    );
-  } catch (error) {
-    log.warn('Could not read agent config; launching with provider defaults', {
-      event: 'agent_config_read_failed',
-      agentId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return {};
-  }
+  return withAgentWorkspace(
+    agentId,
+    async (agent, fs) => (await readAgentConfigFile(fs, agent.name)) ?? {}
+  );
 }
 
 /**

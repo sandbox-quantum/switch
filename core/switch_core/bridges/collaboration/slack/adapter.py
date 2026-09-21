@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
-import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
-from typing import Any, ClassVar
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+from typing import Any, ClassVar, Literal, NoReturn
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from slack_sdk.errors import SlackApiError
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
@@ -19,9 +21,17 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     CollaborationAdapter,
-    LiveRuntimeIndicator,
+    RemovalFailed,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    RichContentThrottled,
+    RichContentWedged,
+    TurnActivity,
 )
+from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -31,14 +41,28 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+)
+from switch_core.bridges.collaboration.session.renderers.slack import (
+    STREAM_SLOTS,
+    SlackMessage,
+    render_activity,
+    render_activity_plan,
+    render_activity_stream,
+    render_attention,
+    render_request,
+    render_turn_with_request,
+    with_session_context,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
+from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +74,24 @@ _AGENT_GROUP_MARKER = "Switch agent — "
 # retries connection errors but not throttling.
 _RATE_LIMIT_MAX_ATTEMPTS = 5
 _RATE_LIMIT_DEFAULT_DELAY = 30
+
+# These responses confirm that Slack rejected the format before publication.
+# Never retry an uncertain delivery as another message merely to change format.
+_BLOCK_FORMAT_ERRORS = {"invalid_blocks", "invalid_blocks_format", "block_mismatch"}
+
+
+def _publication_metadata(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    for block in blocks:
+        marker = block.get("block_id", "")
+        if isinstance(marker, str) and marker.startswith("switch-request:"):
+            return {
+                "metadata": {
+                    "event_type": "switch_publication",
+                    "event_payload": {"token": marker.removeprefix("switch-request:")},
+                }
+            }
+    return {}
+
 
 # Slack refusals that mean this workspace cannot host agent user groups at all,
 # rather than that one particular call went wrong. Each maps to what an operator
@@ -88,95 +130,11 @@ def _group_description(agent_description: str) -> str:
     return full[: _GROUP_DESCRIPTION_MAX - 1].rstrip() + "…"
 
 
-# Slack refusals that mean this app cannot host agent sessions at all, rather
-# than that one call went wrong. Each says what an operator would have to change.
-# How many identical unrecognised refusals before agent sessions are given up
-# on. Slack returns codes this list does not know about, and a status that
-# cannot work must not warn on every turn for the life of the bridge.
-_AGENT_SESSIONS_FAILURE_LIMIT = 3
-
-# How long a give-up over unrecognised errors lasts before the bridge tries
-# again. Long enough that a bad patch is waited out rather than hammered
-# through, short enough that a bridge does not stay dark for a day because of
-# one. A refusal that named its own cause is not covered: nothing about the
-# workspace will have changed, so it is not retried at all.
-_AGENT_SESSIONS_RETRY_AFTER = 600
-
-# Prefix on the trace lines that follow a turn through the session, so a run
-# can be read end to end when something does not render. Debug level: the
-# per-turn detail is only wanted when someone is looking for it.
-_TRACE = "[agent-sessions] "
-
-# Put on the message an agent is working on, for the whole turn.
-_WORKING_REACTION = "eyes"
-
-# Slack caps a task chunk's text; keep well inside it.
-_STREAM_STEP_MAX = 200
-
-
-def _plain(text: str) -> str:
-    """Strip Switch's markup for somewhere that renders none.
-
-    A task card's title is plain text, so markup passed into it arrives as
-    literal `_underscores_` and backticks rather than emphasis."""
-    text = re.sub(r"`([^`]*)`", r"\1", text)
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-    text = re.sub(r"(?<!\w)[*_]([^*_]+)[*_](?!\w)", r"\1", text)
-    return text.strip()
-
-
-def _task_chunk(
-    title: str, deeplink_url: str | None = None, *, done: bool = False
-) -> dict[str, Any]:
-    """One step in a streamed session.
-
-    Slack documents this payload three mutually incompatible ways — the method
-    reference, the guide's sample, and the guide's full example all differ. The
-    method reference is the one followed here, and the shape is kept in this
-    single function so correcting it against the live API is a one-line change
-    rather than a hunt.
-    """
-    chunk: dict[str, Any] = {
-        "type": "task_update",
-        "id": "current",
-        "title": title,
-        "status": "complete" if done else "in_progress",
-    }
-    if deeplink_url:
-        # The way back into the live session. It used to ride on the message
-        # Switch posted; now the card stands alone, so it travels here.
-        chunk["sources"] = [
-            {"type": "url", "text": "Open in Switch Console", "url": deeplink_url}
-        ]
-    return chunk
-
-
-_AGENT_SESSIONS_UNAVAILABLE_ERRORS = {
-    "not_an_agent": (
-        "the Slack app is not declared as an Agent — enable the Agents feature "
-        "in the app's settings. Note that doing so removes access for workspace "
-        "guests and cannot be undone."
-    ),
-    "not_authorized": (
-        "Slack says the app is not a member of that channel. If it plainly is, "
-        "the other cause is that the app is not declared as an Agent — only an "
-        "Agent app may open sessions. Enabling that removes access for "
-        "workspace guests and cannot be undone."
-    ),
-    "feature_disabled": (
-        "the agent tasks feature is not enabled for this Slack workspace."
-    ),
-    "not_allowed_token_type": (
-        "agent sessions need a granular bot token; this app's token is not one."
-    ),
-    "unknown_method": ("this Slack deployment does not offer the agent sessions API."),
-    "missing_scope": (
-        "the Slack app is missing the assistant:write scope — reinstall it with "
-        "the scopes from SLACK_SETUP.md."
-    ),
-    "method_not_supported_for_channel_type": (
-        "agent sessions are not supported in this kind of conversation."
-    ),
+# Reactions on the message an SDK turn is handling: one for work under way,
+# one for a prompt the agent is holding behind something else.
+_REACTION: dict[ActivityMark, str] = {
+    "working": "eyes",
+    "queued": "hourglass_flowing_sand",
 }
 
 
@@ -189,6 +147,15 @@ def _retry_after_seconds(error: SlackApiError) -> int:
         return _RATE_LIMIT_DEFAULT_DELAY
 
 
+class SlackReactionsRateLimited(RuntimeError):
+    """Slack is metering reaction calls, so this one was not made.
+
+    Deliberately not `ActivityMarkRefused`, which means refused for the life of
+    the turn: this is the case that a later attempt fixes, and the publisher
+    tells the two apart by which one it catches.
+    """
+
+
 class SlackUser(BaseModel):
     name: str
     display_name: str
@@ -196,7 +163,29 @@ class SlackUser(BaseModel):
 
 class SlackConnectionConfig(BridgeConnectionConfig):
     bot_token: str
-    app_token: str
+    #: How inbound events reach this bridge, which is decided by which Slack
+    #: app the token came from and is not an operator's preference.
+    #:
+    #: An app the operator registered themselves uses Socket Mode: Switch dials
+    #: out and needs no inbound route. The distributed app cannot — Slack does
+    #: not permit Socket Mode for it — so its events arrive as signed HTTP
+    #: posts to a public endpoint, and there is no app-level token at all.
+    #:
+    #: Hidden from the registration form because it is not a question an
+    #: operator filling that form can be asked: reaching the form at all means
+    #: Socket Mode, and the webhook value is written by the install flow.
+    event_delivery: SkipJsonSchema[Literal["socket_mode", "webhook"]] = "socket_mode"
+    #: Required under Socket Mode and meaningless without it, which the
+    #: validator below enforces rather than leaving to be discovered.
+    app_token: str | None = Field(
+        default=None,
+        title="App-level token",
+        description=(
+            "The xapp-… token with the connections:write scope, from the app's "
+            "Basic Information page. Required: it is what opens the connection "
+            "Slack delivers events down."
+        ),
+    )
     workspace_id: str
     # The descriptions are not decoration: both registration forms build
     # themselves from this schema, so what is written here is the only
@@ -211,23 +200,136 @@ class SlackConnectionConfig(BridgeConnectionConfig):
             "addressed by typing their name."
         ),
     )
-    agent_sessions: bool = Field(
-        default=True,
-        title="Native progress card",
-        description=(
-            "Show an agent's progress in Slack's own live card instead of a "
-            "message Switch posts. Needs the Slack app to be declared an "
-            "Agent; without that, the posted message is used instead."
-        ),
-    )
+
+    @model_validator(mode="after")
+    def _app_token_matches_delivery(self) -> SlackConnectionConfig:
+        """Refuse the two states that would look configured and receive nothing.
+
+        A Socket Mode bridge with no app token opens no connection, so it
+        sends fine and never hears a word back — the exact shape of failure
+        that reads as "Slack is quiet today" for a week. An app token on a
+        webhook bridge is the opposite mistake: a credential for a mechanism
+        this bridge does not use, which will be read as evidence that it does.
+        """
+        if self.event_delivery == "socket_mode" and not self.app_token:
+            raise ValueError(
+                "app_token is required: without it Switch opens no Socket Mode "
+                "connection and this bridge would receive no Slack events at all."
+            )
+        if self.event_delivery == "webhook" and self.app_token:
+            raise ValueError(
+                "app_token must be empty for a bridge whose events arrive over "
+                "HTTP; the distributed Slack app has no app-level token."
+            )
+        return self
+
+
+# A turn whose end never arrives — the agent died, the session was dropped —
+# leaves its stream open with nothing to close it. Far more than this many at
+# once is a bridge holding turns nobody is waiting on, so the oldest goes.
+_MAX_OPEN_STREAMS = 100
+
+# Far above the open-stream bound on purpose. An entry here is what stops a
+# message nothing can change from being asked about again, so evicting one
+# resumes that asking for as long as the process lives. Only turns still being
+# drawn can reach it — an ended one is stopped by its completion receipt before
+# the adapter is consulted — so this is a guard against unbounded growth rather
+# than a working limit, and it is set where no plausible number of live turns
+# reaches it.
+_MAX_WEDGED_MESSAGES = 10_000
+
+# Slack has stopped taking appends for this message and always will have: the
+# stream was closed, the reader stopped it, or it belongs to another app. The
+# message itself is still there, so the turn is redrawn as an ordinary post.
+_STREAM_CLOSED_ERRORS = frozenset(
+    {
+        "message_not_in_streaming_state",
+        "message_not_owned_by_app",
+        "stopped_by_user",
+        "message_not_found",
+    }
+)
+
+# Slack is still holding this message open as a stream and refuses an ordinary
+# edit until something takes it back or closes it. The open-stream registry
+# lives on the adapter and nowhere else, so a restart strands every stream that
+# was open at the time: Slack keeps the streaming state and this process no
+# longer knows the message was ever a stream. Nothing else would notice — if the
+# turn has ended there is no append coming — so the message is refused every
+# edit for the rest of its life unless this is answered where it is raised.
+_STREAMING_CONFLICT = "streaming_state_conflict"
+
+# What a stream adopted after a restart is told Slack already holds. Empty of
+# the turn itself on purpose: every section is then treated as moved and resent,
+# which is what repairs the message. The stop control is the one thing that has
+# to be remembered, because a stream keeps a block it is no longer sent and a
+# turn that ended while this process was away renders no control at all — so
+# without this nothing would ever write over the one on screen and the message
+# would keep a live-looking button for good. The values are blocks no renderer
+# produces, so a turn that *is* still running has its control resent rather than
+# mistaken for one already drawn.
+#
+# Every slot, because which one the control is in depends on how far the turn
+# had got when the record was lost, and that is the part nothing here knows. A
+# turn only ever gains sections, so the control cannot have been below where the
+# redraw now puts it; claiming a slot the message never reached costs a thin
+# rule under a finished turn, which is what a retired control leaves anyway.
+_STRANDED_BLOCKS: dict[str, dict[str, Any]] = {slot: {} for slot in STREAM_SLOTS}
+
+
+class _StreamNotClosed(RichContentFailed):
+    """A turn drawn to the end on a stream Slack would not then stop.
+
+    Its own type only so that the stranded-stream recovery can tell it from a
+    refused append. Everything the recovery falls back to is about Slack not
+    taking an append; by the time this is raised the append has landed and the
+    message is right, and running the fallback would spend a second stop call
+    on the refusal that just happened and log it as something it was not.
+
+    To every other caller it is the `RichContentFailed` it inherits from: the
+    publication did not finish, so the turn is still owed.
+    """
+
+
+@dataclass
+class _ActivityStream:
+    """An open `chat.startStream` message, and what it has been told so far.
+
+    A stream is a conversation, not a document: Slack keeps the message and
+    each append moves part of it. So the adapter has to remember what it last
+    said to work out what is worth saying next — resending a section of fifty
+    cards that has not changed costs an append and risks nothing useful.
+
+    `blocks` is the last thing written to each section, by `block_id`, so a
+    redraw sends only what moved.
+    """
+
+    channel_id: str
+    ts: str
+    blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class SlackAdapter(CollaborationAdapter):
-    # Pin a turn's status to the message being worked on, opening a thread on
-    # it when there is none. Without this a question asked at the channel root
-    # has no thread, so its progress has nowhere to live and no session can be
-    # opened for it — which was most turns.
-    runtime_state_follows_anchor: ClassVar[bool] = True
+    publishes_sdk_sessions: ClassVar[bool] = True
+    separate_attention_slot: ClassVar[bool] = True
+    #: Cheap on a stream in a way it never was on an edit. An append is rate
+    #: limited at 100+/min and redraws nothing, so the clock ticks in the one
+    #: message without disturbing what is open in front of a reader.
+    redraws_for_elapsed_time: ClassVar[bool] = True
+    supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
+    recovers_uncertain_posts: ClassVar[bool] = True
+
+    #: `chat.delete` takes back a card posted under an agent's own name and
+    #: icon. Slack restricts deleting an *impersonated* message, which is a
+    #: message sent as a real member; `chat:write.customize` is not that, and
+    #: the typing indicator has always been posted and deleted this way.
+    removes_answered_cards: ClassVar[bool] = True
+
+    #: Every publication carries its token in `block_id` and in the message's
+    #: metadata, so a status is as findable as a card despite printing no
+    #: handle of its own.
+    carries_publication_marker: ClassVar[bool] = True
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -254,6 +356,21 @@ class SlackAdapter(CollaborationAdapter):
         # message per channel — used to thread the "thinking" indicator into the
         # conversation the agent is responding to.
         self._last_thread_ts: dict[str, str] = {}
+        # Who last spoke in a thread, by (channel, thread root). A stream has
+        # to name the person it is being streamed to, and the person who asked
+        # is the one waiting on the answer. A thread nobody has touched in the
+        # last few hundred is one no turn is about to be published into.
+        self._thread_requester: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._thread_requester_max = 500
+        # Open activity streams by message ref, holding what has already been
+        # appended so a redraw can send only what changed.
+        self._streams: OrderedDict[str, _ActivityStream] = OrderedDict()
+        # Messages a finished stream drew in more than one section, which
+        # nothing can redraw. The value records whether that has already been
+        # reported, so a turn asked for repeatedly says it once. Bounded and
+        # in-memory, so a restart or enough later turns lose the protection and
+        # a publication after that collapses the message. See `_settle_stream`.
+        self._unredrawable: OrderedDict[str, bool] = OrderedDict()
         # Folded Slack username → user id, for resolving outbound @mentions to
         # real Slack mentions. Primed from the bridge's known external users and
         # topped up as new ones are resolved.
@@ -279,49 +396,27 @@ class SlackAdapter(CollaborationAdapter):
         # Set to Slack's error code once the workspace has told us it cannot
         # host user groups, so the bridge stops asking and says so only once.
         self._agent_usergroups_off_reason: str | None = None
-        # Set once Slack has told us it will not host agent sessions, so the
-        # bridge stops asking and says so only once.
-        self._agent_sessions_off_reason: str | None = None
-        # When a give-up over unrecognised errors expires. None means the
-        # reason above is a workspace's settled answer and will not improve on
-        # its own, so nothing re-arms it.
-        self._agent_sessions_retry_at: float | None = None
-        # Consecutive identical session-status failures, so an error code this
-        # build does not recognise still stops complaining eventually.
-        self._session_failures = 0
-        self._last_session_error: str | None = None
-        # While Slack is throttling us, when it said we may call again.
-        self._sessions_throttled_until: float | None = None
-        # (channel_id, thread_ts) -> agent whose turn owns that session, so the
-        # stop button can be routed to the agent it belongs to.
-        self._session_owner: dict[tuple[str, str], str] = {}
-        # (channel_id, thread_ts) -> the open stream's ts, and the last step
-        # pushed into it. A stream is what creates the session Slack renders.
-        self._stream_ts: dict[tuple[str, str], str] = {}
-        self._stream_step: dict[tuple[str, str], str] = {}
-        # (channel_id, thread_ts) -> who asked. Streaming into a channel has to
-        # name the person being replied to, which the runtime-state path does
-        # not carry, so it is remembered from the message that started it.
-        self._thread_requester: dict[tuple[str, str], str] = {}
-        # (channel_id, agent_name) already reported as having no thread, so the
-        # trace says it once rather than on every state report.
-        self._threadless_logged: set[tuple[str, str]] = set()
-        # (channel_id, ts) currently carrying the "being worked on" reaction.
-        self._eyes: set[tuple[str, str]] = set()
-        # (channel_id, agent_name) -> every thread that agent is working in.
-        # A turn ends once but may have opened several.
-        self._agent_threads: dict[tuple[str, str], set[str]] = {}
-        # (channel_id, agent_name) -> every message that agent has marked. Not
-        # the same as the threads: the mark goes on the message that asked,
-        # which inside a thread is a reply rather than the root.
-        self._agent_eyes: dict[tuple[str, str], set[str]] = {}
-        # (channel_id, thread_ts) -> ts of the last message asking in it.
-        self._thread_trigger: dict[tuple[str, str], str] = {}
+        # (channel_id, ts, mark) currently carrying that reaction.
+        self._marked: set[tuple[str, str, ActivityMark]] = set()
         # (channel_id, ts) Slack says it cannot find. Retrying it on every
         # progress report of a long turn is how one unmarkable message became
         # a warning a second for as long as the agent worked.
         self._unmarkable: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._unmarkable_max = 500
+        # The publisher redraws every few seconds and keeps asking until a mark
+        # lands, so without these the retries hold the limit open.
+        self._reactions_cooldown = Cooldown(
+            "Slack",
+            "reactions",
+            "workspace",
+            "Marks on messages stop changing until then.",
+        )
+        self._rich_update_cooldown = Cooldown(
+            "Slack",
+            "message updates",
+            "workspace",
+            "Every card the bridge draws is frozen until then.",
+        )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -352,9 +447,8 @@ class SlackAdapter(CollaborationAdapter):
         self._bot_user_id = auth["user_id"]
         self._bot_id = str(auth.get("bot_id", ""))
         # The team this bot is installed in. Not the same as the configured
-        # workspace id on an Enterprise Grid org, where that is the org id
-        # (`E…`) and streaming wants the team (`T…`) — so take it from the
-        # authenticated identity rather than from config.
+        # workspace id on an Enterprise Grid org. Agent group lookup uses
+        # the authenticated team identity rather than the configured org.
         self._team_id = str(auth.get("team_id", ""))
         logger.info(
             "Slack adapter authenticated as %s (workspace %s)",
@@ -362,19 +456,28 @@ class SlackAdapter(CollaborationAdapter):
             auth.get("team", ""),
         )
 
-        self._socket_client = SocketModeClient(
-            app_token=self._config.app_token,
-            web_client=self._web_client,
-        )
-        self._socket_client.socket_mode_request_listeners.append(
-            self._handle_socket_event  # type: ignore[arg-type]
-        )
-        await self._socket_client.connect()
-        logger.info("Slack Socket Mode connected")
-        logger.debug(
-            _TRACE + "build carries agent sessions; config agent_sessions=%s",
-            self._config.agent_sessions,
-        )
+        if self._config.event_delivery == "webhook":
+            # Nothing to connect: events are posted to the public endpoint,
+            # which verifies them and calls dispatch_event below. Said out loud
+            # because a bridge that opens no connection and logs nothing is
+            # indistinguishable from one that failed to.
+            logger.info(
+                "Slack adapter listening over HTTP; events arrive at the "
+                "messaging install endpoint rather than over Socket Mode"
+            )
+        else:
+            # Narrowing for the type checker; the config validator is what
+            # actually guarantees it.
+            assert self._config.app_token is not None
+            self._socket_client = SocketModeClient(
+                app_token=self._config.app_token,
+                web_client=self._web_client,
+            )
+            self._socket_client.socket_mode_request_listeners.append(
+                self._handle_socket_event  # type: ignore[arg-type]
+            )
+            await self._socket_client.connect()
+            logger.info("Slack Socket Mode connected")
 
     async def stop(self) -> None:
         if self._socket_client:
@@ -431,6 +534,1007 @@ class SlackAdapter(CollaborationAdapter):
             )
             return None
 
+    async def post_blocks(
+        self,
+        channel_id: str,
+        sender_name: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post a Block Kit message, for what plain text cannot carry.
+
+        Slack-only and deliberately not on `CollaborationAdapter`: blocks are
+        Slack's own shape, and the platforms that need something like them need
+        something different. `text` is what a notification and a client that
+        will not render the blocks are left with, so it has to stand alone.
+        """
+        if not self._web_client:
+            logger.error("Cannot post blocks: Slack client not connected")
+            return None
+
+        thread_ts = (
+            self._parse_message_ref(thread_root_id)[1]
+            if thread_root_id and ":" in thread_root_id
+            else thread_root_id
+        )
+        agent = await self.agent_rendering(sender_name)
+        arguments: dict[str, Any] = dict(
+            channel=channel_id,
+            text=text,
+            blocks=blocks,
+            username=agent.field_label,
+            icon_url=agent.icon_url,
+            thread_ts=thread_ts,
+            unfurl_links=False,
+            unfurl_media=False,
+            **_publication_metadata(blocks),
+        )
+        try:
+            try:
+                result = await self._web_client.chat_postMessage(**arguments)
+            except SlackApiError as exc:
+                if exc.response.get("error") not in _BLOCK_FORMAT_ERRORS:
+                    raise
+                logger.warning(
+                    "Slack rejected card blocks in %s (%s); sending its text fallback",
+                    channel_id,
+                    exc.response.get("error"),
+                )
+                arguments.pop("blocks")
+                result = await self._web_client.chat_postMessage(**arguments)
+            ts = result.get("ts", "")
+            if not ts:
+                raise RuntimeError(
+                    "Slack accepted a card without returning its message reference."
+                )
+            return f"{channel_id}:{ts}"
+        except SlackApiError as e:
+            logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
+            if e.response.get("error") in {
+                "internal_error",
+                "fatal_error",
+                "request_timeout",
+                "service_unavailable",
+            }:
+                raise
+            return None
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+        handle: str | None,
+    ) -> str | None:
+        """Find a reserved request or activity post by its shared recovery marker.
+
+        `handle` is unused: Slack carries the marker in the message's own
+        `block_id`, which is exact and invisible, so there is nothing the
+        printed handle would add.
+        """
+        if self._web_client is None:
+            raise RuntimeError(
+                "Cannot recover a request card: Slack client not connected."
+            )
+        cursor = ""
+        while True:
+            arguments: dict[str, Any] = dict(
+                channel=channel_id,
+                oldest=str(created_at.timestamp()),
+                inclusive=True,
+                include_all_metadata=True,
+                limit=100,
+                cursor=cursor,
+            )
+            if thread_root_id:
+                thread_ts = (
+                    self._parse_message_ref(thread_root_id)[1]
+                    if ":" in thread_root_id
+                    else thread_root_id
+                )
+                result = await self._web_client.conversations_replies(
+                    ts=thread_ts, **arguments
+                )
+            else:
+                result = await self._web_client.conversations_history(**arguments)
+            messages: list[dict[str, Any]] = result.get("messages") or []
+            for message in messages:
+                if not (
+                    (self._bot_user_id and message.get("user") == self._bot_user_id)
+                    or (self._bot_id and message.get("bot_id") == self._bot_id)
+                ):
+                    continue
+                marker = message.get("metadata") or {}
+                if (
+                    marker.get("event_type") == "switch_publication"
+                    and (marker.get("event_payload") or {}).get("token") == token
+                ) or any(
+                    block.get("block_id") == f"switch-request:{token}"
+                    for block in message.get("blocks", [])
+                ):
+                    return f"{channel_id}:{message['ts']}"
+            metadata: dict[str, Any] = result.get("response_metadata") or {}
+            cursor = metadata.get("next_cursor", "")
+            if not cursor:
+                return None
+
+    async def update_blocks(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Replace an already posted Block Kit message in place.
+
+        Failure is raised rather than logged, unlike `update_message`. A caller
+        editing a card is replacing something a reader is acting on — a request
+        card left showing buttons for a request that has already settled invites
+        a press that cannot land — so it has to be able to say so instead.
+        """
+        metadata = _publication_metadata(blocks)
+        try:
+            await self._write_blocks(channel_id, message_ref, text, blocks, metadata)
+        except SlackApiError as exc:
+            if exc.response.get("error") not in _BLOCK_FORMAT_ERRORS:
+                raise
+            logger.warning(
+                "Slack rejected updated card blocks in %s (%s); using its text fallback",
+                channel_id,
+                exc.response.get("error"),
+            )
+            # Clear stale interactive controls without creating a second post.
+            await self._write_blocks(channel_id, message_ref, text, [], metadata)
+
+    async def _write_blocks(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> None:
+        """One `chat.update`, with no fallback of its own.
+
+        Separate from `update_blocks` because the text fallback there is only
+        right for a message whose blocks Slack has judged malformed. A caller
+        recovering a message drawn in two sections must not reach it: that edit
+        is refused for the shape of the message rather than the shape of the
+        update, and answering it with an empty `blocks` would take a finished
+        turn off the screen to fix a spinner.
+
+        `metadata` is passed rather than read off `blocks` because the message
+        keeps the token that identifies it whatever its blocks end up being —
+        the fallback above clears the blocks and must not clear that with them.
+        """
+        if not self._web_client:
+            raise RuntimeError("Cannot update blocks: Slack client not connected.")
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot update blocks: invalid message ref {message_ref}."
+            )
+        await self._web_client.chat_update(
+            channel=channel_id,
+            ts=ts,
+            text=text,
+            blocks=blocks,
+            **metadata,
+        )
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post `content`: the activity for a turn, or the request card.
+
+        A turn's activity is streamed where Slack will take a stream, because
+        an append moves one card and leaves the rest of the message — and the
+        reader's expanded plan — alone. Everything else, and every thread a
+        stream cannot be opened in, is an ordinary Block Kit post.
+        """
+        if self._streamable(content, thread_root_id):
+            assert isinstance(content, TurnActivity) and thread_root_id
+            ref = await self._open_stream(
+                channel_id, agent_name, content, thread_root_id
+            )
+            if ref is not None:
+                return ref
+        message = self._render_rich(content)
+        ref = await self.post_blocks(
+            channel_id, agent_name, message.text, message.blocks, thread_root_id
+        )
+        if ref is None:
+            raise RichContentFailed(
+                f"Slack did not accept the message in channel {channel_id}.",
+                text=message.text,
+            )
+        return ref
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw what `post_rich` posted, in place.
+
+        `agent_name` is not read: a Slack message carries its sender's name
+        and face, so the name is never part of what was drawn.
+
+        Chains `SlackApiError` as `RichContentFailed` rather than letting it
+        through raw, so a caller that no longer imports this module still
+        has one thing to catch.
+        """
+        remaining = self._rich_update_cooldown.remaining()
+        if remaining > 0:
+            raise RichContentThrottled(
+                retry_after=remaining, text="Waiting for Slack to allow updates."
+            )
+        stream = self._streams.get(message_ref)
+        if stream is not None and isinstance(content, TurnActivity):
+            await self._extend_stream(stream, message_ref, content)
+            return
+        if message_ref in self._unredrawable:
+            if not self._unredrawable[message_ref]:
+                self._unredrawable[message_ref] = True
+                logger.warning(
+                    "Leaving the activity message %s as its stream drew it: it "
+                    "holds two sections and Slack takes only one in an edit, so "
+                    "redrawing it would replace the turn with its last few "
+                    "dozen lines. Anything that changed since the stream closed "
+                    "is not shown.",
+                    message_ref,
+                )
+            return
+        responder_name = None
+        if isinstance(content, RequestCard) and content.responder_external_id:
+            user = await self._resolve_user_name(content.responder_external_id)
+            responder_name = user.display_name
+        # Mention only on first publication, never on redraw or settlement.
+        message = self._render_rich(
+            replace(content, notify_external_id=None), responder_name=responder_name
+        )
+        try:
+            await self.update_blocks(
+                channel_id, message_ref, message.text, message.blocks
+            )
+        except SlackApiError as error:
+            throttled = self._throttled(error, message.text)
+            if throttled is not None:
+                raise throttled from error
+            if error.response.get("error") == _STREAMING_CONFLICT:
+                await self._recover_stranded_stream(
+                    channel_id, message_ref, content, message
+                )
+                return
+            raise RichContentFailed(
+                f"Slack could not update the message in channel {channel_id}: {error}",
+                text=message.text,
+            ) from error
+
+    async def _recover_stranded_stream(
+        self,
+        channel_id: str,
+        message_ref: str,
+        content: RichContent,
+        message: SlackMessage,
+    ) -> None:
+        """Take back a stream this process forgot, or close it if it will not come.
+
+        Reached when Slack refuses an edit because the message is still open as
+        a stream nothing here remembers opening — see `_STREAMING_CONFLICT`.
+        Slack has just said the message is streaming, and it is still this
+        app's own message, so the append it would accept is worth more than the
+        edit it refused. An append can rewrite a section; a message a stream
+        drew in two of them is one `chat.update` can never replace at all, so
+        adopting the stream is the only thing that repairs those rather than
+        settling for leaving them alone. It also puts a turn that was still
+        running when the process died back on the stream it belongs on, to
+        carry on where it stopped instead of finishing as a series of edits.
+
+        The adopted record starts with no memory of what Slack is holding, so
+        the next append treats every block as moved and resends the lot — which
+        is the repair. The one thing it must not forget is `_STRANDED_BLOCKS`.
+
+        Closing the stream and editing the message is the fallback rather than
+        the plan. It is reached when Slack will not take the append after all,
+        it ends the retry loop on its own, and it is what this did before it
+        could reattach — so a refusal here costs the two-section repair and
+        nothing else. A throttle is not a refusal and is left to propagate: the
+        adopted record stays, and the next publication appends to it directly
+        without going back through a conflict.
+
+        Nor is a stop Slack would not take. By then the append has landed and
+        the message is right; only the streaming state is left to clear, and
+        the fallback has nothing to offer it but the same refusal a second
+        time. It propagates so the turn stays owed — see `_StreamNotClosed`.
+        """
+        if not isinstance(content, TurnActivity):
+            await self._redraw_stranded_stream(channel_id, message_ref, message)
+            return
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot recover an activity stream: invalid message ref {message_ref}."
+            )
+        stream = _ActivityStream(
+            channel_id=channel_id, ts=ts, blocks=dict(_STRANDED_BLOCKS)
+        )
+        self._register_stream(message_ref, stream)
+        try:
+            await self._extend_stream(stream, message_ref, content)
+        except (RichContentThrottled, _StreamNotClosed):
+            raise
+        except RichContentFailed as refused:
+            self._streams.pop(message_ref, None)
+            logger.warning(
+                "The activity stream %s would not take an append after this "
+                "process lost its record of it (%s); closing it and drawing the "
+                "turn as an ordinary message instead.",
+                message_ref,
+                refused,
+            )
+            await self._redraw_stranded_stream(channel_id, message_ref, message)
+            return
+        logger.warning(
+            "Took back the activity stream %s, which Slack still held open after "
+            "this process lost its record of it; the turn is drawn on the stream "
+            "again rather than edited into the message.",
+            message_ref,
+        )
+
+    async def _redraw_stranded_stream(
+        self, channel_id: str, message_ref: str, message: SlackMessage
+    ) -> None:
+        """Close a stream this process has forgotten, then draw the turn again.
+
+        The fallback under `_recover_stranded_stream`, for a stream Slack will
+        not take an append on after all, and the whole of what that method used
+        to do. Closing it is what makes this terminate where there is a stream
+        left to close: the message can only be stranded once, so a publication
+        that arrives after this one is an ordinary edit whatever happens below.
+
+        Slack also leaves a message in a state where that is not true, and it is
+        the common one in practice: the message stays flagged as streaming while
+        the stream it refers to is gone, so an edit is refused as streaming and
+        both stream calls are refused as `message_not_found`. A delete is
+        refused too, so no call clears it, and a message nothing can change is
+        not worth asking about again — it is recorded as unredrawable, which is
+        what ends the retry, and the attempt that discovered it raises
+        `RichContentWedged` so the caller can say so beside the message. It
+        keeps whatever the stream last wrote. That is a stale card rather than a
+        lost turn, and the alternative is the same two refusals every few
+        seconds for as long as the process lives, spending the workspace's rate
+        budget on a message that cannot move.
+
+        Either call here can be rate limited instead, and in the one situation
+        this exists for that is likely: a restart strands every stream that was
+        open, and they are recovered one after another through a budget that
+        belongs to the workspace rather than to any of them. So both answer a
+        refusal to wait with `RichContentThrottled` and the cooldown behind it,
+        which holds the rest of the batch back as well. The message stays
+        stranded until the publisher comes back for it, which is the same state
+        it was already in.
+
+        The redraw is deliberately `_write_blocks` rather than `update_blocks`.
+        A message a stream drew in two sections cannot be edited at all, and the
+        turn is already whole on the screen — only the status heading is stale.
+        Answering that refusal with the empty-blocks fallback would replace a
+        finished turn with nothing, so it is recorded as unredrawable instead
+        and left exactly as the stream wrote it.
+        """
+        client = self._web_client
+        if client is None:
+            raise RuntimeError("Cannot close an activity stream: Slack disconnected.")
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot close an activity stream: invalid message ref {message_ref}."
+            )
+        self._streams.pop(message_ref, None)
+        try:
+            await client.chat_stopStream(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            throttled = self._throttled(error, message.text)
+            if throttled is not None:
+                raise throttled from error
+            code = error.response.get("error")
+            if code not in _STREAM_CLOSED_ERRORS:
+                raise RichContentFailed(
+                    f"Slack refused an edit to {message_ref} because it is still "
+                    f"streaming, and would not close the stream either: {code}",
+                    text=message.text,
+                ) from error
+            logger.warning(
+                "There is no stream left to close on %s (%s), though Slack still "
+                "refuses an edit to it as one that is streaming; redrawing the "
+                "message is all that is left to try.",
+                message_ref,
+                code,
+            )
+        else:
+            logger.warning(
+                "Closed the activity stream %s, which Slack still held open after "
+                "this process lost its record of it; the turn it belonged to has "
+                "already ended.",
+                message_ref,
+            )
+        try:
+            await self._write_blocks(
+                channel_id,
+                message_ref,
+                message.text,
+                message.blocks,
+                _publication_metadata(message.blocks),
+            )
+        except SlackApiError as error:
+            throttled = self._throttled(error, message.text)
+            if throttled is not None:
+                raise throttled from error
+            code = error.response.get("error")
+            if code == _STREAMING_CONFLICT:
+                self._remember_unredrawable(message_ref, warned=True)
+                raise RichContentWedged(
+                    f"The activity message {message_ref} is wedged: Slack refuses "
+                    "an edit to it as a message that is streaming, and refuses "
+                    "both stream calls because the stream is gone. Nothing can be "
+                    "sent that changes it, so it keeps whatever it last showed "
+                    "and is not asked again. The turn itself is unaffected.",
+                    text=message.text,
+                ) from error
+            if code not in _BLOCK_FORMAT_ERRORS:
+                raise RichContentFailed(
+                    f"Slack could not update the message in channel {channel_id} "
+                    f"after closing its stream: {error}",
+                    text=message.text,
+                ) from error
+            self._remember_unredrawable(message_ref, warned=True)
+            logger.warning(
+                "The activity message %s was drawn in sections an edit cannot "
+                "replace, so it keeps the status its stream last wrote. The turn "
+                "itself is complete and stands as it is.",
+                message_ref,
+            )
+
+    def _throttled(
+        self, error: SlackApiError, text: str
+    ) -> RichContentThrottled | None:
+        """Slack asking to be left alone, as the thing a publisher waits out.
+
+        Starts the cooldown as well as reporting it, because the limit being
+        answered is the workspace's and not this message's: the next message
+        redrawn would spend the same budget, and there is no point telling one
+        caller to wait while another walks into the refusal it was warned
+        about.
+
+        Both shapes Slack refuses in. The name comes back on a Web API error
+        body; the status comes back when the refusal is the HTTP layer's and
+        there is no body worth reading.
+
+        None where the refusal is something else, leaving the caller to make of
+        it whatever it was going to.
+        """
+        if (
+            error.response.get("error") != "ratelimited"
+            and getattr(error.response, "status_code", None) != 429
+        ):
+            return None
+        delay = self._retry_after(error)
+        self._rich_update_cooldown.start(delay)
+        return RichContentThrottled(retry_after=delay, text=text)
+
+    @staticmethod
+    def _retry_after(error: SlackApiError) -> float:
+        """How long Slack asked to be left alone for, in seconds."""
+        headers = getattr(error.response, "headers", {}) or {}
+        try:
+            delay = float(headers.get("Retry-After", headers.get("retry-after", 30)))
+        except (ValueError, TypeError):
+            return 30.0
+        return max(1.0, delay) if math.isfinite(delay) else 30.0
+
+    def _streamable(self, content: RichContent, thread_root_id: str | None) -> bool:
+        """Whether this is a turn's activity, in a thread a stream can open in.
+
+        A stream needs a thread to live in, a person to be addressed to and the
+        workspace's own id, and Slack allows one per thread. An attention post
+        and a request card are separate messages by design and stay ordinary
+        posts — only the activity, which is the thing that redraws, streams.
+
+        Missing any of those is a degraded draw rather than a broken one: the
+        turn still appears, and its plan still collapses on every redraw. That
+        is worth a line in the log, so the second group of checks says which
+        piece was absent where the first only says this was never a stream.
+
+        A turn that has already ended by the time it is first published does
+        not stream either. There is nothing left to append to it, so a stream
+        would buy none of what a stream is for — and opening one means closing
+        it in the same call, where a close Slack refuses would report a post
+        that Slack has already created and populated as one that never
+        happened. The caller deletes its delivery reservation on that, and the
+        retry posts the turn a second time. An ordinary post has no close to
+        refuse, which is the whole reason this is a question of whether to
+        open the stream rather than of how to fail once it is open.
+
+        It costs history on a long one: a post carries a single plan block
+        where a stream carries three, so a turn past the section limit keeps
+        its newest section instead of its newest three. The header says how
+        many lines that dropped, and the alternative is a turn Slack holds
+        while the caller is told it was never posted — a published turn drawn
+        short beats a turn published twice.
+        """
+        if not isinstance(content, TurnActivity):
+            return False
+        if content.status_only or content.error_summary:
+            return False
+        if content.turn.status in TURN_ENDED:
+            return False
+        missing = (
+            "no thread to open it in"
+            if thread_root_id is None
+            else "no Slack client"
+            if self._web_client is None
+            else "the workspace id is unknown"
+            if not self._team_id
+            else "nobody in the thread to address it to"
+            if not self._requester_for(thread_root_id)
+            else None
+        )
+        if missing is None:
+            return True
+        logger.warning(
+            "Not streaming the activity for turn %s (%s); drawing it as an "
+            "ordinary message, which collapses an expanded plan on each redraw.",
+            content.turn.turn_id,
+            missing,
+        )
+        return False
+
+    def _note_requester(
+        self,
+        channel_id: str,
+        message_ts: str,
+        thread_ts: str | None,
+        user_id: str | None,
+        bot_id: str | None,
+    ) -> None:
+        """Remember who spoke in a thread, so a stream there has an addressee.
+
+        A bot's own post is not somebody waiting on an answer, so it does not
+        displace the person who asked.
+        """
+        if not user_id or bot_id:
+            return
+        key = (channel_id, thread_ts or message_ts)
+        self._thread_requester[key] = user_id
+        self._thread_requester.move_to_end(key)
+        if len(self._thread_requester) > self._thread_requester_max:
+            self._thread_requester.popitem(last=False)
+
+    def _requester_for(self, thread_root_id: str | None) -> str | None:
+        """The person a stream in this thread would be addressed to."""
+        thread_ts = self._thread_ts_of(thread_root_id)
+        if thread_ts is None:
+            return None
+        channel_id = (thread_root_id or "").split(":", 1)[0]
+        return self._thread_requester.get((channel_id, thread_ts))
+
+    async def _open_stream(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: TurnActivity,
+        thread_root_id: str,
+    ) -> str | None:
+        """Open a stream for this turn, or report that there is none to use.
+
+        A refusal is not an error here: every reason Slack declines leaves the
+        ordinary post as a working way to draw the turn, so the caller falls
+        back to it rather than failing the publication. It is logged at warning
+        because a bridge quietly drawing turns the slower way is something an
+        operator should be able to see.
+        """
+        client = self._web_client
+        assert client is not None
+        thread_ts = self._thread_ts_of(thread_root_id)
+        requester = self._requester_for(thread_root_id)
+        assert thread_ts is not None and requester is not None
+        try:
+            opened = await client.chat_startStream(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                recipient_user_id=requester,
+                recipient_team_id=self._team_id,
+                task_display_mode="plan",
+                username=agent_name,
+                icon_url=await self.agent_icon_url(agent_name),
+            )
+        except SlackApiError as error:
+            logger.warning(
+                "Slack would not open an activity stream for %s in %s (%s); "
+                "drawing the turn as an ordinary message instead.",
+                agent_name,
+                channel_id,
+                error.response.get("error"),
+            )
+            return None
+        ts = opened.get("ts")
+        if not ts:
+            logger.warning(
+                "Slack opened an activity stream for %s with no ts; "
+                "drawing the turn as an ordinary message instead.",
+                agent_name,
+            )
+            return None
+        ref = f"{channel_id}:{ts}"
+        stream = _ActivityStream(channel_id=channel_id, ts=str(ts))
+        self._register_stream(ref, stream)
+        await self._extend_stream(stream, ref, content)
+        return ref
+
+    def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
+        """Hold an open stream, forgetting the oldest if there is no room.
+
+        Shared by a stream this process opened and one it adopted after a
+        restart, because the registry is the same in both cases: the only
+        record that the message is a stream, and the thing whose loss strands
+        it.
+        """
+        self._streams[message_ref] = stream
+        while len(self._streams) > _MAX_OPEN_STREAMS:
+            abandoned, _ = self._streams.popitem(last=False)
+            logger.warning(
+                "Forgetting the activity stream %s to make room; its turn never "
+                "ended, so the message is left in its streaming state.",
+                abandoned,
+            )
+
+    def _settle_stream(self, message_ref: str) -> None:
+        """Drop a finished stream, and note whether its message can be redrawn.
+
+        A message a stream drew in two sections cannot be redrawn by anything.
+        Measured: `chat.update` refuses a message carrying two plan blocks
+        exactly as `chat.postMessage` does, and it refuses it on a message a
+        stream itself built — so once the stream has gone, an edit can only
+        offer the single section the fallback draws, which is the turn's
+        history replaced by its last forty-nine lines.
+
+        Remembering which messages those are is what lets a later publication
+        be declined rather than drawn. The message is already showing the turn
+        as the stream finally left it, so there is nothing owed to a reader —
+        only a revision that landed after the turn ended goes unshown, which is
+        why it is said out loud rather than passed over.
+
+        Only a stream whose last append landed comes through here. One that was
+        refused, or dropped to make room, has not drawn the end of its turn
+        yet, and a collapsed message showing that end beats a whole one that
+        stops mid-turn.
+        """
+        stream = self._streams.pop(message_ref, None)
+        if stream is None:
+            return
+        sections = sum(block.get("type") == "plan" for block in stream.blocks.values())
+        if sections < 2:
+            return
+        self._remember_unredrawable(message_ref, warned=False)
+
+    def _remember_unredrawable(self, message_ref: str, warned: bool) -> None:
+        """Note that no edit can replace this message, and whether that is said.
+
+        `warned` is False where the reason has yet to be given, so the first
+        publication to be declined says it; True where the caller has already
+        said it in terms of its own, which are more use than the general form.
+        """
+        self._unredrawable[message_ref] = warned
+        self._unredrawable.move_to_end(message_ref)
+        while len(self._unredrawable) > _MAX_WEDGED_MESSAGES:
+            self._unredrawable.popitem(last=False)
+
+    async def _extend_stream(
+        self, stream: _ActivityStream, message_ref: str, content: TurnActivity
+    ) -> None:
+        """Send the sections that moved, and close a finished turn.
+
+        Each goes in its own `blocks` chunk: Slack replaces the block it names
+        and leaves the rest of the message — and whatever the reader has open —
+        alone.
+
+        One chunk per plan. Slack refuses a `blocks` chunk holding more than a
+        single plan block, though any number of such chunks ride in one append.
+
+        The clock lives in the newest section's heading, so a tick rewrites that
+        section rather than a header of its own. It is the price of the heading
+        being the whole collapsed message: a block has no title to move on its
+        own. Settled sections above it do not move, so what a tick costs is the
+        section still being filled and never more than one of them.
+        """
+        client = self._web_client
+        if client is None:
+            raise RuntimeError("Cannot extend an activity stream: Slack disconnected.")
+        if message_ref in self._streams:
+            self._streams.move_to_end(message_ref)
+
+        drawn = render_activity_stream(
+            content.items,
+            content.turn,
+            elapsed_seconds=content.elapsed_seconds,
+            session_url=content.session_url,
+            interrupt_turn_id=content.interrupt_turn_id,
+        )
+        blocks = drawn.blocks
+        spent = drawn.spent_control
+        if spent is not None and spent["block_id"] in stream.blocks:
+            # A stream keeps a block it is no longer sent — measured — so the
+            # turn ending is not enough to take the stop control away. It has to
+            # be written over, and only this end knows it was ever there.
+            blocks = [*blocks, spent]
+        moved = [
+            block for block in blocks if stream.blocks.get(block["block_id"]) != block
+        ]
+        if moved:
+            try:
+                await client.chat_appendStream(
+                    channel=stream.channel_id,
+                    ts=stream.ts,
+                    chunks=[{"type": "blocks", "blocks": [block]} for block in moved],
+                )
+            except SlackApiError as error:
+                # Nothing below runs: every path out of here raises. The
+                # stream's record of what Slack holds stays as it was, so a
+                # retry sends the same chunks rather than assuming they landed.
+                self._stream_failed(error, message_ref, drawn.title)
+            for block in moved:
+                stream.blocks[block["block_id"]] = block
+        if content.turn.status in TURN_ENDED:
+            await self._close_stream(client, stream, message_ref, drawn.title)
+
+    async def _close_stream(
+        self,
+        client: AsyncWebClient,
+        stream: _ActivityStream,
+        message_ref: str,
+        text: str,
+    ) -> None:
+        """Stop the stream, and settle it only once Slack says it is stopped.
+
+        The turn is over and the plan is the record of what it did, so unlike
+        the old progress card there is nothing here to delete.
+
+        A refused stop is the publication failing rather than a detail to log.
+        The publisher records a turn as ended on a draw that reported success
+        and drops its anchor with it, so a refusal swallowed here is a message
+        left in its streaming state that nothing is coming back for — a
+        spinner over a finished turn, for good. Raising is what keeps it owed.
+
+        The order matters as much as the raise. Settling forgets the stream,
+        and a stream this process has forgotten is one the next publication
+        tries to *edit* — which for a turn drawn in two sections there is no
+        edit that can hold. Keeping the record until Slack confirms the close
+        means the retry appends instead, finds nothing moved, and asks again.
+
+        A rate limit is the likely refusal and the reason this is careful: a
+        restart ends every stream it stranded at roughly the same moment,
+        through a budget belonging to the workspace rather than to any one of
+        them. `_throttled` puts the cooldown behind the whole batch.
+
+        A stream Slack says is already closed is closed, whoever closed it, so
+        those settle rather than raise. They are the same refusals an append
+        reads as the stream being gone.
+        """
+        try:
+            await client.chat_stopStream(channel=stream.channel_id, ts=stream.ts)
+        except SlackApiError as error:
+            code = error.response.get("error")
+            if code in _STREAM_CLOSED_ERRORS:
+                logger.warning(
+                    "The activity stream %s was already closed (%s); the turn "
+                    "stands as the stream last drew it.",
+                    message_ref,
+                    code,
+                )
+                self._settle_stream(message_ref)
+                return
+            throttled = self._throttled(error, text)
+            if throttled is not None:
+                raise throttled from error
+            raise _StreamNotClosed(
+                f"Slack would not close the activity stream {message_ref}: {code}",
+                text=text,
+            ) from error
+        self._settle_stream(message_ref)
+
+    def _stream_failed(
+        self,
+        error: SlackApiError,
+        message_ref: str,
+        text: str,
+    ) -> NoReturn:
+        """Turn a refused append into the failure the caller already handles.
+
+        A stream that has been stopped, or that this app no longer owns, is
+        gone rather than temporarily unwell: forget it so the publication is
+        redrawn as an ordinary post rather than appended to forever.
+        """
+        code = error.response.get("error")
+        if code in _STREAM_CLOSED_ERRORS:
+            self._streams.pop(message_ref, None)
+            logger.warning(
+                "The activity stream %s is no longer accepting appends (%s); "
+                "later updates will be drawn as an ordinary message.",
+                message_ref,
+                code,
+            )
+            raise RichContentFailed(
+                f"Slack closed the activity stream {message_ref}: {code}", text=text
+            ) from error
+        throttled = self._throttled(error, text)
+        if throttled is not None:
+            raise throttled from error
+        raise RichContentFailed(
+            f"Slack could not extend the activity stream {message_ref}: {error}",
+            text=text,
+        ) from error
+
+    def _render_rich(
+        self, content: RichContent, *, responder_name: str | None = None
+    ) -> SlackMessage:
+        if isinstance(content, TurnActivity):
+            message = (
+                render_attention(content.error_summary)
+                if content.error_summary
+                else render_activity_plan(
+                    content.items,
+                    content.turn,
+                    elapsed_seconds=content.elapsed_seconds,
+                    session_url=content.session_url,
+                    interrupt_turn_id=content.interrupt_turn_id,
+                )
+                if not content.status_only
+                else render_activity(
+                    content.items,
+                    content.turn,
+                    elapsed_seconds=content.elapsed_seconds,
+                    status_only=content.status_only,
+                )
+            )
+            message = with_session_context(
+                message,
+                session_url=content.session_url if content.status_only else None,
+                notify_external_id=content.notify_external_id,
+            )
+            if content.publication_token and message.blocks:
+                message.blocks[0]["block_id"] = (
+                    f"switch-request:{content.publication_token}"
+                )
+            return message
+        assert isinstance(content, RequestCard)
+        if content.turn is not None:
+            message = render_turn_with_request(
+                content.items,
+                content.turn,
+                content.request,
+                content.reference,
+                elapsed_seconds=content.elapsed_seconds,
+            )
+        else:
+            message = render_request(
+                content.request,
+                content.reference,
+                responder_external_id=content.responder_external_id,
+                responder_name=responder_name,
+                unavailable_reason=content.unavailable_reason,
+            )
+        return with_session_context(
+            message,
+            notify_external_id=content.notify_external_id
+            if content.request.state == "open"
+            else None,
+        )
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether this message is the first reply under a thread root.
+
+        Slack's message event names the thread but not the position in it, so
+        the thread itself is the only place the answer exists. `messages[0]` is
+        always the root, which makes `messages[1]` the first reply and two the
+        whole page worth fetching.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot read the thread under %s in %s: Slack client not "
+                "connected. Treating %s as not the first reply.",
+                root_ref,
+                channel_id,
+                message_ref,
+            )
+            return False
+        _, root_ts = self._parse_message_ref(root_ref)
+        _, ts = self._parse_message_ref(message_ref)
+        if not root_ts or not ts:
+            return False
+        try:
+            result = await self._web_client.conversations_replies(
+                channel=channel_id, ts=root_ts, limit=2
+            )
+        except Exception as e:
+            # Broad because this is on the inbound path of every message: a
+            # reset connection or a timed-out read comes out of the client as
+            # neither a SlackApiError nor anything else caught above here, and
+            # raising here loses the message rather than the answer.
+            logger.warning(
+                "Could not read the thread under %s in %s: %s. Treating %s as "
+                "not the first reply.",
+                root_ts,
+                channel_id,
+                e,
+                ts,
+            )
+            return False
+        messages = result.get("messages") or []
+        return len(messages) > 1 and messages[1].get("ts") == ts
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Slack's ephemeral message: one person, in place, and not kept.
+
+        It suits a notice about an answer that did not land. That notice is
+        only useful to whoever gave the answer, and only until they give
+        another, so leaving nothing behind is the point rather than a
+        limitation.
+
+        `actor_name` goes unused here, and that is what being private buys:
+        the only person who reads this is the one it is about, so it has
+        nobody to name.
+
+        Ephemerals are not deliverable to someone who is not in the channel,
+        and Slack says so rather than failing quietly. Nothing here can put
+        them there, so it is logged and left.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot tell %s in %s that their answer did not land: Slack "
+                "client not connected. The notice was: %s",
+                actor_ref,
+                channel_id,
+                text,
+            )
+            return
+        try:
+            await self._web_client.chat_postEphemeral(
+                channel=channel_id,
+                user=actor_ref,
+                text=escape_mrkdwn(text),
+                thread_ts=self._thread_ts_of(thread_ref),
+            )
+        except Exception as e:
+            # Broad for the same reason `is_first_reply` is: this runs on the
+            # inbound path of every message, so raising loses the message and
+            # not just the notice.
+            logger.warning(
+                "Could not tell %s in %s that their answer did not land: %s. "
+                "The notice was: %s",
+                actor_ref,
+                channel_id,
+                e,
+                text,
+            )
+
     def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place
@@ -449,6 +1553,7 @@ class SlackAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Renders its own body: every caller of `admin_message` passes Switch
         # Markdown, so the conversion belongs here rather than at each of
@@ -473,7 +1578,7 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=content,
+                text=self._admin_body(content, drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -672,6 +1777,40 @@ class SlackAdapter(CollaborationAdapter):
         except SlackApiError as e:
             logger.error("Failed to delete Slack message %s: %s", message_ref, e)
 
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        if not self._web_client:
+            raise RemovalFailed("Slack client not connected.")
+
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise RemovalFailed(f"Not a Slack message reference: {message_ref}.")
+
+        try:
+            await self._web_client.chat_delete(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            refusal = error.response.get("error")
+            if refusal == "ratelimited":
+                # Separated from every other error because it is the one that
+                # says nothing about the card: the deletion is still owed, and
+                # Slack has named how long to wait before owing it again.
+                raise RichContentThrottled(
+                    retry_after=_retry_after_seconds(error),
+                    text=f"Waiting for Slack to allow {message_ref} to be deleted.",
+                ) from error
+            if refusal != "message_not_found":
+                raise RemovalFailed(
+                    f"Slack would not delete {message_ref}: {refusal}."
+                ) from error
+            # Slack says the same thing about a message already deleted and
+            # about an address it has never seen. The address here is the one
+            # Slack gave us when it accepted the card, so the first reading is
+            # the one that fits — but it is worth a line, because the second
+            # reading is what a deletion by hand or a channel-wide purge would
+            # also look like.
+            logger.warning(
+                "Slack card %s was already gone when it was taken back.", message_ref
+            )
+
     # ── Typing ───────────────────────────────────────────────────────────────
 
     async def send_typing(
@@ -718,575 +1857,141 @@ class SlackAdapter(CollaborationAdapter):
         except SlackApiError:
             logger.exception("Failed to delete thinking indicator in %s", channel_id)
 
-    # ── Runtime state ──────────────────────────────────────────────────────────
-
-    async def _apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
-    ) -> None:
-        """Render runtime state as persistent, truly-deletable status messages.
-
-        Slack's `chat_delete` removes a message cleanly (no tombstone), so the
-        "working on it…" indicator and any "needs your input" pings are posted
-        while relevant and deleted when the turn ends. The working indicator
-        stays up through `awaiting-input` — the agent is mid-turn, just paused —
-        and the pings are removed alongside it when the turn goes idle (or
-        resumes to `working`, since the input that was requested was provided).
-        When the agent was addressed in a thread, messages surface in that
-        thread (``thread_root_id``); otherwise at the channel root.
-        """
-        # Handled before the branching below, because the working branch
-        # returns early when it only has to refresh the message in place — and
-        # the session still has to track the turn.
-        await self._track_turn(
-            channel_id,
-            thread_root_id,
-            agent_name,
-            state=state,
-            detail=detail,
-            deeplink_url=deeplink_url,
-        )
-
-        key = (channel_id, agent_name)
-        if state == "working":
-            # Resuming work means the requested input was provided — clear the
-            # now-resolved pings, then ensure the working indicator is up.
-            await self._clear_input_pings(channel_id, agent_name)
-            if self._streaming(channel_id, thread_root_id):
-                # Slack is drawing this turn itself, and better: the card is
-                # live, named for the agent, and carries the console link. A
-                # posted message beside it would say the same thing twice, so
-                # any earlier one is taken down.
-                await self._clear_working(channel_id, agent_name)
-                return
-            # Posted under the agent's own name/icon, so the body just states
-            # the activity — no need to repeat the agent name in the text.
-            body = self._working_body(detail, deeplink_url)
-            existing = self._working_msg.get(key)
-            if existing is not None:
-                # Refresh the live message in place with the latest activity.
-                # Position is a separate concern — see reposition_runtime_state,
-                # which moves the indicator when the conversation moves on.
-                await self.update_message(channel_id, existing.message_ref, body)
-                self._working_msg[key] = replace(existing, body=body)
-                return
-            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
-            if ref is not None:
-                self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref,
-                    body=body,
-                    thread_root_id=thread_root_id,
-                    started_at=time.monotonic(),
-                )
-        elif state == "awaiting-input":
-            # Leave the working indicator up; add a ping and track it.
-            ref = await self._ping_operator(
-                channel_id,
-                agent_name,
-                mention_handle,
-                thread_root_id,
-                deeplink_url,
-                detail,
-            )
-            if ref is not None:
-                self._input_pings.setdefault(key, []).append(ref)
-        else:
-            await self._clear_working(channel_id, agent_name)
-            await self._clear_input_pings(channel_id, agent_name)
-
-    async def _track_turn(
-        self,
-        channel_id: str,
-        thread_root_id: str | None,
-        agent_name: str,
-        *,
-        state: str,
-        detail: str | None,
-        deeplink_url: str | None,
-    ) -> None:
-        """Keep every thread this agent has in flight, and end them together.
-
-        An agent asked two things at once works on both, and each message gets
-        its own card and its own eyes — but the turn ends **once**, naming only
-        the thread it last touched. Cleaning up just that one leaves the first
-        message marked as being worked on for good, and its card frozen
-        mid-task. So the threads are remembered per agent and closed together.
-        """
-        akey = (channel_id, agent_name)
-        thread_ts = self._thread_ts_of(thread_root_id)
-
-        if state in ("working", "awaiting-input"):
-            if not thread_ts:
-                await self._update_session(
-                    channel_id,
-                    thread_root_id,
-                    agent_name,
-                    state=state,
-                    detail=detail,
-                    deeplink_url=deeplink_url,
-                )
-                return
-            self._agent_threads.setdefault(akey, set()).add(thread_ts)
-            asked_on = self._thread_trigger.get((channel_id, thread_ts), thread_ts)
-            self._agent_eyes.setdefault(akey, set()).add(asked_on)
-            await self._mark_being_read(channel_id, asked_on, working=True)
-            await self._update_session(
-                channel_id,
-                thread_root_id,
-                agent_name,
-                state=state,
-                detail=detail,
-                deeplink_url=deeplink_url,
-            )
-            return
-
-        for ts in sorted(self._agent_eyes.pop(akey, set())):
-            await self._mark_being_read(channel_id, ts, working=False)
-        for ts in sorted(self._agent_threads.pop(akey, set())):
-            # Ownership goes with the turn: a stop pressed afterwards must not
-            # interrupt whatever the agent moved on to.
-            self._session_owner.pop((channel_id, ts), None)
-            await self._drive_stream(
-                channel_id,
-                ts,
-                agent_name,
-                working=False,
-                detail=None,
-                deeplink_url=None,
-            )
+    # ── SDK activity reactions ────────────────────────────────────────────────
 
     async def _mark_being_read(
-        self, channel_id: str, thread_ts: str | None, *, working: bool
+        self,
+        channel_id: str,
+        thread_ts: str | None,
+        *,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
     ) -> None:
-        """Put 👀 on the message an agent is working on, and take it off after.
+        """Mark the asking message and cache expected Slack reaction refusals.
 
-        Unlike the session card this needs nothing from Slack beyond a scope we
-        already hold, and it works at the channel root as well as in a thread —
-        so it is the one progress signal that is always available. It also says
-        *which* message is being handled, which a status elsewhere cannot.
+        The memory of what is already there is per reaction, because the two
+        are independent: a queued prompt that starts running loses one mark and
+        keeps the other, and a message can carry another turn's working mark
+        while this one is still waiting. A message Slack says does not exist is
+        not per reaction — there is nothing there to carry either.
+
+        Not finding the message is only good news one way round. Nothing was
+        put on a message that is not there, so an addition it refuses has
+        nothing left over; a removal it refuses is indistinguishable from one
+        against a message that is there, which would leave a mark the caller
+        has been told is gone. Neither the caller nor this cache can tell those
+        apart, so the removal is said out loud rather than passed over in
+        silence.
+
+        A rate limit is neither: the mark is still wanted and the call will
+        work later, so the window Slack named is waited out rather than spent
+        asking. The caller is told the mark did not land, which is what keeps
+        it asking again afterwards.
         """
         ts = thread_ts
         if not ts or not self._web_client:
             return
-        key = (channel_id, ts)
-        if working == (key in self._eyes):
+        message = (channel_id, ts)
+        key = (channel_id, ts, mark)
+        if not force and on == (key in self._marked):
             return
-        if key in self._unmarkable:
+        if message in self._unmarkable:
+            if not on:
+                logger.warning(
+                    "Not asking Slack to take the %s reaction off %s in %s: it "
+                    "could not find that message earlier. A reaction still on a "
+                    "message that does exist will stay there.",
+                    mark,
+                    ts,
+                    channel_id,
+                )
             return
+        waiting = self._reactions_cooldown.remaining()
+        if waiting > 0:
+            raise SlackReactionsRateLimited(
+                f"Slack is rate limiting reactions; not asking for {waiting:.0f}s."
+            )
 
         try:
-            if working:
+            if on:
                 await self._web_client.reactions_add(
-                    channel=channel_id, timestamp=ts, name=_WORKING_REACTION
+                    channel=channel_id, timestamp=ts, name=_REACTION[mark]
                 )
-                self._eyes.add(key)
+                self._marked.add(key)
             else:
                 await self._web_client.reactions_remove(
-                    channel=channel_id, timestamp=ts, name=_WORKING_REACTION
+                    channel=channel_id, timestamp=ts, name=_REACTION[mark]
                 )
-                self._eyes.discard(key)
+                self._marked.discard(key)
         except SlackApiError as e:
             error = e.response.get("error", "")
             # Already there, or already gone: the end state is what was wanted,
             # so record it and say nothing.
             if error in ("already_reacted", "no_reaction"):
-                self._eyes.add(key) if working else self._eyes.discard(key)
+                self._marked.add(key) if on else self._marked.discard(key)
                 return
             if error == "message_not_found":
                 # There is no message to mark, and there will not be one later.
-                self._unmarkable[key] = None
+                if not on:
+                    logger.warning(
+                        "Slack could not find %s in %s to take the %s reaction "
+                        "off. A reaction still on a message that does exist "
+                        "will stay there.",
+                        ts,
+                        channel_id,
+                        mark,
+                    )
+                self._unmarkable[message] = None
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)
+                return
+            if (
+                error == "ratelimited"
+                or getattr(e.response, "status_code", None) == 429
+            ):
+                delay = _retry_after_seconds(e)
+                self._reactions_cooldown.start(delay)
+                raise SlackReactionsRateLimited(
+                    f"Slack is rate limiting reactions; not asking for {delay}s."
+                ) from e
+            if force:
+                raise
             logger.warning(
-                "Could not %s the working reaction on %s in %s: %s",
-                "add" if working else "remove",
+                "Could not %s the %s reaction on %s in %s: %s",
+                "add" if on else "remove",
+                mark,
                 ts,
                 channel_id,
                 error or e,
             )
 
-    def _streaming(self, channel_id: str, thread_root_id: str | None) -> bool:
-        """Whether Slack is already drawing this turn's progress itself."""
-        thread_ts = self._thread_ts_of(thread_root_id)
-        return bool(thread_ts) and (channel_id, thread_ts) in self._stream_ts
-
-    # ── Native agent session ─────────────────────────────────────────────────
-
-    async def _update_session(
+    async def mark_activity(
         self,
         channel_id: str,
-        thread_root_id: str | None,
-        agent_name: str,
+        message_ref: str,
         *,
-        state: str,
-        detail: str | None = None,
-        deeplink_url: str | None = None,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
     ) -> None:
-        """Mirror the turn onto a Slack agent session.
+        """Mark the asking message, accepting either a timestamp or channel:ts.
 
-        This is additive: the status messages Switch posts are what actually
-        carry the detail, and they are unchanged. This adds Slack's own live
-        card of what the agent is doing, under the agent's name and icon.
+        The SDK publication journal owns concurrent turn claims. ``force``
+        reconciles Slack's reaction after a restart despite the local cache.
 
-        The card is the stream. Slack also has a session *status*, which does
-        render — but as a second element attributed to the app rather than the
-        agent, with Slack's own generic wording and no way to rename it. Two
-        cards for one turn, one of them anonymous, reads worse than one, so it
-        is deliberately not set here. The stop button that hangs off it goes
-        with it.
-
-        A session is scoped to a thread, so a turn with none is left to the
-        posted messages alone.
+        `agent_name` is not used: every agent speaks as the one app here, so
+        there is a single reaction on the message whoever is working behind
+        it, and adding it twice or removing one agent's while another is
+        still running would both be the same mark.
         """
-        if not self._config.agent_sessions:
-            logger.debug(_TRACE + "skipped for %s: turned off in config", agent_name)
-            return
-        if self._agent_sessions_off():
-            # Silent by design. Giving up is announced once, where it happens;
-            # saying so again per skipped turn produced eleven thousand lines
-            # in a night — an instrument that ruins the thing it measures.
-            return
-        if not self._web_client:
-            logger.debug(_TRACE + "skipped for %s: Slack not connected", agent_name)
-            return
-        thread_ts = self._thread_ts_of(thread_root_id)
-        if not thread_ts:
-            # Once per agent per channel. Runtime state is reported many times
-            # a turn and most turns have no thread, so logging every one buries
-            # everything else.
-            if (channel_id, agent_name) not in self._threadless_logged:
-                self._threadless_logged.add((channel_id, agent_name))
-                logger.debug(
-                    _TRACE + "no thread for %s in %s, so no session (state '%s')",
-                    agent_name,
-                    channel_id,
-                    state,
-                )
-            return
-        self._threadless_logged.discard((channel_id, agent_name))
-
-        working = state in ("working", "awaiting-input")
-        if working and self._sessions_throttled():
-            # A step lost to throttling costs one line of the card. Teardown is
-            # not skipped the same way: dropping it would leave the card open
-            # for good, so it is attempted even while we are being throttled.
-            return
-        key = (channel_id, thread_ts)
-        if working:
-            self._session_owner[key] = agent_name
-        else:
-            self._session_owner.pop(key, None)
-
-        # A detail on `awaiting-input` is the reason a turn died, not a step the
-        # agent is taking. Streamed unmarked it reads as progress — a spinner
-        # over "the turn ended on an error" — so it is flagged as the stall it is.
-        step_detail = f"⚠️ {detail}" if state == "awaiting-input" and detail else detail
-        await self._drive_stream(
+        await self._mark_being_read(
             channel_id,
-            thread_ts,
-            agent_name,
-            working=working,
-            detail=step_detail,
-            deeplink_url=deeplink_url,
-        )
-
-    def _note_session_failure(
-        self,
-        error: str,
-        agent_name: str,
-        channel_id: str,
-        *,
-        retry_after: int | None = None,
-    ) -> None:
-        """Log a failed status call, and give up if it is not going to improve.
-
-        A known refusal names its cause immediately. An unrecognised one cannot
-        be told apart from a passing fault on the first sight of it, so it is
-        logged and retried — but only so many times. Slack returns codes this
-        list does not know about (`not_authorized` for an app that is not an
-        agent, found in the pilot), and without a backstop each one means a
-        warning on every turn for as long as the bridge runs.
-
-        Throttling is the exception, and is not counted at all: it says the app
-        is busy, not that it is unfit, and counting it turned a burst of
-        traffic into a bridge that never showed a card again.
-        """
-        if error == "ratelimited":
-            self._note_session_throttled(retry_after or _RATE_LIMIT_DEFAULT_DELAY)
-            return
-
-        if error in _AGENT_SESSIONS_UNAVAILABLE_ERRORS:
-            self._disable_agent_sessions(error)
-            return
-
-        # One turn's status failing is not worth losing the turn over — the
-        # posted indicator still says what is happening.
-        self._session_failures = (
-            self._session_failures + 1 if error == self._last_session_error else 1
-        )
-        self._last_session_error = error
-        logger.warning(
-            "Could not set the Slack session status for agent %s in %s: %s",
-            agent_name,
-            channel_id,
-            error or "unknown error",
-        )
-        if self._session_failures >= _AGENT_SESSIONS_FAILURE_LIMIT:
-            self._disable_agent_sessions(error, retry_in=_AGENT_SESSIONS_RETRY_AFTER)
-
-    def _note_session_throttled(self, delay: int) -> None:
-        """Stand down for as long as Slack asked, and say so once per burst."""
-        already_waiting = self._sessions_throttled()
-        self._sessions_throttled_until = time.monotonic() + delay
-        if already_waiting:
-            logger.debug(_TRACE + "still throttled; waiting %ss more", delay)
-            return
-        logger.warning(
-            "Slack is rate-limiting agent session updates; pausing them for %ss. "
-            "Cards may miss a step until it clears; Switch's own status messages "
-            "are unaffected.",
-            delay,
-        )
-
-    def _sessions_throttled(self) -> bool:
-        until = self._sessions_throttled_until
-        if until is None:
-            return False
-        if time.monotonic() < until:
-            return True
-        self._sessions_throttled_until = None
-        logger.debug(_TRACE + "throttling window elapsed; resuming session updates")
-        return False
-
-    def _agent_sessions_off(self) -> bool:
-        """Whether sessions are given up on — re-arming a lapsed give-up.
-
-        A give-up over errors this build cannot name is a guess, so it expires:
-        the bridge tries again rather than staying dark until someone restarts
-        it. A refusal that named its own cause does not expire, because nothing
-        will have changed without an operator changing it.
-        """
-        if self._agent_sessions_off_reason is None:
-            return False
-        retry_at = self._agent_sessions_retry_at
-        if retry_at is None or time.monotonic() < retry_at:
-            return True
-        logger.info(
-            "Trying Slack agent sessions again after backing off over '%s'.",
-            self._agent_sessions_off_reason,
-        )
-        self._agent_sessions_off_reason = None
-        self._agent_sessions_retry_at = None
-        self._session_failures = 0
-        self._last_session_error = None
-        return False
-
-    async def _drive_stream(
-        self,
-        channel_id: str,
-        thread_ts: str,
-        agent_name: str,
-        *,
-        working: bool,
-        detail: str | None,
-        deeplink_url: str | None,
-    ) -> None:
-        """Open, extend and close the stream that backs the session.
-
-        The stream calls go through the SDK's own methods, which send JSON and
-        keep the argument names honest; only the session status has no typed
-        method to use."""
-        client = self._web_client
-        if client is None:
-            return
-        key = (channel_id, thread_ts)
-        open_ts = self._stream_ts.get(key)
-
-        if not working:
-            if open_ts:
-                closing_ts = open_ts
-                if self._stream_step.get(key):
-                    # Marked done before closing. The card is deleted a moment
-                    # later, so this only shows if that delete is refused — and
-                    # a leftover reading "finished" beats one reading "failed",
-                    # which is what an unfinished step renders as.
-                    await self._call_session_api(
-                        lambda: client.chat_appendStream(
-                            channel=channel_id,
-                            ts=closing_ts,
-                            chunks=[_task_chunk(self._stream_step[key], done=True)],
-                        ),
-                        agent_name=agent_name,
-                        channel_id=channel_id,
-                        stream_key=key,
-                    )
-                await self._call_session_api(
-                    lambda: client.chat_stopStream(channel=channel_id, ts=closing_ts),
-                    agent_name=agent_name,
-                    channel_id=channel_id,
-                    stream_key=key,
-                )
-                # The card is a progress indicator, not a record. Once the turn
-                # is over the agent's own reply is the thing worth reading, so
-                # the card goes the way the posted status message always did.
-                await self.delete_message(channel_id, f"{channel_id}:{closing_ts}")
-                self._stream_ts.pop(key, None)
-                self._stream_step.pop(key, None)
-                logger.debug(_TRACE + "closed stream for %s on %s", agent_name, key[1])
-            return
-
-        step = (_plain(detail or "") or "Working")[:_STREAM_STEP_MAX]
-        if open_ts is None:
-            requester = self._thread_requester.get(key)
-            if not requester:
-                logger.debug(
-                    _TRACE + "no stream for %s on %s: nobody recorded to stream to",
-                    agent_name,
-                    thread_ts,
-                )
-                return
-            if not self._team_id:
-                logger.debug(
-                    _TRACE + "no stream for %s: the bot's team id is unknown",
-                    agent_name,
-                )
-                return
-            agent = await self.agent_rendering(agent_name)
-            open_ts = await self._call_session_api(
-                lambda: client.chat_startStream(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
-                    recipient_user_id=requester,
-                    recipient_team_id=self._team_id,
-                    task_display_mode="timeline",
-                    username=agent.field_label,
-                    icon_url=agent.icon_url,
-                ),
-                agent_name=agent_name,
-                channel_id=channel_id,
-            )
-            if open_ts is None:
-                return
-            if not open_ts:
-                logger.warning(
-                    _TRACE + "Slack opened a stream for %s with no ts", agent_name
-                )
-                return
-            self._stream_ts[key] = open_ts
-            logger.debug(_TRACE + "opened stream %s for %s", open_ts, agent_name)
-        elif self._stream_step.get(key) == step:
-            return
-
-        # Slack accumulates a task's sources across updates rather than
-        # replacing them, so the link goes on the first step only — sending it
-        # every time stacked eight identical links under one card.
-        first_link = deeplink_url if self._stream_step.get(key) is None else None
-        stream_ts = open_ts
-        pushed = await self._call_session_api(
-            lambda: client.chat_appendStream(
-                channel=channel_id,
-                ts=stream_ts,
-                chunks=[_task_chunk(step, first_link)],
-            ),
-            agent_name=agent_name,
-            channel_id=channel_id,
-            stream_key=key,
-        )
-        if pushed is None:
-            # The step never landed, so it is not what the card is showing —
-            # and recording it would tell the next one the link had been sent.
-            return
-        self._stream_step[key] = step
-
-    async def _call_session_api(
-        self,
-        call: Callable[[], Awaitable[Any]],
-        *,
-        agent_name: str,
-        channel_id: str,
-        stream_key: tuple[str, str] | None = None,
-    ) -> str | None:
-        """Make a session call, routing a refusal through the same give-up path.
-
-        Returns the response's `ts` on success (empty string when it has none)
-        and None on failure, so a caller that needs the stream's id cannot
-        mistake a refusal for a stream it can append to.
-
-        `stream_key` names the card being written to, where there is one, so a
-        card that has gone can be forgotten instead of counted against the app.
-        """
-        try:
-            result = await call()
-        except SlackApiError as e:
-            error = str(e.response.get("error", ""))
-            if error == "message_not_found":
-                self._forget_stream(stream_key, agent_name)
-                return None
-            self._note_session_failure(
-                error,
-                agent_name,
-                channel_id,
-                retry_after=_retry_after_seconds(e) if error == "ratelimited" else None,
-            )
-            return None
-        self._session_failures = 0
-        self._sessions_throttled_until = None
-        return str(result.get("ts", ""))
-
-    def _forget_stream(self, key: tuple[str, str] | None, agent_name: str) -> None:
-        """Drop a card Slack says is no longer there.
-
-        The card is deleted when a turn ends, so a state report that arrives
-        just behind the teardown writes to something that has gone — as does a
-        card a user deleted by hand. It says nothing about whether this app can
-        host sessions, and counting it as if it did took the card away from
-        every agent in the workspace over one stale thread. The turn falls back
-        to the posted status message, and the next one opens a fresh card.
-        """
-        if key is not None:
-            self._stream_ts.pop(key, None)
-            self._stream_step.pop(key, None)
-            self._session_owner.pop(key, None)
-        logger.debug(
-            _TRACE + "card for %s is gone; forgetting it and carrying on", agent_name
-        )
-
-    def _disable_agent_sessions(
-        self, error: str, *, retry_in: int | None = None
-    ) -> None:
-        if self._agent_sessions_off_reason:
-            return
-        self._agent_sessions_off_reason = error
-        self._agent_sessions_retry_at = (
-            time.monotonic() + retry_in if retry_in is not None else None
-        )
-        reason = _AGENT_SESSIONS_UNAVAILABLE_ERRORS.get(
-            error,
-            f"Slack kept refusing with '{error or 'an unknown error'}'. If the "
-            "app is not declared as an Agent in its settings, that is the "
-            "likeliest cause.",
-        )
-        recovery = (
-            f" Trying again in {retry_in}s."
-            if retry_in is not None
-            else " This will not change without an operator changing it."
-        )
-        logger.warning(
-            "Slack agent sessions are unavailable for this app (%s): %s "
-            "Turns still show Switch's own status messages; only Slack's native "
-            "loading UX and stop button are missing.%s",
-            error,
-            reason,
-            recovery,
+            self._thread_ts_of(message_ref),
+            mark=mark,
+            on=on,
+            force=force,
         )
 
     @staticmethod
@@ -1296,54 +2001,6 @@ class SlackAdapter(CollaborationAdapter):
         return (
             thread_root_id.split(":", 1)[1] if ":" in thread_root_id else thread_root_id
         )
-
-    async def _handle_session_stopped(self, event: dict[str, object]) -> None:
-        """Route Slack's stop button to the agent whose turn it belongs to.
-
-        Setting a session to `processing` puts a stop button on the thread. A
-        button that does nothing is worse than no button, so it is wired to the
-        same interrupt an operator can type — anything less would be a control
-        that lies about what it does.
-        """
-        channel_id = str(event.get("channel_id") or event.get("channel") or "")
-        thread_ts = str(event.get("thread_ts") or "")
-        if not channel_id or not thread_ts or self._on_command is None:
-            return
-
-        agent_name = self._session_owner.pop((channel_id, thread_ts), None)
-        if not agent_name:
-            logger.info(
-                "Slack session stopped in %s (%s) with no agent turn to interrupt",
-                channel_id,
-                thread_ts,
-            )
-            return
-
-        user_id = str(event.get("user_id") or event.get("user") or "")
-        user = await self._resolve_user_name(user_id) if user_id else None
-        await self._on_command(
-            InboundCommand(
-                channel_id=channel_id,
-                channel_type=await self.get_channel_type(channel_id),
-                sender_id=user_id,
-                sender_name=user.name if user else "slack",
-                command="interrupt",
-                args=f"@{agent_name}",
-                message_ref=None,
-                root_id=f"{channel_id}:{thread_ts}",
-                channel_name=await self._resolve_channel_name(channel_id),
-            )
-        )
-
-    async def _clear_working(self, channel_id: str, agent_name: str) -> None:
-        live = self._working_msg.pop((channel_id, agent_name), None)
-        if live is not None:
-            await self.delete_message(channel_id, live.message_ref)
-
-    async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
-        refs = self._input_pings.pop((channel_id, agent_name), [])
-        for ref in refs:
-            await self.delete_message(channel_id, ref)
 
     # ── Channel creation ──────────────────────────────────────────────────────
 
@@ -1841,17 +2498,9 @@ class SlackAdapter(CollaborationAdapter):
         from text these three replacements do not touch. The `@` the base class
         defuses is what closes that.
 
-        mrkdwn's emphasis characters (`*`, `_`, `~`, backtick) have no escape
-        sequence — Slack documents none — so a label containing them can still
-        unbalance the bold run it sits in. That is cosmetic; the markup a label
-        could forge is not, and this closes it."""
-        return (
-            super()
-            .escape_label_for_body(label)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        The three replacements themselves are `escape_mrkdwn`, shared with
+        anything else that writes mrkdwn for this workspace."""
+        return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(
@@ -1920,7 +2569,7 @@ class SlackAdapter(CollaborationAdapter):
 
         return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
 
-    # ── Socket Mode event handling ───────────────────────────────────────────
+    # ── Event handling ───────────────────────────────────────────────────────
 
     async def _handle_socket_event(
         self, client: SocketModeClient, req: SocketModeRequest
@@ -1928,15 +2577,36 @@ class SlackAdapter(CollaborationAdapter):
         await client.send_socket_mode_response(
             SocketModeResponse(envelope_id=req.envelope_id)
         )
+        await self.dispatch_event(envelope_type=req.type, payload=req.payload)
 
-        if req.type == "slash_commands":
-            await self._handle_slash_command(req.payload)
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> None:
+        """Route one Slack event, whichever transport carried it.
+
+        Socket Mode hands over an envelope type and a payload; the public
+        webhook parses the same two out of the request it has already proved
+        genuine. Everything after that point is identical, so it is written
+        once — a dispatch that differed by transport is how the two delivery
+        modes would drift into behaving differently for the same event.
+
+        Acknowledgement is *not* here, because the two transports acknowledge
+        incompatibly: Socket Mode replies on the socket before dispatching,
+        while HTTP acknowledges by returning 200 to the post. Both must do it
+        promptly and neither can do it for the other.
+        """
+        if envelope_type == "slash_commands":
+            await self._handle_slash_command(payload)
             return
 
-        if req.type != "events_api":
+        if envelope_type == "interactive":
+            await self._handle_interactive(payload)
             return
 
-        event = req.payload.get("event", {})
+        if envelope_type != "events_api":
+            return
+
+        event = payload.get("event", {})
         event_type = event.get("type")
         event_subtype = event.get("subtype")
 
@@ -1947,8 +2617,67 @@ class SlackAdapter(CollaborationAdapter):
                 await self._handle_message_event(event)
         elif event_type == "member_joined_channel":
             await self._handle_member_joined_channel(event)
-        elif event_type == "agent_session_stopped":
-            await self._handle_session_stopped(event)
+
+    async def _handle_interactive(self, payload: dict[str, Any]) -> None:
+        """Someone operated a Block Kit control on one of our messages.
+
+        Only who Slack says acted, which control they operated, and where the
+        message sits are read out of the payload. A button's `value` is the
+        opaque token this bridge minted when it posted the message, so a payload
+        that was replayed or hand-built names nothing its sender was not already
+        looking at.
+
+        Where it sits includes the thread, because Slack answers a press with a
+        fresh ephemeral post rather than through the interaction, and an
+        ephemeral goes to the channel root unless it is told otherwise. Taking
+        it from the press means every answer lands beside the control, including
+        the refusals that never resolve a session to ask.
+
+        Slack sends one `block_actions` envelope per press, but the field is a
+        list, and a press this bridge did not put there is somebody else's.
+        """
+        if payload.get("type") != "block_actions":
+            return
+        if self._on_interaction is None:
+            return
+
+        user_id = str((payload.get("user") or {}).get("id", ""))
+        container = payload.get("container") or {}
+        channel_id = str(
+            (payload.get("channel") or {}).get("id", "")
+            or container.get("channel_id", "")
+        )
+        message_ts = str(container.get("message_ts", ""))
+        # Same shape `_handle_message_event` normalises: a thread root sets
+        # thread_ts == ts once it has replies, and a control on one is at the
+        # channel root however many replies hang off it.
+        thread_ts = str(
+            container.get("thread_ts", "")
+            or (payload.get("message") or {}).get("thread_ts", "")
+        )
+        if thread_ts == message_ts:
+            thread_ts = ""
+        if not user_id or not channel_id:
+            logger.warning("Slack block_actions missing user or channel, skipping")
+            return
+
+        user = await self._resolve_user_name(user_id)
+        for action in payload.get("actions") or []:
+            action_id = str(action.get("action_id", ""))
+            value = str(action.get("value") or "")
+            if not action_id or not value:
+                continue
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    action_id=action_id,
+                    value=value,
+                    message_ref=f"{channel_id}:{message_ts}" if message_ts else None,
+                    thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
+                )
+            )
 
     async def _handle_member_joined_channel(self, event: dict[str, object]) -> None:
         user_id = str(event.get("user", ""))
@@ -2064,22 +2793,7 @@ class SlackAdapter(CollaborationAdapter):
         # Remember the thread this message belongs to so the "thinking"
         # indicator can be posted into the same conversation.
         self._last_thread_ts[channel_id] = thread_ts or message_ts
-        root = thread_ts or message_ts
-        # The message that actually asked. Inside a thread this is a reply, not
-        # the root, and the mark belongs on what was said — not on the
-        # conversation it happens to sit in. An app's post counts: a Slack
-        # workflow asking an agent something is a request like any other, and
-        # treating it as nobody asking left the mark aimed at a thread root
-        # that need not be a message at all.
-        self._thread_trigger[(channel_id, root)] = message_ts
-        # Streaming a reply into a channel has to name who it is for, and the
-        # runtime-state path never sees the asker — so keep it per thread. This
-        # one does need a person: Slack will not open a session addressed to an
-        # app, so a workflow-triggered turn has the posted status message and
-        # the mark, and no card.
-        if user_id and not bot_id:
-            self._thread_requester[(channel_id, root)] = user_id
-
+        self._note_requester(channel_id, message_ts, thread_ts, user_id, bot_id)
         message_ref = f"{channel_id}:{message_ts}"
         stripped = text.strip()
         if user_id and not bot_id:
@@ -2121,6 +2835,7 @@ class SlackAdapter(CollaborationAdapter):
                     attachments=attachments,
                     attachment_failures=attachment_failures,
                     self_mention_token=self._bot_user_id if self_mention else None,
+                    sender_is_app=bool(bot_id),
                 )
             )
 

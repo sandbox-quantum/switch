@@ -2,19 +2,15 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
-  useRef,
   useState,
   type ReactNode,
   type RefObject,
 } from 'react';
 import { usePanelRef, type PanelImperativeHandle } from 'react-resizable-panels';
-import { panelDragStore } from './panel-drag-store';
 
 export interface WorkspaceLayoutContextValue {
   isLeftOpen: boolean;
   leftPanelRef: RefObject<PanelImperativeHandle | null>;
-  handleDragging: (side: 'left', dragging: boolean) => void;
   syncLeftOpenFromPanel: () => void;
   setCollapsed: (side: 'left', collapsed: boolean) => void;
   toggleLeft: () => void;
@@ -27,29 +23,7 @@ export function useWorkspaceLayoutService() {
 
   const [isLeftOpen, setIsLeftOpen] = useState(true);
 
-  const draggingRef = useRef({ left: false });
-
-  const handleDragging = useCallback((side: 'left', dragging: boolean) => {
-    if (draggingRef.current[side] === dragging) return;
-    const wasDragging = draggingRef.current.left;
-    draggingRef.current[side] = dragging;
-    const isDragging = draggingRef.current.left;
-    if (wasDragging !== isDragging) {
-      panelDragStore.setDragging(isDragging);
-    }
-  }, []);
-
-  useEffect(() => {
-    const dragging = draggingRef.current;
-    return () => {
-      if (dragging.left) {
-        panelDragStore.setDragging(false);
-      }
-    };
-  }, []);
-
   const syncLeftOpenFromPanel = useCallback(() => {
-    if (panelDragStore.getIsSuppressing()) return;
     setIsLeftOpen(!leftPanelRef.current?.isCollapsed());
   }, [leftPanelRef]);
 
@@ -57,10 +31,6 @@ export function useWorkspaceLayoutService() {
     (side: 'left', collapsed: boolean) => {
       const panel = leftPanelRef.current;
       if (!panel) return;
-      // Programmatic toggles (cmd+B) emit a short burst of ResizeObserver
-      // events. Suppress them and resize xterm once after the layout settles
-      // to avoid repeated term.resize() calls during the burst.
-      panelDragStore.suppressFor(140);
       setIsLeftOpen(!collapsed);
       if (collapsed) {
         panel.collapse();
@@ -77,7 +47,6 @@ export function useWorkspaceLayoutService() {
 
   return {
     leftPanelRef,
-    handleDragging,
     syncLeftOpenFromPanel,
     isLeftOpen,
     setCollapsed,

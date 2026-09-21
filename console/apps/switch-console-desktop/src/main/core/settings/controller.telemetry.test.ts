@@ -38,35 +38,35 @@ beforeEach(() => {
 
 describe('changing a setting', () => {
   it('reports which setting changed, and never its value', async () => {
-    await appSettingsController.update('terminal', {
-      fontFamily: '/Users/someone/secret-project/font.ttf',
+    await appSettingsController.update('localLocation', {
+      defaultLocationsDirectory: '/Users/someone/secret-project/font.ttf',
     } as never);
 
-    expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'terminal' });
+    expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'localLocation' });
     expect(JSON.stringify(h.trackEvent.mock.calls)).not.toContain('secret-project');
   });
 });
 
 describe('putting a setting back to its default', () => {
   it('reports a whole group being reset', async () => {
-    await appSettingsController.reset('terminal');
+    await appSettingsController.reset('localLocation');
 
-    expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'terminal' });
+    expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'localLocation' });
   });
 
   it('reports one field being reset', async () => {
     // The Reset control sits in the same rows the editors do. Counting only the
     // change that set a preference makes every one somebody undid look like one
     // that stuck.
-    await appSettingsController.resetField('terminal', 'fontFamily');
+    await appSettingsController.resetField('localLocation', 'defaultLocationsDirectory');
 
-    expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'terminal' });
+    expect(h.trackEvent).toHaveBeenCalledWith('setting_changed', { setting_key: 'localLocation' });
   });
 
   it('says nothing when the reset did not happen', async () => {
     h.reset.mockRejectedValueOnce(new Error('database is locked'));
 
-    await expect(appSettingsController.reset('terminal')).rejects.toThrow();
+    await expect(appSettingsController.reset('localLocation')).rejects.toThrow();
 
     expect(h.trackEvent).not.toHaveBeenCalled();
   });

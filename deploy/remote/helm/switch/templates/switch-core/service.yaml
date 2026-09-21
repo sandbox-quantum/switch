@@ -19,5 +19,11 @@ spec:
       protocol: TCP
       name: teams
     {{- end }}
+    {{- if .Values.switchCore.collaborationCallback.enabled }}
+    - port: {{ .Values.switchCore.collaborationCallback.port }}
+      targetPort: {{ .Values.switchCore.collaborationCallback.port }}
+      protocol: TCP
+      name: callbacks
+    {{- end }}
   selector:
     {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 4 }}

@@ -89,6 +89,38 @@ Expect 200 with `ping` echoed back. A timeout means it is not public; a 404
 means the path is missing or aimed at the API port. `helm test` checks the
 in-cluster half. See docs/bridges/TEAMS_SETUP.md.
 {{- end }}
+{{- if .Values.switchCore.collaborationCallback.enabled }}
+
+── Mattermost button presses ───────────────────────────────────────────────────
+Service {{ include "switch.switchCoreHost" . }} now publishes port {{ .Values.switchCore.collaborationCallback.port }}.
+
+For a Mattermost running inside this cluster, set the bridge's callback_base_url
+to exactly:
+
+  http://{{ include "switch.switchCoreHost" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.switchCore.collaborationCallback.port }}
+
+That is the address the Mattermost *server* calls, not one a browser follows, so
+it stays the cluster-internal name even where Mattermost itself is reached
+publicly. For a Mattermost outside this cluster, route this port to it yourself
+— the chart renders no Ingress — and the address is whatever you route it from.
+
+Either way, that host has to be on the Mattermost server's
+ServiceSettings.AllowedUntrustedInternalConnections: a whitespace-separated list,
+matched against the URL before DNS resolution. Mattermost will not call a private
+address it has not been given, and says so only in its own log.
+
+{{ if .Values.mattermost.enabled -}}
+This release has already put the Service name there for the Mattermost it
+deploys. Any other server needs the entry adding by hand.
+{{- else -}}
+This release deploys no Mattermost, so that entry is yours to add.
+{{- end }}
+
+Leave callback_base_url unset and the bridge draws no buttons at all: its
+requests are answered by typing, which is a reduced service and logs itself.
+Setting an address the server cannot reach is the worse case — the buttons are
+still drawn, and every press fails.
+{{- end }}
 
 ⚠  BACK UP YOUR DATA — this chart ships no backup jobs.
 Postgres holds everything: every room, every message, every account, and the

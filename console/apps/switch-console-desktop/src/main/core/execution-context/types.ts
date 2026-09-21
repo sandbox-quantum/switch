@@ -7,6 +7,7 @@ export interface ExecResult {
 }
 
 export interface ExecOptions {
+  env?: Record<string, string>;
   timeout?: number;
   maxBuffer?: number;
   signal?: AbortSignal;

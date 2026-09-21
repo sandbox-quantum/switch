@@ -15,8 +15,4 @@ describe('CORE_DEPENDENCIES on Windows', () => {
   ])('offers a winget install for %s', (id, command) => {
     expect(pickInstallOption(descriptor(id), 'windows')?.command).toBe(command);
   });
-
-  it('has no Windows option for tmux, which does not run there', () => {
-    expect(pickInstallOption(descriptor('tmux'), 'windows')).toBeUndefined();
-  });
 });

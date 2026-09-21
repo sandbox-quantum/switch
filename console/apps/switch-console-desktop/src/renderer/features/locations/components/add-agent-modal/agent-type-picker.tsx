@@ -2,6 +2,7 @@ import { CircleAlert } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
@@ -136,11 +137,23 @@ export function AgentTypePicker({
               value === agent.id
                 ? 'border-foreground bg-[var(--sel-soft)]'
                 : 'border-border hover:bg-[var(--sel-soft)]',
-              !available && 'cursor-not-allowed opacity-45 hover:bg-transparent'
+              !available && 'cursor-not-allowed bg-background-1 hover:bg-transparent'
             )}
           >
             <AgentIcon id={agent.id} size={22} />
             <span className="w-full truncate text-sm text-foreground">{agent.name}</span>
+            {available ? (
+              <ProviderConnectionStatus
+                providerId={agent.id as AgentProviderId}
+                sshHost={sshHost ?? null}
+                dir=""
+                compact
+              />
+            ) : (
+              <span className="text-xs text-foreground-warning">
+                {blockedReason ?? 'Setup required'}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -148,7 +161,7 @@ export function AgentTypePicker({
           that machine's own page — Agent providers for this computer, the
           host's page for a host. */}
       <p className="text-xs text-foreground-muted">
-        Only providers installed {sshHost ? `on ${sshHost}` : 'on this machine'} are listed.{' '}
+        Installation and sign-in are checked {sshHost ? `on ${sshHost}` : 'on this computer'}.{' '}
         <button
           type="button"
           className="-mx-1 cursor-pointer rounded px-1 text-foreground underline underline-offset-2 transition-colors hover:bg-[var(--sel-soft)]"

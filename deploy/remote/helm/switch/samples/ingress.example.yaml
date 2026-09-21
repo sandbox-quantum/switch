@@ -46,6 +46,12 @@ spec:
           - path: /.well-known
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          # The distributed Slack app's OAuth callback and event URLs. Needed
+          # only if you offer workspace installs; Slack dials these from the
+          # internet, so they must be reachable and on a trusted certificate.
+          - path: /messaging
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /health
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }

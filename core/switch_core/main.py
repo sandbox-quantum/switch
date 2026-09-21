@@ -49,6 +49,11 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+from switch_core.bridges.collaboration.install_routes import (
+    create_messaging_install_router,
+)
+from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -60,6 +65,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.slack.install import SlackAppInstaller
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -100,6 +106,8 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -108,6 +116,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -280,6 +289,7 @@ async def run(config: SwitchConfig) -> None:
     bridge_store = CollaborationBridgeStore()
     external_user_store = ExternalUserStore()
     bridge_message_map_store = BridgeMessageMapStore()
+    session_request_post_store = SessionRequestPostStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
@@ -404,6 +414,7 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         external_user_store=external_user_store,
         bridge_message_map_store=bridge_message_map_store,
+        session_request_post_store=session_request_post_store,
         room_store=room_store,
         agent_store=agent_store,
         client_store=client_store,
@@ -475,6 +486,37 @@ async def run(config: SwitchConfig) -> None:
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
     )
 
+    # ── Messaging app installs ──────────────────────────────────────────────
+    # Registration is the feature flag. An installer exists for a platform when
+    # this deployment holds that platform's app credentials, and the whole
+    # install surface refuses when none does — a deployment that registered no
+    # app cannot half-offer the button. Config validation has already required
+    # the three Slack values all together and a public origin with them.
+    installers = MessagingInstallerRegistry()
+    if config.slack_app_client_id:
+        assert config.slack_app_client_secret is not None
+        assert config.slack_app_signing_secret is not None
+        installers.register(
+            SlackAppInstaller(
+                client_id=config.slack_app_client_id,
+                client_secret=config.slack_app_client_secret,
+                signing_secret=config.slack_app_signing_secret,
+            )
+        )
+
+    install_service: MessagingInstallService | None = None
+    if installers.platforms():
+        assert config.messaging_public_url is not None
+        install_service = MessagingInstallService(
+            session_factory=session_factory,
+            store=MessagingInstallStore(),
+            receipts=MessagingEventReceiptStore(),
+            installers=installers,
+            lifecycle=collab_lifecycle,
+            public_origin=config.messaging_public_url,
+            secret=config.jwt_secret_key,
+        )
+
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
         agent_store=agent_store,
@@ -495,6 +537,7 @@ async def run(config: SwitchConfig) -> None:
         template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
+        install_service=install_service,
         config=config,
     )
 
@@ -515,6 +558,15 @@ async def run(config: SwitchConfig) -> None:
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    # Mounted on the agent-bridge app, not inside /gateway: this is the leg a
+    # platform and a customer's browser reach, and /gateway is neither routed
+    # here from outside nor reachable without a cookie they do not have.
+    if install_service is not None:
+        agent_bridge_app.include_router(
+            create_messaging_install_router(install_service),
+            tags=["messaging-installs"],
+        )
 
     agent_bridge_app.mount("/gateway", gateway_app)
 

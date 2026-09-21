@@ -7,7 +7,7 @@
  * for detail — so a host reads like the rest of the product.
  */
 
-import { GitBranch, Package, Puzzle, RefreshCw, Server, SquareTerminal } from 'lucide-react';
+import { GitBranch, Package, Puzzle, RefreshCw, Server } from 'lucide-react';
 import { Loader2 } from 'lucide-react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { Button } from '@renderer/lib/ui/button';
@@ -28,7 +28,6 @@ import {
 /** Lucide icons for the host tools. Agent types use their own brand icon. */
 const PREREQUISITE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   git: GitBranch,
-  tmux: SquareTerminal,
   node: Package,
 };
 

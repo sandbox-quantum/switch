@@ -64,6 +64,17 @@ spec:
               value: "switchdash"
             - name: MM_TEAMSETTINGS_MAXUSERSPERTEAM
               value: {{ .Values.mattermost.maxUsersPerTeam | default 1000 | quote }}
+            {{- if .Values.switchCore.collaborationCallback.enabled }}
+            {{- $core := include "switch.switchCoreHost" . }}
+            # Mattermost will not call a private address unless it is named
+            # here, so publishing the callback port is only half of it: without
+            # this the press reaches this server and stops, leaving a line in
+            # its log and nothing at all on the card. All three forms of the
+            # Service name, because the allowlist matches the host in the URL
+            # exactly and the bridge is configured by hand with one of them.
+            - name: MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS
+              value: "{{ $core }} {{ $core }}.{{ .Release.Namespace }} {{ $core }}.{{ .Release.Namespace }}.svc.cluster.local"
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /api/v4/system/ping

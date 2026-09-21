@@ -1,6 +1,17 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
+
+from switch_core.sessions.attachments import normalise_mime_type
+
+MimeType = Annotated[str, AfterValidator(normalise_mime_type)]
+"""A media type with its parameters stripped.
+
+Platforms report the type of a text file with a charset attached — Mattermost
+and Discord both return ``text/plain; charset=utf-8`` — and every consumer of
+an attachment compares against bare types, so the parameter comes off here,
+once, rather than in each adapter.
+"""
 
 ChannelType = Literal["lobby", "channel_public", "channel_private", "group", "direct"]
 
@@ -17,6 +28,17 @@ class ChannelCreationUnsupported(ValueError):
     """
 
 
+class WebhookDeliveryUnsupported(RuntimeError):
+    """A verified inbound event was routed to a bridge that cannot take one.
+
+    Only reachable when a bridge is recorded as serving an installed workspace
+    and its adapter receives events some other way — so it is a deployment
+    inconsistency rather than anything the sender did, and it is raised rather
+    than logged-and-dropped so the route answers with a failure the platform's
+    own delivery log records.
+    """
+
+
 class Attachment(BaseModel):
     """An inbound file attachment of any type, with its raw bytes.
 
@@ -25,7 +47,7 @@ class Attachment(BaseModel):
     """
 
     filename: str
-    mimetype: str
+    mimetype: MimeType
     data: bytes
 
 
@@ -33,7 +55,7 @@ class OutboundAttachment(BaseModel):
     """A file on its way out to an external platform, with its raw bytes."""
 
     filename: str
-    mimetype: str
+    mimetype: MimeType
     data: bytes
 
 
@@ -85,6 +107,13 @@ class InboundMessage(BaseModel):
     # itself (e.g. Slack's "Agent Switch" app). None when the bot was not
     # tagged. Lets the bridge guide users who tag the app instead of an agent.
     self_mention_token: str | None = None
+    # The platform reported this post as coming from an app rather than a
+    # person (a Slack workflow, a third-party integration). Such a post is
+    # relayed like any other, but it cannot answer a request: a decision is
+    # attributed to whoever made it, and an app made none. Only Slack reports
+    # it today; a platform that cannot tell an app from a person leaves this
+    # False and its cards accept the answer.
+    sender_is_app: bool = False
 
 
 class InboundCommand(BaseModel):
@@ -106,6 +135,29 @@ class InboundCommand(BaseModel):
     root_id: str | None = None
     agent_name: str | None = None
     channel_name: str | None = None
+
+
+class InboundInteraction(BaseModel):
+    """Someone operated a control the bridge put on one of its own messages.
+
+    Unlike a message this carries no words. What it means is entirely in the
+    control's id and in `value`, an opaque token the bridge minted when it
+    posted the message and resolves against its own record. Neither is identity:
+    who acted is `sender_id`, which comes from the platform's envelope.
+    """
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    action_id: str
+    value: str
+    # The platform's id for the message the control sits on, in the same form
+    # `InboundMessage.message_ref` uses.
+    message_ref: str | None = None
+    # The platform's thread root the pressed message sits in, None at the top
+    # level. Only a platform that answers a press with a new post rather than
+    # through the interaction needs it, so most adapters leave it unset.
+    thread_ref: str | None = None
 
 
 class InboundAgentJoin(BaseModel):

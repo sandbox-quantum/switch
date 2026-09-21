@@ -197,12 +197,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     category: 'Session View',
     ignoreWhenMonacoFocused: true,
   },
-  newTerminal: {
-    defaultHotkey: 'Mod+Shift+T',
-    label: 'New Terminal',
-    description: 'Create a new terminal in the current session',
-    category: 'Session View',
-  },
   openBrowser: {
     defaultHotkey: 'Mod+Shift+B',
     label: 'Open Browser',
@@ -213,12 +207,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     defaultHotkey: 'Mod+Shift+C',
     label: 'Copy Browser URL',
     description: 'Copy the current in-app browser URL',
-    category: 'Session View',
-  },
-  toggleTerminalDrawer: {
-    defaultHotkey: 'Mod+J',
-    label: 'Toggle Terminal Drawer',
-    description: 'Show or hide the terminal drawer',
     category: 'Session View',
   },
   confirm: {

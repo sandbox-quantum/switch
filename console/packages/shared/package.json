@@ -16,7 +16,11 @@
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./session-v1": {
+      "types": "./dist/session-v1.d.mts",
+      "default": "./dist/session-v1.mjs"
+    }
   },
   "scripts": {
     "dev": "tsdown --watch",
@@ -27,7 +31,9 @@
     "format:check": "oxfmt --check",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
-  "dependencies": {},
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
     "@types/node": "^20.19.42",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",

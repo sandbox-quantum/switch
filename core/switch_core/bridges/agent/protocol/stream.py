@@ -80,14 +80,27 @@ def _connection_state(conn: Connection) -> dict[str, Any]:
     }
 
 
-async def event_stream(
+def event_stream(
     *,
     conn: Connection,
     registry: ConnectionRegistry,
     buffer: EventBuffer,
 ) -> AsyncIterator[bytes]:
+    return _event_stream(
+        conn=conn, registry=registry, buffer=buffer, generation=conn.stream_generation
+    )
+
+
+async def _event_stream(
+    *,
+    conn: Connection,
+    registry: ConnectionRegistry,
+    buffer: EventBuffer,
+    generation: int,
+) -> AsyncIterator[bytes]:
     """Yield SSE frames for a connection until its stream is superseded or it dies."""
-    generation = conn.stream_generation
+    if conn.stream_generation != generation:
+        return
     agent_id = conn.agent_id
     bell = buffer.doorbell(agent_id)
     # Captured before the first yield: the generator suspends there, and any
@@ -276,7 +289,7 @@ async def event_stream(
             if not await _wait_for_work(bell, conn):
                 yield b": keepalive\n\n"
     finally:
-        registry.detach_stream(conn.id, generation)
+        registry.detach_stream(conn, generation)
 
 
 async def _wait_for_wake(conn: Connection) -> bool:
