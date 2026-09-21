@@ -9,9 +9,14 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import { DialogContentArea, DialogFooter } from '@renderer/lib/ui/dialog';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import { StepPager } from '@renderer/lib/ui/step-pager';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { BridgeIdentitySearch } from './bridge-identity-search';
 import { connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
@@ -29,14 +34,10 @@ import { useMyIdentities } from './use-my-identities';
 export const LinkAccountsStep = observer(function LinkAccountsStep({
   serverId,
   serverName,
-  step,
-  of,
   onDone,
 }: {
   serverId: string;
   serverName: string;
-  step: number;
-  of: number;
   onDone: () => void;
 }) {
   // Which app's directory is open, or null while the list is. Linking happens
@@ -52,14 +53,16 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
   });
   const { identities } = useMyIdentities(workspaceId);
 
+  // The footer's Back and the pager's back arrow are the same move, so they
+  // read one const.
+  const goBack = () => setLinking(null);
+
   if (linking && workspaceId !== null) {
     return (
       <>
-        <WizardStepHeader
-          title={`Link your ${bridgePlatformLabel(linking.type)} account`}
-          step={step}
-          of={of}
-        />
+        <DialogHeader showCloseButton={false}>
+          <DialogTitle>Link your {bridgePlatformLabel(linking.type)} account</DialogTitle>
+        </DialogHeader>
         <DialogContentArea className="pt-0">
           <div className="flex w-full flex-col gap-4">
             <p className="text-sm text-foreground-muted">
@@ -77,17 +80,24 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
           </div>
         </DialogContentArea>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setLinking(null)}>
+          <Button variant="outline" onClick={goBack}>
             Back
           </Button>
         </DialogFooter>
+        <StepPager
+          pageName={`Link ${bridgePlatformLabel(linking.type)}`}
+          onBack={goBack}
+          onNext={null}
+        />
       </>
     );
   }
 
   return (
     <>
-      <WizardStepHeader title="Link your messaging accounts" step={step} of={of} />
+      <DialogHeader showCloseButton={false}>
+        <DialogTitle>Link your messaging accounts</DialogTitle>
+      </DialogHeader>
       <DialogContentArea className="pt-0">
         <BridgeList
           serverName={serverName}
@@ -102,6 +112,9 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
       <DialogFooter>
         <ConfirmButton onClick={onDone}>Done</ConfirmButton>
       </DialogFooter>
+      {/* The last page of the flow, and signing in cannot be undone by walking
+          backwards, so there is nowhere for either arrow to go. */}
+      <StepPager pageName="Link accounts" onBack={null} onNext={null} />
     </>
   );
 });

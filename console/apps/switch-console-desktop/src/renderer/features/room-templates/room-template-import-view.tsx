@@ -15,6 +15,7 @@ import { appState } from '@renderer/lib/stores/app-state';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
+import { StepPager } from '@renderer/lib/ui/step-pager';
 
 // ── Source step ─────────────────────────────────────────────────────────────
 
@@ -31,6 +32,7 @@ function SourceStep({
   onYamlChange,
   parseError,
   onNext,
+  canAdvance,
   onFileSelect,
   onSaveToServer,
   saving,
@@ -39,6 +41,9 @@ function SourceStep({
   onYamlChange: (text: string) => void;
   parseError: string | null;
   onNext: () => void;
+  /** Whether there is a document to go on with. Decided by the page, so the
+   * Next button and the pager's arrow cannot come to different answers. */
+  canAdvance: boolean;
   onFileSelect: (name: string) => void;
   onSaveToServer: () => void;
   saving: boolean;
@@ -152,7 +157,7 @@ function SourceStep({
           <Save className="mr-1.5 size-3.5" />
           {saving ? 'Saving…' : 'Save to workspace'}
         </Button>
-        <Button disabled={!yamlText.trim() || saving} onClick={onNext}>
+        <Button disabled={!canAdvance} onClick={onNext}>
           Next
           <ArrowRight className="ml-1.5 size-3.5" />
         </Button>
@@ -255,16 +260,28 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     }
   }, [initialTemplateId, initialYaml, editing, serverId, handleParseAndAdvance]);
 
+  // The pager's arrow only repeats the Next button below, so both read this
+  // rather than spelling the condition once each and drifting apart.
+  const canAdvance = yamlText.trim().length > 0 && !saving;
+
   return (
     <ServerPage
       title="Import a template"
       description="Paste an agent, room or group template, or pick a YAML file. The document says which it is."
+      footer={
+        <StepPager
+          pageName="Pick a template"
+          onBack={null}
+          onNext={canAdvance ? () => void handleParseAndAdvance() : null}
+        />
+      }
     >
       <SourceStep
         yamlText={yamlText}
         onYamlChange={setYamlText}
         parseError={parseError}
         onNext={handleParseAndAdvance}
+        canAdvance={canAdvance}
         onFileSelect={setSourceName}
         onSaveToServer={handleSaveToServer}
         saving={saving}

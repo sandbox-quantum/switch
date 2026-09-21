@@ -10,6 +10,7 @@ export function ServerPage({
   title,
   description,
   action,
+  footer,
   children,
 }: {
   title: string;
@@ -17,20 +18,26 @@ export function ServerPage({
   /** Header-level action, where the page has one. Agents has none: its add
    * affordance is the first tile of its grid. */
   action?: ReactNode;
+  /** A bar pinned under the page, outside the scrolling content — a pager for
+   * the pages that are one step of a flow. */
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
-        <header className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>
-            <p className="mt-1 text-sm text-foreground-muted">{description}</p>
-          </div>
-          {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
-        </header>
-        {children}
+    <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
+          <header className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>
+              <p className="mt-1 text-sm text-foreground-muted">{description}</p>
+            </div>
+            {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+          </header>
+          {children}
+        </div>
       </div>
+      {footer}
     </div>
   );
 }
