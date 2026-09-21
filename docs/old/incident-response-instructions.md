@@ -860,6 +860,138 @@ the postmortem.
 
 ---
 
+## Standing it up
+
+A readiness check and an ordered checklist. The verdict first: **ready to build,
+not yet ready to depend on** — and two of the things in the way are in the SOP
+rather than in Switch.
+
+### Where the SOP is covered
+
+Walking the source SOP's own steps against this design:
+
+| SOP step | Covered by | State |
+| --- | --- | --- |
+| Alert fires, on-call paged | PagerDuty and Datadog | Nothing to build |
+| Acknowledge | PagerDuty | Nothing to build |
+| Triage: is a customer affected? | Human judgement | Nothing to build |
+| Declare, set priority | Human, in PagerDuty | Nothing to build |
+| **War room created, responders invited** | The responder agent | **This design** |
+| Situation reports on a clock | Posted deadline, agent poll, dead-man's switch | **This design** |
+| Act, escalate at ~1h | Human authority; the ladder is an attached document | Partly — the ladder must be written |
+| Confirm recovery, resolve | Human, in PagerDuty | Nothing to build |
+| Postmortem, RCA within 5 days | Seeded document, written in the war room | Partly — the SOP has no postmortem process yet |
+
+### Two blockers that are not Switch's
+
+Both are flagged as open in the source document itself, and the agent cannot
+work around either — it will simply have nothing to answer from.
+
+1. **The service-owner map does not exist.** The severity table names owners
+   informally and the document carries an open comment saying owners and their
+   timezones need writing down somewhere. Our design attaches that map to every
+   war room as the thing the agent answers ownership questions from. Until it is
+   written, the agent's most common answer is "not listed".
+2. **The escalation ladder names tiers, not holders.** Tier 2 is "workstream lead
+   or service owner" and tier 4 is a named coordinator. For the agent to answer
+   "who do I escalate to" it needs role names it can resolve, and a rule for what
+   to do when a tier is unstaffed.
+
+Neither is expensive. Both are prerequisites, not follow-ups.
+
+### The checklist
+
+**Phase 0 — verify the assumptions. Do this first; any one can invalidate a
+later phase.**
+
+- [ ] A PagerDuty MCP server exists, works against your PagerDuty plan, and can
+      read **on-call schedules** — not just incidents. This is the assumption the
+      whole design leans on; if schedules are not readable, the on-call lookup
+      goes away and the invitee list falls back to a static one from the
+      bindings. Find out now, not in phase 4.
+- [ ] Your PagerDuty priority scheme really is P0/P1/P2, and confirm the
+      severity map.
+- [ ] Identify the **internal** workspace bridge and record its id. Confirm it is
+      not the external-facing one.
+- [ ] Decide whether you can create a non-person Switch user to own the agent.
+      If not, accept Admin or personal ownership **knowingly and temporarily**,
+      and write down who and when to revisit.
+- [ ] Decide the sev2 cadence, or confirm there is none.
+
+**Phase 1 — finish the SOP.**
+
+- [ ] Write the service-owner map: service, owning team, contact role, timezone.
+- [ ] Write the escalation ladder as resolvable role names, plus what to do when
+      a tier is unstaffed.
+- [ ] Agree the war-room invitee list beyond the on-call primary.
+- [ ] Agree that "mitigated" is announced in the room by a human, since it is
+      what stops the update clock.
+
+**Phase 2 — infrastructure.**
+
+- [ ] A VM in team infrastructure, with a shared service account and SSH access
+      for the whole rotation. Not anyone's personal machine.
+- [ ] Onboard the host, work through the setup plan, install the agent CLI and
+      the Switch connector.
+- [ ] Install the PagerDuty MCP server and its token in the host environment.
+      Remember this is per-host, so every agent on that box gets it.
+- [ ] Write a service unit for the sidecar so a reboot brings it back. Nothing
+      does this for you, and until it exists the responder's availability is one
+      unattended restart away from zero.
+
+**Phase 3 — the Switch objects.** All the text is in this document.
+
+- [ ] Adopt the alert channel as the incident hub; paste its instructions and
+      fill in the bindings.
+- [ ] Define the exclusive `responder` role on the hub.
+- [ ] Register the responder agent; set its description; put its definition in
+      its working directory on the host.
+- [ ] Widen its addressing policy **through the API, not the dashboard**.
+- [ ] Create the `pagerduty` reference type and its references; attach the
+      runbook reference.
+- [ ] Create the four documents.
+- [ ] Register the room YAML as a template, as documentation of the shape.
+
+**Phase 4 — prove it, on a fake incident, before anyone relies on it.** This is
+the phase that gets skipped and the one that matters.
+
+- [ ] Declare a fake sev1. Check: exactly one room; correct bridge; the right
+      people actually added; documents and references attached; alias resolves;
+      banner posted in the hub.
+- [ ] Declare the **same** incident twice. Confirm the second declaration joins
+      rather than creating a second room.
+- [ ] Have someone join the war room and confirm they are greeted and oriented.
+- [ ] Let a deadline pass. Confirm the poll notices and drafts.
+- [ ] Kill the agent's session mid-incident. Confirm it cold-starts, reads back,
+      and says it was away rather than carrying on as if nothing happened.
+- [ ] **Reboot the host.** Confirm the sidecar returns. If it does not, phase 2's
+      last item is not done.
+- [ ] Test the failure paths deliberately: block PagerDuty and confirm the agent
+      says so rather than inventing an on-call; give it an invitee the bridge
+      does not know and confirm it reports the gap by name.
+- [ ] If you are relying on a push to wake it, verify it end to end on the real
+      host — and know that if the host's authentication does not support it, it
+      fails **silently**. A quiet hub is the symptom.
+- [ ] Archive the fake room and confirm the agent deletes its timer.
+
+**Phase 5 — go live, narrowly.**
+
+- [ ] One product first.
+- [ ] Keep the human declaration path as the primary trigger until the design has
+      been through a real incident. Add automatic declaration after, not before.
+- [ ] Name an owner for the agent and the host, and a date to revisit the
+      ownership compromise from phase 0.
+- [ ] After the first real incident, review the transcript against this
+      instruction set and correct it. The first version will be wrong somewhere,
+      and the incident will tell you where.
+
+### What would make this genuinely solid
+
+Two items from the design document's gap register, neither blocking:
+supervising the sidecar so a reboot is a non-event, and a service account so the
+agent belongs to the team. Both are small. Everything else on that register is a
+convenience.
+
 ## What is deliberately not here
 
 - **A room template.** The war room is built by the agent, because a template
