@@ -268,43 +268,59 @@ async def test_incomplete_group_is_anchored_on_part_zero() -> None:
     assert client.queue.events[0].payload.message_id == "$part-0"
 
 
-async def test_group_timeout_bounds_the_group_not_the_gap_between_parts() -> None:
+async def test_group_timeout_bounds_the_group_not_the_gap_between_parts(
+    monkeypatch: Any,
+) -> None:
     """The safety-net timer is armed once per group. A batch dribbling in just
-    under the timeout must not be able to hold the buffer open indefinitely."""
-    original = ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS
-    ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = 0.12
-    try:
-        client = _fake_client()
+    under the timeout must not be able to hold the buffer open indefinitely.
+
+    The deadline is taken rather than waited on. Sleeping a fraction under a
+    shortened timeout tests the rule only on a machine quiet enough to keep to
+    the fraction, and on one that is not it reports a product defect — the
+    group flushing early with fewer parts than the test arranged — for what is
+    the suite's own load. Holding the arming and firing of the timer instead
+    says the same thing about a group whose parts arrive over any interval at
+    all, including the real five seconds nothing would wait for.
+    """
+    armed: list[tuple[float, Any]] = []
+
+    def call_later(delay: float, callback: Any, *args: Any) -> Any:
+        armed.append((delay, callback))
+        return SimpleNamespace(cancel=lambda: None)
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "call_later", call_later)
+    client = _fake_client()
+    await AgentClient.on_media(
+        client,
+        _room(),
+        _media_event(
+            body="slow batch",
+            filename="a.png",
+            event_id="$part-0",
+            group={"id": "grp-slow", "index": 0, "total": 4},
+        ),
+    )
+    first_timer = client._attachment_group_timers["grp-slow"]
+    assert [delay for delay, _ in armed] == [ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS]
+
+    # Parts keep trickling in below the deadline; the timer must NOT be
+    # pushed back by each arrival.
+    for index, name in [(1, "b.md"), (2, "c.csv")]:
         await AgentClient.on_media(
             client,
             _room(),
             _media_event(
-                body="slow batch",
-                filename="a.png",
-                event_id="$part-0",
-                group={"id": "grp-slow", "index": 0, "total": 4},
+                body=name,
+                event_id=f"$part-{index}",
+                group={"id": "grp-slow", "index": index, "total": 4},
             ),
         )
-        first_timer = client._attachment_group_timers["grp-slow"]
+        assert client._attachment_group_timers["grp-slow"] is first_timer
+        assert len(armed) == 1
 
-        # Parts keep trickling in below the deadline; the timer must NOT be
-        # pushed back by each arrival.
-        for index, name in [(1, "b.md"), (2, "c.csv")]:
-            await asyncio.sleep(0.05)
-            await AgentClient.on_media(
-                client,
-                _room(),
-                _media_event(
-                    body=name,
-                    event_id=f"$part-{index}",
-                    group={"id": "grp-slow", "index": index, "total": 4},
-                ),
-            )
-            assert client._attachment_group_timers["grp-slow"] is first_timer
-
-        await asyncio.sleep(0.15)
-    finally:
-        ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = original
+    running = asyncio.all_tasks()
+    armed[0][1]()
+    await asyncio.gather(*(asyncio.all_tasks() - running))
 
     # Fired on the group's own deadline rather than being extended forever.
     assert len(client.queue.events) == 1

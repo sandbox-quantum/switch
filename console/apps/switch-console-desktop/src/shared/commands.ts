@@ -120,15 +120,6 @@ export const SESSION_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'terminal',
   },
   {
-    id: 'session.toggleTerminalDrawer',
-    label: 'Toggle Terminal Drawer',
-    description: 'Show or hide the terminal drawer',
-    scope: 'session',
-    shortcutKey: 'toggleTerminalDrawer',
-    group: 'Panel',
-    iconKey: 'terminal',
-  },
-  {
     id: 'session.toggleRightSidebar',
     label: 'Toggle Right Sidebar',
     description: 'Show or hide the right sidebar',
@@ -136,15 +127,6 @@ export const SESSION_COMMAND_DEFS = defineCommandDefs([
     shortcutKey: 'toggleRightSidebar',
     group: 'Panel',
     iconKey: 'panel-right',
-  },
-  {
-    id: 'session.newTerminal',
-    label: 'New Terminal',
-    description: 'Create a new terminal session',
-    scope: 'session',
-    shortcutKey: 'newTerminal',
-    group: 'Terminals',
-    iconKey: 'square-terminal',
   },
   {
     id: 'session.openBrowser',

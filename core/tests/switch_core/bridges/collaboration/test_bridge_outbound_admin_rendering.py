@@ -74,7 +74,6 @@ def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
     core._channel_to_room = {"C1": ("room-uuid", "!r:switch.local")}  # type: ignore[assignment]
     core._room_tenant = _tenant  # type: ignore[assignment]
     core._record_message_map = _noop  # type: ignore[assignment]
-    core._move_indicator_for_sender = _noop  # type: ignore[assignment]
     core._outbound_thread_root_ref = _none  # type: ignore[assignment]
     return core
 

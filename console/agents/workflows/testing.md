@@ -45,5 +45,5 @@ pnpm run test
 ## Focused Validation
 
 - after IPC/RPC changes: rerun the affected Vitest file and confirm the controller is wired in `src/main/rpc.ts`
-- after session or PTY changes: rerun the closest `src/main/core/` test files
+- after SDK session changes: rerun the closest `src/main/core/` test files
 - after schema changes: run `pnpm run db:fixtures` and `pnpm run test:migrations`

@@ -99,6 +99,7 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -1256,6 +1257,10 @@ class ProtocolService:
         """
         if not files:
             raise ValueError("no attachments provided")
+        files = [
+            (data, filename, normalise_mime_type(mimetype))
+            for data, filename, mimetype in files
+        ]
         max_bytes = self.config.agent_media_max_bytes
         for data, filename, _mimetype in files:
             if not data:
@@ -1581,24 +1586,15 @@ class ProtocolService:
         """Record and broadcast an agent's runtime state in a room.
 
         Persists the latest state (so it is queryable via `!status`) and emits
-        a `com.switch.agent.runtime_state` room event the collaboration bridge
-        picks up to surface the state on the bridged channel. Reported by the
-        Switch Console connector as its managed session transitions.
+        a `com.switch.agent.runtime_state` room event for protocol clients that
+        watch it. Reported by the Switch Console connector as its managed
+        session transitions.
 
-        `thread_id` (the triggering message's thread, when it was in one) rides
-        the event so the bridge can surface the state in that thread. It is
-        transient routing only — it is never persisted as part of the state.
-
-        `detail` is a short activity line for the running turn (e.g. "Editing
-        foo.py"); like `thread_id` it is transient and rides the event only —
-        the bridge surfaces it in place on the live working message.
-
-        `anchor_event_id` is the latest message the reporting connector has
-        actually handed to the agent's session. The bridge repositions the
-        indicator when it changes, so position follows what the agent has
-        genuinely been given rather than what merely arrived in the room. Also
-        transient routing — reported on every refresh, and only a change moves
-        anything.
+        What a bridged channel shows of a running turn is the SDK session
+        publication, not this: no collaboration adapter renders the event any
+        more. `thread_id`, `detail` and `anchor_event_id` still ride it as
+        transient routing — never persisted as part of the state — and describe
+        where the turn is happening for a client that wants to draw it.
 
         The `switchdash://` deeplink is rewritten to a gateway HTTP redirect for
         platforms that linkify only http(s) (Discord, Telegram), so the "Open in

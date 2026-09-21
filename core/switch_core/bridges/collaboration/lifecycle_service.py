@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
@@ -23,7 +24,9 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
+from switch_core.deeplinks import gateway_url_warning
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.deployment import (
@@ -113,6 +116,7 @@ class CollaborationBridgeLifecycleService:
         bridge_store: CollaborationBridgeStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
+        session_request_post_store: SessionRequestPostStore,
         room_store: RoomStore,
         agent_store: AgentStore,
         client_store: ClientStore,
@@ -127,6 +131,7 @@ class CollaborationBridgeLifecycleService:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
+        self._session_request_post_store = session_request_post_store
         self._room_store = room_store
         self._agent_store = agent_store
         self._client_store = client_store
@@ -164,6 +169,18 @@ class CollaborationBridgeLifecycleService:
         # otherwise a crashed bridge is indistinguishable from one that was
         # never set up, and the only evidence is a log line nobody reads.
         self._started: set[str] = set()
+        # The one listener every bridge that gets called back shares, and each
+        # running bridge's place on it. Owned here rather than by an adapter
+        # because the port is the process's, not a bridge's: two Mattermost
+        # bridges are ordinary, and a listener each would be a port and an
+        # ingress rule each. Constructed unconditionally and bound by nobody —
+        # it binds when a bridge first asks to be served.
+        self._callback_ingress = CallbackIngress(
+            host=config.collaboration_callback_host,
+            port=config.collaboration_callback_port,
+            secret=config.jwt_secret_key,
+        )
+        self._callback_endpoints: dict[str, CallbackEndpoint] = {}
         # Serialises registration. The exclusivity check reads the stored
         # bridges and the winner is not written until several awaits later,
         # so two concurrent registrations would both see a free resource and
@@ -188,6 +205,10 @@ class CollaborationBridgeLifecycleService:
 
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
+
+    async def refresh_sdk_session(self, session_id: str) -> None:
+        for bridge in self._bridges.values():
+            await bridge.refresh_sdk_session(session_id)
 
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
@@ -549,18 +570,16 @@ class CollaborationBridgeLifecycleService:
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
-        if (
-            not adapter_cls.renders_custom_url_schemes
-            and not self._config.gateway_public_url
-        ):
+        callback_endpoint = self._callback_ingress.endpoint_for(bridge.type, bridge_id)
+        adapter.set_callback_endpoint(callback_endpoint)
+        self._callback_endpoints[bridge_id] = callback_endpoint
+
+        gateway_warning = gateway_url_warning(
+            self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes
+        )
+        if gateway_warning:
             logger.warning(
-                "GATEWAY_PUBLIC_URL is not set and %s only renders http(s) links, "
-                "so the 'Open in Switch Console' deeplink cannot be clickable on "
-                "bridge %s — it is posted as copyable text instead. Set "
-                "GATEWAY_PUBLIC_URL to the Switch API's public origin (scheme + "
-                "host, no path) to turn it into a real link",
-                bridge.type,
-                bridge_id,
+                "%s (bridge %s, %s)", gateway_warning, bridge_id, bridge.type
             )
 
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -579,6 +598,7 @@ class CollaborationBridgeLifecycleService:
             room_store=self._room_store,
             external_user_store=self._external_user_store,
             bridge_message_map_store=self._bridge_message_map_store,
+            session_request_post_store=self._session_request_post_store,
             agent_store=self._agent_store,
             client_store=self._client_store,
             room_service=self._room_service,
@@ -588,6 +608,8 @@ class CollaborationBridgeLifecycleService:
             matrix_server_name=self._config.matrix_server_name,
             bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
             max_attachment_bytes=self._config.agent_media_max_bytes,
+            session_demo_enabled=self._config.session_demo_enabled,
+            gateway_public_url=self._config.gateway_public_url,
         )
 
         bridge_client = BridgeClient(
@@ -713,6 +735,12 @@ class CollaborationBridgeLifecycleService:
                 self._bridges.pop(bridge_id, None)
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
+                # The adapter may already have asked to be served before the
+                # failure, so a crash that leaves the endpoint registered
+                # leaves presses being handled by a bridge that is not running.
+                endpoint = self._callback_endpoints.pop(bridge_id, None)
+                if endpoint is not None:
+                    await endpoint.withdraw()
                 # Told apart by whether the adapter ever came up: a failure
                 # before that never connected at all, and reporting it as a
                 # disconnection would invent an uptime the bridge never had.
@@ -823,6 +851,11 @@ class CollaborationBridgeLifecycleService:
         return any(other != bridge_id for other in self._bridges)
 
     async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
+        # Before the adapter goes, so a press in flight is answered as gone
+        # rather than handled by a bridge that is halfway shut down.
+        endpoint = self._callback_endpoints.pop(bridge_id, None)
+        if endpoint is not None:
+            await endpoint.withdraw()
         bridge_core = self._bridges.get(bridge_id)
         was_connected = bridge_id in self._connected
         self._connected.discard(bridge_id)
@@ -867,6 +900,7 @@ class CollaborationBridgeLifecycleService:
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))
         for bridge_id in list(self._bridges):
             await self.stop(bridge_id)
+        await self._callback_ingress.stop()
 
     async def remove(self, bridge_id: str) -> None:
         """Disconnect a messaging app and take its identities with it.

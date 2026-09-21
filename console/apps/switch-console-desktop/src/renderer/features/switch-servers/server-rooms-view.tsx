@@ -43,7 +43,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
-  const rooms = switchRoomsStore.listedRoomsOnServer(serverId);
+  const rooms = switchRoomsStore.readableRoomsOnServer(serverId);
   const signedOut = switchRoomsStore.serversNotSignedIn.some((s) => s.id === serverId);
   const failed = switchRoomsStore.serversThatFailedToLoad.some((s) => s.id === serverId);
 

@@ -62,6 +62,10 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
+{{- if .Values.switchCore.slackApp.enabled }}
+SLACK_APP_CLIENT_SECRET: {{ required "secrets.slackAppClientSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppClientSecret | b64enc | quote }}
+SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppSigningSecret | b64enc | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -660,6 +664,22 @@ Include with `nindent 12`.
 {{- if .Values.switchCore.gatewayPublicUrl }}
 - name: GATEWAY_PUBLIC_URL
   value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
+{{- end }}
+{{- if .Values.switchCore.slackApp.enabled }}
+- name: MESSAGING_PUBLIC_URL
+  value: {{ required "switchCore.slackApp.messagingPublicUrl is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.messagingPublicUrl | quote }}
+- name: SLACK_APP_CLIENT_ID
+  value: {{ required "switchCore.slackApp.clientId is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.clientId | quote }}
+- name: SLACK_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SLACK_APP_CLIENT_SECRET
+- name: SLACK_APP_SIGNING_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SLACK_APP_SIGNING_SECRET
 {{- end }}
 {{- end }}
 

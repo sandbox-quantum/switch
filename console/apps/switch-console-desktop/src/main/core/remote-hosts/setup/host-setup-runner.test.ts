@@ -180,14 +180,14 @@ describe('installing one step', () => {
 
   it('says there is no install command rather than silently stalling', async () => {
     const { runner } = makeRunner({
-      checks: { tmux: [{ outcome: 'missing' }] },
+      checks: { 'example-tool': [{ outcome: 'missing' }] },
       installs: {},
       canInstall: () => false,
     });
 
-    const result = await runner.runSingleStep(plan([step('tmux')]), 'tmux');
+    const result = await runner.runSingleStep(plan([step('example-tool')]), 'example-tool');
 
-    expect(stateOf(result, 'tmux')).toBe('failed');
+    expect(stateOf(result, 'example-tool')).toBe('failed');
     expect(result.steps[0]!.error).toContain('no install command');
   });
 
@@ -214,12 +214,12 @@ describe('installing one step', () => {
     });
 
     const result = await runner.runSingleStep(
-      plan([step('git'), step('node'), step('tmux', { state: 'satisfied' })]),
+      plan([step('git'), step('node'), step('example-tool', { state: 'satisfied' })]),
       'git'
     );
 
     expect(stateOf(result, 'node')).toBe('pending');
-    expect(stateOf(result, 'tmux')).toBe('satisfied');
+    expect(stateOf(result, 'example-tool')).toBe('satisfied');
   });
 
   it('refuses to interleave with another operation on the same host', async () => {
@@ -342,15 +342,15 @@ describe('checkAll — looking without touching', () => {
       checks: {
         git: [{ outcome: 'missing' }],
         node: [{ outcome: 'missing' }],
-        tmux: [{ outcome: 'satisfied' }],
+        'example-tool': [{ outcome: 'satisfied' }],
       },
       installs: {},
     });
 
-    const result = await runner.checkAll(plan([step('git'), step('node'), step('tmux')]));
+    const result = await runner.checkAll(plan([step('git'), step('node'), step('example-tool')]));
 
     expect(result.steps.map((s) => s.outcome)).toEqual(['missing', 'missing', 'satisfied']);
-    expect(stateOf(result, 'tmux')).toBe('satisfied');
+    expect(stateOf(result, 'example-tool')).toBe('satisfied');
   });
 
   it('supersedes a previous failure rather than leaving its error behind', async () => {
@@ -444,12 +444,12 @@ describe('checkStep — re-checking a single row', () => {
     const { runner } = makeRunner({ checks: { git: [{ outcome: 'missing' }] }, installs: {} });
 
     const result = await runner.checkStep(
-      plan([step('git'), step('node'), step('tmux', { state: 'satisfied' })]),
+      plan([step('git'), step('node'), step('example-tool', { state: 'satisfied' })]),
       'git'
     );
 
     expect(stateOf(result, 'node')).toBe('pending');
-    expect(stateOf(result, 'tmux')).toBe('satisfied');
+    expect(stateOf(result, 'example-tool')).toBe('satisfied');
   });
 
   it('supersedes a previous failure rather than leaving its error behind', async () => {

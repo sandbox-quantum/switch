@@ -126,6 +126,7 @@ any CORS configuration: as far as the browser can tell, it never left
 | --- | --- | --- |
 | `http://localhost:5173` | The operator dashboard (Vite dev server). Open this in a browser. | `just gateway-dev` |
 | `http://localhost:8000` | switch-core: the Agent Bridge API, the MCP server, and the gateway management API under `/gateway/*`. JSON, not a UI. | `just run` |
+| `http://localhost:8081` | switch-core's collaboration callback listener — where Mattermost delivers a button press. Bound only once a bridge asks to be called back, so it is often not there at all. | `just run` |
 | `http://localhost:8065` | Mattermost, seeded as the local collaboration bridge. | `just up` |
 | `http://localhost:5432` | PostgreSQL. | `just up` |
 

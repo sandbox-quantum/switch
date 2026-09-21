@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
@@ -33,12 +35,18 @@ def _service() -> CollaborationBridgeLifecycleService:
 
     get_registered_types / get_config_schema touch just the in-memory
     registries populated by register_adapter, so the heavy collaborators are
-    irrelevant here and passed as None.
+    irrelevant here and passed as None. The config is not one of them: the
+    shared callback listener is constructed up front, from it.
     """
+    config = MagicMock()
+    config.collaboration_callback_host = "127.0.0.1"
+    config.collaboration_callback_port = 0
+    config.jwt_secret_key = "server-secret-for-tests"
     return CollaborationBridgeLifecycleService(
         bridge_store=None,  # type: ignore[arg-type]
         external_user_store=None,  # type: ignore[arg-type]
         bridge_message_map_store=None,  # type: ignore[arg-type]
+        session_request_post_store=None,  # type: ignore[arg-type]
         room_store=None,  # type: ignore[arg-type]
         agent_store=None,  # type: ignore[arg-type]
         client_store=None,  # type: ignore[arg-type]
@@ -46,7 +54,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         room_service=None,  # type: ignore[arg-type]
         matrix_admin=None,  # type: ignore[arg-type]
         session_factory=None,  # type: ignore[arg-type]
-        config=None,  # type: ignore[arg-type]
+        config=config,
         client_factory=None,  # type: ignore[arg-type]
     )
 
@@ -98,9 +106,12 @@ def test_get_config_schema_exposes_required_fields() -> None:
         "app_token",
         "workspace_id",
         "agent_usergroups",
-        "agent_sessions",
     }
-    assert set(schema["required"]) == {"bot_token", "app_token", "workspace_id"}
+    # app_token is offered but not required by the schema: a bridge whose
+    # events arrive over HTTP has none. What enforces it for a Socket Mode
+    # bridge — which receives nothing at all without one — is the model
+    # validator, not this form.
+    assert set(schema["required"]) == {"bot_token", "workspace_id"}
 
 
 def test_get_config_schema_unknown_type_raises() -> None:

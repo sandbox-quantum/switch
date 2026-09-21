@@ -48,21 +48,12 @@ Views use a registry + parameterized navigation pattern.
 - Views are singletons — one per ViewId
 - Add new views to `src/renderer/app/view-registry.ts`
 
-## PTY Frontend (`src/renderer/lib/pty/`)
+## SDK transcripts
 
-- `pty.ts` — `FrontendPty` class; subscribing fetches the main-process ring buffer and
-  registers the consumer in one synchronous tick, so there is no renderer-side buffer
-  and no missed output
-- `pty-session.ts` — session lifecycle
-- `pty-pool-provider.tsx` — `TerminalPoolProvider` managing reusable xterm.js instances
-- `pty-pane.tsx` — terminal pane component
-- `prompt-injection.ts`, `pty-input-buffer.ts`, `pty-keybindings.ts`, `pty-clipboard.ts` — input handling
-
-**Rules:**
-- Historical output comes from the main-process ring buffer; do not add renderer-side buffering
-- `sessionId` format: `makePtySessionId(locationId, scopeId, leafId)` from
-  `src/shared/core/pty/ptySessionId.ts` — deterministic
-- Panel drag pauses resizing to avoid jank (`src/renderer/lib/layout/panel-drag-store.ts`)
+Session views live in `src/renderer/features/sessions/components/transcript/`.
+Render persisted SDK events and expose only capabilities reported by the
+connected provider. Keep reconnect, stop, interrupt and recovery distinct.
+A component remount must never resubmit a user action or initial prompt.
 
 ## React Query Context Pattern
 

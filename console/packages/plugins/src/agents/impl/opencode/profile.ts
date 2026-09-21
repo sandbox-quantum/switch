@@ -33,7 +33,7 @@ const OPENCODE_PROFILE_DIR = '.config/opencode/switch';
  * name in different directories, so the name alone would collide onto one file
  * and whichever launched second would overwrite the first's settings. The name
  * therefore carries a digest of `(workingDir, slug)` — the same `(dir, slug)` key
- * the Codex profile and `agentSidecarTmuxName` use — which also keeps `a.b` and
+ * the Codex profile uses — which also keeps `a.b` and
  * `a-b` distinct.
  */
 export function opencodeProfileName(slug: string, workingDir: string): string {

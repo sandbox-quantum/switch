@@ -34,8 +34,6 @@ const PRESERVE_KEYS = new Set([
 
 export const SHELL_ENV_CAPTURE_GUARD: Record<string, string> = {
   DISABLE_AUTO_UPDATE: 'true',
-  ZSH_TMUX_AUTOSTART: 'false',
-  ZSH_TMUX_AUTOSTARTED: 'true',
 };
 
 const USER_BIN_DIRS = [path.join(os.homedir(), '.local', 'bin')];
@@ -105,7 +103,7 @@ export function ensureWindowsNpmGlobalBinInPath(
  * returns — the app continues with whatever `process.env` already contains.
  *
  * After this call returns, all subsequent consumers that inherit `process.env`
- * (execFile, PTY env builders, dependency prober, etc.) automatically see the
+ * (execFile, SDK host environment, dependency prober, etc.) automatically see the
  * full PATH, SSH_AUTH_SOCK, and other variables the user's shell init sets.
  */
 export async function resolveUserEnv(): Promise<void> {

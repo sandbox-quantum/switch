@@ -15,7 +15,7 @@ A guess there would be wrong by an unknown margin in an unknown direction, and
 every activation figure derived from it would look confident and be false.
 
 Revision ID: a7e1c4b90d23
-Revises: 5daaea6b674d
+Revises: 2d84b6f1c705
 Create Date: 2026-09-16 00:00:00.000000
 
 """
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a7e1c4b90d23"
-down_revision: str | None = "5daaea6b674d"
+down_revision: str | None = "2d84b6f1c705"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

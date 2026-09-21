@@ -1,7 +1,7 @@
 # Switch Console BYOI Testing Kit
 
 A copy-pasteable setup for testing Switch Console's BYOI (Bring Your Own Infrastructure) feature.
-Each task gets its own Docker container running a full Linux dev environment with Node.js, git, tmux, and Claude Code pre-installed.
+Each task gets its own Docker container running a full Linux dev environment with Node.js, git, and Claude Code pre-installed.
 
 ## How it works
 

@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest, Conflict, TelegramError
+from telegram.error import BadRequest, Conflict, TelegramError, TimedOut
 
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
@@ -46,11 +46,13 @@ class _FakeChat:
         chat_type: str = "supergroup",
         title: str | None = "general",
         username: str | None = None,
+        is_forum: bool = False,
     ) -> None:
         self.id = chat_id
         self.type = chat_type
         self.title = title
         self.username = username
+        self.is_forum = is_forum
 
 
 class _FakeUser:
@@ -135,6 +137,25 @@ class _FakeInbound:
             setattr(self, field, value)
 
 
+class _FakeCallbackQuery:
+    """A press on an inline button. Only the fields the adapter reads."""
+
+    def __init__(
+        self,
+        *,
+        data: str,
+        query_id: str = "cq-1",
+        message: Any = "default",
+        from_user: Any = "default",
+    ) -> None:
+        self.id = query_id
+        self.data = data
+        self.message = (
+            _FakeSentMessage(_FakeChat(), 11) if message == "default" else message
+        )
+        self.from_user = _FakeUser() if from_user == "default" else from_user
+
+
 class _FakeMember:
     def __init__(self, status: str) -> None:
         self.status = status
@@ -150,6 +171,7 @@ class _FakeBot:
         self.deletes: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.reactions: list[dict[str, Any]] = []
+        self.answers: list[dict[str, Any]] = []
         self.files: dict[str, _FakeFileHandle] = {}
         # Set to an exception to make every set_message_reaction raise it.
         self.reaction_error: Exception | None = None
@@ -157,12 +179,19 @@ class _FakeBot:
         self.chat: _FakeChat = _FakeChat()
         # What getChatMember reports for the bot itself in `chat`.
         self.member_status = "administrator"
+        self.get_chat_error: Exception | None = None
         self.get_chat_member_error: Exception | None = None
         self._next_id = 500
         # Set to an exception to make the next send_message raise it once.
         self.send_message_error: Exception | None = None
         self.send_photo_error: Exception | None = None
         self.send_album_error: Exception | None = None
+        # Set to an exception to make the next edit_message_text raise it once.
+        self.edit_error: Exception | None = None
+        # Set to an exception to make the next delete_message raise it once.
+        self.delete_error: Exception | None = None
+        # Set to an exception to make answer_callback_query raise it.
+        self.answer_error: Exception | None = None
 
     def _mint(self, chat_id: Any) -> _FakeSentMessage:
         self._next_id += 1
@@ -197,13 +226,26 @@ class _FakeBot:
         return [self._mint(kwargs["chat_id"]) for _ in kwargs["media"]]
 
     async def edit_message_text(self, **kwargs: Any) -> None:
+        if self.edit_error is not None:
+            error = self.edit_error
+            self.edit_error = None
+            raise error
         self.edits.append(kwargs)
 
     async def delete_message(self, **kwargs: Any) -> None:
+        if self.delete_error is not None:
+            error = self.delete_error
+            self.delete_error = None
+            raise error
         self.deletes.append(kwargs)
 
     async def send_chat_action(self, **kwargs: Any) -> None:
         self.actions.append(kwargs)
+
+    async def answer_callback_query(self, **kwargs: Any) -> None:
+        if self.answer_error is not None:
+            raise self.answer_error
+        self.answers.append(kwargs)
 
     async def set_message_reaction(self, **kwargs: Any) -> None:
         if self.reaction_error is not None:
@@ -214,6 +256,8 @@ class _FakeBot:
         self.published_commands = list(commands)
 
     async def get_chat(self, chat_id: Any) -> _FakeChat:
+        if self.get_chat_error is not None:
+            raise self.get_chat_error
         return self.chat
 
     async def get_chat_member(self, **kwargs: Any) -> _FakeMember:
@@ -623,10 +667,17 @@ class _FakeChatMemberUpdate:
 
 
 class _FakeUpdate:
-    def __init__(self, *, message: Any = None, my_chat_member: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        message: Any = None,
+        my_chat_member: Any = None,
+        callback_query: Any = None,
+    ) -> None:
         self.message = message
         self.channel_post = None
         self.my_chat_member = my_chat_member
+        self.callback_query = callback_query
 
 
 # ── Sender names ─────────────────────────────────────────────────────────────
@@ -811,6 +862,17 @@ def test_a_threaded_reply_is_anchored_to_its_root() -> None:
     assert params.allow_sending_without_reply is True
 
 
+def test_a_reply_anchored_to_a_stored_message_reference_still_quotes_it() -> None:
+    # `chat:message` is how this platform's own refs are spelled — it is what
+    # `send_message` returns and what the message map keeps — so a root read
+    # back out of storage arrives in that form rather than as a bare number.
+    adapter = _adapter()
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "in thread", f"{CHAT_ID}:88"))
+
+    assert _bot(adapter).messages[0]["reply_parameters"].message_id == 88
+
+
 def test_a_body_over_the_cap_is_split_rather_than_rejected() -> None:
     adapter = _adapter()
     body = "\n".join(["x" * 200] * 60)
@@ -835,6 +897,151 @@ def test_only_the_first_chunk_replies_into_the_thread() -> None:
     sent = _bot(adapter).messages
     assert "reply_parameters" in sent[0]
     assert all("reply_parameters" not in m for m in sent[1:])
+
+
+def test_every_chunk_of_a_forum_reply_stays_in_the_topic() -> None:
+    # A reply anchor in a forum is the one case where the two rules collide:
+    # dropping it after the first chunk is what keeps the quote tidy, and it is
+    # also what drops the tail of the answer into General, away from the people
+    # reading the topic. Re-quoting is the lesser cost.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) > 1
+    assert all(m["reply_parameters"].message_id == 88 for m in sent)
+
+
+def test_a_forum_reply_anchor_is_mandatory_because_it_is_the_only_topic() -> None:
+    # Repeating the anchor is not what holds the destination. In a forum the
+    # reply target is also the only thing naming the topic, so permitting the
+    # send without it permits it into General — on every chunk that carries the
+    # permission, which after the repeat rule is all of them.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) > 1
+    assert all(m["reply_parameters"].allow_sending_without_reply is False for m in sent)
+
+
+def test_an_ordinary_chat_still_detaches_rather_than_lose_the_message() -> None:
+    # The forum rule must not become the general one: outside a forum there is
+    # no topic to lose, so a deleted target costs the quote and nothing else.
+    adapter = _adapter()
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "in thread", f"{CHAT_ID}:88"))
+
+    assert (
+        _bot(adapter).messages[0]["reply_parameters"].allow_sending_without_reply
+        is True
+    )
+
+
+def test_a_forum_reply_whose_target_is_already_gone_keeps_its_anchor_on_retry() -> None:
+    # The unformatted retry re-sends with the same kwargs. If it ever dropped
+    # them, a refused reply would come back as a successful send into General —
+    # the exact outcome the mandatory anchor exists to prevent.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    _bot(adapter).send_message_error = BadRequest("message to be replied not found")
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "hello", f"{CHAT_ID}:88"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) == 1
+    assert sent[0]["reply_parameters"].message_id == 88
+    assert sent[0]["reply_parameters"].allow_sending_without_reply is False
+
+
+def test_a_forum_target_deleted_mid_run_truncates_rather_than_scatters() -> None:
+    # Losing the tail of a long answer is a visible failure with an error in
+    # the log. Delivering it to General is an invisible one, read by the whole
+    # group instead of the topic.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    bot = _bot(adapter)
+    original = bot.send_message
+    calls: list[int] = []
+
+    async def gone_after_the_first(**kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) > 1:
+            raise BadRequest("message to be replied not found")
+        return await original(**kwargs)
+
+    bot.send_message = gone_after_the_first  # type: ignore[method-assign]
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+
+    sent = bot.messages
+    assert len(sent) == 1
+    assert all("reply_parameters" in m for m in sent)
+
+
+def test_a_forum_attachment_carries_the_same_mandatory_anchor() -> None:
+    # send_attachment shares the helper, and one file in the wrong topic is the
+    # same misdelivery as one message in it.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID),
+            "scout",
+            "note.txt",
+            "text/plain",
+            b"hello",
+            caption="here",
+            thread_root_id=f"{CHAT_ID}:88",
+        )
+    )
+
+    params = _bot(adapter).documents[0]["reply_parameters"]
+    assert params.message_id == 88
+    assert params.allow_sending_without_reply is False
+
+
+def test_a_forum_nudge_with_no_locatable_topic_is_dropped_not_widened() -> None:
+    # A typing indicator in General is shown to a whole group who did not ask
+    # for it, while the people who did see nothing. There is no topic id to be
+    # had from a message reference, so the nudge is simply not sent.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+
+    _run(adapter.notify_working(str(CHAT_ID), "scout", f"{CHAT_ID}:88"))
+
+    assert _bot(adapter).actions == []
+
+
+def test_an_ordinary_chat_still_gets_its_nudge() -> None:
+    # Outside a forum the chat is the only destination there is, so sending to
+    # it is right rather than a widening.
+    adapter = _adapter()
+
+    _run(adapter.notify_working(str(CHAT_ID), "scout", f"{CHAT_ID}:88"))
+
+    assert len(_bot(adapter).actions) == 1
+    assert "message_thread_id" not in _bot(adapter).actions[0]
+
+
+def test_a_chat_that_cannot_be_read_costs_the_nudge_and_nothing_else() -> None:
+    # Placing the nudge needs a getChat on a cold cache, and that call can time
+    # out. The nudge is worth five seconds; the status it precedes is worth the
+    # turn, so a failure to place one must not take the other down with it.
+    adapter = _adapter()
+    _bot(adapter).get_chat_error = TimedOut()
+
+    _run(adapter.notify_working(str(CHAT_ID), "scout", f"{CHAT_ID}:88"))
+
+    assert _bot(adapter).actions == []
 
 
 def test_markup_telegram_rejects_is_resent_as_plain_text() -> None:
@@ -1139,299 +1346,6 @@ def test_a_rejected_album_still_delivers_the_files() -> None:
     assert len(_bot(adapter).photos) == 2
 
 
-# ── Runtime state ────────────────────────────────────────────────────────────
-
-
-def test_working_posts_a_status_message() -> None:
-    adapter = _adapter()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    assert "Working on it" in _bot(adapter).messages[0]["text"]
-    assert (str(CHAT_ID), "scout") in adapter._working_msg
-
-
-def test_working_again_edits_the_status_rather_than_reposting() -> None:
-    adapter = _adapter()
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID),
-            "scout",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-            detail="Editing adapter.py",
-        )
-    )
-
-    assert len(_bot(adapter).messages) == 1
-    assert "Editing adapter.py" in _bot(adapter).edits[0]["text"]
-
-
-def test_awaiting_input_pings_the_operator() -> None:
-    adapter = _adapter()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID),
-            "scout",
-            "awaiting-input",
-            mention_handle="alice",
-            thread_root_id=None,
-        )
-    )
-
-    assert "needs your input" in _bot(adapter).messages[0]["text"]
-    assert adapter._input_pings[(str(CHAT_ID), "scout")]
-
-
-def test_going_idle_removes_the_status_and_the_pings() -> None:
-    adapter = _adapter()
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID),
-            "scout",
-            "awaiting-input",
-            mention_handle="alice",
-            thread_root_id=None,
-        )
-    )
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    assert adapter._working_msg == {}
-    assert adapter._input_pings == {}
-    assert len(_bot(adapter).deletes) == 2
-
-
-def test_the_status_message_follows_the_conversation() -> None:
-    # Repositioning comes from the base class, but only for adapters that track
-    # the indicator — this asserts Telegram does.
-    adapter = _adapter()
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-    original = adapter._working_msg[(str(CHAT_ID), "scout")].message_ref
-
-    _run(adapter.reposition_runtime_state(str(CHAT_ID), "scout", "88"))
-
-    moved = adapter._working_msg[(str(CHAT_ID), "scout")]
-    assert moved.message_ref != original
-    assert moved.thread_root_id == "88"
-    # The replacement goes up before the original comes down.
-    assert _bot(adapter).deletes[0]["message_id"] == int(original.split(":")[1])
-
-
-# ── Working reaction ─────────────────────────────────────────────────────────
-
-
-def _ask(adapter: TelegramAdapter, message_id: int = 11, **kwargs: Any) -> None:
-    """Deliver an inbound message, so the adapter knows what is being answered."""
-    adapter._on_message = lambda m: _collect([], m)
-    _run(adapter._handle_message(_FakeInbound(message_id=message_id, **kwargs)))
-
-
-def _emoji(call: dict[str, Any]) -> list[str]:
-    return [r.emoji for r in call["reaction"]]
-
-
-def test_working_puts_the_eyes_on_the_message_that_asked() -> None:
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    assert _emoji(_bot(adapter).reactions[0]) == ["👀"]
-    assert _bot(adapter).reactions[0]["message_id"] == 11
-
-
-def test_the_eyes_come_off_when_the_turn_ends() -> None:
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    assert _emoji(_bot(adapter).reactions[-1]) == []
-    assert _bot(adapter).reactions[-1]["message_id"] == 11
-
-
-def test_the_eyes_go_up_once_however_often_the_activity_changes() -> None:
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-
-    for detail in ("reading", "editing", "running tests"):
-        _run(
-            adapter.apply_runtime_state(
-                str(CHAT_ID),
-                "scout",
-                "working",
-                mention_handle=None,
-                thread_root_id=None,
-                detail=detail,
-            )
-        )
-
-    assert len(_bot(adapter).reactions) == 1
-
-
-def test_the_eyes_stay_up_while_the_agent_waits_for_input() -> None:
-    # awaiting-input is mid-turn, not the end of one: the agent is still on it.
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID),
-            "scout",
-            "awaiting-input",
-            mention_handle="alice",
-            thread_root_id=None,
-        )
-    )
-
-    assert [_emoji(c) for c in _bot(adapter).reactions] == [["👀"]]
-
-
-def test_the_eyes_follow_the_newest_question_in_the_chat() -> None:
-    # Telegram reports no thread, so "what is being worked on" is whatever was
-    # asked last — not the first thing the agent was ever asked.
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    _ask(adapter, message_id=12)
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    assert [c["message_id"] for c in _bot(adapter).reactions] == [11, 11, 12]
-
-
-def test_a_reply_is_marked_on_itself_not_on_what_it_replied_to() -> None:
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-    _ask(adapter, message_id=12, reply_to_message=_FakeInbound(message_id=11))
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id="11"
-        )
-    )
-
-    assert _bot(adapter).reactions[0]["message_id"] == 12
-
-
-def test_every_message_an_agent_marked_is_cleared_by_the_one_turn_ending() -> None:
-    # Two chats, one agent, one turn end — both marks have to come off.
-    adapter = _adapter()
-    other = str(-100999)
-    _ask(adapter, message_id=11)
-    _ask(adapter, message_id=21, chat=_FakeChat(chat_id=-100999))
-    for channel in (str(CHAT_ID), other):
-        _run(
-            adapter.apply_runtime_state(
-                channel, "scout", "working", mention_handle=None, thread_root_id=None
-            )
-        )
-
-    for channel in (str(CHAT_ID), other):
-        _run(
-            adapter.apply_runtime_state(
-                channel, "scout", "idle", mention_handle=None, thread_root_id=None
-            )
-        )
-
-    cleared = [c["message_id"] for c in _bot(adapter).reactions if not c["reaction"]]
-    assert sorted(cleared) == [11, 21]
-
-
-def test_a_chat_that_never_spoke_is_not_reacted_to() -> None:
-    # Nothing to mark is not an error, and must not invent a message id.
-    adapter = _adapter()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-
-    assert _bot(adapter).reactions == []
-    assert "Working on it" in _bot(adapter).messages[0]["text"]
-
-
-def test_a_refused_reaction_is_logged_and_the_turn_carries_on(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # Reactions can be switched off per chat. That costs the signal, not the turn.
-    adapter = _adapter()
-    _ask(adapter, message_id=11)
-    _bot(adapter).reaction_error = BadRequest("REACTION_INVALID")
-
-    with caplog.at_level(logging.WARNING):
-        _run(
-            adapter.apply_runtime_state(
-                str(CHAT_ID),
-                "scout",
-                "working",
-                mention_handle=None,
-                thread_root_id=None,
-            )
-        )
-
-    assert any("working reaction" in r.getMessage() for r in caplog.records)
-    assert "Working on it" in _bot(adapter).messages[0]["text"]
-
-
 # ── Translation ──────────────────────────────────────────────────────────────
 
 
@@ -1659,6 +1573,7 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
         "message",
         "channel_post",
         "my_chat_member",
+        "callback_query",
     ]
 
 

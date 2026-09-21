@@ -77,6 +77,13 @@ _ALLOWED_MODULES = {
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
     "switch_core.bridges.collaboration.bridge_core",
+    # An inbound webhook from an installed workspace: the platform's signature
+    # proves the sender and the payload names a workspace, and nothing in
+    # either names a tenant. It is the one read that must happen before a
+    # tenant can be bound at all, and the install row is then re-read scoped to
+    # the tenant it produced, so a wrong answer here is a miss rather than a
+    # cross-tenant read.
+    "switch_core.bridges.collaboration.install_service",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_client`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
@@ -121,6 +128,20 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
+    # The SDK session publisher and the cards it draws. `bridge_core` is the
+    # only thing that builds any of the three, by two routes and both bound: a
+    # button press or a typed answer arrives through `BridgeCore._traced`,
+    # which binds the tenant of the room the channel maps to; and the sweep
+    # loop is created inside a `tenant_scope(self._bridge_tenant_id)` that
+    # `BridgeCore.start` opens for exactly that, so the task carries the
+    # bridge's tenant for its whole life. Worth saying plainly, because
+    # `start()` itself runs under `no_tenant()` and that scope is the only
+    # thing standing between the sweep and an unbound context. The sweep's own
+    # reads say so too: they are keyed on `require_tenant_id()`, so an unbound
+    # publisher raises on its first pass rather than quietly reading nothing.
+    "switch_core.sessions.publication",
+    "switch_core.bridges.collaboration.session.inbound",
+    "switch_core.bridges.collaboration.session.outbound",
     # ── The exemption's own plumbing. It opens a session with nothing bound
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.

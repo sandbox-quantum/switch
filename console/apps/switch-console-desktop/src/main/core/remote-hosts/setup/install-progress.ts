@@ -1,7 +1,7 @@
 /**
  * Reading an install's live output as one line of progress (CHOO-1809).
  *
- * Install commands run in a PTY, so what arrives is terminal output rather than
+ * Install commands run as child processes, so what arrives is terminal output rather than
  * a log: escape sequences, and carriage returns that redraw the current line
  * instead of adding a new one. `apt-get` repaints `0% [Waiting for headers]`
  * dozens of times a second that way.
@@ -36,7 +36,7 @@ export class InstallProgressReader {
   private latest = '';
   private lastTaken: string | null = null;
 
-  /** Feed a chunk of raw PTY output. */
+  /** Feed a chunk of raw command output. */
   push(chunk: string): void {
     // Both terminators end the current line. For a newline that starts a
     // genuinely new one; for a carriage return the same one is repainted. Only

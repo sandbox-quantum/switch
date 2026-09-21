@@ -258,6 +258,19 @@ class SwitchConfig(BaseSettings):
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
+    # Where collaboration bridges take platform callbacks. Only a Mattermost
+    # button press needs one today: the press is delivered by the Mattermost
+    # server to a URL, where every other platform Switch bridges to sends it
+    # down a connection Switch already holds open.
+    #
+    # A socket of its own, not a route on the port above, which carries the
+    # agent API, the MCP server and the operator dashboard. What an operator
+    # has to expose for a button to work should be callbacks and nothing else,
+    # so that one over-broad proxy rule cannot publish the other three. It
+    # stays unbound in a deployment where no bridge asks to be called back.
+    collaboration_callback_host: str = "0.0.0.0"
+    collaboration_callback_port: int = 8081
+
     frontend_base_url: str | None = None
 
     # Public origin (scheme + host, no path) of the Switch API — the same host
@@ -269,10 +282,48 @@ class SwitchConfig(BaseSettings):
     # unset, the raw `switchdash://` deeplink is posted as-is.
     gateway_public_url: str | None = None
 
+    # Credentials of the distributed Slack app *we* registered — the one a
+    # customer installs by clicking a button, as opposed to the app an operator
+    # registers themselves and pastes tokens for. See
+    # `docs/old/bridges/SLACK_DISTRIBUTED_APP.md`.
+    #
+    # Setting all three is what enables workspace installs at all: there is no
+    # separate on/off switch, because an app with no credentials is not an app.
+    # Setting some is a mistake and is refused at startup.
+    #
+    # The signing secret is the one that must never be treated as optional in
+    # spirit: it is the whole of what distinguishes a Slack event from a post by
+    # anyone who learned the URL.
+    slack_app_client_id: str | None = None
+    slack_app_client_secret: str | None = None
+    slack_app_signing_secret: str | None = None
+
+    # Public origin (scheme + host, no path) that a messaging platform reaches
+    # Switch on: the base of the OAuth redirect and of the three event URLs
+    # under `/messaging`, and the one registered with the app.
+    #
+    # Separate from `gateway_public_url` because the two answer to different
+    # audiences and need not be the same host. The gateway URL is opened by a
+    # person following a deeplink and may live on a private network; this one
+    # is dialled by Slack from the internet and must resolve and present a
+    # browser-trusted certificate there. A deployment whose gateway is
+    # reachable only over a VPN can still offer installs, and pointing the
+    # gateway URL at the internet-facing host to achieve that would silently
+    # move every deeplink along with it.
+    messaging_public_url: str | None = None
+
     # Upper bound on a single attachment an agent may post to a room (and that
     # a collaboration bridge will relay out). Uploads over this raise instead
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
+
+    # Development only. No agent host speaks the session interaction contract
+    # yet, so there is no session whose requests could reach a channel. With
+    # this set, `!session-demo` in a bridged Slack channel posts the recorded
+    # fixture's request there as a real card, to exercise the answer path
+    # against a real workspace. It needs the repository checkout for the
+    # fixtures, and it says in the log that there is no session behind the card.
+    session_demo_enabled: bool = False
 
     # Upper bound on a template document uploaded to the registry. The column
     # itself is unbounded, so raising this is a deploy-time change and never a
@@ -662,6 +713,28 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_messaging_public_url(self) -> "SwitchConfig":
+        # Slack compares the redirect URI it is sent against the one registered
+        # with the app, byte for byte, and reports a mismatch as a generic
+        # refusal. A path here would make every install URL wrong in a way the
+        # error message does not name, so it is a startup error instead.
+        if self.messaging_public_url:
+            parts = urlsplit(self.messaging_public_url)
+            if not parts.scheme or not parts.netloc or parts.path not in ("", "/"):
+                raise ValueError(
+                    "MESSAGING_PUBLIC_URL must be a scheme + host only "
+                    "(e.g. https://switch.example), with no path, "
+                    f"got {self.messaging_public_url!r}."
+                )
+            if parts.scheme != "https":
+                raise ValueError(
+                    "MESSAGING_PUBLIC_URL must be https. Slack refuses to "
+                    "register an http redirect or event URL, so an http origin "
+                    f"cannot work, got {self.messaging_public_url!r}."
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_gateway_oidc(self) -> "SwitchConfig":
         required = (
             self.gateway_oidc_issuer_url,
@@ -685,6 +758,34 @@ class SwitchConfig(BaseSettings):
                 "provider issues no id_token, and the callback falls back "
                 "to the provider's userinfo endpoint, which may not answer. "
                 f"Got {self.gateway_oidc_scopes!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_slack_app(self) -> "SwitchConfig":
+        required = (
+            self.slack_app_client_id,
+            self.slack_app_client_secret,
+            self.slack_app_signing_secret,
+        )
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial distributed Slack app config: set all of "
+                "SLACK_APP_CLIENT_ID / SLACK_APP_CLIENT_SECRET / "
+                "SLACK_APP_SIGNING_SECRET, or none of them."
+            )
+        # The redirect URI and the events URL are both built from the public
+        # origin, and Slack checks the redirect matches the one registered with
+        # the app. Without the origin they would be built against nothing, so a
+        # deployment configured to offer installs and unable to name itself is
+        # a startup error rather than a broken button.
+        if set_count and not self.messaging_public_url:
+            raise ValueError(
+                "A distributed Slack app is configured but MESSAGING_PUBLIC_URL "
+                "is not. The install redirect and the events endpoint are built "
+                "from it, and Slack rejects a redirect that does not match the "
+                "one registered with the app."
             )
         return self
 

@@ -61,7 +61,6 @@ vi.mock('./agent-name-taken', () => ({
 vi.mock('./connect-remote-agent', () => ({ connectRemoteAgent: vi.fn() }));
 vi.mock('./remote-watcher', () => ({ ensureRemoteWatcher: vi.fn(async () => {}) }));
 vi.mock('@main/core/agent-runtime/impl/remote-sidecar-launcher', () => ({
-  agentSidecarTmuxName: vi.fn(() => 'tmux'),
   killSidecarSession: vi.fn(async () => {}),
 }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));

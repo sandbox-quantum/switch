@@ -156,6 +156,13 @@ not list.
 
 **Traces** are not implemented. See "What is missing" below.
 
+**Not every HTTP surface is counted.** `switch.http.*` comes from middleware on
+the FastAPI app, which is the agent bridge, the MCP mount and the gateway
+beneath it. Two listeners sit outside it — the Teams bridge and the
+collaboration callback ingress each run their own `aiohttp` server on their own
+port — so their traffic appears in no request metric. Read the HTTP panels as
+"the main API", not "everything this process serves".
+
 ## Why there is a catalogue
 
 A metric's cost is the number of distinct attribute combinations it produces,

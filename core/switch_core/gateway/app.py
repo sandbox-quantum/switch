@@ -8,6 +8,9 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
+from switch_core.bridges.collaboration.install_service import (
+    MessagingInstallService,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -32,6 +35,9 @@ from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.messaging_installs import (
+    router as messaging_installs_router,
+)
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.packages import router as packages_router
@@ -39,9 +45,12 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.sessions import router as sessions_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.room_service import RoomService
+from switch_core.sessions.http import session_error_response
+from switch_core.sessions.service import SessionError
 
 
 def create_gateway_app(
@@ -64,6 +73,7 @@ def create_gateway_app(
     template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
+    install_service: MessagingInstallService | None,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -85,6 +95,7 @@ def create_gateway_app(
         template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
+        install_service=install_service,
         config=config,
     )
 
@@ -103,6 +114,8 @@ def create_gateway_app(
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
 
+    app.add_exception_handler(SessionError, session_error_response)
+    app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
     app.include_router(auth_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
@@ -120,5 +133,10 @@ def create_gateway_app(
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
+    app.include_router(
+        messaging_installs_router,
+        prefix="/messaging-apps",
+        tags=["messaging-apps"],
+    )
 
     return app

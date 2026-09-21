@@ -20,6 +20,7 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     CollaborationAdapter,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -102,6 +103,9 @@ def _bridge(*agents: SimpleNamespace) -> BridgeCore:
     bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore({a.name: a for a in agents})  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
+    bridge._session_publisher = None
+    bridge._session_publication_task = None
+    bridge._session_interactions = None
     return bridge
 
 
@@ -395,46 +399,30 @@ def test_slack_leaves_the_username_field_unescaped() -> None:
     assert client.calls[0]["username"] == "Ops & Co"
 
 
-def test_slack_session_card_opens_under_the_display_name() -> None:
-    """The streamed session card names the agent too, and is the one Slack
-    surface that goes through neither `send_message` nor `send_typing`."""
-    bridge = _bridge(_agent("worker", "Worker Bee"))
+@pytest.mark.parametrize(
+    "display_name,expected", [("Worker Bee", "Worker Bee"), (None, "worker")]
+)
+async def test_sdk_slack_status_uses_the_agent_display_name(display_name, expected):
+    from switch_core.sessions.contract import TurnUpsert
+
+    bridge = _bridge(_agent("worker", display_name))
     adapter, client = _slack_adapter(bridge)
-    adapter._team_id = "T123"
-    adapter._thread_requester[(SLACK_CHANNEL, "500.0")] = "U-asker"
-
-    _run(
-        adapter._drive_stream(
-            SLACK_CHANNEL,
-            "500.0",
-            "worker",
-            working=True,
-            detail="Editing foo.py",
-            deeplink_url=None,
-        )
+    await adapter.post_rich(
+        SLACK_CHANNEL,
+        "worker",
+        TurnActivity(
+            [],
+            TurnUpsert(
+                type="turn.upsert",
+                turn_id="turn",
+                command_id="command",
+                status="running",
+            ),
+            status_only=True,
+        ),
+        "500.0",
     )
-
-    assert client.streams[0]["username"] == "Worker Bee"
-
-
-def test_slack_session_card_opens_under_the_identifier_without_one() -> None:
-    bridge = _bridge(_agent("worker", None))
-    adapter, client = _slack_adapter(bridge)
-    adapter._team_id = "T123"
-    adapter._thread_requester[(SLACK_CHANNEL, "500.0")] = "U-asker"
-
-    _run(
-        adapter._drive_stream(
-            SLACK_CHANNEL,
-            "500.0",
-            "worker",
-            working=True,
-            detail="Editing foo.py",
-            deeplink_url=None,
-        )
-    )
-
-    assert client.streams[0]["username"] == "worker"
+    assert client.calls[0]["username"] == expected
 
 
 def test_slack_still_draws_an_agent_icon_on_its_own_background() -> None:
@@ -458,31 +446,6 @@ def test_slack_resolves_an_agent_once_per_send() -> None:
     _run(adapter.send_message(SLACK_CHANNEL, "worker", "hello"))
 
     assert bridge._agent_store.lookups == ["worker"]  # type: ignore[attr-defined]
-
-
-def test_slack_awaiting_input_ping_uses_the_display_name_in_both_header_and_body() -> (
-    None
-):
-    """The awaiting-input ping posts with the display label as username AND
-    inlines it into the body — the identifier must not leak into the prose."""
-    bridge = _bridge(_agent("switchdev", "Switch Dev"))
-    adapter, client = _slack_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            SLACK_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="U123",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    assert client.calls[-1]["username"] == "Switch Dev"
-    body = client.calls[-1]["text"]
-    assert "Switch Dev" in body
-    assert "switchdev" not in body
 
 
 def test_slack_does_not_reimport_its_own_post_made_under_a_display_name() -> None:
@@ -580,30 +543,6 @@ async def test_the_bridge_echo_check_does_not_match_on_the_display_name() -> Non
 
     assert await bridge._is_registered_agent("worker") is True
     assert await bridge._is_registered_agent("Worker Bee") is False
-
-
-def test_a_slack_display_name_cannot_forge_a_usergroup_mention() -> None:
-    """Escaping `&<>` stops a label writing Slack's own markup, but
-    `_translate_mentions_to_slack` runs over the finished body and turns a
-    plain `@opsbot` in the label into a real usergroup ping."""
-    bridge = _bridge(_agent("switchdev", "@opsbot"), _agent("opsbot", None))
-    adapter, client = _slack_adapter(bridge)
-    adapter._remember_agent_group("S999", "opsbot")
-
-    _run(
-        adapter._apply_runtime_state(
-            SLACK_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="U123",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    text = client.calls[-1]["text"]
-    assert "<!subteam^S999>" not in text
-    assert "@\u200bopsbot" in text
 
 
 # ── Discord ──────────────────────────────────────────────────────────────────
@@ -1050,6 +989,9 @@ def test_discord_still_bridges_a_foreign_webhook_using_the_same_label() -> None:
         ("plain", "plain"),
         ("Bo*b", r"Bo\*b"),
         ("@here", "@\u200bhere"),
+        # A bare handle needs no Discord syntax at all, so `escape_mentions`
+        # leaves it alone and only the base class's `@` rule defuses it.
+        ("@opsbot", "@\u200bopsbot"),
         ("<@123456789012345678>", "<\u200b@\u200b123456789012345678>"),
         ("a`b`c", r"a\`b\`c"),
         # Everything else Discord resolves from `<…>`: a channel link, a
@@ -1065,51 +1007,6 @@ def test_discord_still_bridges_a_foreign_webhook_using_the_same_label() -> None:
 def test_discord_body_escape_cases(label: str, expected: str) -> None:
     adapter, _channel, _dm = _discord_adapter(None)
     assert adapter.escape_label_for_body(label) == expected
-
-
-def test_a_discord_display_name_cannot_forge_a_role_mention() -> None:
-    """`escape_mentions` breaks Discord's own `@everyone`/`<@id>` syntax, but a
-    label needs no Discord syntax: `translate_outbound` resolves a bare handle
-    into a real mention after the label is already in the body."""
-    bridge = _bridge(_agent("switchdev", "@opsbot"), _agent("opsbot", None))
-    adapter, channel, _dm = _discord_adapter(bridge)
-    adapter._agent_role_ids["opsbot"] = 4242
-
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "switchdev",
-            "awaiting-input",
-            mention_handle="123",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    content = channel.webhook.sent[-1]["content"]
-    assert "<@&4242>" not in content
-    assert "@\u200bopsbot" in content
-
-
-def test_a_discord_display_name_cannot_forge_a_user_mention() -> None:
-    bridge = _bridge(_agent("switchdev", "@alice"))
-    adapter, channel, _dm = _discord_adapter(bridge)
-    adapter._username_to_id["alice"] = 777
-
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "switchdev",
-            "awaiting-input",
-            mention_handle="123",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    content = channel.webhook.sent[-1]["content"]
-    assert "<@777>" not in content
-    assert "@\u200balice" in content
 
 
 # ── Teams ────────────────────────────────────────────────────────────────────
@@ -1203,32 +1100,6 @@ def test_teams_card_names_the_agent_by_its_identifier_without_one() -> None:
     assert activity["summary"] == "worker: hello"
 
 
-def test_teams_awaiting_input_ping_uses_the_display_name_in_both_header_and_body() -> (
-    None
-):
-    """The ping is a card like any other message, so the label has to reach the
-    header AND the prose the base class writes — the identifier neither."""
-    bridge = _bridge(_agent("switchdev", "Switch Dev"))
-    adapter, connector = _teams_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            TEAMS_CHAT,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="Alice Example",
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    activity = connector.sends[-1]
-    assert _teams_header(activity) == "Switch Dev"
-    assert "Switch Dev" in _teams_body(activity)
-    assert "switchdev" not in _teams_body(activity)
-    assert "switchdev" not in _teams_header(activity)
-
-
 def test_teams_resolves_an_agent_once_per_send() -> None:
     """The card needs the label and the avatar; they come off one row, so the
     single icon lookup this replaced must not have become two."""
@@ -1240,54 +1111,21 @@ def test_teams_resolves_an_agent_once_per_send() -> None:
     assert bridge._agent_store.lookups == ["worker"]  # type: ignore[attr-defined]
 
 
-def test_a_teams_display_name_cannot_forge_a_mention_of_a_real_person() -> None:
-    """`@alice` in a display name is a ping of whoever alice is, not a cosmetic
-    bug: the base ping inlines the label into Markdown source that
-    `translate_outbound` then runs the mention pass over, so both halves of a
-    real Teams mention are forgeable from a name alone."""
-    bridge = _bridge(_agent("switchdev", "@alice the Bot"))
-    adapter, connector = _teams_adapter(bridge)
-    adapter.prime_mention_targets({"alice": "aad-alice"})
-
-    _run(
-        adapter._apply_runtime_state(
-            TEAMS_CHAT,
-            "switchdev",
-            "awaiting-input",
-            mention_handle=None,
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
-
-    activity = connector.sends[-1]
-    assert "msteams" not in _teams_card(activity)
-    assert "<at>" not in _teams_body(activity)
-    assert "<at>" not in _teams_header(activity)
-
-
 def test_a_teams_display_name_cannot_carry_the_mention_markup_itself() -> None:
-    """The other half of the same hole: `<at>…</at>` written straight into a
-    name skips the marking pass, but the entity pass reads the markup back out
-    of the rendered body and pairs it."""
+    """`<at>…</at>` written straight into a name skips the marking pass that
+    turns `@name` into mention markup, so the defusal has to hold on the way in
+    as well: what `_mention_entities` scans is the rendered card, and a tag it
+    can pair with a target becomes a real ping of that person."""
     bridge = _bridge(_agent("switchdev", "<at>alice</at>"))
     adapter, connector = _teams_adapter(bridge)
     adapter.prime_mention_targets({"alice": "aad-alice"})
 
-    _run(
-        adapter._apply_runtime_state(
-            TEAMS_CHAT,
-            "switchdev",
-            "awaiting-input",
-            mention_handle=None,
-            thread_root_id=None,
-            deeplink_url=None,
-        )
-    )
+    _run(adapter.send_message(TEAMS_CHAT, "switchdev", "hello"))
 
-    activity = connector.sends[-1]
+    activity = connector.sends[0]
     assert "msteams" not in _teams_card(activity)
-    assert "<at>alice</at>" not in _teams_body(activity)
+    assert "<at>alice</at>" not in _teams_header(activity)
+    assert "<at>alice</at>" not in _teams_card(activity)["fallbackText"]
 
 
 def test_teams_still_delivers_a_mention_the_agent_wrote() -> None:
@@ -1473,31 +1311,6 @@ def test_telegram_album_caption_uses_the_display_name() -> None:
     assert "switchdev" not in caption
 
 
-def test_telegram_runtime_status_edit_keeps_the_display_name() -> None:
-    """The live "working on it…" card is edited in place rather than reposted,
-    and that edit rebuilds the prefix itself instead of going through
-    `send_message`."""
-    bridge = _bridge(_agent("switchdev", "Switch Dev"))
-    adapter, bot = _telegram_adapter(bridge)
-
-    for detail in ("Reading foo.py", "Editing foo.py"):
-        _run(
-            adapter._apply_runtime_state(
-                TELEGRAM_CHAT,
-                "switchdev",
-                "working",
-                mention_handle=None,
-                thread_root_id=None,
-                detail=detail,
-            )
-        )
-
-    edited = bot.edits[0]["text"]
-    assert "<b>Switch Dev</b>" in edited
-    assert "switchdev" not in edited
-    assert "Editing foo.py" in edited
-
-
 def test_telegram_escapes_a_display_name_exactly_once_in_the_prefix() -> None:
     """The prefix is finished HTML, escaped by `_attribute` and nothing else,
     so one `html.escape` is the whole of what it needs. The body escape inserts
@@ -1511,30 +1324,6 @@ def test_telegram_escapes_a_display_name_exactly_once_in_the_prefix() -> None:
     text = bot.messages[0]["text"]
     assert text.endswith("<b>R&amp;D &lt;Bot&gt;</b>: on it")
     assert "&amp;amp;" not in text
-
-
-def test_telegram_escapes_a_display_name_exactly_once_in_the_ping() -> None:
-    """The other pipeline, and the one that double-escaped: the base builds the
-    ping text around the label and hands the whole line to `translate_outbound`,
-    which escapes it. Both halves of this message carry the same name, and both
-    must have been escaped once."""
-    bridge = _bridge(_agent("switchdev", "R&D <Bot>"))
-    adapter, bot = _telegram_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            TELEGRAM_CHAT,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    text = bot.messages[-1]["text"]
-    assert text.count("R&amp;D &lt;Bot&gt;") == 2
-    assert "&amp;amp;" not in text
-    assert "&lt;b&gt;" not in text
 
 
 def test_telegram_marks_two_agents_sharing_a_display_name_apart() -> None:
@@ -1576,59 +1365,14 @@ def test_a_telegram_agents_mark_does_not_move_when_it_is_renamed() -> None:
             "[Switch Support](https://evil.example)",
             "[Switch Support]\u200b(https://evil.example)",
         ),
-        # No entities inserted, which is what lets the prefix and the ping each
-        # stay a single escape.
+        # No entities inserted, which is what lets the prefix stay a single
+        # escape.
         ("R&D <Bot>", "R&D <Bot>"),
     ],
 )
 def test_telegram_body_escape_cases(label: str, expected: str) -> None:
     adapter, _bot = _telegram_adapter(None)
     assert adapter.escape_label_for_body(label) == expected
-
-
-def test_a_telegram_display_name_cannot_forge_a_mention_of_a_real_person() -> None:
-    """A `tg://user?id=` anchor is a hard mention: Telegram notifies that
-    account whatever the visible text says. The ping inlines the label into
-    Markdown source the mention pass then runs over, so one is forgeable from a
-    display name alone."""
-    bridge = _bridge(_agent("switchdev", "@ceo_person"))
-    adapter, bot = _telegram_adapter(bridge)
-    adapter._username_to_id["ceo_person"] = 777
-
-    _run(
-        adapter._apply_runtime_state(
-            TELEGRAM_CHAT,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    text = bot.messages[-1]["text"]
-    assert "tg://user?id=777" not in text
-    assert "tg://user" not in text
-
-
-def test_a_telegram_display_name_cannot_forge_a_link() -> None:
-    """Both halves of `[text](url)` are the name's to choose, and the anchor
-    lands in the sentence naming who is speaking."""
-    bridge = _bridge(_agent("switchdev", "[Switch Support](https://evil.example)"))
-    adapter, bot = _telegram_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            TELEGRAM_CHAT,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    text = bot.messages[-1]["text"]
-    assert 'href="https://evil.example"' not in text
-    assert "<a href" not in text
 
 
 def test_a_telegram_display_name_cannot_mention_from_the_prefix() -> None:
@@ -1649,9 +1393,9 @@ def test_a_telegram_display_name_cannot_mention_from_the_prefix() -> None:
 
 
 def test_telegram_defuses_the_label_in_every_prefix_it_builds() -> None:
-    """Four call sites build a prefix; the plain send is only one of them. An
-    attachment caption, an album caption and the in-place runtime edit each
-    assemble their own, so each has to reach for the escaped label itself."""
+    """Three call sites build a prefix; the plain send is only one of them. An
+    attachment caption and an album caption each assemble their own, so each
+    has to reach for the escaped label itself."""
     bridge = _bridge(_agent("switchdev", "@ceo_person"))
     adapter, bot = _telegram_adapter(bridge)
     files = [
@@ -1665,22 +1409,12 @@ def test_telegram_defuses_the_label_in_every_prefix_it_builds() -> None:
         )
     )
     _run(adapter.send_attachments(TELEGRAM_CHAT, "switchdev", files, "two charts"))
-    for detail in ("Reading foo.py", "Editing foo.py"):
-        _run(
-            adapter._apply_runtime_state(
-                TELEGRAM_CHAT,
-                "switchdev",
-                "working",
-                mention_handle=None,
-                thread_root_id=None,
-                detail=detail,
-            )
-        )
+    _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
 
     built = [
         bot.photos[0]["caption"],
         bot.albums[0]["media"][0].caption,
-        bot.edits[0]["text"],
+        bot.messages[0]["text"],
     ]
     for prefix in built:
         assert "@\u200bceo_person" in prefix
@@ -1785,81 +1519,6 @@ def _mattermost_adapter(
 def test_mattermost_body_escape_cases(label: str, expected: str) -> None:
     adapter, _sent = _mattermost_adapter(None)
     assert adapter.escape_label_for_body(label) == expected
-
-
-def test_mattermost_awaiting_input_ping_uses_the_display_name() -> None:
-    bridge = _bridge(_agent("switchdev", "Switch Dev"))
-    adapter, sent = _mattermost_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            MATTERMOST_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    assert "**Switch Dev**" in sent[-1]
-    assert "switchdev" not in sent[-1]
-
-
-def test_a_mattermost_display_name_cannot_address_the_whole_channel() -> None:
-    """Switch ships Markdown verbatim, so an undefused `@channel` in the label
-    is resolved by Mattermost itself and notifies everyone in the room."""
-    bridge = _bridge(_agent("switchdev", "@channel"))
-    adapter, sent = _mattermost_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            MATTERMOST_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    assert "@\u200bchannel" in sent[-1]
-    assert "@channel" not in sent[-1]
-
-
-def test_a_mattermost_display_name_cannot_forge_a_link() -> None:
-    bridge = _bridge(_agent("switchdev", "[Switch Support](https://evil.example)"))
-    adapter, sent = _mattermost_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            MATTERMOST_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    assert "](https://evil.example)" not in sent[-1]
-    assert "]\u200b(https://evil.example)" in sent[-1]
-
-
-def test_mattermost_still_delivers_the_owner_ping() -> None:
-    """The defusal lands on the label alone — the operator handle the ping is
-    built around is not the label and must still resolve."""
-    bridge = _bridge(_agent("switchdev", "@channel"))
-    adapter, sent = _mattermost_adapter(bridge)
-
-    _run(
-        adapter._apply_runtime_state(
-            MATTERMOST_CHANNEL,
-            "switchdev",
-            "awaiting-input",
-            mention_handle="opslead",
-            thread_root_id=None,
-        )
-    )
-
-    assert sent[-1].startswith("@opslead ")
 
 
 # ── Mattermost bot identities ────────────────────────────────────────────────
