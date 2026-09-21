@@ -3,8 +3,18 @@ import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import type { TelemetryEventMap } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import {
+  clearActiveWorkspaceOnServer,
+  ensureServerWorkspace,
+  getActiveWorkspaceId,
+  insertServerWorkspace,
+  renameServerWorkspaces,
+  requireSoleWorkspaceForServer,
+  serverIdForWorkspace,
+  setActiveWorkspaceId,
+} from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
-import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema';
+import { type SwitchServerRow, switchServers } from '@main/db/schema';
 import {
   urlOrigin,
   type AddServerParams,
@@ -14,8 +24,8 @@ import {
   type UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
 
-const ACTIVE_SERVER_KV_KEY = 'activeSwitchServerId';
-
+// Keyed to the server, not the workspace: one gateway session cookie covers
+// every workspace on a server.
 function cookieSecretKey(serverId: string): string {
   return `switch-server-cookie:${serverId}`;
 }
@@ -142,7 +152,9 @@ export async function ensureManagedServer(
       })
       .where(eq(switchServers.id, existing.id))
       .returning();
-    return mapRow(row);
+    const server = mapRow(row);
+    await ensureServerWorkspace(server);
+    return server;
   }
   const [row] = await db
     .insert(switchServers)
@@ -157,13 +169,15 @@ export async function ensureManagedServer(
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
+  const server = mapRow(row);
+  await ensureServerWorkspace(server);
   // Only the insert: this function also runs on every restart of a stack that
   // already exists, and that is not a server being added.
   trackEvent('server_added', {
     server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
     outcome: 'success',
   });
-  return mapRow(row);
+  return server;
 }
 
 async function getServerByGatewayUrl(gatewayUrl: string): Promise<SwitchServer | null> {
@@ -176,22 +190,28 @@ async function getServerByGatewayUrl(gatewayUrl: string): Promise<SwitchServer |
 }
 
 export async function addServer(params: AddServerParams): Promise<SwitchServer> {
-  const [row] = await db
-    .insert(switchServers)
-    .values({
-      id: randomUUID(),
-      name: params.name.trim(),
-      gatewayUrl: normaliseUrl(params.gatewayUrl),
-      apiUrl: normaliseUrl(params.apiUrl),
-      updatedAt: sql`CURRENT_TIMESTAMP`,
-    })
-    .returning();
+  const server = db.transaction((tx) => {
+    const [row] = tx
+      .insert(switchServers)
+      .values({
+        id: randomUUID(),
+        name: params.name.trim(),
+        gatewayUrl: normaliseUrl(params.gatewayUrl),
+        apiUrl: normaliseUrl(params.apiUrl),
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .returning()
+      .all();
+    const inserted = mapRow(row!);
+    insertServerWorkspace(tx, inserted);
+    return inserted;
+  });
   // Not reported here, unlike the managed insert above: registering a URL is a
   // discrete action with one caller, so the controller reports both of its
   // outcomes together and a single Add cannot produce two events. The managed
   // kinds have no such single owner — two services call that path and so does
   // every restart — which is why it is reported at the insert instead.
-  return mapRow(row);
+  return server;
 }
 
 export async function updateServer(params: UpdateServerParams): Promise<SwitchServer> {
@@ -208,6 +228,7 @@ export async function updateServer(params: UpdateServerParams): Promise<SwitchSe
   if (!row) {
     throw new Error(`No Switch server with id ${params.id}`);
   }
+  await renameServerWorkspaces(params.id, params.name.trim());
   return mapRow(row);
 }
 
@@ -220,6 +241,7 @@ export async function renameServer(params: RenameServerParams): Promise<SwitchSe
   if (!row) {
     throw new Error(`No Switch server with id ${params.id}`);
   }
+  await renameServerWorkspaces(params.id, params.name.trim());
   return mapRow(row);
 }
 
@@ -229,13 +251,11 @@ export async function removeServer(id: string): Promise<void> {
   const server = await getServer(id).catch(() => null);
 
   await deleteSessionCookie(id);
-  // Unlink agents explicitly: SQLite's ALTER TABLE ADD COLUMN can't carry an
-  // ON DELETE clause, so the FK's set-null isn't enforced by the engine.
-  await db.update(agents).set({ serverId: null }).where(eq(agents.serverId, id));
+  // Before the delete, while the server's workspaces are still readable.
+  await clearActiveWorkspaceOnServer(id);
+  // Deleting the server takes its workspaces with it and unlinks their agents,
+  // both by foreign key: workspaces cascade, agents are set null.
   await db.delete(switchServers).where(eq(switchServers.id, id));
-  if ((await getActiveServerId()) === id) {
-    await db.delete(kv).where(eq(kv.key, ACTIVE_SERVER_KV_KEY));
-  }
 
   // Removing an already-absent server is not a server being removed.
   if (server) trackEvent('server_removed', { server_kind: serverKindOf(server) });
@@ -249,23 +269,26 @@ export function serverKindOf(
   return server.managementKind === 'remote' ? 'remote_managed' : 'local';
 }
 
+/**
+ * The server whose workspace is active, for the parts of the app that still
+ * scope themselves to a server.
+ *
+ * The selection itself is a workspace — see the workspaces store. This reads it
+ * back as the server hosting it, and returns null when nothing is selected or
+ * the selected workspace has since gone.
+ */
 export async function getActiveServerId(): Promise<string | null> {
-  const [row] = await db.select().from(kv).where(eq(kv.key, ACTIVE_SERVER_KV_KEY)).limit(1);
-  return row?.value ?? null;
+  const activeWorkspaceId = await getActiveWorkspaceId();
+  if (!activeWorkspaceId) return null;
+  return serverIdForWorkspace(activeWorkspaceId);
 }
 
+/** Select a server by selecting its workspace. */
 export async function setActiveServerId(id: string): Promise<void> {
   const server = await getServer(id);
-  if (!server) {
-    throw new Error(`No Switch server with id ${id}`);
-  }
-  await db
-    .insert(kv)
-    .values({ key: ACTIVE_SERVER_KV_KEY, value: id, updatedAt: sql`CURRENT_TIMESTAMP` })
-    .onConflictDoUpdate({
-      target: kv.key,
-      set: { value: id, updatedAt: sql`CURRENT_TIMESTAMP` },
-    });
+  if (!server) throw new Error(`No Switch server with id ${id}`);
+  const workspace = await requireSoleWorkspaceForServer(id);
+  await setActiveWorkspaceId(workspace.id);
 }
 
 // ---------------------------------------------------------------------------

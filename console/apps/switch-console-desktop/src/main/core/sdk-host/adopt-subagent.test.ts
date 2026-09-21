@@ -4,6 +4,7 @@ import { adoptSubagent } from './adopt-subagent';
 
 const mocks = vi.hoisted(() => ({
   local: vi.fn(),
+  workspace: vi.fn(),
   server: vi.fn(),
   remote: vi.fn(),
   create: vi.fn(),
@@ -13,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@main/core/agents/agent-events', () => ({ agentEvents: { _emit: mocks.emit } }));
 vi.mock('@main/core/agents/createAgent', () => ({ createAgent: mocks.create }));
-vi.mock('@main/core/agents/getAgents', () => ({ getLocationAgentsOnServer: mocks.local }));
+vi.mock('@main/core/agents/getAgents', () => ({ getLocationAgentsInWorkspace: mocks.local }));
 vi.mock('@main/core/agents/remote-session-reconciler', () => ({
   remoteSessionReconciler: { start: mocks.start },
 }));
@@ -29,10 +30,11 @@ vi.mock('@main/core/agents/import-agent-config', () => ({ importAgentConfig: moc
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({ behavior: { repoAgents: { definitionPath: () => '' } } }),
 }));
+vi.mock('@main/core/workspaces/workspaces-store', () => ({ requireWorkspace: mocks.workspace }));
 const parent = {
   id: 'parent',
   locationId: 'location',
-  serverId: 'server',
+  workspaceId: 'workspace',
   apiEndpoint: 'https://example.test/agent',
   providerId: 'claude',
   autoApprove: false,
@@ -42,6 +44,7 @@ const parent = {
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.local.mockResolvedValue([]);
+  mocks.workspace.mockResolvedValue({ id: 'workspace', serverId: 'server' });
   mocks.server.mockResolvedValue({ id: 'server' });
   mocks.remote.mockResolvedValue({ id: 'child', ownerName: 'Owner' });
   mocks.create.mockImplementation(async (value) => ({ ...value, id: 'local-child' }));
@@ -55,7 +58,7 @@ it('adopts the child identity and discovers its sessions using its own credentia
       name: 'reviewer',
       switchAgentId: 'child',
       providerId: 'claude',
-      serverId: 'server',
+      workspaceId: 'workspace',
       autoApprove: false,
       providerConfig: parent.providerConfig,
     })

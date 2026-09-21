@@ -941,6 +941,12 @@
           "name": "idx_workspaces_server_tenant",
           "columns": ["server_id", "tenant_id"],
           "isUnique": true
+        },
+        "idx_workspaces_server_placeholder": {
+          "name": "idx_workspaces_server_placeholder",
+          "columns": ["server_id"],
+          "isUnique": true,
+          "where": "`tenant_id` IS NULL"
         }
       },
       "foreignKeys": {

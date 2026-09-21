@@ -7,8 +7,9 @@
 -- read as a workspace id, so nothing has to be rewritten or reconciled. New
 -- workspaces discovered from a gateway get fresh ids.
 --
--- tenant_id stays NULL for these rows: the server reported no tenancy, so the
--- workspace IS the whole server. A later reconcile fills it in if that changes.
+-- tenant_id stays NULL for these rows: no gateway has been asked yet, and the
+-- upgrade must not depend on one being reachable. The first reconcile matches
+-- each row to a tenant, keeping the id so the agents pointing at it still do.
 CREATE TABLE `workspaces` (
 	`id` text PRIMARY KEY NOT NULL,
 	`server_id` text NOT NULL,
@@ -23,6 +24,7 @@ CREATE TABLE `workspaces` (
 --> statement-breakpoint
 CREATE INDEX `idx_workspaces_server_id` ON `workspaces` (`server_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `idx_workspaces_server_tenant` ON `workspaces` (`server_id`,`tenant_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_workspaces_server_placeholder` ON `workspaces` (`server_id`) WHERE `tenant_id` IS NULL;--> statement-breakpoint
 INSERT INTO `workspaces` (`id`, `server_id`, `name`, `tenant_id`, `slug`, `role`)
 	SELECT `id`, `id`, `name`, NULL, NULL, NULL FROM `switch_servers`;
 --> statement-breakpoint
@@ -31,7 +33,12 @@ INSERT INTO `workspaces` (`id`, `server_id`, `name`, `tenant_id`, `slug`, `role`
 -- drop a column named in one. Runs with foreign_keys=OFF inside the migration
 -- transaction, so dropping and renaming does not disturb the sessions FK, which
 -- tracks the table name. The workspace id equals the old server id, so the
--- carry-over is a straight copy.
+-- carry-over is a straight copy — except that `server_id` was added by
+-- ALTER TABLE ADD COLUMN, which in SQLite cannot carry an ON DELETE clause, so
+-- its set-null was never enforced by the engine and a row may point at a server
+-- that is gone. Copying such a value would seed the new, real foreign key with a
+-- violation that foreign_keys=OFF lets straight through, so it is dropped to
+-- NULL here — the same "unlinked" state the app already handles.
 CREATE TABLE `__new_agents` (
 	`id` text PRIMARY KEY NOT NULL,
 	`location_id` text NOT NULL,
@@ -50,7 +57,9 @@ CREATE TABLE `__new_agents` (
 	FOREIGN KEY (`workspace_id`) REFERENCES `workspaces`(`id`) ON UPDATE no action ON DELETE set null
 );--> statement-breakpoint
 INSERT INTO `__new_agents` (`id`, `location_id`, `name`, `provider_id`, `switch_agent_id`, `api_endpoint`, `workspace_id`, `status`, `auto_approve`, `owner_name`, `provider_config`, `created_at`, `updated_at`)
-	SELECT `id`, `location_id`, `name`, `provider_id`, `switch_agent_id`, `api_endpoint`, `server_id`, `status`, `auto_approve`, `owner_name`, `provider_config`, `created_at`, `updated_at` FROM `agents`;
+	SELECT `id`, `location_id`, `name`, `provider_id`, `switch_agent_id`, `api_endpoint`,
+		CASE WHEN `server_id` IN (SELECT `id` FROM `workspaces`) THEN `server_id` END,
+		`status`, `auto_approve`, `owner_name`, `provider_config`, `created_at`, `updated_at` FROM `agents`;
 --> statement-breakpoint
 DROP TABLE `agents`;--> statement-breakpoint
 ALTER TABLE `__new_agents` RENAME TO `agents`;--> statement-breakpoint

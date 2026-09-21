@@ -1,13 +1,14 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { getLocationByHostDir } from '@main/core/locations/store';
 import { listPlugins } from '@main/core/providers/plugin-registry';
+import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import {
   isValidProviderId,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
-import { getLocationAgentsOnServer } from './getAgents';
+import { getLocationAgentsInWorkspace } from './getAgents';
 import { SWITCH_AGENTS_DIR_RELATIVE } from './switch-settings-paths';
 
 /** How an agent's provider was inferred, so the UI can say whether to trust it. */
@@ -118,9 +119,12 @@ export async function discoverConfiguredAgents(params: {
    * attached here already and still be attachable to another (CHOO-2044). */
   serverId: string;
 }): Promise<DiscoveredConfiguredAgent[]> {
+  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
   const location = await getLocationByHostDir(params.sshHost, params.dir);
   const existing = location
-    ? new Set((await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name))
+    ? new Set(
+        (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
+      )
     : new Set<string>();
 
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
