@@ -1,20 +1,10 @@
-"""Where a validated event actually goes.
+"""Where a validated event actually goes: the only thing that knows there is an
+HTTP request involved.
 
-One narrow seam, with the relay behind it. Everything above this file — the
-catalogue, the snapshot, the call sites — is about *what* Switch reports;
-everything below is about the wire. The sink is the only thing that knows there
-is an HTTP request involved at all.
-
-**The wire format is not ours.** `switch_core.observability.otlp` owns it, for
-both this and the operational export: one encoder, one client, one set of
-resource attributes, and one place where the protobuf-JSON rules that nothing
-else would catch are written down and tested. A second copy here would be a
-second thing to keep correct, and the failure would be invisible — the relay
-answers 200 to a malformed payload and drops it.
-
-What this file adds is the two things that are specific to a product event:
-the `eventName` field the relay's exporter reads, and a failure policy that
-never lets a reporting problem reach the caller.
+The wire format belongs to `switch_core.observability.otlp`, shared with the
+operational export. What is here is what a product event needs on top: the
+`eventName` field the relay's exporter reads, and a failure policy that never
+lets a reporting problem reach the caller.
 """
 
 from __future__ import annotations
@@ -64,12 +54,8 @@ class TelemetrySink(Protocol):
 
 
 class NullSink:
-    """Drops everything, for when telemetry is off.
-
-    The service holds a sink unconditionally so that no call site has to ask
-    whether telemetry is on — a question every call site would eventually
-    answer differently. Off is a sink that discards, not a `None` to check.
-    """
+    """Drops everything. Off is a sink that discards, so no call site has to
+    ask whether telemetry is on."""
 
     async def send(self, record: TelemetryRecord) -> None:
         return None
@@ -81,27 +67,16 @@ class NullSink:
 class OtlpRelaySink:
     """Posts one OTLP log record per event to the relay.
 
-    **Log records, not metrics.** The relay routes on log records and the
-    product-analytics exporter beyond it reads them as events; a metric would
-    be dropped without complaint. That is why this does not go through the
-    operational export's metric path even though both end at the same relay by
-    default — and why the two endpoints stay separately configurable, since a
-    deployment pointing its metrics at its own collector must not thereby send
-    its usage analytics there too.
+    Log records, not metrics: the relay routes on them and the analytics
+    exporter reads them as events. A metric would be dropped without complaint.
 
-    **The event name goes in two places** — the log record's own `eventName`
-    field and an `event.name` attribute. The relay's filter reads the
-    attribute; the exporter reads the field. Sending only one is accepted with
-    a 200 at every hop and then quietly discarded, which is the single easiest
-    way to believe this is working when it is not. `build_logs_payload` writes
-    the attribute; the field is added here, because it is meaningful for a
-    product event and not for an operational log line.
+    **The event name goes in two places** — the record's `eventName` field and
+    an `event.name` attribute. The relay filters on the attribute, the exporter
+    reads the field, and sending only one is accepted with a 200 at every hop
+    and then discarded. That is the easiest way to believe this works when it
+    does not.
 
-    No batching and no retry, matching both the Console and the operational
-    exporter. A dropped event is a lost row in a chart, and the alternative —
-    a queue growing while the relay is unreachable, in the process that is
-    already this deployment's single point of failure — costs more than it
-    saves.
+    No batching and no retry, matching the operational exporter.
     """
 
     def __init__(self, *, client: OtlpClient) -> None:
@@ -127,10 +102,7 @@ class OtlpRelaySink:
         try:
             await self._client.post("logs", payload)
         except OtlpSendError as exc:
-            # Logged and dropped. The relay being slow, unreachable or unhappy
-            # is an operational condition with nothing to do with whatever was
-            # being reported, and Switch working while analytics is down is the
-            # only acceptable behaviour.
+            # Switch has to keep working while analytics is down.
             logger.warning(
                 "Telemetry event %s was not sent: %s. The event is dropped; "
                 "there is no retry.",
@@ -139,19 +111,16 @@ class OtlpRelaySink:
             )
 
     async def aclose(self) -> None:
-        # Nothing to do: `telemetry/setup.py` opens the HTTP client and
-        # `main._drain_telemetry` closes it, under a timeout that shutdown
-        # depends on. Closing it here as well would be a second close on the
-        # same object and would move the work out from under that budget.
+        # `telemetry/setup.py` opens the client and `main._drain_telemetry`
+        # closes it, under a timeout shutdown depends on.
         return None
 
 
 def _resource_from(record: TelemetryRecord) -> OtlpResource:
     """The record's resource attributes, as the shared encoder wants them.
 
-    The service builds the map (it is the same map on every event of a run);
-    this turns it back into the dataclass rather than having the service depend
-    on the observability package, so the seam stays one file wide.
+    Rebuilt here rather than in the service, so only this file depends on the
+    observability package.
     """
     return OtlpResource(
         service_name=record.resource["service.name"],
@@ -162,13 +131,8 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
 
 
 def _add_event_name(payload: dict[str, Any], name: str) -> None:
-    """Set the log record's own `eventName` field.
-
-    Not part of `build_logs_payload`, because an operational log line has no
-    event name and a field that is sometimes absent is worse than one this
-    caller adds deliberately. Reaching into the payload keeps the shared
-    encoder unaware of product events; the test pins that both places carry it.
-    """
+    """Set the record's own `eventName` field, which `build_logs_payload` does
+    not: an operational log line has no event name."""
     for resource_log in payload["resourceLogs"]:
         for scope_log in resource_log["scopeLogs"]:
             for record in scope_log["logRecords"]:

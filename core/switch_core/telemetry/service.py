@@ -1,21 +1,12 @@
 """The one call every site uses to report an event.
 
-`emit` is deliberately fire-and-forget and deliberately synchronous to call: a
-room being created must not wait on an analytics relay, and a call site must
-not have to decide whether reporting is worth an `await`. It validates against
-the catalogue immediately — that part is cheap and its failures are bugs — and
-hands the send to a background task.
+`emit` is fire-and-forget and synchronous to call: creating a room must not
+wait on a relay. It validates against the catalogue first, then hands the send
+to a background task.
 
-The asymmetry in how failures are treated is the point:
-
-- **A bad event raises.** An undeclared event, an undeclared property, a value
-  outside its set: each is a programming error, each is caught by the tests
-  that build the event, and each would otherwise put something unintended on
-  the wire. Silence here would defeat the catalogue.
-- **A failed send does not.** The relay being slow, unreachable or unhappy is
-  an operational condition that has nothing to do with the caller, and Switch
-  continuing to work while analytics is down is the only acceptable behaviour.
-  It is logged and dropped.
+The asymmetry is deliberate. **A bad event raises** — it is a programming error
+and silence would defeat the catalogue. **A failed send does not** — it is
+logged and dropped.
 """
 
 from __future__ import annotations
@@ -129,10 +120,7 @@ class TelemetryService:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Reported from somewhere with no event loop — a management
-            # command, or a test calling a synchronous helper directly. Worth
-            # a line rather than a crash: the caller was doing something
-            # legitimate and telemetry is not its job.
+            # A management command or a sync helper; not its job to have one.
             logger.debug(
                 "Telemetry event %s not sent: no running event loop.", record.name
             )
@@ -151,11 +139,8 @@ class TelemetryService:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The sink is expected to swallow its own transport failures, so
-            # reaching here means a bug in the sink rather than a bad relay.
-            # Still not allowed to propagate: this runs in a bare task, where
-            # an exception becomes an unretrievable "task exception was never
-            # retrieved" at some later garbage collection.
+            # A bug in the sink, not a bad relay — but this is a bare task, so
+            # letting it out only surfaces at some later collection.
             logger.exception("Telemetry sink failed on event %s", record.name)
 
     async def aclose(self) -> None:

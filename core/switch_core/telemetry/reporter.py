@@ -1,17 +1,11 @@
 """The background task that sends the daily snapshot.
 
-One loop, anchored to what was last sent rather than to how long this process
-has been up. A timer started at boot would send several snapshots on a day with
-several restarts and none on a day the server happened to be down at the wrong
-moment; a watermark in the database gives the same cadence whatever the process
-does.
+Anchored to a watermark rather than to uptime, so restarts do not change the
+cadence.
 
-The first pass on a deployment that already has history is the one case worth
-knowing about. It sends the snapshot — those are current-state counts and are
-correct immediately — but not the room-activation events, because "first human
-interaction since the watermark" with no watermark means every room that ever
-went active, arriving at once and all dated today. The watermark is set instead,
-and the next pass reports normally.
+The first pass sends the snapshot but not the room-activation events: with no
+watermark, "first interaction since then" means every room that ever went
+active, arriving at once and all dated today.
 """
 
 from __future__ import annotations
@@ -64,9 +58,8 @@ class SnapshotReporter:
         self._session_factory = session_factory
         self._interval = timedelta(hours=interval_hours)
         self._installed_at = installed_at
-        # A zero-argument callable rather than the registry itself: the
-        # reporter has no business knowing what a connection is, and a test
-        # should not have to build one to check a count.
+        # A callable rather than the registry: no business knowing what a
+        # connection is.
         self._live_session_count = live_session_count
 
     async def run_forever(self) -> None:
@@ -128,32 +121,16 @@ class SnapshotReporter:
     async def _report_first_room_active(self, active: list) -> None:
         """The activation milestone: the first room a person actually used.
 
-        Three things here are easy to get wrong and all three matter, because
-        the milestone fires once and whatever it reports is permanent.
-
-        **Measured from the interaction, not from this pass.** A snapshot runs
-        on an interval, so it learns about an activation up to a whole interval
-        after it happened — and always late, never early. Reporting
-        `now - installed_at` would add that lag to every deployment's headline
-        activation time in the same direction.
-
-        **The earliest room, not the quickest.** A batch can contain several
-        newly-active rooms; the one that activated *first* is the deployment's
-        activation. The one that went from creation to use fastest is a
-        different and much smaller number.
-
-        **User-created rooms only**, matching `first_room_created` and the
-        design note. A room an agent provisioned for its own orchestration is
-        not a customer getting started, and it must not be allowed to consume
-        the claim.
+        Fires once, so all three of these are permanent if wrong. Measured from
+        the interaction, not from this pass, which is always late in the same
+        direction. The *earliest* room, not the quickest. And user-created
+        only, matching `first_room_created`.
         """
         by_a_person = [room for room in active if room.created_by_kind == "user"]
         if not by_a_person or self._installed_at is None:
             return
-        # Not `emit_milestone`, because the elapsed time is computed from the
-        # room rather than from now — so the enabled gate it would have applied
-        # is applied here instead. Without it a deployment with telemetry off
-        # would spend the claim and never be able to report this again.
+        # Not `emit_milestone`, because the elapsed time comes from the room
+        # rather than from now — so its enabled gate is applied here instead.
         if not self._telemetry.enabled:
             return
 

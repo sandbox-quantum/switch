@@ -7,22 +7,17 @@ in, and attachments. `ix_messages_room_sent_at` cannot serve any of them — its
 leading column is `room_id` and none of these name a room — so each was a
 sequential scan of the busiest table in the schema, once per tenant per pass.
 
-Nothing else needed it, which is why it did not already exist: the read path
-pages within a room and the existing index serves that. A cross-room,
-whole-tenant time window is a shape only the snapshot asks for.
+Nothing else needed it: the read path pages within a room and the existing
+index serves that.
 
-**Built in the ordinary way, not `CONCURRENTLY`, and that is a judgement about
-when this lands rather than a general preference.** `migrations/env.py` wraps
-every revision in a transaction, so this holds `ACCESS EXCLUSIVE` on `messages`
-until the migration commits — blocking sends for the duration of the build. That
-is measured in milliseconds on a table of the size every deployment has today,
-and the index is being added *now*, before any of them grows: a deployment that
-later reaches millions of messages will have had it since before it did.
-`CONCURRENTLY` would need an `autocommit_block`, which cannot roll back and
-leaves an `INVALID` index behind when it fails.
+**Not `CONCURRENTLY`, which is a judgement about when this lands.** Revisions
+run in a transaction, so this holds `ACCESS EXCLUSIVE` on `messages` until the
+migration commits — milliseconds at the size every deployment has today, and
+one that later grows will have had the index since before it did.
+`CONCURRENTLY` would need an `autocommit_block`, which cannot roll back.
 
-If a deployment does already have a large `messages` table, build the index by
-hand before upgrading and this becomes a no-op:
+For a deployment that already has a large `messages` table, build it by hand
+first and this becomes a no-op:
 
     CREATE INDEX CONCURRENTLY ix_messages_tenant_sent_at
         ON messages (tenant_id, sent_at);

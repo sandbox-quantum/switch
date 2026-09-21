@@ -4,15 +4,12 @@ Three server-global tables, none tenant-scoped and none carrying row-level
 security: each records a fact about the *installation*, which is the thing
 above tenants rather than one of them.
 
-`deployment_identity` is seeded here rather than at first use, and that is the
-load-bearing part of this migration. Whether a deployment is new decides
-whether it ever reports time-to-value, and the only moment that question can
-be answered honestly is before the server has written anything of its own.
-`installed_at` is set only when the database is genuinely empty of product
-content; an existing deployment gets an identity with a null install date and
-reports no milestones at all, rather than a date inferred from its oldest row.
-A guess there would be wrong by an unknown margin in an unknown direction, and
-every activation figure derived from it would look confident and be false.
+`deployment_identity` is seeded here rather than at first use, because whether
+a deployment is new decides whether it ever reports time-to-value and this is
+the last moment that can be answered honestly. `installed_at` is set only when
+the database is empty of product content; an existing deployment gets a null
+install date and reports no milestones, rather than a date inferred from its
+oldest row.
 
 Revision ID: a7e1c4b90d23
 Revises: 2d84b6f1c705

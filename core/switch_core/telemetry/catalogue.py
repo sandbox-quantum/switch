@@ -1,25 +1,13 @@
 """Every event the server may report, and every property each one carries.
 
-The catalogue is the whole privacy boundary. An event is describable here or it
-cannot be sent; a property is declared here or it cannot be sent. There is no
-path that takes an arbitrary string and forwards it, which is what makes "the
-server never reports a room name" a property of the code rather than a promise
-about how carefully call sites are written.
+This is the privacy boundary, enforced rather than documented: an event or a
+property not declared here cannot be sent, and no path forwards an arbitrary
+string. :func:`validate` holds two rules — the property set is exact (a
+property that does not apply carries an explicit ``none``, so a missing key is
+always a bug) and values are closed.
 
-Two rules follow from that, and both are enforced in :func:`validate`:
-
-- **The property set is exact.** Not a subset and not a superset — an event
-  carries every property its spec names, every time. A property that does not
-  apply carries an explicit ``none`` rather than being left out, so a missing key
-  is always a bug and never a case the reader has to guess at.
-- **Values are closed.** A property is a number, a boolean, or one of a fixed
-  set of strings. Nothing accepts free text, so no call site can widen the
-  catalogue by passing something new; a value outside the set raises where the
-  event is built.
-
-The design note is ``docs/old/telemetry-events.md``, which explains why each
-event exists and what question it answers. This file is the enforceable half of
-it and the two are meant to be read together.
+``docs/old/telemetry-events.md`` says why each event exists; this says what is
+allowed on the wire.
 """
 
 from __future__ import annotations
@@ -99,11 +87,8 @@ BRIDGE_PLATFORM = one_of("slack", "mattermost", "discord", "teams", "telegram", 
 
 CHANNEL_TYPE = one_of("channel_public", "channel_private", "direct", "none")
 
-# How an agent behaves in a room, as `agents.agent_type` records it — the
-# connection models in `bridges/agent/protocol/types.py`, all four of them.
-# `auto_session` is the one Switch Console sets whenever a user ticks
-# auto-session, so leaving it out dropped the registration event for exactly
-# the population the Console exists to serve.
+# All four connection models in `bridges/agent/protocol/types.py`. Missing one
+# drops the registration event for every agent that uses it.
 AGENT_TYPE = one_of(
     "always_on", "session_addressable", "session_passive", "auto_session"
 )
@@ -117,10 +102,8 @@ ACTOR_KIND = one_of("user", "agent", "system")
 
 OUTCOME = one_of("success", "failure")
 
-# A reference's kind. The four Switch ships, plus `other` for the
-# user-defined types an owner can register — their slugs are free text chosen
-# by whoever made them, so the type itself can never go on the wire, only
-# whether it is one of ours.
+# The four built-in types. A user-defined type's slug is free text, so it
+# reports as `other` rather than going on the wire.
 REFERENCE_TYPE = one_of("google_drive", "confluence", "github", "jira", "other")
 
 # Where a document lives. A room document is scoped to one room and never in
@@ -138,10 +121,8 @@ VISIBILITY = one_of("private", "public")
 # product itself uses, and anything an operator invents reports as `other`.
 TEMPLATE_KIND = one_of("room", "group", "agent", "other")
 
-# Why a bridge failed, shared by the connect and disconnect events because one
-# classifier (`bridges/collaboration/lifecycle_service._failure_reason`) feeds
-# both. `none` belongs only to the success case and is stripped where the event
-# has no success case.
+# Shared by the connect and disconnect events: one classifier feeds both, so a
+# value only one of them declares fails validation when a bridge drops.
 BRIDGE_FAILURE_REASON = one_of(
     "none", "auth_failed", "network", "platform_error", "config_invalid", "unknown"
 )
@@ -154,10 +135,8 @@ _SNAPSHOT_COUNTS = (
     "user_count",
     "user_active_1d",
     "user_active_7d",
-    # Rooms, split three ways rather than two. `room_count` is the headline —
-    # rooms a person made — and the other two exist so that folding a channel
-    # Switch was merely invited to, or one an agent made for its own
-    # orchestration, into that figure is not possible by accident.
+    # `room_count` is the headline: rooms a *person* made. The other two keep
+    # agent scratch rooms and adopted channels out of it.
     "room_count",
     "room_agent_created_count",
     "room_system_created_count",
@@ -174,13 +153,9 @@ _SNAPSHOT_COUNTS = (
     "agent_codex_count",
     "agent_opencode_count",
     "agent_other_count",
-    # Connections open right now, not distinct agents holding one: an agent
-    # may hold several, and counting agents would report 1 for ten people
-    # running two windows each. "Sessions started today" is deliberately
-    # absent — nothing durable records a session opening, so the snapshot
-    # could only report an in-process tally that a restart silently resets.
-    # `agent_session_started` is emitted per occurrence instead, and counting
-    # those is the analytics tool's job.
+    # Connections, not distinct agents: an agent may hold several. No
+    # "sessions started today" — nothing durable records one, so it could only
+    # be an in-process tally a restart resets. `agent_session_started` covers it.
     "session_live_count",
     "connector_slack_count",
     "connector_mattermost_count",
@@ -191,19 +166,15 @@ _SNAPSHOT_COUNTS = (
     "message_count_1d",
     "message_from_human_1d",
     "message_from_agent_1d",
-    # Turns, not senders. A turn is one message classified by who sent the
-    # message *before* it in the same room, which is the only way to tell an
-    # agent answering a person from two agents talking to each other — a
-    # sender-only count reports both as "from an agent" and hides the
-    # difference that matters.
+    # A turn is a message classified by who sent the one before it. A
+    # sender-only count reports an agent answering a person and two agents
+    # talking to each other identically.
     "turn_human_to_agent_1d",
     "turn_agent_to_human_1d",
     "turn_agent_to_agent_1d",
     "attachment_count_1d",
-    # What a deployment has built up, as opposed to what it did today. These
-    # are stock rather than flow: a reference nobody attached is still a
-    # reference somebody made, and the gap between the two is the interesting
-    # part — hence the `*_attached_count` figures beside them.
+    # Stock rather than flow. The `*_attached_count` figures sit beside the
+    # totals because the gap between made and used is the signal.
     "reference_count",
     "reference_attached_count",
     "document_count",
@@ -220,20 +191,11 @@ _SINCE_INSTALL: Mapping[str, PropertyType] = {"seconds_since_install": NUMBER}
 
 CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # ── The daily snapshot ───────────────────────────────────────────────────
-    # One per deployment per day. Counts are gathered locally, where the server
-    # legitimately knows the ids, and only totals are reported — which is what
-    # lets the catalogue answer "how many active rooms" without any room ever
-    # being identifiable.
+    # Counted locally, where the ids are known; only totals are reported.
     "usage_snapshot": {name: NUMBER for name in _SNAPSHOT_COUNTS},
     # ── Milestones ───────────────────────────────────────────────────────────
-    # At most once per deployment, ever, and only for deployments installed
-    # after this shipped. Together they are the activation funnel.
-    # The funnel's origin. Carries the elapsed time like every other milestone
-    # — normally a few seconds, since it is claimed on the first boot after
-    # install, and visibly longer for a deployment that switched reporting on
-    # some time after it was set up. That difference is worth being able to
-    # see rather than flatten to zero: it says the funnel's origin is not
-    # where it appears to be.
+    # At most once per deployment, and only for one installed after this
+    # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
@@ -252,12 +214,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     "first_session_started": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
     # ── Lifecycle ────────────────────────────────────────────────────────────
-    # The version is already a resource attribute, so this is the upgrade
-    # curve: which versions are actually running, and how many tenants each
-    # carries. Deliberately no "did this boot migrate" flag — migrations run
-    # in a different event loop from the server, so the answer would have to
-    # be smuggled across on a module global, and it is operational trivia
-    # rather than something the product wants to know.
+    # The version is a resource attribute, so this is the upgrade curve.
     "deployment_started": {"tenant_count": NUMBER},
     "room_created": {
         "channel_type": CHANNEL_TYPE,
@@ -283,15 +240,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "room_agents_added": {"agent_count": NUMBER, "added_by_kind": ACTOR_KIND},
     "room_agents_removed": {"agent_count": NUMBER, "removed_by_kind": ACTOR_KIND},
     # ── Removals ─────────────────────────────────────────────────────────────
-    # Every count in the snapshot can fall, and without these nothing says
-    # why. A drop in `room_count` is a customer tidying up, a bridge being
-    # disconnected, or a deployment being abandoned — three very different
-    # readings of the same line on a chart, and the difference is only
-    # recoverable if the removal was reported when it happened.
-    #
-    # Each carries the lifespan of the thing removed, because "deleted after
-    # an hour" and "deleted after a year" are opposite signals: the first is a
-    # mistake or an experiment, the second is a deliberate clean-up.
+    # Counts fall for several reasons and only these say which. Each carries
+    # the lifespan: deleted after an hour and after a year mean opposite things.
     "room_deleted": {
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
@@ -309,40 +259,24 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "connector_removed": {
         "bridge_platform": BRIDGE_PLATFORM,
         "age_days": NUMBER,
-        # Whether it ever worked. A connector removed having never connected
-        # is a failed setup; one removed after months of service is a
-        # decision. Counting both as "removed" hides the first, which is the
-        # one worth acting on.
+        # Removed having never connected is a failed setup; removed after
+        # months is a decision.
         "was_ever_connected": BOOLEAN,
         "room_count": NUMBER,
     },
     "agent_registered": {
         "agent_type": AGENT_TYPE,
         "known_agent_type": KNOWN_AGENT_TYPE,
-        # What the server can actually distinguish, which is not quite what
-        # a reader might expect. `gateway` covers both Switch Console and the
-        # browser dashboard: they authenticate the same session-backed way
-        # against the same endpoint, so telling them apart would need the
-        # client to say which it is. `console` would have been a value that
-        # looked precise and was a guess.
+        # `gateway` is Console *and* the browser dashboard: they authenticate
+        # identically, so the server cannot tell them apart.
         "registration_path": one_of("bootstrap", "personal_key", "gateway", "other"),
         "has_parent": BOOLEAN,
     },
-    # Deliberately only the runtime. How a session was *started* — a person
-    # launching it against one Switch Console spawned automatically — is not
-    # visible from here: the server sees an authenticated connection either
-    # way. A property that is the same value on every emission is a dimension
-    # that cannot segment anything, which is worse than not having it, so if
-    # that distinction is wanted it belongs on a Console-side event that knows
-    # the answer.
+    # No "start source": the server sees an authenticated connection whether a
+    # person launched the session or Console spawned it.
     "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
-    # Duration and cause, and deliberately not the runtime. The connection
-    # registry is the only thing that knows a session has ended, and it holds
-    # no runtime — the client's self-declared `artifact` is free text, which
-    # may not be sent, and looking the agent up would put a database query on
-    # a path that runs from the connection sweep. Session *starts* carry the
-    # runtime, so the mix is available from those; what this answers is how
-    # long sessions last and why they stop.
+    # No runtime: the connection registry is the only thing that knows a
+    # session ended and it holds none. Starts carry it.
     "agent_session_ended": {
         "duration_seconds": NUMBER,
         "reason": one_of(
@@ -363,10 +297,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "failure_reason": BRIDGE_FAILURE_REASON,
     },
     # ── Resources, keys and groups ───────────────────────────────────────────
-    # Creating one is intent; attaching it to a room is use. Both are reported
-    # because the distance between them is the signal — a library of
-    # references nobody ever attached says something quite different from one
-    # that is attached constantly.
+    # Creating is intent, attaching is use, and the gap between them is the
+    # signal — hence both.
     "reference_created": {
         "reference_type": REFERENCE_TYPE,
         "read_visibility": VISIBILITY,
@@ -388,14 +320,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "api_key_revoked": {"key_type": API_KEY_TYPE, "age_days": NUMBER},
     "room_group_created": {"has_parent": BOOLEAN},
     "room_group_deleted": {"room_count": NUMBER, "age_days": NUMBER},
-    # A reference *type* is the schema, not an instance of one: registering one
-    # is an owner extending what Switch can point at, which is a different and
-    # rarer act than making a reference of an existing type.
+    # The schema, not an instance: registering one extends what Switch can
+    # point at.
     "reference_type_created": {},
     "reference_type_deleted": {"age_days": NUMBER},
-    # `kind` is free text in the schema, so only the three Switch itself uses
-    # are named and anything else reports `other` — the same rule the
-    # reference types follow, for the same reason.
     "template_created": {"template_kind": TEMPLATE_KIND},
     "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": NUMBER},
     "room_link_created": {},
@@ -403,31 +331,21 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "room_role_defined": {"exclusive": BOOLEAN},
     "room_role_deleted": {},
     "room_users_added": {"user_count": NUMBER},
-    # The inverse of the attach events. The snapshot's `*_attached_count`
-    # carries the standing state; these say when it moved and therefore
-    # whether a resource is being tried and dropped or simply not used.
+    # The inverse of the attaches: tried and dropped, as against never used.
     "reference_detached_from_room": {"reference_type": REFERENCE_TYPE},
     "document_detached_from_room": {},
     "package_detached_from_room": {},
-    # A server-side connector is Switch reaching out to an agent host rather
-    # than one connecting in, so it is neither an agent registration nor a
-    # collaboration bridge.
+    # Switch reaching out to an agent host, rather than one connecting in.
     "server_connector_registered": {"connector_kind": one_of("opencode", "other")},
     "server_connector_removed": {"connector_kind": one_of("opencode", "other")},
-    # The bridge row being written, which is distinct from it connecting:
-    # `bridge_connected` says the platform answered, this says somebody
-    # configured it. A deployment with many of the first and none of the
-    # second is one whose setup is failing.
+    # Configured, not connected. Many of these and few `bridge_connected` is a
+    # deployment whose setup is failing.
     "connector_configured": {"bridge_platform": BRIDGE_PLATFORM},
     "invitation_sent": {},
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {
         "bridge_platform": BRIDGE_PLATFORM,
-        # The deliberate-shutdown reasons, plus every failure reason
-        # `bridge_connected` can carry. One classifier feeds both events, so a
-        # value it can produce and only one of them declares is an event that
-        # fails validation at the moment a bridge drops — which is precisely
-        # the event worth not losing.
+        # Shutdown reasons plus every failure `bridge_connected` can carry.
         "reason": one_of(
             "shutdown",
             "restart",

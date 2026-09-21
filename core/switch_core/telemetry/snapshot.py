@@ -1,28 +1,16 @@
 """The daily usage snapshot, and the room-activation events derived with it.
 
-Most of what the product wants to know — how many users, rooms, agents,
-sessions and connectors, and how many of them are actually active — is a count
-of things the server already stores. Counting them here, once a day, is what
-lets those questions be answered without any room, tenant or person ever being
-identified: the ids stay in the database where they belong, and only the
-totals leave.
+Counting here rather than emitting per occurrence is what lets these questions
+be answered with no room, tenant or person identified: the ids stay in the
+database and only totals leave.
 
-**Everything is counted per tenant and summed.** Not because the answer is
-reported per tenant — it is not, deliberately — but because row-level security
-means it has to be. Under the restricted runtime role a session with no tenant
-bound reads *nothing* from a scoped table, so a single `SELECT count(*) FROM
-rooms` would return zero on a correctly configured deployment and the whole
-snapshot would be a page of confident zeroes. `all_tenant_ids` answers the one
-question no tenant can be scoped to, and each tenant's rows are then read on a
-session bound to it, exactly as the rest of the tree does.
+**Counted per tenant and summed**, because row-level security requires it — a
+session with nothing bound reads nothing from a scoped table, so an unscoped
+`COUNT` answers zero on a correctly configured deployment.
 
-The room-activation events ride along here rather than being emitted from the
-message path, and that is a deliberate trade. Detecting "this room just became
-active" at write time would mean a per-room flag and three extra queries on the
-hottest path in the server, to learn something nobody needs within a day.
-Asking the message table once a day instead costs nothing at write time, needs
-no new state, and is exactly as accurate — the timestamps it reads were always
-there.
+Room activation is derived here rather than detected at write time, which
+would need a per-room flag and three extra queries on the hottest path to learn
+something nobody needs within a day.
 """
 
 from __future__ import annotations
@@ -58,10 +46,8 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 
 logger = logging.getLogger(__name__)
 
-# `clients.type` for a human. One puppet per external user per bridge, created
-# when a person first speaks on a bridged channel — so this is the only row in
-# the schema that stands for "a person did something", and every "human" count
-# below is a count of these.
+# `clients.type` for a human: one puppet per external user per bridge, and the
+# only row in the schema that stands for "a person did something".
 HUMAN_CLIENT_TYPE = "user"
 AGENT_CLIENT_TYPE = "agent"
 
@@ -172,10 +158,8 @@ class UsageCounts:
 class NewlyActiveRoom:
     """A room whose first human interaction happened in the window just read."""
 
-    # When the room actually went active. Carried rather than derived, because
-    # the activation milestone is measured from this and not from the moment
-    # the snapshot pass happened to run — a pass is up to a whole interval
-    # late, and always late in the same direction.
+    # The milestone is measured from this, not from when the pass ran: a pass
+    # is up to a whole interval late, always in the same direction.
     first_active_at: datetime
     seconds_since_room_created: float
     bridge_platform: str
@@ -270,16 +254,9 @@ async def collect_tenant_counts(
         session, _human_interaction(tenant_id, week_ago)
     )
 
-    # Rooms, split three ways by who made them, because there are three kinds
-    # and they mean different things. `created_by_kind` is stamped into the
-    # room's metadata at creation; a room made before that existed carries
-    # nothing and is counted as user-created — the conservative reading, since
-    # both other paths are newer than the stamp.
-    #
-    # `system` is the one worth naming: a channel Switch adopted because it was
-    # invited to it on the platform. Folding those into the headline would make
-    # "rooms a human created" mean "channels this workspace happens to have" on
-    # any deployment with a busy Slack.
+    # A room predating the stamp reads as user-created, the conservative
+    # answer. `system` is a channel Switch was invited to; folding those in
+    # would make the headline mean "channels this workspace happens to have".
     kind = Room.metadata_["created_by_kind"].astext
     live = (Room.tenant_id == tenant_id, Room.archived_at.is_(None))
     counts.room_count += await _scalar(
@@ -309,11 +286,8 @@ async def collect_tenant_counts(
     # from the total rather than averaged per tenant, so a deployment with one
     # busy tenant and one idle one reports the real figure instead of the mean
     # of two means.
-    #
-    # Counted over the same population as `room_count` — user-created rooms —
-    # because the mean is derived from this total divided by that count. Over
-    # different populations the pair can report a mean above the maximum, which
-    # is impossible for any one set of rooms and reads as a broken metric.
+    # Same population as `room_count`, since the mean divides one by the
+    # other — different populations can report a mean above the maximum.
     per_room = (
         select(func.count(ClientRoom.client_id).label("members"))
         .join(Client, Client.id == ClientRoom.client_id)
@@ -517,18 +491,11 @@ async def _collect_turns(
             Message.tenant_id == tenant_id,
             Client.tenant_id == tenant_id,
             Message.seq > 0,
-            # Bounded, or the window is computed over the tenant's entire
-            # history on every pass while the answer stays a day wide — a cost
-            # that grows forever for a figure that does not. The outer
-            # `sent_at >= since` cannot be pushed in here: the window
+            # Bounded, or the window covers the tenant's whole history every
+            # pass. The outer `sent_at` filter cannot be pushed in: the window
             # partitions by room, so narrowing the input would change which
-            # message counts as the predecessor.
-            #
-            # The lookback is wider than the window so that a reply to
-            # yesterday's question still finds what it answered. A turn whose
-            # two halves are further apart than this is counted as the first
-            # message in its room, which is to say not counted — the right
-            # trade for a conversation that paused for a day.
+            # message counts as the predecessor. The lookback is wider than the
+            # window so a reply to yesterday still finds what it answered.
             Message.sent_at >= since - _TURN_LOOKBACK,
         )
         .subquery()
@@ -538,12 +505,8 @@ async def _collect_turns(
         .where(
             paired.c.sent_at >= since,
             paired.c.previous.is_not(None),
-            # A turn is a reply, so the two sides must be different
-            # participants. Without this an agent posting three messages in a
-            # row — which is how agents normally answer — scores as two
-            # agent-to-agent turns, and the figure that is supposed to mean
-            # "two agents talking among themselves" is dominated by one agent
-            # talking to a person.
+            # A reply needs two participants: without this an agent answering
+            # across three messages scores as two agent-to-agent turns.
             paired.c.sender_id != paired.c.previous_id,
         )
         .group_by(paired.c.sender, paired.c.previous)

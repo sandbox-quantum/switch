@@ -1,31 +1,13 @@
-"""Reporting an agent session — the thing a person means by that word.
+"""Reporting an agent session, which is not the same as a connection.
 
-A session is not a connection, and conflating the two is how the first
-dashboard this reached filled with `agent_session_started` /
-`agent_session_ended` pairs a few seconds apart, for ever.
+Two ordinary things make an agent hold a succession of short connections while
+being continuously present: a stream rejected at the room claim and retried,
+and a stream whose heartbeat lapsed (six seconds) closing itself so the client
+reopens. Per connection, both read as a session every few seconds.
 
-Two different things produce that, and both are ordinary:
-
-- **A stream rejected at the room claim.** Opening a stream creates a
-  connection and then claims its rooms; a claim fails when another live
-  session holds the room, the connection is closed, and the client retries.
-  Nothing began, so nothing should be reported.
-- **A stream reconnecting.** The protocol requires the client to heartbeat
-  (`HEARTBEAT_TTL_SECONDS`, six seconds), and a stream whose heartbeat lapses
-  closes itself and tells the client to reopen. An agent that is slow to beat
-  therefore holds a succession of short connections while being, to anyone
-  watching the product, continuously present the whole time.
-
-So this reports on the **agent**, not the connection:
-
-- a session begins when an agent that had none acquires its first live
-  connection, and
-- it ends only once the agent has had none for `_RECONNECT_GRACE_SECONDS` —
-  comfortably longer than the heartbeat TTL, so a reconnect inside that window
-  continues the session it resumed rather than starting another.
-
-The duration reported is the whole span, across however many connections it
-took, which is the number "how long do sessions last" is actually asking for.
+So this reports on the **agent**: a session begins when one that had no live
+connection acquires its first, and ends only once it has had none for
+`_RECONNECT_GRACE_SECONDS`. The duration is the whole span.
 """
 
 from __future__ import annotations
@@ -45,17 +27,12 @@ from switch_core.telemetry.snapshot import normalise_known_agent_type
 
 logger = logging.getLogger(__name__)
 
-# How long an agent must hold no connection before its session is over.
-# Several times the heartbeat TTL, because the reconnect this exists to absorb
-# is triggered *by* that TTL lapsing: the client learns it must reopen only
-# when the stream tells it so, and then has to come back. Too tight and every
-# lapse is a new session, which is the bug; too loose and a genuine departure
-# is reported late, which costs nothing.
+# Several times the heartbeat TTL, because the reconnect this absorbs is
+# triggered by that TTL lapsing. Too tight and every lapse is a new session.
 _RECONNECT_GRACE_SECONDS = HEARTBEAT_TTL_SECONDS * 4
 
-# The registry records why it closed a connection as prose. These are the
-# strings it actually uses; anything else is reported as `error` rather than
-# rejected, because a lost session event is worse than an imprecise one.
+# The registry's reasons are prose. Anything unmapped reports `error` rather
+# than failing validation at the moment a session drops.
 _SESSION_END_REASONS = {
     "heartbeat lapsed": "heartbeat_lapsed",
     "room already claimed": "room_claimed",
@@ -98,10 +75,8 @@ class SessionReporter:
         session = self._sessions.get(conn.agent_id)
 
         if session is not None:
-            # The agent was already in a session. Either it holds several
-            # connections at once, or this is the reconnect that the pending
-            # end was waiting to see — in both cases the session continues and
-            # there is nothing to report.
+            # Already in a session: another connection, or the reconnect the
+            # pending end was waiting for. Either way it continues.
             if session.ending is not None:
                 session.ending.cancel()
                 session.ending = None
@@ -120,8 +95,7 @@ class SessionReporter:
     def on_close(self, conn: Connection) -> None:
         """The registry's close listener, for every path that closes."""
         if conn.id not in self._streaming:
-            # Never streamed: a room claim was refused and the connection was
-            # closed on the way out. No session began, so none ends.
+            # A refused room claim closed it on the way out; nothing began.
             return
         self._streaming.discard(conn.id)
 
@@ -138,9 +112,7 @@ class SessionReporter:
                 self._end_after_grace(conn.agent_id, reason)
             )
         except RuntimeError:
-            # No loop — a synchronous teardown. Report immediately rather than
-            # losing the event; the grace period is an optimisation, not a
-            # correctness requirement.
+            # Synchronous teardown. The grace period is an optimisation.
             self._report_end(conn.agent_id, reason)
 
     async def _end_after_grace(self, agent_id: str, reason: str) -> None:
@@ -170,12 +142,8 @@ class SessionReporter:
         )
 
     async def aclose(self) -> None:
-        """Cancel any pending ends, at shutdown.
-
-        The sessions they describe are not reported: the process is going away,
-        so every agent is about to disconnect at once, and a burst of ends
-        carrying "the server stopped" is noise rather than signal.
-        """
+        """Cancel any pending ends at shutdown, without reporting them: every
+        agent disconnects at once, so a burst of ends is noise."""
         for session in self._sessions.values():
             if session.ending is not None:
                 session.ending.cancel()

@@ -1831,29 +1831,15 @@ class SessionRequestPost(TenantScoped, Base):
 class DeploymentIdentity(Base):
     """Who this installation is to the telemetry relay, and when it began.
 
-    Deliberately **not** tenant-scoped: this identifies the deployment, which
-    is the thing above tenants rather than one of them. A deployment running
-    several tenants is one subject, because the alternative is a per-tenant
-    identifier and that is precisely what the telemetry rule forbids
-    (`docs/old/telemetry-events.md`).
+    Not tenant-scoped: a deployment running several tenants is one subject.
+    Exactly one row, pinned by a check constraint — two would silently double
+    every count derived from it.
 
-    Exactly one row. The primary key is pinned to 1 by a check constraint so a
-    second identity cannot be inserted by accident — two would mean one
-    installation reporting as two subjects, silently doubling every count
-    derived from it.
+    `client_id` is a random UUID, derived from nothing, kept across restarts.
 
-    `client_id` is a random UUID and nothing else: not derived from a hostname,
-    a licence, an account or any customer value. It is generated once and kept
-    across restarts and redeploys so the deployment is one subject for its
-    whole life rather than a new one each boot.
-
-    `installed_at` is null when the identity was created against a database
-    that already held content — an installation that predates this telemetry
-    and whose true install date is not recoverable. Milestone events are
-    suppressed for such a deployment rather than measured from a guess: an
-    install date inferred from the oldest row would be wrong by an unknown
-    margin in an unknown direction, and an activation funnel built on it would
-    read as confident when it is not. The daily counts are unaffected.
+    `installed_at` is null where the identity was created against a database
+    that already held content; milestones are suppressed for such a deployment
+    rather than measured from a guess. The daily counts are unaffected.
     """
 
     __tablename__ = "deployment_identity"
@@ -1874,19 +1860,8 @@ class DeploymentIdentity(Base):
 class TelemetryMilestone(Base):
     """A once-ever telemetry event that has already been reported.
 
-    The activation funnel is built from milestones — first connector, first
-    room, first room that anyone used — and each is only meaningful if it is
-    reported the first time it happens and never again. A restart must not
-    re-emit one, and a deployment must not report "first room created" every
-    time the server boots and finds a room.
-
-    So the fact of having emitted is a row, not process state. The name is the
-    primary key, which makes the insert itself the guard: a second emission
-    collides rather than needing a read-then-write that two workers could
-    interleave.
-
-    Not tenant-scoped, for the same reason as `DeploymentIdentity` — a
-    milestone is a fact about the installation.
+    A row rather than process state, so a restart cannot re-emit one. The name
+    is the primary key, which makes the insert itself the guard.
     """
 
     __tablename__ = "telemetry_milestones"
@@ -1900,10 +1875,8 @@ class TelemetryMilestone(Base):
 class TelemetrySnapshotWatermark(Base):
     """When the daily usage snapshot was last sent.
 
-    A timer started at boot would emit several snapshots on a day with several
-    restarts and none on a day the server happened to be down at the wrong
-    moment, so the schedule is anchored to what was actually sent rather than
-    to uptime. One row, pinned like the identity above.
+    Anchored to what was sent rather than to uptime, so restarts do not change
+    the cadence. One row, pinned like the identity above.
     """
 
     __tablename__ = "telemetry_snapshot_watermark"
@@ -1968,12 +1941,9 @@ class Message(TenantScoped, Base):
         # is what a caller asking for a time window filters by, so it needs an
         # index of its own rather than a scan back along seq.
         Index("ix_messages_room_sent_at", "room_id", "sent_at"),
-        # The usage snapshot's shape: this tenant's messages since a moment,
-        # across every room. The index above cannot serve it — its leading
-        # column is the room, and the snapshot names none — so without this
-        # each pass sequentially scans the whole table, several times, per
-        # tenant. Nothing else asks that question, which is why it is here
-        # rather than in the original schema.
+        # The usage snapshot's shape: one tenant's messages since a moment,
+        # across every room. The index above leads on the room, so it cannot
+        # serve that and each pass would scan the whole table.
         Index("ix_messages_tenant_sent_at", "tenant_id", "sent_at"),
         Index(
             "ix_messages_thread_root",

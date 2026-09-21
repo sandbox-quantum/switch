@@ -219,10 +219,9 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
             logger.exception("Connection sweep failed")
 
 
-# What shutdown will spend on in-flight product events before giving up. Well
-# under `observability.logs.SHUTDOWN_FLUSH_SECONDS`, which is itself under
-# `_FORCED_EXIT_GRACE_SECONDS`: the three budgets nest, and this is the
-# innermost because a lost usage count matters least of the three.
+# The innermost of three nested budgets: under
+# `observability.logs.SHUTDOWN_FLUSH_SECONDS`, itself under
+# `_FORCED_EXIT_GRACE_SECONDS`.
 _TELEMETRY_DRAIN_SECONDS = 1.0
 
 
@@ -231,9 +230,8 @@ async def _drain_telemetry(
 ) -> None:
     """Let in-flight product events finish, then close their client.
 
-    Never raises and never overruns: a relay that has stopped answering must
-    not be able to hold the process past the point where it is killed, taking
-    the operational flush with it.
+    Never raises and never overruns: a relay that stopped answering must not
+    hold the process past the point where it is killed.
     """
     try:
         async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
@@ -390,9 +388,7 @@ async def run(config: SwitchConfig) -> None:
     connector_store = ServerConnectorStore()
 
     # ── Product telemetry ────────────────────────────────────────────────────
-    # Built before the services that report through it, and built whether or
-    # not it is switched on: disabled is a sink that discards, so nothing
-    # downstream has to ask.
+    # Before the services that report through it, switched on or not.
     telemetry, installed_at, telemetry_http = await build_telemetry(
         config, session_factory, switch_core_version()
     )
@@ -550,9 +546,8 @@ async def run(config: SwitchConfig) -> None:
         connections=connections,
         telemetry=telemetry,
     )
-    # Every connection this registry closes reports the session that ended,
-    # whichever of the five paths closed it — and only for one the handler saw
-    # start, so a stream rejected at the room claim is not a session.
+    # Every close reports, whichever of the five paths did it — and only for a
+    # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
 
     # ── Server-side connector lifecycle ─────────────────────────────────────
@@ -709,11 +704,8 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
-            # Only when telemetry is on. "Off" is documented — in the Helm
-            # chart a customer reads — as nothing being collected, and running
-            # the per-tenant fan-out anyway would make that false: it is a
-            # seven-day scan over `messages` per tenant, per interval, for an
-            # analytics payload the deployment has declined.
+            # Only when telemetry is on: the chart tells a customer that off
+            # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
                 asyncio.create_task(_snapshot_loop(snapshot_reporter))
                 if telemetry.enabled
@@ -728,14 +720,9 @@ async def run(config: SwitchConfig) -> None:
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()
-                # Bounded, and *before* the operational flush rather than
-                # after. The whole teardown runs inside
-                # `_FORCED_EXIT_GRACE_SECONDS`, and the log exporter's own
-                # budget is deliberately sized to fit under it — so an
-                # unbounded drain here, ahead of that, spends the grace period
-                # on analytics and takes the "N log record(s) never exported"
-                # line down with it. A product event is the least valuable
-                # thing in this block; it must be the first to be given up.
+                # Before the operational flush, and bounded: the whole
+                # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
+                # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, telemetry_http)
                 await observability.aclose()
@@ -760,8 +747,7 @@ async def run(config: SwitchConfig) -> None:
     )
 
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
-    # The funnel's first step. Claimed once, and only by a deployment that
-    # knows when it was installed — see telemetry/deployment.py.
+    # The funnel's first step, and only for a deployment with an install date.
     await telemetry.emit_milestone("deployment_installed")
 
     server_config = uvicorn.Config(

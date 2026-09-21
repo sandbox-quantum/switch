@@ -132,13 +132,8 @@ class RoomCreateConfig(BaseModel):
     aliases: dict[str, str] | None = None
     acting_user_id: str | None = None
     acting_is_admin: bool = False
-    # Who asked for this room, as a kind rather than an identity. Not
-    # derivable from the fields above: `created_by` and `owner_id` hold the
-    # *agent's owner* on the agent path, so a room an agent provisioned for
-    # itself is indistinguishable from one that owner made by hand. Telemetry
-    # counts the two separately — an orchestration spinning up scratch rooms
-    # is not adoption — and the value is stamped into the room's metadata so
-    # the distinction survives for later reporting.
+    # Not derivable from `created_by`, which holds the *agent's owner* on the
+    # agent path. Stamped into the room's metadata so it survives.
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
@@ -554,9 +549,7 @@ class RoomService:
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
-                # Kept for later reporting: which rooms a human made is a
-                # headline product figure, and nothing else on the row can
-                # answer it afterwards. A kind, never an identity.
+                # Nothing else on the row can answer this afterwards.
                 metadata_={"created_by_kind": config.created_by_kind},
             )
 
@@ -648,11 +641,8 @@ class RoomService:
             len(system_clients),
         )
 
-        # Resolved once, before the reporting block, and never inside an
-        # argument list: an `await` in the dict passed to `emit_safely` is
-        # evaluated *before* that function is entered, so a database hiccup in
-        # a telemetry lookup would escape the guard meant to contain it and
-        # fail a room creation that has already committed.
+        # Never inside the argument list: an `await` there is evaluated before
+        # `emit_safely` is entered, outside the guard meant to contain it.
         platform = await self._bridge_platform(bridge_id)
 
         emit_safely(
@@ -669,11 +659,8 @@ class RoomService:
             },
         )
 
+        # Only a room a person made counts as activation.
         if self._telemetry is not None and config.created_by_kind == "user":
-            # Only a room a person made counts as activation. A room an agent
-            # provisioned for its own orchestration is not the moment a
-            # customer got started, and letting it claim the milestone would
-            # report an activation that never happened.
             await self._telemetry.emit_milestone(
                 "first_room_created",
                 channel_type=normalise_channel_type(channel_type),
@@ -734,8 +721,7 @@ class RoomService:
                 else 0
             )
 
-        # Read before the delete, not after: the cascade takes the messages
-        # with the room, so afterwards every room looks like it was never used.
+        # Before the delete: the cascade takes the messages with the room.
         was_ever_active = await self._was_ever_active(room.tenant_id, room_id)
 
         # `kick_user` and the delete below both write rows scoped to this
@@ -775,8 +761,6 @@ class RoomService:
                     (room.metadata_ or {}).get("created_by_kind")
                 ),
                 "age_days": _age_days(room.created_at),
-                # Asked before the rows go, or there would be nothing left to
-                # ask: `room_store.delete` cascades the messages away.
                 "was_ever_active": was_ever_active,
                 "agent_count": agent_count,
             },
@@ -873,8 +857,7 @@ class RoomService:
             self._telemetry,
             "room_agents_added",
             {
-                # The agents actually added, not the ones asked for: a request
-                # naming five agents already in the room added none.
+                # Added, not requested.
                 "agent_count": len(new_agent_ids),
                 "added_by_kind": added_by_kind,
             },
@@ -1009,9 +992,7 @@ class RoomService:
 
         Raises ValueError if the room does not exist.
         """
-        # The whole row rather than just its tenant: archiving reports how old
-        # the room was and what it was bridged to, and re-reading it after the
-        # write would be a second query for something already in hand.
+        # The whole row: archiving reports its age and platform.
         room = await self._load_room(room_id)
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
@@ -1032,14 +1013,8 @@ class RoomService:
     async def _bridge_platform(self, bridge_id: str | None) -> str:
         """The platform a bridge id names, as the telemetry catalogue spells it.
 
-        `none` for an internal-only room, for a bridge id that no longer
-        resolves, and for a lookup that failed — a deleted bridge is not a
-        platform, and guessing one would be worse than reporting the absence.
-
-        Never raises. This is read only to label an analytics event, and the
-        operations it labels — creating a room, archiving one — must not fail
-        because a telemetry lookup did. Skipped entirely when nothing is
-        listening, so an opted-out deployment pays no query for it.
+        `none` for an internal-only room and for a lookup that failed. Never
+        raises: the operations this labels must not fail because it did.
         """
         if bridge_id is None or self._telemetry is None:
             return "none"
@@ -1059,10 +1034,8 @@ class RoomService:
     async def _was_ever_active(self, tenant_id: str, room_id: str) -> bool:
         """Whether a human ever posted in this room.
 
-        Asked only when a room is archived, so the cost lands on a rare
-        operation rather than on every message. A failure answers False rather
-        than raising: this is one property of one analytics event, and an
-        archive must not fail because a count did.
+        Asked only on archive, so the cost lands on a rare operation. False on
+        failure — an archive must not fail because a count did.
         """
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -1115,9 +1088,8 @@ class RoomService:
             )
         emit_safely(
             self._telemetry,
+            # Resolved, not requested: an unknown name adds nobody.
             "room_users_added",
-            # Those that resolved to a real person, not those asked for: a
-            # name the platform does not know adds nobody.
             {"user_count": max(len(user_names) - len(unresolved), 0)},
         )
         return unresolved
