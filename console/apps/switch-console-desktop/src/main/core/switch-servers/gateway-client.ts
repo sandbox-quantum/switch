@@ -1264,6 +1264,8 @@ export async function updateTemplate(
   changes: {
     name?: string;
     description?: string;
+    /** The listing label, sent when an edit changed the document's shape. */
+    kind?: string;
     content?: string;
     readVisibility?: TemplateVisibility;
     writeVisibility?: TemplateVisibility;

@@ -77,6 +77,13 @@ describe('updateTemplate', () => {
     expect(saved).toMatchObject({ id: 'tpl/1', version: 3, definition: STORED.content });
   });
 
+  it('sends the new kind alongside a document whose shape changed', async () => {
+    fetchMock.mockResolvedValue(response(200, STORED));
+    await updateTemplate(SERVER, 'tpl/1', { content: 'agent:\n  name: a\n', kind: 'agent' });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ content: 'agent:\n  name: a\n', kind: 'agent' });
+  });
+
   it('reports a name the owner already uses', async () => {
     fetchMock.mockResolvedValue(response(409, { detail: 'You already have a template named x' }));
 

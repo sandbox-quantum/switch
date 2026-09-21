@@ -190,6 +190,8 @@ type EditingTemplate = {
   id: string;
   name: string;
   description: string;
+  /** The stored listing label: agent, room or group. */
+  kind: string;
   access: TemplateAccess;
   /** Only the owner or an admin decides who may see or change a template. */
   canChangeAccess: boolean;
@@ -281,6 +283,9 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       await rpc.agentTemplates.parseAgents({ yamlText });
       const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
       if (coreYaml) await rpc.roomTemplates.parse({ yamlText: coreYaml });
+      // The listing files a template by its stored label, so an edit that
+      // changes the document's shape carries the new label with it.
+      const kind = yamlText !== initialYaml ? await rpc.agentTemplates.kind({ yamlText }) : null;
       // Each field is sent only when changed, so saving one cannot put back
       // another that someone else changed meanwhile.
       const saved = await rpc.switchServers.updateTemplate({
@@ -291,6 +296,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
           ? { description: description.trim() }
           : {}),
         ...(yamlText !== initialYaml ? { content: yamlText } : {}),
+        ...(kind !== null && kind !== editingTemplate.kind ? { kind } : {}),
         ...(access !== editingTemplate.access ? visibilityOf(access) : {}),
       });
       toast({ title: `"${saved.name}" saved`, description: `Version ${saved.version}.` });

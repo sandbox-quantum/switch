@@ -379,6 +379,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                       id: loaded.server!.id,
                       name: loaded.name,
                       description: loaded.description,
+                      kind: loaded.server!.kind,
                       access: accessOf(loaded.server!),
                       canChangeAccess: canManage,
                     },

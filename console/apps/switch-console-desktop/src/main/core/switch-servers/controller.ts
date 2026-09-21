@@ -589,6 +589,7 @@ export const switchServersController = createRPCController({
     templateId: string;
     name?: string;
     description?: string;
+    kind?: string;
     content?: string;
     readVisibility?: TemplateVisibility;
     writeVisibility?: TemplateVisibility;
