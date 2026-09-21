@@ -8,6 +8,7 @@ from switch_core.observability.health import (
     HealthCheck,
     HealthMonitor,
     bridges_check,
+    connectors_check,
     message_listener_check,
 )
 from switch_core.observability.metrics import MetricsRegistry
@@ -189,3 +190,22 @@ async def test_run_forever_keeps_going_after_a_broken_refresh(monkeypatch):
 
     assert calls[0] > 1
     assert monitor.current().ready is True
+
+
+@pytest.mark.asyncio
+async def test_connectors_check_counts_the_missing_ones():
+    """They start fire-and-forget, so a failure is otherwise one boot-log line."""
+    check = connectors_check(running=lambda: 1, configured=lambda: 3)
+    outcome = await check.probe()
+
+    assert outcome.healthy is False
+    assert "2 of 3" in outcome.detail
+    # The rest of Switch serves fine without one, and emptying the Service
+    # would not bring it back.
+    assert check.gates_readiness is False
+
+
+@pytest.mark.asyncio
+async def test_connectors_check_is_healthy_when_none_are_configured():
+    check = connectors_check(running=lambda: 0, configured=lambda: 0)
+    assert (await check.probe()).healthy is True

@@ -128,6 +128,15 @@ MESSAGES_DELIVERED = _spec(
     "Messages handed to a client's handler.",
     "kind",
 )
+SEND_FAILURES = _spec(
+    "switch.messages.send_failures",
+    "sum",
+    "{failure}",
+    "Sends that raised before the row was committed. `switch.messages.sent` "
+    "counts only what persisted, so without this a database outage shows as "
+    "an absence — and an absence looks the same as a quiet room.",
+    "kind",
+)
 DELIVERY_FAILURES = _spec(
     "switch.messages.delivery_failures",
     "sum",
@@ -182,6 +191,30 @@ BRIDGES_RUNNING = _spec(
     "has crashed.",
 )
 
+# ── Agent protocol ───────────────────────────────────────────────────────────
+# The agent-side counterpart to the delivery counters above. An event that
+# reaches the buffer and is dropped before the agent reads it is the same class
+# of loss as a delivery that raised, and until this existed only one of the two
+# was countable.
+AGENT_EVENTS_DROPPED = _spec(
+    "switch.agent.events_dropped",
+    "sum",
+    "{event}",
+    "Buffered events discarded before an agent read them. The agent is told it "
+    "missed events when it next reads, so this is disclosed rather than "
+    "silent — but nothing counted it. `reason` separates an agent that cannot "
+    "keep up (overflow) from one that was away too long (retention).",
+    "reason",
+)
+AGENT_CONNECTIONS_EXPIRED = _spec(
+    "switch.agent.connections_expired",
+    "sum",
+    "{connection}",
+    "Agent connections closed because their heartbeat lapsed. A steady rate "
+    "against a flat connection count is churn: agents reconnecting as fast as "
+    "they are being expired, which a gauge alone cannot show.",
+)
+
 # ── Agents and clients ───────────────────────────────────────────────────────
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
@@ -194,6 +227,14 @@ CLIENTS_RUNNING = _spec(
     "gauge",
     "{client}",
     "Room clients with a live task.",
+)
+CONNECTORS_RUNNING = _spec(
+    "switch.connectors.running",
+    "gauge",
+    "{connector}",
+    "Server-side connectors running. Started fire-and-forget at boot, with "
+    "each failure logged and stepped over — so a connector short of the "
+    "configured count is a dead agent host that nothing else reports.",
 )
 
 # ── Process and runtime ──────────────────────────────────────────────────────
@@ -257,14 +298,18 @@ CATALOGUE: dict[str, MetricSpec] = {
         DB_POOL_OVERFLOW,
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
+        SEND_FAILURES,
         DELIVERY_FAILURES,
         DELIVERY_LAG,
         BRIDGE_EVENTS_IN,
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
+        AGENT_EVENTS_DROPPED,
+        AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,
         CLIENTS_RUNNING,
+        CONNECTORS_RUNNING,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,
         RUNTIME_OPEN_FDS,

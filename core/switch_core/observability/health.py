@@ -189,6 +189,36 @@ def bridges_check(
     return HealthCheck(name="bridges", gates_readiness=False, probe=probe)
 
 
+def connectors_check(
+    running: Callable[[], int], configured: Callable[[], int]
+) -> HealthCheck:
+    """Whether every server-side connector this process meant to run is running.
+
+    They are started fire-and-forget at boot, and `start_all` logs each failure
+    and steps over it — so a connector that never came up is a dead agent host
+    whose only trace is one line in a boot log. Reported, never gating: the
+    rest of Switch serves perfectly well without one, and taking the pod out of
+    service would not bring it back.
+    """
+
+    async def probe() -> CheckOutcome:
+        live = running()
+        expected = configured()
+        if live >= expected:
+            return CheckOutcome(name="connectors", healthy=True, detail="")
+        return CheckOutcome(
+            name="connectors",
+            healthy=False,
+            detail=(
+                f"{expected - live} of {expected} server-side connector(s) are "
+                "not running. The agents they host are unreachable; the boot "
+                "log names which failed and why."
+            ),
+        )
+
+    return HealthCheck(name="connectors", gates_readiness=False, probe=probe)
+
+
 class HealthMonitor:
     """Runs the checks on an interval and holds the latest answer."""
 

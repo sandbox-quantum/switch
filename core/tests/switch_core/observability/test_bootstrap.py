@@ -70,6 +70,8 @@ def _probes(**overrides) -> RuntimeProbes:
         bridges_running=lambda: 2,
         bridges_configured=lambda: 2,
         clients_running=lambda: 5,
+        connectors_running=lambda: 2,
+        connectors_configured=lambda: 2,
         agents_connected=lambda: 3,
         pool_stats=lambda: PoolStats(in_use=4, size=30, overflow=0),
     )
@@ -161,6 +163,7 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
         }
         assert values["switch.agents.connected"] == 3.0
         assert values["switch.clients.running"] == 5.0
+        assert values["switch.connectors.running"] == 2.0
         assert values["switch.bridges.running"] == 2.0
         assert values["switch.db.pool.in_use"] == 4.0
         assert values["switch.db.pool.size"] == 30.0

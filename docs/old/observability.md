@@ -116,8 +116,9 @@ floor, not a stall: it is how far past its deadline a timer normally wakes.
 The alert on it fires at a thousand times that.
 
 **What this does not exercise.** A bare server has no rooms, no agents and no
-bridges, so seven of the twenty-one metrics never appear — everything under
-`switch.messages.*` and `switch.bridge.*`. Their absence here is correct and
+bridges, so nine of the twenty-five metrics never appear — everything under
+`switch.messages.*`, `switch.bridge.*` and `switch.agent.*`. Their absence
+here is correct and
 says nothing about whether they work; what covers them is
 `TestWhatIsMeasured` in `core/tests/switch_core/transport/test_postgres_transport.py`
 and `test_bridge_metrics.py`, which record against a real database and a real
@@ -193,6 +194,35 @@ the tree: the HTTP middleware labels by route template and folds everything
 unmatched into one bucket, because a 404 path is attacker-chosen; and the
 transport classifies `send_event`'s arbitrary event type into four values
 rather than passing it through.
+
+## What is counted because it is otherwise invisible
+
+Most of the catalogue is volume and state — useful, and you would miss it, but
+its absence would not mislead anyone. A handful of counters exist for a
+different reason: each one measures something that is *already handled*, and
+handled in a way that leaves no trace.
+
+- **`switch.messages.delivery_failures`** — the delivery loop swallows one
+  room's exception so it cannot stop the others. Correct, and it means a room
+  that stopped delivering leaves only a log line.
+- **`switch.messages.send_failures`** — a send that raises before the commit
+  writes nothing, so the symptom is an absence, and an absence is what a quiet
+  room looks like too.
+- **`switch.agent.events_dropped`** — an agent's buffer discards events when it
+  overflows or when they age out. The agent is *told* it missed them, so
+  nothing is hidden from the agent; nothing told anybody else.
+- **`switch.agent.connections_expired`** — a lapsed heartbeat closes a
+  connection and the agent reconnects. A gauge of live connections stays
+  perfectly flat while that happens as fast as it can.
+- **`switch.bridge.errors`** — an inbound bridge failure is a message a person
+  sent that nobody received; from the platform it is indistinguishable from
+  being ignored.
+- **`switch.connectors.running`** — connectors start fire-and-forget, each
+  failure logged and stepped over, so one that never came up is a dead agent
+  host nothing else reports.
+
+If you add another place that catches an exception to keep something alive,
+this is the list it belongs on.
 
 ## Health: two routes, on purpose
 

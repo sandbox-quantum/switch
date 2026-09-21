@@ -50,6 +50,7 @@ from switch_core.observability.catalogue import (
     DELIVERY_LAG,
     MESSAGES_DELIVERED,
     MESSAGES_SENT,
+    SEND_FAILURES,
 )
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -569,27 +570,34 @@ class PostgresTransport:
             metrics().increment(MESSAGES_SENT, {"kind": kind})
             return result
 
-        room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            message = Message(
-                room_id=room_id,
-                transport_event_id=result.event_id,
-                sender_id=self.user_id,
-                sender_client_id=self.client_id,
-                sender_name=sender_name,
-                event_type=event_type,
-                msgtype=text_field(content.get("msgtype")),
-                body=text_field(content.get("body")),
-                formatted_body=text_field(content.get("formatted_body")),
-                thread_root_event_id=thread_root_of(content),
-                content=content,
-            )
-            await self._message_store.create(session, message, attachments_in(content))
-            await session.commit()
+        try:
+            room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                message = Message(
+                    room_id=room_id,
+                    transport_event_id=result.event_id,
+                    sender_id=self.user_id,
+                    sender_client_id=self.client_id,
+                    sender_name=sender_name,
+                    event_type=event_type,
+                    msgtype=text_field(content.get("msgtype")),
+                    body=text_field(content.get("body")),
+                    formatted_body=text_field(content.get("formatted_body")),
+                    thread_root_event_id=thread_root_of(content),
+                    content=content,
+                )
+                await self._message_store.create(
+                    session, message, attachments_in(content)
+                )
+                await session.commit()
+        except Exception:
+            # The paired counter. `MESSAGES_SENT` is recorded only after the
+            # commit, so without this a database outage reads as silence, and
+            # silence is what a quiet room looks like too.
+            metrics().increment(SEND_FAILURES, {"kind": kind})
+            raise
         # Counted after the commit, because the commit is what sending means
-        # here. Counted before it, a database outage would draw an unbroken
-        # send rate on the dashboard while nothing was being written at all —
-        # and there is no paired failure counter to contradict it.
+        # here.
         metrics().increment(MESSAGES_SENT, {"kind": kind})
         return result
 

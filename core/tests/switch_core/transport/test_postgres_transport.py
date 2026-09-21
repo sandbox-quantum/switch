@@ -1466,3 +1466,21 @@ class TestWhatIsMeasured:
 
         recorded = {payload.name for payload in _registry.collect()}
         assert "switch.messages.sent" not in recorded
+
+    async def test_a_send_that_never_persists_is_counted_as_a_failure(
+        self, session_factory: async_sessionmaker[AsyncSession], _registry
+    ) -> None:
+        """Otherwise the only symptom is an absence, and a quiet room is one too."""
+        transport, _, _ = await self._receiving(session_factory)
+
+        with pytest.raises(Exception):
+            await transport.send_message(
+                "!room-that-does-not-exist:test", "hello", sender_name="agent one"
+            )
+
+        payload = next(
+            p for p in _registry.collect() if p.name == "switch.messages.send_failures"
+        )
+        assert {
+            str(point.attributes["kind"]): point.value for point in payload.numbers
+        } == {"message": 1.0}

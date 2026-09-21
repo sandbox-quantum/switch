@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from switch_core.artifacts import contract_range
+from switch_core.observability.catalogue import AGENT_CONNECTIONS_EXPIRED
+from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +387,10 @@ class ConnectionRegistry:
             gone = self.close(conn.id, "heartbeat lapsed")
             if gone is not None:
                 closed.append(gone)
+        if closed:
+            # A gauge of live connections cannot show churn: agents
+            # reconnecting as fast as they expire hold it perfectly flat.
+            metrics().increment(AGENT_CONNECTIONS_EXPIRED, {}, float(len(closed)))
         return closed
 
     # ------------------------------------------------------------------
