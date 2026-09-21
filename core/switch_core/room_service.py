@@ -1113,6 +1113,13 @@ class RoomService:
                 room_id,
                 unresolved,
             )
+        emit_safely(
+            self._telemetry,
+            "room_users_added",
+            # Those that resolved to a real person, not those asked for: a
+            # name the platform does not know adds nobody.
+            {"user_count": max(len(user_names) - len(unresolved), 0)},
+        )
         return unresolved
 
     async def link_bridge_to_room(

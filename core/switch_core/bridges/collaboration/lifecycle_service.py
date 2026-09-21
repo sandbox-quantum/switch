@@ -510,6 +510,15 @@ class CollaborationBridgeLifecycleService:
             await self._bridge_store.create(session, bridge)
             await session.commit()
 
+        # Configured, which is not the same as connected — `bridge_connected`
+        # says the platform answered. A deployment with many of these and few
+        # of those is one whose setup is failing, and only the pair shows it.
+        emit_safely(
+            self._telemetry,
+            "connector_configured",
+            {"bridge_platform": normalise_platform(bridge_type)},
+        )
+
         await self.start(bridge.id)
 
         logger.info(

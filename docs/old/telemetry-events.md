@@ -685,6 +685,30 @@ something quite different from one attached constantly. The snapshot carries
 `reference_count` and `reference_attached_count` side by side for the same
 reason.
 
+**Everything else with a lifecycle**
+
+- `reference_type_created` / `reference_type_deleted` — registering a *type*,
+  which is an owner extending what Switch can point at, not making a reference.
+- `template_created` / `template_deleted` — `template_kind` names the three the
+  product uses and reports anything an operator invents as `other`.
+- `room_link_created` / `room_link_removed`, `room_role_defined` /
+  `room_role_deleted`, `room_users_added`.
+- `reference_detached_from_room` / `document_detached_from_room` /
+  `package_detached_from_room` — the inverse of the attach events, so a
+  resource tried and dropped is distinguishable from one never used.
+- `connector_configured` — the bridge row being written, which is not the same
+  as it connecting. Many of these and few `bridge_connected` is a deployment
+  whose setup is failing, and only the pair shows it.
+- `server_connector_registered` / `server_connector_removed`.
+
+**Deliberately not reported**, so the boundary is stated rather than
+discovered: edits that change a setting rather than create or remove
+something — an agent's icon, display name or addressing policy, a room's
+visibility, protection or observe config, moving a room between groups,
+renaming anything. They are configuration, not adoption, and each would be an
+event that fires constantly and answers nothing. Ask if one of them turns out
+to matter.
+
 **What a pass has not proved**
 
 Every event firing locally says the call sites are wired and the payloads are

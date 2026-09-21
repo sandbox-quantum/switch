@@ -134,6 +134,10 @@ API_KEY_TYPE = one_of("agent", "registration", "bootstrap", "other")
 
 VISIBILITY = one_of("private", "public")
 
+# What a template provisions. Free text in the schema; these are the three the
+# product itself uses, and anything an operator invents reports as `other`.
+TEMPLATE_KIND = one_of("room", "group", "agent", "other")
+
 # Why a bridge failed, shared by the connect and disconnect events because one
 # classifier (`bridges/collaboration/lifecycle_service._failure_reason`) feeds
 # both. `none` belongs only to the success case and is stripped where the event
@@ -384,6 +388,37 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "api_key_revoked": {"key_type": API_KEY_TYPE, "age_days": NUMBER},
     "room_group_created": {"has_parent": BOOLEAN},
     "room_group_deleted": {"room_count": NUMBER, "age_days": NUMBER},
+    # A reference *type* is the schema, not an instance of one: registering one
+    # is an owner extending what Switch can point at, which is a different and
+    # rarer act than making a reference of an existing type.
+    "reference_type_created": {},
+    "reference_type_deleted": {"age_days": NUMBER},
+    # `kind` is free text in the schema, so only the three Switch itself uses
+    # are named and anything else reports `other` — the same rule the
+    # reference types follow, for the same reason.
+    "template_created": {"template_kind": TEMPLATE_KIND},
+    "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": NUMBER},
+    "room_link_created": {},
+    "room_link_removed": {},
+    "room_role_defined": {"exclusive": BOOLEAN},
+    "room_role_deleted": {},
+    "room_users_added": {"user_count": NUMBER},
+    # The inverse of the attach events. The snapshot's `*_attached_count`
+    # carries the standing state; these say when it moved and therefore
+    # whether a resource is being tried and dropped or simply not used.
+    "reference_detached_from_room": {"reference_type": REFERENCE_TYPE},
+    "document_detached_from_room": {},
+    "package_detached_from_room": {},
+    # A server-side connector is Switch reaching out to an agent host rather
+    # than one connecting in, so it is neither an agent registration nor a
+    # collaboration bridge.
+    "server_connector_registered": {"connector_kind": one_of("opencode", "other")},
+    "server_connector_removed": {"connector_kind": one_of("opencode", "other")},
+    # The bridge row being written, which is distinct from it connecting:
+    # `bridge_connected` says the platform answered, this says somebody
+    # configured it. A deployment with many of the first and none of the
+    # second is one whose setup is failing.
+    "connector_configured": {"bridge_platform": BRIDGE_PLATFORM},
     "invitation_sent": {},
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {

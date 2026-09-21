@@ -562,6 +562,7 @@ async def run(config: SwitchConfig) -> None:
         protocol=protocol,
         session_factory=session_factory,
         encryption_secret=config.jwt_secret_key,
+        telemetry=telemetry,
     )
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig

@@ -348,7 +348,12 @@ class ResourceService:
             instructions=instructions,
             value_hint=value_hint,
         )
-        return await self._reference_types.create(session, reference_type)
+        created = await self._reference_types.create(session, reference_type)
+        # No slug: the type's name is free text whoever registered it chose,
+        # and that is exactly what a user-defined type is — the fact that one
+        # was registered is the whole reportable content.
+        emit_safely(self._telemetry, "reference_type_created", {})
+        return created
 
     async def update_reference_type(
         self,
@@ -408,7 +413,9 @@ class ResourceService:
                     f"Reference type '{type_}' is used by {in_use} reference(s) "
                     "and cannot be deleted"
                 )
+        age = _age_days(reference_type.created_at)
         await self._reference_types.delete(session, type_)
+        emit_safely(self._telemetry, "reference_type_deleted", {"age_days": age})
 
     async def log_builtin_shadowing(self, session: AsyncSession) -> None:
         """Report every stored type a built-in shadows.
@@ -679,7 +686,13 @@ class ResourceService:
     async def detach_reference_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
     ) -> None:
+        ref = await self._references.get(session, reference_id)
         await self._references.detach_from_room(session, room_id, reference_id)
+        emit_safely(
+            self._telemetry,
+            "reference_detached_from_room",
+            {"reference_type": _reference_type(ref.type) if ref else "other"},
+        )
 
     async def list_room_references(
         self, session: AsyncSession, room_id: str
@@ -788,6 +801,9 @@ class ResourceService:
         if await self._room_links.exists(session, source_room_id, target_room_id):
             raise ValueError(f"Room {source_room_id} already links to {target_room_id}")
         await self._room_links.attach(session, source_room_id, target_room_id, label)
+        # No label: it is free text describing why two rooms relate, which is
+        # exactly the kind of thing that names a customer's work.
+        emit_safely(self._telemetry, "room_link_created", {})
         return {
             "target_room_id": target.id,
             "target_room_name": target.name,
@@ -802,7 +818,11 @@ class ResourceService:
         source_room_id: str,
         target_room_id: str,
     ) -> bool:
-        return await self._room_links.detach(session, source_room_id, target_room_id)
+        detached = await self._room_links.detach(
+            session, source_room_id, target_room_id
+        )
+        emit_safely(self._telemetry, "room_link_removed", {})
+        return detached
 
     # ── Document CRUD (gateway) ───────────────────────────────────────────
 
@@ -938,6 +958,7 @@ class ResourceService:
         self, session: AsyncSession, room_id: str, document_id: str
     ) -> None:
         await self._documents.detach_from_room(session, room_id, document_id)
+        emit_safely(self._telemetry, "document_detached_from_room", {})
 
     async def list_room_documents(
         self, session: AsyncSession, room_id: str
@@ -1290,6 +1311,7 @@ class ResourceService:
         self, session: AsyncSession, room_id: str, package_id: str
     ) -> None:
         await self._packages.detach_from_room(session, room_id, package_id)
+        emit_safely(self._telemetry, "package_detached_from_room", {})
 
     async def list_room_packages(
         self, session: AsyncSession, room_id: str

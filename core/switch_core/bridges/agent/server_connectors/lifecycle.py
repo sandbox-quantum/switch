@@ -18,11 +18,25 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_server_connector
+from switch_core.telemetry import TelemetryService, emit_safely
 
 logger = logging.getLogger(__name__)
 
 
+def _connector_kind(connector_type: str) -> str:
+    """A connector type as the catalogue spells it.
+
+    Registered types are a runtime registry rather than a fixed list, so only
+    the one Switch ships is named and anything else reports `other`.
+    """
+    return connector_type if connector_type == "opencode" else "other"
+
+
 class ServerSideConnectorLifecycleService:
+    # Class-level default, as elsewhere: a test may build this without
+    # `__init__`, and `emit_safely` treats None as "report nothing".
+    _telemetry: TelemetryService | None = None
+
     def __init__(
         self,
         *,
@@ -30,12 +44,14 @@ class ServerSideConnectorLifecycleService:
         api_key_store: ApiKeyStore,
         protocol: ProtocolService,
         session_factory: async_sessionmaker[AsyncSession],
+        telemetry: TelemetryService | None = None,
         encryption_secret: str,
     ) -> None:
         self._connector_store = connector_store
         self._api_key_store = api_key_store
         self._protocol = protocol
         self._session_factory = session_factory
+        self._telemetry = telemetry
         self._encryption_secret = encryption_secret
 
         self._connector_registry: dict[str, type[ServerSideConnector]] = {}
@@ -127,6 +143,12 @@ class ServerSideConnectorLifecycleService:
 
         await self.start(record.id)
 
+        emit_safely(
+            self._telemetry,
+            "server_connector_registered",
+            {"connector_kind": _connector_kind(connector_type)},
+        )
+
         logger.info(
             "Registered server-side connector %s (%s): %s (owner: %s)",
             record.id,
@@ -209,7 +231,9 @@ class ServerSideConnectorLifecycleService:
         an error rather than as a second false success.
         """
         async with self._session_factory() as session:
-            if await self._connector_store.get(session, connector_id) is None:
+            existing = await self._connector_store.get(session, connector_id)
+            kind = existing.type if existing is not None else "other"
+            if existing is None:
                 raise ValueError(f"Connector not found: {connector_id}")
 
         core = self._cores.get(connector_id)
@@ -222,6 +246,11 @@ class ServerSideConnectorLifecycleService:
             await self._connector_store.delete(session, connector_id)
             await session.commit()
 
+        emit_safely(
+            self._telemetry,
+            "server_connector_removed",
+            {"connector_kind": _connector_kind(kind)},
+        )
         logger.info("Removed server-side connector %s", connector_id)
 
     def get_registered_types(self) -> list[str]:
