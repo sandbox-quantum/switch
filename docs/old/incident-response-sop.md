@@ -1282,7 +1282,7 @@ instructions must say so explicitly, because the tool surface will not.
 
 ## Gaps
 
-Twenty-six, grouped by what they block. Each says what is missing, why it matters
+Twenty-seven, grouped by what they block. Each says what is missing, why it matters
 here, and a ticket to file. Sizes are rough: **S** is days, **M** is a sprint,
 **L** is a project. The numbers are stable identifiers, not an ordering — they
 are in the order they were found, and the grouping is what to read by.
@@ -1538,6 +1538,36 @@ task rather than a Switch setting.
 > capability schema and a writer per provider. Note Codex refuses to load a
 > config that layers a base entry onto a plugin-provided server, so this is not
 > uniform across providers. **L**
+
+**G27 — On-call tooling has no built-in reference type, so every deployment
+re-types the instructions.**
+Switch ships four built-in reference types. The rest are user-defined, per
+tenant, which means a `pagerduty` type is a setup step every deployment repeats
+and — more to the point — a block of prose each one can edit.
+
+That matters more here than it would elsewhere. A built-in exists precisely so
+that its agent-facing instructions "stay under code review", and PagerDuty's
+instructions are where the **read-only boundary** lives: never acknowledge,
+resolve or re-prioritise. That is a safety rule the tool surface will not
+enforce, so where it is written and who can quietly change it is a real
+question, not a filing preference.
+
+The precedent is exact. The built-in `jira` type ships instructions pointing at
+an MCP connector Switch does not itself provide, which is the same shape a
+`pagerduty` type would take.
+
+The change is small — one entry in the built-in registry plus a test, no
+migration, no gateway change, since built-ins are never database rows and the UI
+renders whatever the type list returns. The decision worth making is not
+PagerDuty specifically but **what earns a built-in slot**, because the next
+request is Datadog and the one after is Sentry.
+
+> **Proposed ticket:** *Built-in reference types for on-call and observability
+> tooling* — add `pagerduty` first, with a test pinning the read-only wording the
+> way the Jira test pins its connector wording, and write down the rule for what
+> qualifies so the next vendor is a decision already made. Note the published
+> docs still describe reference types as a closed set of four; that sentence is
+> already stale and wants correcting in the docs repository. **S**
 
 **G20 — There is no agent-scoped secret storage.**
 Switch encrypts its own API keys and bridge tokens; a server-side connector's
