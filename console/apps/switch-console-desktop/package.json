@@ -92,7 +92,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/jsdom": "^28.0.3",
     "@types/katex": "^0.16.8",
-    "@types/node": "^20.10.0",
+    "@types/node": "^24.13.3",
     "@types/pidusage": "^2.0.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
