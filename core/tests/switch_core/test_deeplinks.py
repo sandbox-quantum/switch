@@ -74,6 +74,16 @@ class TestSwitchdashToGateway:
             is None
         )
 
+    def test_host_is_matched_case_insensitively(self) -> None:
+        result = switchdash_to_gateway(
+            "switchdash://Session?server=https%3A%2F%2Fs&agent=a&room=r&session=x",
+            "https://gw.example",
+        )
+        assert result == (
+            "https://gw.example/deeplink/session"
+            "?server=https%3A%2F%2Fs&agent=a&room=r&session=x"
+        )
+
 
 class TestGatewayUrlIsLoopback:
     """A configured origin that only the Switch host can reach.
