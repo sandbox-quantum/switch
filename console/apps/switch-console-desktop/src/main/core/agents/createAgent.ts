@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import type { Agent, CreateAgentParams } from '@shared/core/agents/agents';
-import { mapAgentRowToAgent } from './utils';
+import { mapAgentRow } from './utils';
 
 export async function createAgent(params: CreateAgentParams): Promise<Agent> {
   const [row] = await db
@@ -14,7 +14,7 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
       providerId: params.providerId,
       switchAgentId: params.switchAgentId,
       apiEndpoint: params.apiEndpoint,
-      serverId: params.serverId,
+      workspaceId: params.workspaceId,
       autoApprove: params.autoApprove,
       ownerName: params.ownerName ?? null,
       providerConfig: params.providerConfig ?? null,
@@ -22,5 +22,5 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
     })
     .returning();
 
-  return mapAgentRowToAgent(row);
+  return mapAgentRow(row);
 }

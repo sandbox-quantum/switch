@@ -1,4 +1,3 @@
-import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import { ensureManagedServer, setActiveServerId } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -254,7 +253,6 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     });
   }
 
-  await resolveAgentServers();
   return { kind: 'started', serverId: server.id };
 }
 

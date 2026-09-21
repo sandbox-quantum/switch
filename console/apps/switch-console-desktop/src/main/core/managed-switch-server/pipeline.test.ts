@@ -53,7 +53,6 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('@main/core/switch-servers/auth', () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
-vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
 
 const { startStack } = await import('./pipeline');
 const { ENV_FILE_NAME } = await import('./constants');

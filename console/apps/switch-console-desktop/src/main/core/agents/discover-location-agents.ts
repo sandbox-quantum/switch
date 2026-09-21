@@ -1,8 +1,9 @@
 import { getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
-import { getLocationAgentsOnServer } from './getAgents';
+import { getLocationAgentsInWorkspace } from './getAgents';
 
 export type DiscoveredLocationAgent = {
   /** The definition/launch name (`.claude/agents/<name>.md` stem, `--agent <name>`). */
@@ -46,9 +47,12 @@ export async function discoverLocationAgents(params: {
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
   if (!behavior) return [];
 
+  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
   const location = await getLocationByHostDir(params.sshHost, params.dir);
   const existing = location
-    ? new Set((await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name))
+    ? new Set(
+        (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
+      )
     : new Set<string>();
 
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);

@@ -136,7 +136,9 @@ describe('migration 0050: workspaces', () => {
     expect(workspace!.id).toBe('srv-local');
   });
 
-  it('leaves the migrated workspaces tenant-less, since the server reported no tenancy', () => {
+  // No gateway is asked during the upgrade — it must not depend on one being
+  // reachable — so the tenant is filled in by the first reconcile, not here.
+  it('leaves the migrated workspaces tenant-less for the first reconcile to match', () => {
     seedServer('srv-local', 'Local dev');
 
     applyMigration();
@@ -177,6 +179,30 @@ describe('migration 0050: workspaces', () => {
       workspace_id: string | null;
     };
     expect(row.workspace_id).toBeNull();
+  });
+
+  // The old server_id was added by ALTER TABLE ADD COLUMN, which in SQLite
+  // cannot carry ON DELETE, so its set-null was never enforced and a row can
+  // point at a server that is gone. Carrying that value over would seed the new,
+  // engine-enforced foreign key with a violation, and the migration runs with
+  // foreign_keys=OFF, so nothing would catch it until much later.
+  it('drops an agent’s link to a server that no longer exists', () => {
+    seedServer('srv-local', 'Local dev');
+    seedAgent('agent-a', 'srv-local');
+    // The dangling value has to be written with the constraint off, which is
+    // how it arises: the real column was added by ALTER TABLE, so the engine
+    // never enforced the clause this fixture's DDL can only state up front.
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.prepare(`UPDATE agents SET server_id = 'srv-gone' WHERE id = 'agent-a'`).run();
+
+    applyMigration();
+    db.exec('PRAGMA foreign_keys = ON');
+
+    const row = db.prepare(`SELECT workspace_id FROM agents WHERE id = 'agent-a'`).get() as {
+      workspace_id: string | null;
+    };
+    expect(row.workspace_id).toBeNull();
+    expect(db.prepare(`PRAGMA foreign_key_check`).all()).toEqual([]);
   });
 
   it('carries every other agent column through the table rebuild', () => {
@@ -270,6 +296,22 @@ describe('migration 0050: workspaces', () => {
     db.prepare(`DELETE FROM switch_servers WHERE id = ?`).run('srv-local');
 
     expect(workspaces()).toEqual([]);
+  });
+
+  // Two foreign keys deep, and the one the old schema only claimed: the server's
+  // workspaces cascade away, and their agents are unlinked rather than deleted.
+  it('unlinks an agent when the server under its workspace is deleted', () => {
+    seedServer('srv-local', 'Local dev');
+    seedAgent('agent-a', 'srv-local');
+    applyMigration();
+    db.exec('PRAGMA foreign_keys = ON');
+
+    db.prepare(`DELETE FROM switch_servers WHERE id = ?`).run('srv-local');
+
+    const row = db.prepare(`SELECT workspace_id FROM agents WHERE id = 'agent-a'`).get() as {
+      workspace_id: string | null;
+    };
+    expect(row.workspace_id).toBeNull();
   });
 
   it('lets two servers each keep a tenant-less workspace', () => {
