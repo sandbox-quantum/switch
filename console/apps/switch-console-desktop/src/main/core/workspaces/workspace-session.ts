@@ -2,7 +2,7 @@ import { decodeJwtTenantId, switchTenant } from '@main/core/switch-servers/gatew
 import { hostUnreachable, requireServer } from '@main/core/switch-servers/require-server';
 import { getSessionCookie } from '@main/core/switch-servers/servers-store';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import type { Workspace } from '@shared/core/workspaces/workspaces';
+import { isUnmatchedWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { clearAssertedTenant, setAssertedTenant } from './asserted-tenant';
 import { listWorkspacesForServer, requireWorkspace } from './workspaces-store';
 
@@ -116,7 +116,7 @@ async function requireAddressableWorkspace(workspaceId: string): Promise<Workspa
   const workspace = await requireWorkspace(workspaceId);
   if (workspace.tenantId) return workspace;
   const onServer = await listWorkspacesForServer(workspace.serverId);
-  if (onServer.length > 1) {
+  if (isUnmatchedWorkspace(workspace, onServer.length)) {
     throw new Error(
       // Not "sign in again": signing in re-runs the reconcile, which is what
       // left the row unmatched in the first place and would do so again. The

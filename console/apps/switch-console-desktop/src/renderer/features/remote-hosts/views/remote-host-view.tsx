@@ -135,7 +135,7 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
   // Which of that server's workspaces the discovery below asks. `GET /agents`
   // answers for one tenant, so without it the list would be whichever workspace
   // the session last selected.
-  const workspaceId = workspacesStore.soleIdOnServer(serverId);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
 
   const status = deriveHostStatus(reachability, plan.data ?? null);
   const { prerequisites, agentTypes } = useMemo(

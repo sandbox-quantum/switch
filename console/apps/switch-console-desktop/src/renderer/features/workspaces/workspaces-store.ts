@@ -13,16 +13,19 @@ import type { Workspace } from '@shared/core/workspaces/workspaces';
  * identity stays in the servers store: reachability, sign-in and the gateway
  * URL are facts about a gateway, not about whose data it answers with.
  *
- * The selection itself lives in the main process, so this mirrors it rather
- * than owning it — the servers store drives both through the same calls that
- * change the active server.
+ * The selection is persisted by the main process, so this mirrors it rather
+ * than owning it — but the window is scoped to a workspace, so this is where
+ * the scope is read and changed, and the servers store derives its own notion
+ * of "which server" from it.
  */
 export class WorkspacesStore {
   workspaces: Workspace[] = [];
   activeId: string | null = null;
+  /** Ordinal of the most recent {@link setActive}; nothing renders it. */
+  lastSwitch = 0;
 
   constructor() {
-    makeAutoObservable(this);
+    makeAutoObservable(this, { lastSwitch: false });
 
     // The reconcile adds, matches and drops rows without a window asking, so
     // the calls the servers store makes are not the only times this list moves.
@@ -36,6 +39,40 @@ export class WorkspacesStore {
 
   get active(): Workspace | null {
     return this.workspaces.find((w) => w.id === this.activeId) ?? null;
+  }
+
+  /**
+   * The server the window is scoped to, for the parts of the app still keyed by
+   * one.
+   *
+   * Derived rather than stored alongside the workspace: the server is simply
+   * the one hosting the selection, and the main process reads it back the same
+   * way, so the two cannot come to disagree about which server the app is on.
+   */
+  get activeServerId(): string | null {
+    return this.active?.serverId ?? null;
+  }
+
+  /**
+   * Scope the window to a workspace.
+   *
+   * Raises if the selection does not take. The caller shows it: a switch that
+   * failed quietly would leave the sidebar listing one workspace's rooms under
+   * another one's name, which looks like data loss rather than a failed click.
+   *
+   * Only the last switch started may write the mirror. Two clicks in quick
+   * succession are two round trips that can finish in either order, and the
+   * slower one landing second would leave this pointing at a workspace the main
+   * process has already moved off — every read after it addressed under a name
+   * the window is no longer showing.
+   */
+  async setActive(workspaceId: string): Promise<void> {
+    const request = ++this.lastSwitch;
+    await rpc.workspaces.setActive(workspaceId);
+    if (request !== this.lastSwitch) return;
+    runInAction(() => {
+      this.activeId = workspaceId;
+    });
   }
 
   async refresh(): Promise<void> {
@@ -63,39 +100,38 @@ export class WorkspacesStore {
   }
 
   /**
-   * The one workspace on a server, for a view that is about the server itself —
-   * its page, its cards, its pickers.
+   * The workspace a view about a server acts in — its page, its cards, its
+   * pickers.
    *
-   * Null on either edge rather than a guess. A server with none has not
-   * finished registering; a server with several means the view is the one that
-   * has to say which, and addressing the wrong one answers with somebody else's
-   * rooms while looking entirely correct. Callers render the absence; they must
-   * not substitute the server id, which would reach the gateway and succeed.
+   * The active one when the window is scoped to that server, which is the
+   * ordinary case: choosing a workspace in the switcher is how you reach its
+   * pages at all. A view about some other server falls back to its only
+   * workspace, since then there is nothing to choose.
+   *
+   * Null rather than a guess where neither applies. A server with no workspace
+   * has not finished registering; a server with several, none of them active,
+   * means the view is the one that has to say which, and addressing the wrong
+   * one answers with somebody else's rooms while looking entirely correct.
+   * Callers render the absence; they must not substitute the server id, which
+   * would reach the gateway and succeed.
    */
-  soleOnServer(serverId: string): Workspace | null {
+  onServerInScope(serverId: string | null): Workspace | null {
+    if (serverId === null) return null;
+    const active = this.active;
+    if (active?.serverId === serverId) return active;
     const found = this.onServer(serverId);
     return found.length === 1 ? found[0]! : null;
   }
 
   /**
-   * {@link soleOnServer} as an id, tolerating a server that has not been chosen
-   * — what a view still routed by server reads to address its workspace.
+   * {@link onServerInScope} as an id, for a view still routed by server.
    *
    * Null means "no workspace to act in yet", and a view must hold its reads and
    * writes until it is not: the list arrives asynchronously, so this answers
    * null on the first render of every such page.
    */
-  soleIdOnServer(serverId: string | null): string | null {
-    return serverId === null ? null : (this.soleOnServer(serverId)?.id ?? null);
-  }
-
-  /** {@link soleOnServer} as an id, for a call that cannot proceed without one. */
-  requireSoleIdOnServer(serverId: string): string {
-    const workspace = this.soleOnServer(serverId);
-    if (!workspace) {
-      throw new Error(`Switch server ${serverId} does not have exactly one workspace`);
-    }
-    return workspace.id;
+  idOnServerInScope(serverId: string | null): string | null {
+    return this.onServerInScope(serverId)?.id ?? null;
   }
 }
 

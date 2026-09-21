@@ -7,7 +7,8 @@ import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
-import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
@@ -75,7 +76,7 @@ export async function attachConfiguredAgents(
 
   const server = await getServer(params.serverId);
   if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
-  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
 
   const discovered = new Map(
     (
@@ -122,7 +123,10 @@ export async function attachConfiguredAgents(
     if (!found) continue;
 
     try {
-      if (!(await agentExistsOnServer(server, found.switchAgentId))) {
+      const exists = await withWorkspaceSession(targetWorkspace.id, (target) =>
+        agentExistsOnServer(target, found.switchAgentId)
+      );
+      if (!exists) {
         return err({
           type: 'switch-agent-not-on-server',
           dir: params.dir,

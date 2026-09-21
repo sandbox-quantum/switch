@@ -11,7 +11,6 @@ import {
   insertServerWorkspace,
   listWorkspacesForServer,
   renameServerWorkspaces,
-  serverIdForWorkspace,
   setActiveWorkspaceId,
 } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
@@ -24,6 +23,7 @@ import {
   type SwitchServer,
   type UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
+import { workspaceUnavailability } from '@shared/core/workspaces/workspaces';
 
 // Keyed to the server, not the workspace: one gateway session cookie covers
 // every workspace on a server.
@@ -272,20 +272,6 @@ export function serverKindOf(
 }
 
 /**
- * The server whose workspace is active, for the parts of the app that still
- * scope themselves to a server.
- *
- * The selection itself is a workspace — see the workspaces store. This reads it
- * back as the server hosting it, and returns null when nothing is selected or
- * the selected workspace has since gone.
- */
-export async function getActiveServerId(): Promise<string | null> {
-  const activeWorkspaceId = await getActiveWorkspaceId();
-  if (!activeWorkspaceId) return null;
-  return serverIdForWorkspace(activeWorkspaceId);
-}
-
-/**
  * Select a server by selecting one of its workspaces.
  *
  * Picks the first when the account turns out to belong to several on that
@@ -294,16 +280,27 @@ export async function getActiveServerId(): Promise<string | null> {
  * from being corrected, while attaching an agent to it is neither. Refusing
  * here would instead fail the managed stack start this runs inside, taking a
  * healthy server down over a question about which of its workspaces to show.
+ *
+ * "First" means the first that can actually be opened, where there is one: a
+ * withdrawn membership and an unmatched placeholder are both refused by the
+ * gateway, and landing on either is not a wrong guess a click corrects. Where
+ * there is no such workspace it still picks, for the same reason it does not
+ * refuse a choice between several — the seam says why on the first call.
  */
 export async function setActiveServerId(id: string): Promise<void> {
   const server = await getServer(id);
   if (!server) throw new Error(`No Switch server with id ${id}`);
   const found = await listWorkspacesForServer(id);
-  const workspace = found[0];
-  if (!workspace) throw new Error(`Switch server ${id} has no workspace`);
+  if (found.length === 0) throw new Error(`Switch server ${id} has no workspace`);
   const active = await getActiveWorkspaceId();
   if (found.some((candidate) => candidate.id === active)) return;
-  await setActiveWorkspaceId(workspace.id);
+  // The rows are oldest first, and the oldest is exactly the one a withdrawn
+  // membership or an unmatched placeholder is most likely to be — the row the
+  // server was registered with, before the gateway was ever asked.
+  const openable = found.find(
+    (candidate) => workspaceUnavailability(candidate, found.length) === null
+  );
+  await setActiveWorkspaceId((openable ?? found[0]!).id);
 }
 
 // ---------------------------------------------------------------------------

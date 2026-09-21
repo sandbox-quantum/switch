@@ -50,7 +50,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // asking again would let the user create a room somewhere they are not
   // looking, and then wonder where it went.
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
-  const workspaceId = workspacesStore.soleIdOnServer(serverId || null);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
 
   const [name, setName] = useState('');

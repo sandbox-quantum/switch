@@ -54,25 +54,30 @@ export async function requireWorkspace(id: string): Promise<Workspace> {
 }
 
 /**
- * The one workspace on a server, for a caller that knows only the server.
+ * The workspace to act in on a server, for a caller that knows only the server
+ * — onboarding an agent, attaching one, discovering what a directory holds.
  *
- * Servers currently carry exactly one workspace each: the row migration 0050
- * created, or the one `ensureServerWorkspace` creates when a server is
- * registered. Until the user can pick between them, callers that act on a
- * server — onboarding an agent, switching the active scope — resolve through
- * here rather than naming a workspace they have no way to choose.
+ * Most servers carry exactly one workspace, and then there is nothing to
+ * choose. Where there are several, the answer is the one the window is scoped
+ * to: these callers are all driven from screens showing that workspace, so
+ * anything else would act somewhere the user is not looking.
  *
- * Raises on either edge instead of picking. A server with none is a registration
- * that half-succeeded; a server with several means the caller is the one that
- * has to say which, and attaching an agent to the wrong workspace is not
- * something the user would see until it had already happened.
+ * Raises rather than picking when neither applies. A server with no workspace
+ * is a registration that half-succeeded; a server with several, none of them
+ * the active one, means the caller is the one that has to say which — and
+ * attaching an agent to the wrong workspace is not something the user would see
+ * until it had already happened.
  */
-export async function requireSoleWorkspaceForServer(serverId: string): Promise<Workspace> {
+export async function requireWorkspaceForServer(serverId: string): Promise<Workspace> {
   const found = await listWorkspacesForServer(serverId);
   if (found.length === 1) return found[0]!;
   if (found.length === 0) throw new Error(`Switch server ${serverId} has no workspace`);
+
+  const activeId = await getActiveWorkspaceId();
+  const active = found.find((workspace) => workspace.id === activeId);
+  if (active) return active;
   throw new Error(
-    `Switch server ${serverId} has ${found.length} workspaces; the caller must name one`
+    `Switch server ${serverId} has ${found.length} workspaces and none of them is the active one; the caller must name one`
   );
 }
 
@@ -160,6 +165,22 @@ export async function setWorkspaceTenant(
       role: tenant.role,
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
+    .where(eq(workspaces.id, workspaceId));
+}
+
+/**
+ * Record that the account is no longer a member of a workspace it still holds a
+ * row for.
+ *
+ * The tenant id stays, because it is what the row's agents were registered
+ * against and what a restored membership would match it back to; only the role
+ * goes, since the gateway no longer reports one. A row naming a tenant with no
+ * role is what the switcher reads as withdrawn.
+ */
+export async function clearWorkspaceRole(workspaceId: string): Promise<void> {
+  await db
+    .update(workspaces)
+    .set({ role: null, updatedAt: sql`CURRENT_TIMESTAMP` })
     .where(eq(workspaces.id, workspaceId));
 }
 

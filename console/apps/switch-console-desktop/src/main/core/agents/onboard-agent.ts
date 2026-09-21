@@ -10,7 +10,8 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
-import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
   OnboardAgentError,
@@ -88,33 +89,32 @@ async function verifyAgentOnServer(
   agentId: string,
   dir: string
 ): Promise<OnboardAgentError | null> {
-  const server = await getServer(serverId);
-  if (!server) {
-    throw new Error(`No Switch server with id ${serverId}`);
-  }
-  try {
-    const exists = await agentExistsOnServer(server, agentId);
-    if (!exists) {
-      return {
-        type: 'switch-agent-not-on-server',
-        dir,
-        serverId: server.id,
-        serverName: server.name,
-        agentId,
-      };
+  const workspace = await requireWorkspaceForServer(serverId);
+  return withWorkspaceSession(workspace.id, async (server) => {
+    try {
+      const exists = await agentExistsOnServer(server, agentId);
+      if (!exists) {
+        return {
+          type: 'switch-agent-not-on-server',
+          dir,
+          serverId: server.id,
+          serverName: server.name,
+          agentId,
+        };
+      }
+      return null;
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+        return {
+          type: 'switch-server-unauthenticated',
+          dir,
+          serverId: server.id,
+          serverName: server.name,
+        };
+      }
+      throw cause;
     }
-    return null;
-  } catch (cause) {
-    if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
-      return {
-        type: 'switch-server-unauthenticated',
-        dir,
-        serverId: server.id,
-        serverName: server.name,
-      };
-    }
-    throw cause;
-  }
+  });
 }
 
 /**
@@ -189,7 +189,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     }
   }
 
-  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
 
   const name = basenameFromAnyPath(params.dir) || params.providerId;
 

@@ -37,14 +37,9 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
 }));
 
 // Imported after the mocks so the module binds to the mocked db + secrets store.
-const {
-  addServer,
-  ensureManagedServer,
-  getActiveServerId,
-  removeServer,
-  renameServer,
-  setActiveServerId,
-} = await import('./servers-store');
+const { addServer, ensureManagedServer, removeServer, renameServer, setActiveServerId } =
+  await import('./servers-store');
+const { getActiveWorkspaceId } = await import('@main/core/workspaces/workspaces-store');
 
 describe('servers-store: rename & delete', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
@@ -306,8 +301,12 @@ describe('selecting a server', () => {
     mocks.db = undefined;
   });
 
-  async function seedWorkspace(id: string, tenantId: string | null): Promise<void> {
-    await fixture.db.insert(workspaces).values({ id, serverId: 'srv-1', name: id, tenantId });
+  async function seedWorkspace(
+    id: string,
+    tenantId: string | null,
+    role: 'owner' | 'member' | null = 'member'
+  ): Promise<void> {
+    await fixture.db.insert(workspaces).values({ id, serverId: 'srv-1', name: id, tenantId, role });
   }
 
   it('selects the one workspace a server has', async () => {
@@ -315,7 +314,7 @@ describe('selecting a server', () => {
 
     await setActiveServerId('srv-1');
 
-    expect(await getActiveServerId()).toBe('srv-1');
+    expect(await getActiveWorkspaceId()).toBe('ws-1');
   });
 
   /**
@@ -328,7 +327,7 @@ describe('selecting a server', () => {
 
     await setActiveServerId('srv-1');
 
-    expect(await getActiveServerId()).toBe('srv-1');
+    expect(await getActiveWorkspaceId()).toBe('ws-1');
   });
 
   // Re-selecting the server the user is already in must not move them to
@@ -343,6 +342,57 @@ describe('selecting a server', () => {
 
     const [pointer] = await fixture.db.select().from(kv).where(eq(kv.key, 'activeWorkspaceId'));
     expect(pointer!.value).toBe('ws-2');
+  });
+
+  /**
+   * The oldest row is the one a withdrawn membership is most likely to be —
+   * the server's original workspace, whose membership was the first to be
+   * given up. Landing on it would scope the window to something the gateway
+   * refuses every call for.
+   */
+  it('skips a workspace this account is no longer a member of', async () => {
+    await seedWorkspace('ws-1', 't-gone', null);
+    await seedWorkspace('ws-2', 't-2');
+
+    await setActiveServerId('srv-1');
+
+    expect(await getActiveWorkspaceId()).toBe('ws-2');
+  });
+
+  /**
+   * The row the server was registered with, before the gateway was asked which
+   * workspaces the account has. It names no tenant, so a call scoped to it
+   * selects none and the gateway answers with whichever workspace the session
+   * last selected — under this one's name. On an upgraded install it is also
+   * the oldest row, and holds every agent.
+   */
+  it('skips a placeholder the reconcile could not match', async () => {
+    await seedWorkspace('ws-1', null, null);
+    await seedWorkspace('ws-2', 't-2');
+
+    await setActiveServerId('srv-1');
+
+    expect(await getActiveWorkspaceId()).toBe('ws-2');
+  });
+
+  // Every server's first workspace starts out like this and is matched to a
+  // membership afterwards; on its own there is nothing to confuse it with.
+  it('selects a lone workspace that has no tenant yet', async () => {
+    await seedWorkspace('ws-1', null, null);
+
+    await setActiveServerId('srv-1');
+
+    expect(await getActiveWorkspaceId()).toBe('ws-1');
+  });
+
+  // Nothing else to fall back to, and refusing here takes a healthy managed
+  // stack start down; the seam says why on the first call instead.
+  it('still picks one when every workspace on the server is withdrawn', async () => {
+    await seedWorkspace('ws-1', 't-gone', null);
+
+    await setActiveServerId('srv-1');
+
+    expect(await getActiveWorkspaceId()).toBe('ws-1');
   });
 
   it('refuses a server with no workspace at all', async () => {

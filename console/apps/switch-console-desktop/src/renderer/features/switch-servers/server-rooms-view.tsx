@@ -44,7 +44,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
-  const workspaceId = workspacesStore.soleIdOnServer(serverId);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const rooms = workspaceId === null ? [] : switchRoomsStore.readableRoomsInWorkspace(workspaceId);
   const signedOut = switchRoomsStore.workspacesNotSignedIn.some((w) => w.id === workspaceId);
   const failed = switchRoomsStore.workspacesThatFailedToLoad.some((w) => w.id === workspaceId);

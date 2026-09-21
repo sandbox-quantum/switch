@@ -74,7 +74,10 @@ vi.mock('./agent-workdir-fs', () => ({
   })),
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: vi.fn(async () => ({ id: 'srv-1', apiUrl: 'https://switch.example.com' })),
+  getServer: vi.fn(async () => mockServer),
+}));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(mockServer),
 }));
 vi.mock('@main/core/locations/store', () => ({
   ensureLocation: vi.fn(async () => ({ id: 'loc-1' })),
@@ -105,8 +108,10 @@ vi.mock('@main/db/client', () => ({
 vi.mock('@main/db/schema', () => ({ agents: { id: 'id', switchAgentId: 'switchAgentId' } }));
 vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
 }));
+
+const mockServer = vi.hoisted(() => ({ id: 'srv-1', apiUrl: 'https://switch.example.com' }));
 
 const { addAgent } = await import('./add-agent');
 const { trackEvent } = await import('@main/core/telemetry/telemetry-service');
