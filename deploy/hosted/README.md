@@ -162,3 +162,12 @@ The controller PVC is annotated `keep` so Helm uninstall retains it. That is not
 backup and does not override the underlying StorageClass/PV reclaim policy. Back
 up the assignment database and retain resource identities before uninstalling; a
 fresh empty database must not be used to guess ownership of existing workers.
+
+### GitHub authentication slice
+
+The optional worker secret fields described in [the worker contract](worker/README.md#optional-github-credential-delivery)
+provide a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
+it in a workspace/config or passing it as a command argument. Bootstrap checks
+the token before starting the provider. Repository permission checks and actual
+clone/build/push/PR operations remain the coding task's responsibility; no live
+GitHub task or Console repository onboarding is implied by this implementation.

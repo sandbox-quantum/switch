@@ -31,7 +31,7 @@ onboarding and the complete managed service do not exist yet.
 | EC2 controller | Operator CLI, SQLite desired state, revision-fenced reconciliation, create/start/stop/delete, retained encrypted EBS, per-assignment IAM/secret references. | Live AWS permission/lifecycle tests and service-owned assignment integration. |
 | Worker launcher | Root launcher, unprivileged agent, artifact checks, tmpfs credential delivery and instance/boot identity validation. | Bake and inspect a real pinned Linux AMI; test mounts, reboot and isolation. |
 | Packaging | Generic Terraform, controller container, Helm chart and standalone runtime builder. | Private environment configuration, published image digests and a reviewed deployment plan. |
-| GitHub workflow | Product requirements defined. | Secure GitHub credential transport, checkout/setup and clone/build/push/PR proof. |
+| GitHub workflow | Optional personal-token delivery through tmpfs, startup credential checks, non-persistent Git HTTPS helper and GitHub CLI environment implemented in the next stacked slice. | Live repository permission checks, checkout/setup and clone/build/push/PR proof; Console connection UI. |
 | Console experience | Existing SDK session surfaces provide a foundation. | Hosted creation, connections, readiness, lifecycle and actionable errors. |
 | Provider coverage | Five SDK adapters exist; the current EC2 worker slice configures Claude. | Noninteractive hosted authentication and lifecycle certification for every provider. |
 

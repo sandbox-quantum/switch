@@ -5,6 +5,12 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { buildSharedHostConfig } from './build-shared-config';
+import {
+  githubLaunchEnvironment,
+  githubRedactions,
+  readGitHubCredential,
+  validateGitHubCredential,
+} from './hosted-github';
 import { redactHostedText } from './hosted-log';
 import { currentHostedMachineIdentity } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
@@ -39,6 +45,11 @@ export const hostedDeploymentSpecSchema = z.strictObject({
       .optional(),
     context: z.string(),
   }),
+  github: z
+    .strictObject({
+      credentialPath: absolutePath,
+    })
+    .optional(),
   workspacePath: absolutePath,
   room: z.strictObject({
     roomId: identifier,
@@ -299,13 +310,24 @@ export async function prepareHostedDeployment(
     workspaceRoot,
     'Switch'
   );
+  const githubCredentialPath = spec.github
+    ? await resolveCredentialFile(spec.github.credentialPath, root, workspaceRoot, 'GitHub')
+    : undefined;
   const providerCredential = await readProviderCredential(providerCredentialPath);
   const switchCredentials = await validateSwitchCredentials(
     switchCredentialsPath,
     spec.session.agentId
   );
-  const environment = controlledEnvironment(root);
-  await createControlledDirectories(environment);
+  const githubCredential = githubCredentialPath
+    ? await readGitHubCredential(githubCredentialPath)
+    : undefined;
+  if (githubCredential) await validateGitHubCredential(githubCredential);
+  const controlled = controlledEnvironment(root);
+  await createControlledDirectories(controlled);
+  const environment = {
+    ...controlled,
+    ...(githubCredential ? githubLaunchEnvironment() : {}),
+  };
   const variable = credentialVariable(spec.provider.credential.kind);
   const candidate = hostedDeploymentPlanSchema.parse(
     JSON.parse(
@@ -334,7 +356,7 @@ export async function prepareHostedDeployment(
           },
           execution: {
             credentialsPath: switchCredentialsPath,
-            inheritEnv: [...INHERITED_ENV, variable],
+            inheritEnv: [...INHERITED_ENV, variable, ...(githubCredential ? ['GH_TOKEN'] : [])],
             binaryPath,
             mcpRuntime: spec.mcpRuntime,
             codexConfig: '',
@@ -404,6 +426,7 @@ export async function prepareHostedDeployment(
     if (value !== undefined) providerEnvironment[key] = value;
   }
   providerEnvironment[variable] = providerCredential;
+  if (githubCredential) providerEnvironment.GH_TOKEN = githubCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
   const machine = currentHostedMachineIdentity();
   if (machine) {
@@ -416,7 +439,11 @@ export async function prepareHostedDeployment(
     configPath,
     config: plan.config,
     providerEnvironment,
-    logRedactions: [providerCredential, switchCredentials.token],
+    logRedactions: [
+      providerCredential,
+      switchCredentials.token,
+      ...(githubCredential ? githubRedactions(githubCredential) : []),
+    ],
   };
 }
 
