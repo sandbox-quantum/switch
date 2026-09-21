@@ -24,13 +24,38 @@ Switch has eight places that carry instruction text. Listing them all is how the
 | Room document `instructions` + content | Yes, ×4 | [7](#7-the-four-room-documents) |
 | Reference type `instructions` | Yes, ×1 | [8](#8-the-pagerduty-reference-type) |
 | Reference `instructions` | Yes, ×2 | [9](#9-the-two-references) |
-| Package `instructions` | No — see below | — |
+| Package `instructions` | **Yes, ×1** | [below](#the-package-and-why-it-is-required) |
 | Per-room agent `alias` | Yes, not instructions | `responder` in every war room |
 
-**Packages** bundle references and documents into one attachable unit, and are
-Gateway-only to assemble. They are worth using once a second product adopts this
-— one attach instead of six — but they add an indirection that is not worth it
-for the first deployment.
+### The package, and why it is required
+
+`create_room` accepts `reference_ids` and `package_ids`. It does **not** accept
+documents. So there are only two ways to get the four documents into a war room:
+the agent creates them one at a time after connecting, re-typing the content into
+every incident — or they are assembled once into a **package** and attached by
+id in the same call that builds the room.
+
+The package wins on every axis that matters here. One id instead of four calls
+at the moment the agent is busiest; content maintained in one place instead of
+copied per incident; a correction to the escalation ladder that reaches the next
+war room automatically rather than only the ones created after someone
+remembered.
+
+Assembling a package is Gateway-only — an agent can attach one but cannot build
+one — which is fine, because this is a one-time setup step.
+
+Its own `instructions`:
+
+```
+The incident-response kit: the service-owner map, the situation-report shape,
+the escalation ladder and the postmortem skeleton, plus the runbook and
+PagerDuty references.
+
+Attached to every war room at creation. Read the service-owner map before
+asking the room who owns something, and the situation-report shape before
+drafting an update. Each document carries its own instructions; follow those
+over any habit of your own.
+```
 
 Three blocks are not Switch fields at all but are needed for the design to work,
 so they are here too: the [declaration grammar](#10-the-declaration-grammar), the
@@ -939,18 +964,7 @@ later phase.**
       does this for you, and until it exists the responder's availability is one
       unattended restart away from zero.
 
-**Phase 3 — the Switch objects.** All the text is in this document.
-
-- [ ] Adopt the alert channel as the incident hub; paste its instructions and
-      fill in the bindings.
-- [ ] Define the exclusive `responder` role on the hub.
-- [ ] Register the responder agent; set its description; put its definition in
-      its working directory on the host.
-- [ ] Widen its addressing policy **through the API, not the dashboard**.
-- [ ] Create the `pagerduty` reference type and its references; attach the
-      runbook reference.
-- [ ] Create the four documents.
-- [ ] Register the room YAML as a template, as documentation of the shape.
+**Phase 3 — the Switch objects.** Expanded in full below.
 
 **Phase 4 — prove it, on a fake incident, before anyone relies on it.** This is
 the phase that gets skipped and the one that matters.
@@ -984,6 +998,83 @@ the phase that gets skipped and the one that matters.
 - [ ] After the first real incident, review the transcript against this
       instruction set and correct it. The first version will be wrong somewhere,
       and the incident will tell you where.
+
+### The Switch side, step by step
+
+Phase 3 in full. The order is a dependency order, not a preference: each step
+needs an id produced by an earlier one. Where a step can be done in more than
+one place, the easiest is named.
+
+**Collect three ids first.** Nothing below works without them.
+
+1. **The internal bridge id.** Gateway → Messaging Apps, or `list_bridges`.
+   Confirm it is the internal workspace and not a customer-facing one. Write it
+   in the bindings. Everything else can be fixed later; this one publishes an
+   outage to the wrong audience.
+2. **The room group.** Create `<product> incidents` (Gateway → Rooms → Groups, or
+   `create_room_group`). Rooms are filed into it by name, so it must exist before
+   the agent builds its first war room.
+3. **Your PagerDuty service and escalation-policy ids**, from PagerDuty. Not a
+   Switch step, but the bindings are incomplete without them.
+
+**Build the kit, bottom-up.** Documents and references have to exist before the
+package that contains them, and the package before the room that attaches it.
+
+4. **Create the `pagerduty` reference type.** Gateway → Resources → Reference
+   types. Slug `pagerduty`, with the instructions from
+   [block 8](#8-the-pagerduty-reference-type). Do this before the references —
+   a reference needs a type that already exists.
+5. **Create the two references** — PagerDuty and the runbooks — with the
+   instructions from [block 9](#9-the-two-references). Gateway → Resources, or
+   `create_reference`. Set read visibility so the responder's owner can reach
+   them; a reference the agent cannot read is worse than none, because it looks
+   attached.
+6. **Create the four documents** — service owners, situation report, escalation
+   ladder, postmortem — as library documents, each with the instructions from
+   [block 7](#7-the-four-room-documents). The service-owner map needs real
+   content here; the others are the skeletons in this document.
+7. **Assemble the package** from those four documents and the two references,
+   with the instructions above. Gateway only. **Record its id in the bindings** —
+   this is the single id the agent attaches to every war room.
+
+**Stand up the room and the role.**
+
+8. **Adopt the alert channel as the incident hub.** Add the Switch app to the
+   existing channel rather than creating a new one; Switch picks it up. Creating
+   a fresh channel and asking everyone to move is how this gets abandoned.
+9. **Paste the hub's instructions** from [block 3](#3-the-incident-hub-rooms-instructions),
+   with the bindings filled in from steps 1–7. This is the longest single
+   action and the one worth re-reading before saving.
+10. **Define the `responder` role** on the hub, `exclusive: true`, with
+    [block 4](#4-the-responder-role-hub). Requires write access to the room.
+
+**Stand up the agent.**
+
+11. **Register the responder as a remote agent** on the host, through Switch
+    Console. Name it `<product>-responder`. Auto-session must be **on** — on a
+    remote host that setting is what causes the listener to be deployed at all,
+    so with it off nothing will ever wake the agent.
+12. **Set its description** from [block 2](#2-the-agent-description).
+13. **Write its definition** into its working directory on the host —
+    [block 1](#1-the-responder-agents-definition), as `CLAUDE.md` or `AGENTS.md`.
+    The directory must already exist; Switch Console does not clone anything.
+14. **Widen its addressing policy through the API**, not the dashboard. Every
+    agent is created owner-only, and the rotation needs to address it. The
+    gateway's editor drops the symbolic owner rule on save, so widening it there
+    locks the owner out.
+15. **Add the agent to the hub** and give it the alias `responder` there. Confirm
+    `@responder` resolves before going further — it is the handle every later
+    step assumes.
+
+**Finish.**
+
+16. **Register the room YAML as a template.** Gateway → Resources → Templates.
+    Documentation of the shape the agent builds, and a fallback when no agent is
+    online. Lint it on upload and read the findings: only three of them block.
+17. **Check the agent can actually see everything.** Start a session, have it
+    connect to the hub, and confirm it reports the bindings, both references and
+    all four documents. A resource the owner cannot read simply will not appear,
+    and the agent will not tell you it was expecting one.
 
 ### What would make this genuinely solid
 
