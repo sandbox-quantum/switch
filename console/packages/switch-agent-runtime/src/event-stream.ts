@@ -94,6 +94,35 @@ function evictionCode(data: Record<string, unknown>): string {
   return EVICTION_CLOSED;
 }
 
+/**
+ * Read the code off a refused heartbeat.
+ *
+ * Every refusal shares one status, and they call for opposite responses: being
+ * superseded is terminal, because reopening is itself a takeover, while the
+ * rest are recovered by reopening. A server that sends no code — one built
+ * before the refusals were distinguishable — yields null, and null keeps the
+ * reopen it has always had.
+ */
+export function beatRefusalCode(body: string): string | null {
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail;
+    if (typeof detail !== 'object' || detail === null) return null;
+    const code = (detail as { code?: unknown }).code;
+    return typeof code === 'string' && code.length > 0 ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves when any of these signals aborts, so a wait can be given up on. */
+function until(...signals: AbortSignal[]): Promise<void> {
+  const any = AbortSignal.any(signals);
+  if (any.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    any.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
 export interface EventStreamLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
@@ -192,6 +221,21 @@ export class SwitchEventStream {
    * `connection_state`, and against a server too old to send one.
    */
   private generation: number | null = null;
+  private announceAttached: () => void = () => {};
+  /**
+   * Resolved by the first `connection_state` frame of this connection's life.
+   *
+   * The heartbeat waits on it. Until the server has said which incarnation we
+   * are, a tick cannot be fenced, and an unfenced tick is exactly what a
+   * displaced client sends — so beating before the frame arrives is beating as
+   * someone the server cannot place. There is nothing to keep alive yet
+   * either: the connection does not exist until the stream opens it. A server
+   * too old to carry an incarnation still sends the frame, so waiting costs
+   * that case nothing.
+   */
+  private readonly attached: Promise<void> = new Promise((resolve) => {
+    this.announceAttached = resolve;
+  });
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -283,6 +327,27 @@ export class SwitchEventStream {
     this.deps.onEvicted({
       code: EVICTION_CREDENTIALS_REJECTED,
       reason: `Switch rejected the agent credentials (HTTP ${status})${detail ? `: ${detail}` : ''}`,
+      roomId: null,
+    });
+  }
+
+  /**
+   * Give the connection up to the client that now holds it.
+   *
+   * Ends both loops and reports through the same callback an `evicted` frame
+   * does, with the same code, so whatever records the stand-down does not have
+   * to care which door the news came through.
+   */
+  private standDown(): void {
+    if (this.halt.signal.aborted) return;
+    this.deps.log.warn('SwitchEventStream: the connection was taken over — standing down', {
+      event: 'switch_beat_superseded',
+      connectionId: this.deps.connectionId,
+    });
+    this.halt.abort();
+    this.deps.onEvicted({
+      code: EVICTION_TAKEN_OVER,
+      reason: 'another client took this connection over; this one stood down',
       roomId: null,
     });
   }
@@ -454,6 +519,7 @@ export class SwitchEventStream {
           server: frame.data.server ?? null,
         });
         this.reportRooms(frame.data.rooms);
+        this.announceAttached();
         return;
       case 'subscription_changed':
         log.debug('SwitchEventStream: subscription changed', {
@@ -510,12 +576,14 @@ export class SwitchEventStream {
    *
    * A 404 or 409 means we are not receiving — the connection expired, or it has
    * no stream attached. Both are recovered by reopening, which resumes from the
-   * cursor, and both count as a beat that did not land: the remedy is a reopen,
-   * and a reopen that keeps being refused is a client that cannot succeed and
-   * must not be retried at full rate forever. Failing quietly here is the one
-   * thing that must not happen: a client that has stopped receiving while
-   * believing it is connected is exactly the bug this transport exists to
-   * remove.
+   * cursor, and both count as a beat that did not land. The exception is the
+   * 409 that says another client has taken the connection over, which no
+   * reopen recovers because a reopen is itself a takeover: that one ends here.
+   * For the rest the remedy is a reopen, and a reopen that keeps being refused
+   * is a client that cannot succeed and must not be retried at full rate
+   * forever. Failing quietly here is the one thing that must not happen: a
+   * client that has stopped receiving while believing it is connected is
+   * exactly the bug this transport exists to remove.
    *
    * While beats succeed the cadence is fixed and short — the server declares the
    * connection dead without them. While they fail it backs off, because a beat
@@ -551,6 +619,10 @@ export class SwitchEventStream {
       });
     };
 
+    // Nothing to keep alive until the server has told us we are connected, and
+    // nothing to fence the tick with either.
+    await Promise.race([this.attached, until(signal, this.halt.signal)]);
+
     while (!signal.aborted && !this.halt.signal.aborted) {
       try {
         const resp = await this.post('connection/beat', {
@@ -560,6 +632,14 @@ export class SwitchEventStream {
         });
         if (resp.status === 401 || resp.status === 403) {
           this.rejectCredentials(resp.status, await resp.text());
+          return;
+        }
+        if (resp.status === 409 && beatRefusalCode(await resp.text()) === EVICTION_TAKEN_OVER) {
+          // The other door onto a takeover. A displaced client whose socket
+          // dropped before the `evicted` frame reached it learns here instead,
+          // and must end the same way: reopening is a takeover, so a loser
+          // that reopens takes the connection straight back off the winner.
+          this.standDown();
           return;
         }
         if (resp.status === 404 || resp.status === 409) {

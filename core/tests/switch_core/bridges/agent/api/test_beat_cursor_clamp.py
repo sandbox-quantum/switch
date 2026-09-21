@@ -67,9 +67,12 @@ def _connect(protocol: _Protocol, cursor: int = 0) -> Any:
 
 
 async def _beat(protocol: _Protocol, cursor: int) -> Any:
+    # Fenced with the only incarnation these tests ever open. A client that
+    # declares the current revision and then ticks without one is refused, and
+    # nothing here is about that.
     return await connection_beat(
         AGENT_ID,
-        ConnectionBeatRequest(connection_id=CONN_ID, cursor=cursor),
+        ConnectionBeatRequest(connection_id=CONN_ID, cursor=cursor, generation=0),
         SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]
     )

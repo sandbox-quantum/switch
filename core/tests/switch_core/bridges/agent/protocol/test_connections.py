@@ -19,6 +19,7 @@ from switch_core.bridges.agent.protocol.connections import (
     RoomOccupiedError,
     SupersededConnectionError,
     TooManyConnectionsError,
+    UnfencedBeatError,
     UnknownConnectionError,
 )
 
@@ -37,6 +38,7 @@ def _open(
     delivery_filter: str = "all",
     spawn_capable: bool = False,
     cursor: int = 0,
+    speaks: int | None = PROTOCOL_VERSION,
 ):
     return registry.open(
         agent_id=agent_id,
@@ -45,7 +47,7 @@ def _open(
         delivery_filter=delivery_filter,  # type: ignore[arg-type]
         spawn_capable=spawn_capable,
         cursor=cursor,
-        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        declaration=ClientDeclaration(speaks=speaks),
     )
 
 
@@ -210,7 +212,7 @@ def test_a_beat_without_a_stream_is_rejected() -> None:
     # The client is alive but receiving nothing. It must be told, not left
     # believing it is connected.
     with pytest.raises(NoStreamAttachedError):
-        registry.beat(AGENT, "c1", 5, None)
+        registry.beat(AGENT, "c1", 5, conn.stream_generation)
 
 
 def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
@@ -238,10 +240,11 @@ def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
 
 def test_beat_advances_the_cursor_but_never_rewinds_it() -> None:
     registry = ConnectionRegistry()
-    _open(registry, "c1")
+    conn = _open(registry, "c1")
+    current = conn.stream_generation
 
-    assert registry.beat(AGENT, "c1", 7, None).cursor == 7
-    assert registry.beat(AGENT, "c1", 3, None).cursor == 7
+    assert registry.beat(AGENT, "c1", 7, current).cursor == 7
+    assert registry.beat(AGENT, "c1", 3, current).cursor == 7
 
 
 def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
@@ -295,11 +298,41 @@ def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
 
 def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
     registry = ConnectionRegistry()
-    _open(registry, "c1")
-    _open(registry, "c1")
+    _open(registry, "c1", speaks=None)
+    _open(registry, "c1", speaks=None)
 
     # A revision-1 client sends no incarnation. Unknown is not superseded.
     assert registry.beat(AGENT, "c1", 4, None).cursor == 4
+
+
+def test_a_holder_that_carries_an_incarnation_may_not_tick_without_one() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    conn.cursor = 4
+
+    # Otherwise the fence is a formality: a displaced client that never saw its
+    # own incarnation — or one that would rather not be fenced — sends null and
+    # is treated as the holder, which is what the incarnation exists to stop.
+    with pytest.raises(UnfencedBeatError) as caught:
+        registry.beat(AGENT, "c1", 99, None)
+
+    assert caught.value.speaks == PROTOCOL_VERSION
+    assert conn.cursor == 4
+    assert conn.beats == 0
+
+
+def test_what_a_connection_cannot_be_fenced_by_follows_its_current_holder() -> None:
+    registry = ConnectionRegistry()
+    _open(registry, "c1", speaks=None)
+
+    # A reattach replaces the declaration, so an id first opened by a client
+    # that could not be fenced stops being unfenceable the moment one that can
+    # takes it over. Reading the fence off the id's history instead would leave
+    # a permanent hole behind every old client that ever used it.
+    _open(registry, "c1")
+
+    with pytest.raises(UnfencedBeatError):
+        registry.beat(AGENT, "c1", 4, None)
 
 
 # ── Room slots ──────────────────────────────────────────────────────────────

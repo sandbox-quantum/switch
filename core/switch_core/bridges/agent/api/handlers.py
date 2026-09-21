@@ -88,6 +88,7 @@ from switch_core.bridges.agent.protocol.connections import (
     RoomOccupiedError,
     Scope,
     SupersededConnectionError,
+    UnfencedBeatError,
     UnknownConnectionError,
     evicted_session_warning,
 )
@@ -901,9 +902,11 @@ async def connection_beat(
     """The single per-connection heartbeat.
 
     Proves the client is alive and reports its cursor. Rejected when the
-    connection is unknown, dead, or has no stream attached — an agent that can
-    still make calls but is receiving nothing must be told, not left believing
-    it is connected.
+    connection is unknown, dead, has no stream attached, or belongs to another
+    incarnation — an agent that can still make calls but is receiving nothing
+    must be told, not left believing it is connected. A refusal carries a code
+    beside its prose, because the remedies differ: `taken_over` is terminal for
+    the client that receives it, and the rest are recovered by reopening.
     """
     # A cursor above the buffer's head belongs to a previous life of this
     # process: the buffer is in memory, so a restart resets the sequence while
@@ -919,8 +922,19 @@ async def connection_beat(
         conn = protocol.connections.beat(
             agent.id, req.connection_id, cursor, req.generation
         )
-    except (NoStreamAttachedError, SupersededConnectionError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (
+        NoStreamAttachedError,
+        SupersededConnectionError,
+        UnfencedBeatError,
+    ) as exc:
+        # All three refuse the tick, and one of them means something the others
+        # do not: a superseded tick is terminal for the client that sent it,
+        # because reopening is itself a takeover and would pull the connection
+        # back off the client that now holds it. Prose alone could not tell
+        # them apart, so every refusal was answered with a reopen.
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

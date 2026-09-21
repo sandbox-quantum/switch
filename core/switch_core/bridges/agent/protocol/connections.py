@@ -56,13 +56,27 @@ _SERVER_AGENT_PROTOCOL = contract_range("agent-protocol", "switch-core")
 PROTOCOL_VERSION = _SERVER_AGENT_PROTOCOL.speaks
 PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts
 
+# The revision from which a client carries the connection incarnation on every
+# heartbeat. A client that declares it and then ticks without one is refused
+# rather than trusted: an unfenceable tick is only honest from a client that
+# never had an incarnation to send.
+FENCED_PROTOCOL_REVISION = 2
+
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
 
 
 class ConnectionError_(Exception):
-    """Base for connection faults that a client must be told about."""
+    """Base for connection faults that a client must be told about.
+
+    `code` travels beside the prose so a client decides what to do from a
+    stable token rather than by matching words. The refusals a heartbeat can
+    receive share a status and differ only here, and they call for opposite
+    responses — reopen, or stand down.
+    """
+
+    code = "connection_error"
 
 
 class UnknownConnectionError(ConnectionError_):
@@ -75,6 +89,8 @@ class UnknownConnectionError(ConnectionError_):
 
 
 class NoStreamAttachedError(ConnectionError_):
+    code = "no_stream"
+
     def __init__(self, connection_id: str) -> None:
         super().__init__(
             f"connection {connection_id} has no stream attached; reopen the "
@@ -94,7 +110,16 @@ class RoomOccupiedError(ConnectionError_):
 
 
 class SupersededConnectionError(ConnectionError_):
-    """A tick for an incarnation of the connection that is no longer current."""
+    """A tick for an incarnation of the connection that is no longer current.
+
+    Carries the same code as the eviction a displaced stream is sent, because
+    it is the same ending reaching the client by the other door: a client whose
+    socket dropped before that frame arrived learns it here instead. Reopening
+    is a takeover, so this is terminal for whoever receives it — treating it as
+    recoverable is how the loser takes the connection back from the winner.
+    """
+
+    code = "taken_over"
 
     def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
         super().__init__(
@@ -105,6 +130,23 @@ class SupersededConnectionError(ConnectionError_):
         self.connection_id = connection_id
         self.presented = presented
         self.current = current
+
+
+class UnfencedBeatError(ConnectionError_):
+    """A tick carrying no incarnation, from a client whose holder sends one."""
+
+    code = "unfenced"
+
+    def __init__(self, connection_id: str, *, speaks: int) -> None:
+        super().__init__(
+            f"connection {connection_id} is held by a client speaking "
+            f"agent-protocol {speaks}, which carries the connection incarnation "
+            "on every heartbeat; this tick carried none, so it could not be "
+            "fenced and was refused — reopen the stream and beat with the "
+            "incarnation its first frame gives you"
+        )
+        self.connection_id = connection_id
+        self.speaks = speaks
 
 
 CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed"]
@@ -503,13 +545,23 @@ class ConnectionRegistry:
         adopted, drags the winner past events it was never sent. Nothing is
         mutated before the check, so a refused tick costs the winner nothing.
 
-        `None` is a client built before the fence existed. That is unknown, not
-        current: such a tick cannot be fenced and is accepted, which is the
-        honest answer until the protocol floor rises past it. It is recorded on
-        the connection's declaration, so who cannot be fenced is answerable.
+        `None` is a tick that cannot be fenced, and it is accepted only from a
+        connection whose holder is a client built before the fence existed.
+        That client is unknown rather than current, and accepting it is the
+        honest answer until the protocol floor rises past it. Once the holder
+        has declared a revision that carries the incarnation, a tick without
+        one is refused: that client is told its incarnation on the first frame
+        of its stream, so an unfenced tick is either one that never received a
+        frame or one that withheld it, and neither may keep the holder's
+        connection alive. Both answers follow from the declaration on the
+        connection, so who cannot be fenced stays answerable.
         """
         conn = self.require(agent_id, connection_id)
-        if generation is not None and generation != conn.stream_generation:
+        if generation is None:
+            speaks = conn.declaration.speaks
+            if speaks is not None and speaks >= FENCED_PROTOCOL_REVISION:
+                raise UnfencedBeatError(connection_id, speaks=speaks)
+        elif generation != conn.stream_generation:
             raise SupersededConnectionError(
                 connection_id, presented=generation, current=conn.stream_generation
             )

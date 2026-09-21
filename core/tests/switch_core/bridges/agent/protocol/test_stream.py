@@ -665,7 +665,7 @@ async def test_replaced_stream_cannot_capture_its_successors_generation() -> Non
     old = event_stream(conn=conn, registry=registry, buffer=buffer)
     _open(registry)
     assert await _take(old, 1) == []
-    assert registry.beat(AGENT, conn.id, 0, None).stream_attached
+    assert registry.beat(AGENT, conn.id, 0, conn.stream_generation).stream_attached
 
 
 async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
@@ -678,7 +678,9 @@ async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
     replacement = _open(registry)
     assert replacement is not conn
     await old.aclose()
-    assert registry.beat(AGENT, replacement.id, 0, None).stream_attached
+    assert registry.beat(
+        AGENT, replacement.id, 0, replacement.stream_generation
+    ).stream_attached
 
 
 async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_from() -> (

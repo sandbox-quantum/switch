@@ -206,11 +206,16 @@ def score(
     Delivering a message twice is counted too, and separately. It is the
     opposite failure and it does not show up in any of the other figures: an
     extra dispatch adds no latency, loses nothing, and leaves the counts of
-    sent and served messages agreeing with each other.
+    sent and served messages agreeing with each other. It is counted over
+    everything posted rather than over what was delivered, because a message
+    dispatched twice and completed neither time is a duplicate and a delivery
+    failure at once — scored over the delivered subset it would show only as
+    the second, which reads as the topology being slow rather than confused.
     """
-    correlations = set(posted.markers.values()) - undelivered
+    posted_correlations = set(posted.markers.values())
+    duplicated = collector.subset(posted_correlations).repeats(PROVIDER_DISPATCH)
+    correlations = posted_correlations - undelivered
     scoped = collector.subset(correlations)
-    duplicated = scoped.repeats(PROVIDER_DISPATCH)
     populations = (
         ("cold", posted.cold & correlations),
         ("warm", correlations - posted.cold),

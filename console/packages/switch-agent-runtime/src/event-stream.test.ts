@@ -24,9 +24,59 @@ function silentLog() {
   return { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-/** A stream body that stays open, so the loop neither reconnects nor spins. */
+function encodeFrame(name: string, data: unknown): Uint8Array {
+  return new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+/** The frame a server opens every stream with, naming the incarnation this
+ * client is attached to. No `rooms`, so it says nothing about the declared set
+ * a test may be asserting on. */
+function connected(generation = 0): Uint8Array {
+  return encodeFrame('connection_state', { connection_id: 'conn-1', generation });
+}
+
+/** A stream body carrying one frame and then closing, the way the server ends
+ * a displaced stream. */
+function frameThenClose(name: string, data: unknown): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encodeFrame(name, data));
+      controller.close();
+    },
+  });
+}
+
+/**
+ * A connected stream body that stays open, so the loop neither reconnects nor
+ * spins.
+ *
+ * It announces the connection first because the heartbeat waits for that: a
+ * client that has not been told which incarnation it is cannot fence its own
+ * tick, and a body that never announces is a connection that never beats.
+ */
 function openForever(): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({ start() {} });
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(connected());
+    },
+  });
+}
+
+/**
+ * A connected stream body that ends when the client drops the socket.
+ *
+ * `openForever` cannot: its reader is parked on a read that never returns, so
+ * a reopen is invisible to the test rather than absent. A body that honours
+ * the request's signal is what a real socket does, and what a test asserting
+ * on reopens needs.
+ */
+function openUntilAborted(init: { signal: AbortSignal }): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(connected());
+      init.signal.addEventListener('abort', () => controller.close(), { once: true });
+    },
+  });
 }
 
 function urlsFor(fetchMock: { mock: { calls: unknown[][] } }, fragment: string): string[] {
@@ -234,11 +284,26 @@ describe('credentials the server rejects', () => {
 
   it('tells the owner once when the stream and the heartbeat are refused together', async () => {
     vi.useFakeTimers();
+    let opens = 0;
     const fetchMock = vi.fn(async (url: string) => {
       if (String(url).includes('/events')) {
+        // Connected once — the heartbeat has nothing to beat for until then —
+        // and refused on every reopen after that.
+        opens += 1;
+        if (opens === 1) {
+          return {
+            ok: true,
+            status: 200,
+            body: frameThenClose('connection_state', { connection_id: 'conn-1', generation: 0 }),
+            text: async (): Promise<string> => '',
+          };
+        }
         await new Promise((r) => setTimeout(r, BEAT_INTERVAL_MS));
         return refusal(401, 'Invalid agent token');
       }
+      // Slow enough to still be in flight when the reopen is refused: both
+      // doors closing at once is the case this test is about.
+      await new Promise((r) => setTimeout(r, 2 * BEAT_INTERVAL_MS));
       return refusal(401, 'Invalid agent token');
     });
     const evicted: Eviction[] = [];
@@ -249,7 +314,7 @@ describe('credentials the server rejects', () => {
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     abort.abort();
 
-    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(2);
     expect(urlsFor(fetchMock, 'connection/beat')).toHaveLength(1);
     expect(evicted).toHaveLength(1);
     expect(log.error).toHaveBeenCalledTimes(1);
@@ -308,7 +373,13 @@ describe('the heartbeat', () => {
   async function beatsWhileRejected(status: number, windowMs: number): Promise<number> {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/events')) return new Promise(() => {});
+      if (String(url).includes('/events'))
+        return {
+          ok: true,
+          status: 200,
+          body: openForever(),
+          text: async (): Promise<string> => '',
+        };
       return { ok: false, status, text: async (): Promise<string> => '' };
     });
     const { abort } = makeStream(fetchMock, { rooms: [] });
@@ -329,7 +400,13 @@ describe('the heartbeat', () => {
   it('keeps backing off the longer the rejection lasts', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/events')) return new Promise(() => {});
+      if (String(url).includes('/events'))
+        return {
+          ok: true,
+          status: 200,
+          body: openForever(),
+          text: async (): Promise<string> => '',
+        };
       return { ok: false, status: 404, text: async (): Promise<string> => '' };
     });
     const { abort } = makeStream(fetchMock, { rooms: [] });
@@ -343,11 +420,53 @@ describe('the heartbeat', () => {
     abort.abort();
   });
 
+  it('sends nothing until the server has said which incarnation it is', async () => {
+    vi.useFakeTimers();
+    const server = { announce: (): void => {} };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!String(url).includes('/events'))
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            server.announce = () => controller.enqueue(connected(7));
+          },
+        }),
+        text: async (): Promise<string> => '',
+      };
+    });
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(10 * BEAT_INTERVAL_MS);
+    // An unfenced tick is what a displaced client sends, and the server refuses
+    // it. Beating before the first frame would make every healthy connection
+    // open with one.
+    expect(urlsFor(fetchMock, 'connection/beat')).toHaveLength(0);
+
+    server.announce();
+    await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS);
+
+    const beats = fetchMock.mock.calls.filter((c) => String(c[0]).includes('connection/beat'));
+    expect(beats.length).toBeGreaterThan(0);
+    // And it carries the incarnation that frame named, so the server can fence it.
+    const [, sent] = beats[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(sent.body).generation).toBe(7);
+    abort.abort();
+  });
+
   it('returns to the base cadence once a beat lands', async () => {
     vi.useFakeTimers();
     let reject = true;
     const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/events')) return new Promise(() => {});
+      if (String(url).includes('/events'))
+        return {
+          ok: true,
+          status: 200,
+          body: openForever(),
+          text: async (): Promise<string> => '',
+        };
       if (reject) return { ok: false, status: 404, text: async (): Promise<string> => '' };
       return { ok: true, status: 200, text: async (): Promise<string> => '' };
     });
@@ -365,19 +484,6 @@ describe('the heartbeat', () => {
 });
 
 describe('a connection another client takes over', () => {
-  /** A stream body carrying one frame and then closing, the way the server ends
-   * a displaced stream. */
-  function frameThenClose(name: string, data: unknown): ReadableStream<Uint8Array> {
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(
-          new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
-        );
-        controller.close();
-      },
-    });
-  }
-
   it('halts instead of reopening, because reopening would be a takeover back', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async (url: string) =>
@@ -412,6 +518,74 @@ describe('a connection another client takes over', () => {
         roomId: null,
       },
     ]);
+    abort.abort();
+  });
+
+  it('stands down when its heartbeat is refused, rather than taking the connection back', async () => {
+    vi.useFakeTimers();
+    // The case the SSE frame cannot cover: this client's socket dropped before
+    // the eviction reached it, so the refused heartbeat is the only way it ever
+    // hears that it lost.
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? { ok: true, status: 200, body: openForever(), text: async (): Promise<string> => '' }
+        : {
+            ok: false,
+            status: 409,
+            text: async (): Promise<string> =>
+              JSON.stringify({
+                detail: {
+                  code: 'taken_over',
+                  message: 'connection conn-1 was reopened since incarnation 0',
+                },
+              }),
+          }
+    );
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      onEvicted: (eviction) => evicted.push(eviction),
+    });
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    // One beat and no second open: reopening is a takeover, so a loser that
+    // reopens pulls the connection straight back off the client that won it.
+    expect(urlsFor(fetchMock, 'connection/beat')).toHaveLength(1);
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(evicted.map((e) => e.code)).toEqual([EVICTION_TAKEN_OVER]);
+    abort.abort();
+  });
+
+  it('still reopens on a refusal that names no code, the way an old server sends it', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal }) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: openUntilAborted(init),
+            text: async (): Promise<string> => '',
+          }
+        : {
+            ok: false,
+            status: 409,
+            text: async (): Promise<string> =>
+              JSON.stringify({ detail: 'connection conn-1 has no stream attached' }),
+          }
+    );
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      onEvicted: (eviction) => evicted.push(eviction),
+    });
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    // Only the takeover is terminal. Everything else a 409 can mean is still
+    // something a reopen fixes, and a server too old to say which is one of them.
+    expect(urlsFor(fetchMock, '/events').length).toBeGreaterThan(1);
+    expect(evicted).toEqual([]);
     abort.abort();
   });
 

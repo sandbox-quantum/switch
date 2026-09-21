@@ -119,6 +119,48 @@ def test_scoring_carries_a_duplicate_through_to_the_result_and_the_report() -> N
     assert "served 2x: room/a" in rendered
 
 
+def test_scoring_still_sees_a_duplicate_of_a_message_that_was_never_served() -> None:
+    """Dispatched twice and completed neither time is the worst case, not a gap.
+
+    Latency is scored over what was delivered, and scoring duplication over the
+    same subset hid the topology's most confused outcome behind its dullest
+    label: the run reported one message not served, and said nothing about the
+    two hosts that had both been handed it.
+    """
+    collector = TraceCollector()
+    _served(collector, "room/a", host="host:1")
+    collector.record(SSE_PUSH, "room/b")
+    # Handed to two hosts and finished by neither.
+    collector.record(PROVIDER_DISPATCH, "room/b", process="host:1")
+    collector.record(PROVIDER_DISPATCH, "room/b", process="host:2")
+
+    result = score(
+        label="lost twice",
+        rooms=2,
+        collector=collector,
+        posted=Posted(
+            markers={"m-a": "room/a", "m-b": "room/b"}, cold=frozenset({"room/a"})
+        ),
+        undelivered=frozenset({"room/b"}),
+        resources=ResourceReport(
+            label="lost twice",
+            wall_seconds=1.0,
+            samples=2,
+            peak_process_count=3,
+            peak_rss_kib=1024,
+            peak_connections=2,
+            peak_streams=2,
+            cpu_seconds=0.5,
+        ),
+    )
+
+    assert result.duplicated == (("room/b", 2),)
+    assert result.undelivered == ("room/b",)
+    rendered = render([result])
+    assert "SERVED TWICE" in rendered
+    assert "served 2x: room/b" in rendered
+
+
 def test_scoring_reports_no_duplicates_when_every_message_was_served_once() -> None:
     """The figure must be empty on a clean run, so it can gate one."""
     collector = TraceCollector()

@@ -134,8 +134,10 @@ class ConnectionBeatRequest(BaseModel):
     #: The incarnation of the connection this client is attached to, as the
     #: server told it on `connection_state`. Fences the tick: a client that has
     #: been displaced still holds the id and the token, and is otherwise
-    #: indistinguishable from the one that replaced it. Null means a client
-    #: built before the fence existed — unknown, not current.
+    #: indistinguishable from the one that replaced it. Null is accepted only
+    #: while the connection's holder is a client built before the fence existed
+    #: — unknown, not current; from a holder that declares the revision which
+    #: carries it, a tick without one is refused.
     generation: int | None = None
 
 

@@ -52,6 +52,7 @@ import {
   readAgentStore,
   type ResolvedAgent,
 } from './credentials';
+import { beatRefusalCode, EVICTION_TAKEN_OVER } from './event-stream';
 import { reapOrphanedRuntimes } from './reap';
 import { readSse, type SseFrame } from './sse';
 
@@ -1443,14 +1444,23 @@ function startHeartbeat() {
           }),
           signal: abort.signal,
         });
+        if (resp.status === 409 && beatRefusalCode(await resp.text()) === EVICTION_TAKEN_OVER) {
+          // Another client holds this connection now. Reopening is itself a
+          // takeover, so coming back would pull it off whoever has it and
+          // start the two of us trading it. Stop receiving, and say so: a
+          // session that quietly stopped being pushed events is the failure
+          // this transport exists to remove.
+          process.stderr.write(
+            'switch: another client took this connection over — no longer receiving events. ' +
+              'Restart this session if it should hold the connection instead.\n'
+          );
+          stopStreamKeepingRoom();
+          stopHeartbeat();
+          return;
+        }
         if (resp.status === 409 || resp.status === 404) {
-          // The stream is gone, the connection expired, or another client has
-          // taken it over. All three mean we are not receiving; reopening
-          // resumes from the cursor.
-          //
-          // Slowing down matters most in the last case: reopening is itself a
-          // takeover, so at full rate two clients would trade the connection
-          // between them twice a second for as long as both ran.
+          // The stream is gone or the connection expired. Both mean we are not
+          // receiving; reopening resumes from the cursor.
           process.stderr.write(
             `switch: heartbeat rejected (HTTP ${resp.status}) — reopening stream in ${interval / 1000}s\n`
           );
