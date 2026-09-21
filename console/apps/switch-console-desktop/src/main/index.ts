@@ -40,6 +40,7 @@ import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners
 import { trackEvent } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
+import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
 import { initializeDatabase } from './db/initialize';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
@@ -167,6 +168,14 @@ void app.whenReady().then(async () => {
   registerRPCRouter(rpcRouter, ipcMain, withRPCLogContext);
 
   void reconcileResourceSampler();
+
+  // A server registered before its account's memberships were known carries one
+  // tenant-less workspace; this is what gives it its tenant, and what notices a
+  // membership added or withdrawn since the last launch. Unawaited: it talks to
+  // every signed-in server, and the window must not wait on any of them.
+  void reconcileAllWorkspaces().catch((error: unknown) => {
+    log.error('Workspace reconcile could not run; every server was left as it was:', error);
+  });
 
   // Before any session is relaunched below, so a runtime abandoned by a
   // previous run is gone before its replacement starts — but not awaited: it

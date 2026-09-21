@@ -10,6 +10,7 @@ const fetchBridges = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const requireWorkspace = vi.hoisted(() => vi.fn());
+const listWorkspacesForServer = vi.hoisted(() => vi.fn(async () => [{ id: 'ws' }]));
 const switchTenant = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
@@ -88,6 +89,7 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('./workspaces-store', () => ({
   getActiveWorkspaceId: vi.fn(),
   listWorkspaces: vi.fn(),
+  listWorkspacesForServer,
   requireWorkspace,
   setActiveWorkspaceId: vi.fn(),
 }));
@@ -240,12 +242,20 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(switchTenant).not.toHaveBeenCalled();
   });
 
-  it('asserts nothing for a workspace with no tenant of its own', async () => {
+  it('asserts nothing for a workspace with no tenant, where its server has only the one', async () => {
     requireWorkspace.mockResolvedValue(workspace(null));
 
     await workspacesController.listBridges('ws');
 
     expect(switchTenant).not.toHaveBeenCalled();
     expect(getSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it('refuses a workspace with no tenant where its server has several', async () => {
+    requireWorkspace.mockResolvedValue(workspace(null));
+    listWorkspacesForServer.mockResolvedValueOnce([{ id: 'ws' }, { id: 'ws-2' }]);
+
+    await expect(workspacesController.listBridges('ws')).rejects.toThrow('has not been matched');
+    expect(fetchBridges).not.toHaveBeenCalled();
   });
 });

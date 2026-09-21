@@ -5,6 +5,8 @@ import { appService } from '@main/core/app/service';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
+import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddServerParams,
@@ -46,6 +48,26 @@ const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
 
 function signInFailureReason(result: Result<unknown, LoginError>): TelemetrySignInFailure {
   return result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind];
+}
+
+/**
+ * Match the server's workspaces to the memberships the account turns out to
+ * have. Signing in is the first moment the gateway will answer that, and the
+ * renderer reloads its workspace list straight afterwards — so it is awaited,
+ * to be there when it does.
+ *
+ * Logged rather than raised: the sign-in itself succeeded, and reporting it as
+ * a failure would send the user back to a form that has nothing left to do.
+ */
+async function adoptWorkspaces(server: SwitchServer): Promise<void> {
+  try {
+    await reconcileServerWorkspaces(server.id);
+  } catch (error) {
+    log.warn('workspaces: signed in, but could not read the account’s workspaces', {
+      server: server.id,
+      error: String(error),
+    });
+  }
 }
 
 /**
@@ -124,6 +146,7 @@ export const switchServersController = createRPCController({
     }
     const result = await passwordLogin(server, params.email, params.password);
     reportSignIn('password', server, signInFailureReason(result));
+    if (result.success) await adoptWorkspaces(server);
     return result;
   },
 
@@ -136,6 +159,7 @@ export const switchServersController = createRPCController({
     }
     const result = await oidcLogin(server);
     reportSignIn('oidc', server, signInFailureReason(result));
+    if (result.success) await adoptWorkspaces(server);
     return result;
   },
 

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { db, type DrizzleTx } from '@main/db/client';
-import { kv, type WorkspaceRow, workspaces } from '@main/db/schema';
-import type { Workspace } from '@shared/core/workspaces/workspaces';
+import { agents, kv, type WorkspaceRow, workspaces } from '@main/db/schema';
+import type { Workspace, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 
 const ACTIVE_WORKSPACE_KV_KEY = 'activeWorkspaceId';
 
@@ -19,8 +19,17 @@ function mapRow(row: WorkspaceRow): Workspace {
   };
 }
 
+// `createdAt` is a one-second-granularity timestamp and a reconcile writes a
+// server's rows in one loop, so ties are the norm rather than the exception. The
+// id breaks them, because callers that take the first row — the one the window
+// falls back to — must land on the same one every launch.
+const workspaceOrder = [asc(workspaces.createdAt), asc(workspaces.id)];
+
 export async function listWorkspaces(): Promise<Workspace[]> {
-  const rows = await db.select().from(workspaces).orderBy(asc(workspaces.createdAt));
+  const rows = await db
+    .select()
+    .from(workspaces)
+    .orderBy(...workspaceOrder);
   return rows.map(mapRow);
 }
 
@@ -29,7 +38,7 @@ export async function listWorkspacesForServer(serverId: string): Promise<Workspa
     .select()
     .from(workspaces)
     .where(eq(workspaces.serverId, serverId))
-    .orderBy(asc(workspaces.createdAt));
+    .orderBy(...workspaceOrder);
   return rows.map(mapRow);
 }
 
@@ -112,6 +121,90 @@ export function insertServerWorkspace(
     })
     .returning()
     .all();
+  return mapRow(row!);
+}
+
+/**
+ * Match a workspace row to the tenant it holds, and keep what the gateway owns
+ * about that tenant up to date.
+ *
+ * An update rather than a replacement, because the row's id is what the agents,
+ * the active selection and the saved navigation all point at — a new row for
+ * the same workspace would detach every one of them. The name is deliberately
+ * left alone: it is what the user already sees, and a gateway's first workspace
+ * is called "Default", so taking the remote name would rename every install's
+ * only workspace to that.
+ */
+export async function setWorkspaceTenant(
+  workspaceId: string,
+  tenant: { id: string; slug: string; role: WorkspaceRole }
+): Promise<void> {
+  await db
+    .update(workspaces)
+    .set({
+      tenantId: tenant.id,
+      slug: tenant.slug,
+      role: tenant.role,
+      updatedAt: sql`CURRENT_TIMESTAMP`,
+    })
+    .where(eq(workspaces.id, workspaceId));
+}
+
+/**
+ * Whether any agent still belongs to a workspace.
+ *
+ * Asked of the tenant-less row a server is registered with, to tell a
+ * placeholder nothing was ever put in from the record of where a set of agents
+ * lives. The first can be given a membership or dropped; the second cannot be
+ * guessed at, because moving it would move those agents somewhere the user has
+ * no way to see.
+ */
+export async function workspaceHasAgents(workspaceId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(eq(agents.workspaceId, workspaceId))
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * Drop a workspace nothing points at, moving the active selection off it first.
+ *
+ * Only ever the placeholder row a server is registered with, and only once a
+ * reconcile has found that every membership the account holds is already held
+ * by another row — leaving it would put a workspace in the switcher that
+ * belongs to no membership at all. The caller checks it is empty first; the
+ * selection is a plain `kv` value that no foreign key reaches, so it has to be
+ * moved here rather than left pointing at a row that has gone.
+ */
+export async function discardEmptyWorkspace(workspaceId: string): Promise<void> {
+  const workspace = await requireWorkspace(workspaceId);
+  const sibling = (await listWorkspacesForServer(workspace.serverId)).find(
+    (candidate) => candidate.id !== workspaceId
+  );
+  if (!sibling) throw new Error(`Workspace ${workspaceId} is the only one on its Switch server`);
+  if ((await getActiveWorkspaceId()) === workspaceId) await setActiveWorkspaceId(sibling.id);
+  await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+}
+
+/** Record a workspace the user belongs to that this install has no row for. */
+export async function createTenantWorkspace(
+  serverId: string,
+  tenant: { id: string; slug: string; name: string; role: WorkspaceRole }
+): Promise<Workspace> {
+  const [row] = await db
+    .insert(workspaces)
+    .values({
+      id: randomUUID(),
+      serverId,
+      name: tenant.name,
+      tenantId: tenant.id,
+      slug: tenant.slug,
+      role: tenant.role,
+      updatedAt: sql`CURRENT_TIMESTAMP`,
+    })
+    .returning();
   return mapRow(row!);
 }
 
