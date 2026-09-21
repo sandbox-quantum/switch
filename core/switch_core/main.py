@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.agent.api.handlers import session_end_reporter
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -431,10 +430,6 @@ async def run(config: SwitchConfig) -> None:
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = ConnectionRegistry()
-    # Every connection this registry closes reports the session that ended,
-    # whichever of the five paths closed it. Installed here because this is the
-    # one registry the whole process shares.
-    connections.set_close_listener(session_end_reporter(telemetry))
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
@@ -543,6 +538,11 @@ async def run(config: SwitchConfig) -> None:
         connections=connections,
         telemetry=telemetry,
     )
+    # Every connection this registry closes reports the session that ended,
+    # whichever of the five paths closed it — and only for one the handler saw
+    # start, so a stream rejected at the room claim is not a session.
+    connections.set_close_listener(protocol.sessions.on_close)
+
     # ── Server-side connector lifecycle ─────────────────────────────────────
     connector_lifecycle = ServerSideConnectorLifecycleService(
         connector_store=connector_store,

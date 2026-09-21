@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.api.handlers import session_end_reporter
+from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
@@ -128,7 +129,8 @@ class TestSessionEndsAreReportedFromEveryClosePath:
             environment=None,
         )
         registry = ConnectionRegistry()
-        registry.set_close_listener(session_end_reporter(service))
+        self.reporter = SessionReporter(service)
+        registry.set_close_listener(self.reporter.on_close)
         return registry
 
     def _open(self, registry: ConnectionRegistry, agent: str = "agent-1") -> str:
@@ -142,6 +144,9 @@ class TestSessionEndsAreReportedFromEveryClosePath:
             cursor=0,
             declaration=ClientDeclaration(),
         )
+        # The handler reports the start once the stream is handed back; these
+        # tests are about the close, so mark it started directly.
+        self.reporter._started.add(connection_id)
         return connection_id
 
     async def test_a_close_reports_the_session(self) -> None:
@@ -205,6 +210,7 @@ class TestSessionEndsAreReportedFromEveryClosePath:
         """The registry's contract is that the connection is closed and handed
         back. An observer cannot be allowed to change that."""
         registry = ConnectionRegistry()
+        self.reporter = SessionReporter(None)
         registry.set_close_listener(lambda conn: (_ for _ in ()).throw(RuntimeError()))
         connection_id = self._open(registry)
 
@@ -271,3 +277,112 @@ class TestTelemetryNeverPreventsBoot:
         )
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
+
+
+class TestARejectedStreamIsNotASession:
+    """The flood that reached the first real dashboard.
+
+    Opening a stream creates a connection, then claims rooms on it, and a claim
+    can fail — the room is held by another live session, or the agent is not a
+    member. The connection is closed and the client retries. Reporting the
+    start when the connection was created turned every rejected attempt into a
+    session that began and ended in the same second, for as long as the client
+    kept trying, which is forever.
+    """
+
+    def _reporter(self, sink: _RecordingSink) -> SessionReporter:
+        return SessionReporter(
+            TelemetryService(
+                sink=sink,  # type: ignore[arg-type]
+                enabled=True,
+                client_id=VALID_UUID,
+                service_name="switch-core",
+                version="1.0.0",
+                environment=None,
+            )
+        )
+
+    def _conn(self, registry: ConnectionRegistry) -> str:
+        connection_id = uuid.uuid4().hex
+        registry.open(
+            agent_id="agent-1",
+            connection_id=connection_id,
+            scope="all",
+            delivery_filter="all",
+            spawn_capable=False,
+            cursor=0,
+            declaration=ClientDeclaration(),
+        )
+        return connection_id
+
+    async def test_a_connection_closed_before_the_stream_reports_nothing(
+        self,
+    ) -> None:
+        """The room claim failed, so no session ever began — and reporting an
+        end for it would be an end with no start."""
+        sink = _RecordingSink()
+        reporter = self._reporter(sink)
+        registry = ConnectionRegistry()
+        registry.set_close_listener(reporter.on_close)
+
+        connection_id = self._conn(registry)
+        registry.close(connection_id, "room already claimed")
+        await _settle()
+
+        assert sink.sent == []
+
+    async def test_a_retry_loop_produces_no_events_at_all(self) -> None:
+        """Twenty rejected attempts is what the dashboard actually saw."""
+        sink = _RecordingSink()
+        reporter = self._reporter(sink)
+        registry = ConnectionRegistry()
+        registry.set_close_listener(reporter.on_close)
+
+        for _ in range(20):
+            connection_id = self._conn(registry)
+            registry.close(connection_id, "room already claimed")
+        await _settle()
+
+        assert sink.sent == []
+
+    async def test_a_stream_that_was_handed_back_reports_both(self) -> None:
+        sink = _RecordingSink()
+        reporter = self._reporter(sink)
+        registry = ConnectionRegistry()
+        registry.set_close_listener(reporter.on_close)
+
+        connection_id = self._conn(registry)
+        conn = registry.get(connection_id)
+        assert conn is not None
+        await reporter.started(
+            SimpleNamespace(metadata_={"known_agent_type": "codex"}),  # type: ignore[arg-type]
+            conn,
+        )
+        registry.close(connection_id, "heartbeat lapsed")
+        await _settle()
+
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_session_ended",
+        ]
+
+    async def test_the_started_set_does_not_grow(self) -> None:
+        """It is bounded by the live connection count; the sweep reaps anything
+        whose client went away, so every id is eventually discarded."""
+        sink = _RecordingSink()
+        reporter = self._reporter(sink)
+        registry = ConnectionRegistry()
+        registry.set_close_listener(reporter.on_close)
+
+        for _ in range(50):
+            connection_id = self._conn(registry)
+            conn = registry.get(connection_id)
+            assert conn is not None
+            await reporter.started(
+                SimpleNamespace(metadata_=None),  # type: ignore[arg-type]
+                conn,
+            )
+            registry.close(connection_id, "heartbeat lapsed")
+        await _settle()
+
+        assert reporter._started == set()

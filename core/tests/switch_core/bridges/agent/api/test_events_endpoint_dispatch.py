@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from starlette.responses import StreamingResponse
 
 from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
+from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
@@ -30,9 +31,10 @@ class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
         self.connections = ConnectionRegistry()
-        # Opening and closing a stream reports a session; None means report
-        # nothing, which is what these tests want.
+        # Opening and closing a stream reports a session; a reporter with no
+        # telemetry service reports nothing, which is what these tests want.
         self.telemetry = None
+        self.sessions = SessionReporter(None)
         self.polled = False
         self.recorded: list[tuple[str, str, ClientDeclaration]] = []
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import time
-from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
@@ -82,7 +80,6 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
-    Connection,
     ConnectionError_,
     DeliveryFilter,
     NoStreamAttachedError,
@@ -104,8 +101,6 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
-from switch_core.telemetry import TelemetryService, emit_safely
-from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -762,49 +757,6 @@ def _resolve_start_cursor(
         ) from exc
 
 
-def session_end_reporter(
-    telemetry: TelemetryService | None,
-) -> Callable[[Connection], None]:
-    """A close listener that reports the session that just ended.
-
-    Installed once on the `ConnectionRegistry`, rather than called at each
-    site that closes a connection. There are five such sites — the sweep, the
-    stale-connection check, the stream's own lapse detection, and two
-    room-claim failures — and only three were reporting; the two that were not
-    also `pop` the connection, so the sweep could never recover them. A
-    listener cannot be forgotten by a sixth.
-
-    The reason is mapped from the registry's free-text string into the
-    catalogue's closed set here, in one place, so a new reason added there
-    degrades to `error` rather than failing validation at the moment a session
-    drops.
-    """
-
-    def report(conn: Connection) -> None:
-        emit_safely(
-            telemetry,
-            "agent_session_ended",
-            {
-                "duration_seconds": max(time.monotonic() - conn.opened_at, 0.0),
-                "reason": _SESSION_END_REASONS.get(conn.closed_reason or "", "error"),
-            },
-        )
-
-    return report
-
-
-# The registry records why it closed a connection as prose. These are the
-# strings it actually uses; anything else is reported as `error` rather than
-# rejected, because a lost session event is worse than an imprecise one.
-_SESSION_END_REASONS = {
-    "heartbeat lapsed": "heartbeat_lapsed",
-    "room already claimed": "room_claimed",
-    "invalid room subscription": "error",
-    "replaced": "replaced",
-    "shutdown": "normal",
-}
-
-
 async def _open_event_stream(
     *,
     agent: Agent,
@@ -873,21 +825,6 @@ async def _open_event_stream(
     # reason an agent could not connect.
     await protocol.record_client_declaration(agent.id, connection_id, declaration)
 
-    # A fresh connection, not a supervisor reattaching to one it already had —
-    # `open()` hands back the existing Connection in that case, and counting it
-    # would turn one long session into a session per reconnect.
-    if conn.stream_generation == 0:
-        runtime = normalise_known_agent_type(agent.metadata_)
-        emit_safely(
-            protocol.telemetry,
-            "agent_session_started",
-            {"known_agent_type": runtime},
-        )
-        if protocol.telemetry is not None:
-            await protocol.telemetry.emit_milestone(
-                "first_session_started", known_agent_type=runtime
-            )
-
     # Rooms are claimed before the stream starts, not after it opens. A client
     # reconnecting already knows which room it was in; making it re-subscribe
     # afterwards would race the catch-up, and buffered events for that room
@@ -914,6 +851,17 @@ async def _open_event_stream(
         except ConnectionError_ as exc:
             protocol.connections.close(conn.id, "room already claimed")
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Every claim succeeded and the stream is about to be returned, so this is
+    # the first moment a session exists. Reporting it where the connection was
+    # created instead counted every rejected attempt as a session that began
+    # and ended at once, which a retrying client repeats indefinitely.
+    #
+    # `stream_generation == 0` keeps a supervisor reattaching to a connection
+    # it already had from reading as a new session: `open()` hands back the
+    # existing Connection and bumps the generation rather than making another.
+    if conn.stream_generation == 0:
+        await protocol.sessions.started(agent, conn)
 
     return StreamingResponse(
         event_stream(

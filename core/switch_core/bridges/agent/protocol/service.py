@@ -22,6 +22,7 @@ from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_detail import (
@@ -253,9 +254,10 @@ def _describe_room(room: Room) -> RoomDescriptor:
 
 
 class ProtocolService:
-    # Class-level default: several tests assemble a minimal instance without
+    # Class-level defaults: several tests assemble a minimal instance without
     # `__init__`, and `emit_safely` treats None as "report nothing".
     telemetry: TelemetryService | None = None
+    sessions: SessionReporter = SessionReporter(None)
 
     def __init__(
         self,
@@ -279,6 +281,10 @@ class ProtocolService:
         telemetry: TelemetryService | None = None,
     ) -> None:
         self.telemetry = telemetry
+        # Pairs session start with session end. Held here because the handler
+        # that starts a session and the registry listener that ends one must
+        # be the same object — an end is reported only for a start this saw.
+        self.sessions = SessionReporter(telemetry)
         self.agent_store = agent_store
         self.agent_session_store = agent_session_store
         self.agent_runtime_state_store = AgentRuntimeStateStore()
