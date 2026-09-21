@@ -95,6 +95,9 @@ export function gitHubCredentialResponse(operation: string, input: string, token
     const at = line.indexOf('=');
     if (at <= 0 || line.includes('\r') || line.includes('\0')) return '';
     const key = line.slice(0, at);
+    // Git's array-valued extensions can repeat; only scalar protocol/host
+    // fields determine where this helper supplies credentials.
+    if (key.endsWith('[]')) continue;
     if (fields.has(key)) return '';
     fields.set(key, line.slice(at + 1));
   }
