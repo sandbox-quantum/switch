@@ -10,7 +10,7 @@ import { describeFailure, failureText } from '@renderer/lib/errors/describe-fail
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import {
@@ -31,8 +31,8 @@ import { openRoomChannel } from './room-links';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
-function roomDetailKey(serverId: string, roomId: string) {
-  return ['remote-room-detail', serverId, roomId] as const;
+function roomDetailKey(workspaceId: string, roomId: string) {
+  return ['remote-room-detail', workspaceId, roomId] as const;
 }
 
 /**
@@ -48,15 +48,15 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
 }: {
   roomId: string;
 }) {
-  const serverId = switchRoomsStore.roomServerId(roomId);
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
   const query = useQuery({
-    queryKey: roomDetailKey(serverId ?? '', roomId),
-    queryFn: () => rpc.switchServers.getRoomDetail({ serverId: serverId as string, roomId }),
-    enabled: serverId !== null,
+    queryKey: roomDetailKey(workspaceId ?? '', roomId),
+    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
+    enabled: workspaceId !== null,
   });
 
-  if (serverId === null) {
-    return <PanelNotice title="This room’s server is still loading." />;
+  if (workspaceId === null) {
+    return <PanelNotice title="This room’s workspace is still loading." />;
   }
 
   if (query.isPending) {
@@ -95,9 +95,9 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
         {/* Keyed on the room so the drafts below belong to the room on screen:
             switching rooms starts a fresh form rather than carrying half-typed
             text across. */}
-        <GeneralSection key={room.id} serverId={serverId} room={room} />
-        <ParticipantsSection serverId={serverId} room={room} />
-        <DeleteRoomSection serverId={serverId} room={room} />
+        <GeneralSection key={room.id} workspaceId={workspaceId} room={room} />
+        <ParticipantsSection workspaceId={workspaceId} room={room} />
+        <DeleteRoomSection workspaceId={workspaceId} room={room} />
       </div>
     </div>
   );
@@ -111,16 +111,16 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
  * none to find — the room is someone else's.
  */
 const DeleteRoomSection = observer(function DeleteRoomSection({
-  serverId,
+  workspaceId,
   room,
 }: {
-  serverId: string;
+  workspaceId: string;
   room: RemoteRoomDetail;
 }) {
   const showDeleteRoomModal = useShowModal('deleteRoomModal');
   const { navigate } = useNavigate();
 
-  if (!switchRoomsStore.canDeleteRoom(serverId, room)) return null;
+  if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
 
   return (
     <section className="border-t border-border pt-6">
@@ -138,7 +138,7 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
           className="shrink-0 border-red-500/40 text-red-500 hover:bg-red-500/10 hover:text-red-500"
           onClick={() =>
             showDeleteRoomModal({
-              serverId,
+              workspaceId,
               roomId: room.id,
               roomName: roomTitle(room),
               // The page this is on is the deleted room's own, so staying would
@@ -197,7 +197,7 @@ type SaveState = { phase: 'idle' | 'saving' | 'saved' } | { phase: 'failed'; mes
  *
  * One request carries both fields, so the pair is stored together or not at all.
  */
-function GeneralSection({ serverId, room }: { serverId: string; room: RemoteRoomDetail }) {
+function GeneralSection({ workspaceId, room }: { workspaceId: string; room: RemoteRoomDetail }) {
   const queryClient = useQueryClient();
   const savedDescription = room.description;
   const savedInstructions = room.instructions ?? '';
@@ -210,13 +210,13 @@ function GeneralSection({ serverId, room }: { serverId: string; room: RemoteRoom
   async function save() {
     setState({ phase: 'saving' });
     try {
-      const updated = await rpc.switchServers.updateRoom({
-        serverId,
+      const updated = await rpc.workspaces.updateRoom({
+        workspaceId,
         roomId: room.id,
         description,
         instructions,
       });
-      queryClient.setQueryData(roomDetailKey(serverId, room.id), updated);
+      queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
       setState({ phase: 'saved' });
     } catch (cause) {
       setState({ phase: 'failed', message: failureText(cause, 'Could not save the change.') });
@@ -311,10 +311,10 @@ function Field({
  * hierarchy the room does not have.
  */
 const ParticipantsSection = observer(function ParticipantsSection({
-  serverId,
+  workspaceId,
   room,
 }: {
-  serverId: string;
+  workspaceId: string;
   room: RemoteRoomDetail;
 }) {
   const queryClient = useQueryClient();
@@ -324,11 +324,11 @@ const ParticipantsSection = observer(function ParticipantsSection({
   // Names for agents belonging to other installs, which this computer has no
   // local record of. Shares its key with the rest of the app, so it is usually
   // already in hand.
-  const remoteAgents = useRemoteAgents(serverId);
+  const remoteAgents = useWorkspaceAgents(workspaceId);
   const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
 
   async function refresh() {
-    await queryClient.invalidateQueries({ queryKey: roomDetailKey(serverId, room.id) });
+    await queryClient.invalidateQueries({ queryKey: roomDetailKey(workspaceId, room.id) });
     await switchRoomsStore.refreshRoomState();
   }
 
@@ -369,9 +369,11 @@ const ParticipantsSection = observer(function ParticipantsSection({
           {room.agentIds.map((agentId) => (
             <ParticipantCard
               key={agentId}
-              mark={<AgentMark agentId={agentId} serverId={serverId} remoteById={remoteById} />}
-              name={agentNameFor(agentId, serverId, remoteById)}
-              detail={agentKindFor(agentId, serverId, remoteById)}
+              mark={
+                <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />
+              }
+              name={agentNameFor(agentId, workspaceId, remoteById)}
+              detail={agentKindFor(agentId, workspaceId, remoteById)}
             />
           ))}
           {room.connectedUserNames.map((name) => (
@@ -389,7 +391,7 @@ const ParticipantsSection = observer(function ParticipantsSection({
         </div>
       )}
 
-      {adding && <AddAgentPanel serverId={serverId} room={room} onAdded={refresh} />}
+      {adding && <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refresh} />}
     </section>
   );
 });
@@ -422,11 +424,11 @@ function ParticipantCard({
  * whose owner never agreed to it.
  */
 const AddAgentPanel = observer(function AddAgentPanel({
-  serverId,
+  workspaceId,
   room,
   onAdded,
 }: {
-  serverId: string;
+  workspaceId: string;
   room: RemoteRoomDetail;
   onAdded: () => Promise<void>;
 }) {
@@ -435,11 +437,11 @@ const AddAgentPanel = observer(function AddAgentPanel({
   const [error, setError] = useState<string | null>(null);
 
   const members = new Set(room.agentIds);
-  const { data: remoteAgents } = useRemoteAgents(serverId);
+  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
   const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
   const query = filter.trim().toLowerCase();
   const candidates = agentsStore
-    .agentsOnServer(serverId)
+    .agentsInWorkspace(workspaceId)
     .filter((agent) => agent.switchAgentId !== null && !members.has(agent.switchAgentId))
     .filter((agent) => query === '' || agent.name.toLowerCase().includes(query));
 
@@ -447,8 +449,8 @@ const AddAgentPanel = observer(function AddAgentPanel({
     setBusyId(switchAgentId);
     setError(null);
     try {
-      await rpc.switchServers.addRoomAgents({
-        serverId,
+      await rpc.workspaces.addRoomAgents({
+        workspaceId,
         roomId: room.id,
         agentIds: [switchAgentId],
         direction: 'agents_to_room',
@@ -558,18 +560,18 @@ function PanelNotice({
 /** An agent's own picture, beside the human participants' initials discs. */
 function AgentMark({
   agentId,
-  serverId,
+  workspaceId,
   remoteById,
 }: {
   agentId: string;
-  serverId: string;
+  workspaceId: string;
   remoteById: Map<string, RemoteAgentSummary>;
 }) {
   const remote = remoteById.get(agentId) ?? null;
   return (
     <span className="flex size-7 shrink-0 items-center justify-center">
       <AgentAvatar
-        name={agentNameFor(agentId, serverId, remoteById)}
+        name={agentNameFor(agentId, workspaceId, remoteById)}
         iconUrl={remote?.iconUrl ?? null}
         size={26}
       />
@@ -579,19 +581,22 @@ function AgentMark({
 
 /** This install's record of a Switch agent, which is where its provider is
  * known — the server says what type an agent is, not what runs it here. */
-function localAgentFor(switchAgentId: string, serverId: string) {
+function localAgentFor(switchAgentId: string, workspaceId: string) {
   return (
-    agentsStore.agentsOnServer(serverId).find((a) => a.switchAgentId === switchAgentId) ?? null
+    agentsStore.agentsInWorkspace(workspaceId).find((a) => a.switchAgentId === switchAgentId) ??
+    null
   );
 }
 
 function agentNameFor(
   switchAgentId: string,
-  serverId: string,
+  workspaceId: string,
   remoteById: Map<string, RemoteAgentSummary>
 ): string {
   return (
-    localAgentFor(switchAgentId, serverId)?.name ?? remoteById.get(switchAgentId)?.name ?? 'Agent'
+    localAgentFor(switchAgentId, workspaceId)?.name ??
+    remoteById.get(switchAgentId)?.name ??
+    'Agent'
   );
 }
 
@@ -599,10 +604,10 @@ function agentNameFor(
  * otherwise the type the server knows it by. */
 function agentKindFor(
   switchAgentId: string,
-  serverId: string,
+  workspaceId: string,
   remoteById: Map<string, RemoteAgentSummary>
 ): string {
-  const providerId = localAgentFor(switchAgentId, serverId)?.providerId ?? null;
+  const providerId = localAgentFor(switchAgentId, workspaceId)?.providerId ?? null;
   const knownType = remoteById.get(switchAgentId)?.knownAgentType ?? null;
   return providerDisplayName(providerId) ?? providerDisplayName(knownType) ?? 'agent';
 }

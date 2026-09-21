@@ -9,7 +9,7 @@ import {
   fetchSdkSessions,
   fetchSdkSnapshot,
 } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -58,118 +58,122 @@ class RemoteSessionReconciler {
         this.stop(agentId);
         return;
       }
-      if (!agent.serverId) throw new Error('This linked agent has no Switch server configured.');
-      const server = await getServer(agent.serverId);
-      if (!server) throw new Error('The session discovery server is missing.');
-      const remote = await fetchSdkSessions(server);
-      if (!Array.isArray(remote))
-        throw new Error(
-          'The server returned an incompatible session list. Update Console and server together.'
+      if (!agent.workspaceId) throw new Error('This linked agent has no workspace configured.');
+      // One lease for the whole pass. The reads below are tenant-owned — the
+      // session list, a session's snapshot, a room's name — and a selection
+      // that changed between them would answer with another workspace's
+      // sessions while looking entirely correct.
+      await withWorkspaceSession(agent.workspaceId, async (server) => {
+        const remote = await fetchSdkSessions(server);
+        if (!Array.isArray(remote))
+          throw new Error(
+            'The server returned an incompatible session list. Update Console and server together.'
+          );
+        const failures: string[] = [];
+        const local = new Map(
+          (
+            await db
+              .select({ id: sessions.id, status: sessions.status })
+              .from(sessions)
+              .where(eq(sessions.agentId, agentId))
+          ).map((row) => [row.id, row.status])
         );
-      const failures: string[] = [];
-      const local = new Map(
-        (
-          await db
-            .select({ id: sessions.id, status: sessions.status })
-            .from(sessions)
-            .where(eq(sessions.agentId, agentId))
-        ).map((row) => [row.id, row.status])
-      );
-      for (const value of remote) {
-        try {
-          if (
-            value &&
-            typeof value === 'object' &&
-            'agentId' in value &&
-            value.agentId !== agent.switchAgentId
-          )
-            continue;
-          if (value && typeof value === 'object' && 'discoveryError' in value)
-            throw new Error(String(value.discoveryError));
-          const session = sessionSchema.parse(value);
-          if (!AGENT_PROVIDER_IDS.some((provider) => provider === session.provider))
-            throw new Error(
-              `Session ${session.sessionId} uses unsupported provider "${session.provider}". Update Console to open it.`
-            );
-          if (session.agentId !== agent.switchAgentId || sessionWasDeleted(session.sessionId))
-            continue;
-          if (local.has(session.sessionId)) await syncSdkSessionActivity(session);
-          if (
-            local.has(session.sessionId) &&
-            (session.status === 'stopped' ||
-              session.status === 'error' ||
-              session.retired ||
-              (local.get(session.sessionId) === 'cancelled' &&
-                (session.status === 'ready' || session.status === 'running')))
-          ) {
-            const status =
-              session.status === 'stopped'
-                ? 'cancelled'
-                : session.status === 'ready' || session.status === 'running'
-                  ? 'in_progress'
-                  : 'review';
-            if (local.get(session.sessionId) !== status) {
-              await sessionService.updateSessionStatus(session.sessionId, status);
-              events.emit(sessionStatusUpdatedChannel, { sessionId: session.sessionId, status });
+        for (const value of remote) {
+          try {
+            if (
+              value &&
+              typeof value === 'object' &&
+              'agentId' in value &&
+              value.agentId !== agent.switchAgentId
+            )
+              continue;
+            if (value && typeof value === 'object' && 'discoveryError' in value)
+              throw new Error(String(value.discoveryError));
+            const session = sessionSchema.parse(value);
+            if (!AGENT_PROVIDER_IDS.some((provider) => provider === session.provider))
+              throw new Error(
+                `Session ${session.sessionId} uses unsupported provider "${session.provider}". Update Console to open it.`
+              );
+            if (session.agentId !== agent.switchAgentId || sessionWasDeleted(session.sessionId))
+              continue;
+            if (local.has(session.sessionId)) await syncSdkSessionActivity(session);
+            if (
+              local.has(session.sessionId) &&
+              (session.status === 'stopped' ||
+                session.status === 'error' ||
+                session.retired ||
+                (local.get(session.sessionId) === 'cancelled' &&
+                  (session.status === 'ready' || session.status === 'running')))
+            ) {
+              const status =
+                session.status === 'stopped'
+                  ? 'cancelled'
+                  : session.status === 'ready' || session.status === 'running'
+                    ? 'in_progress'
+                    : 'review';
+              if (local.get(session.sessionId) !== status) {
+                await sessionService.updateSessionStatus(session.sessionId, status);
+                events.emit(sessionStatusUpdatedChannel, { sessionId: session.sessionId, status });
+              }
             }
+            // A retired session is finished; adopting one puts a row back for
+            // work that will never resume.
+            if (session.status === 'stopped' || session.retired) continue;
+            let roomId = session.roomIds?.[0] ?? null;
+            if (session.roomIds === undefined && !local.has(session.sessionId)) {
+              const snapshot = snapshotSchema.parse(
+                await fetchSdkSnapshot(server, session.sessionId)
+              );
+              roomId =
+                snapshot.session.roomIds?.[0] ??
+                [...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ??
+                null;
+            }
+            if (roomId)
+              switchRoomService.mirrorRemoteSessionRoom(
+                {
+                  sessionId: session.sessionId,
+                  providerId: agent.providerId,
+                  ptyId: makeHookSessionId(agent.providerId, session.sessionId),
+                },
+                roomId,
+                agent.switchAgentId
+              );
+            if (!roomId && session.roomIds !== undefined)
+              switchRoomService.clearSession(session.sessionId);
+            if (local.has(session.sessionId)) continue;
+            const result = await sessionService.createSession({
+              id: session.sessionId,
+              agentId,
+              title: roomId
+                ? `Session for ${(await fetchRoomDetail(server, roomId)).name}`
+                : 'Shared session',
+              attach: false,
+              startSource: 'adopted',
+            });
+            if (!result.success) {
+              if (result.error.type === 'already-exists') continue;
+              throw new Error(`Could not adopt SDK session: ${JSON.stringify(result.error)}`);
+            }
+            if (roomId)
+              switchRoomService.mirrorRemoteSessionRoom(
+                {
+                  sessionId: session.sessionId,
+                  providerId: agent.providerId,
+                  ptyId: makeHookSessionId(agent.providerId, session.sessionId),
+                },
+                roomId,
+                agent.switchAgentId
+              );
+          } catch (error) {
+            failures.push(String(error));
           }
-          // A retired session is finished; adopting one puts a row back for
-          // work that will never resume.
-          if (session.status === 'stopped' || session.retired) continue;
-          let roomId = session.roomIds?.[0] ?? null;
-          if (session.roomIds === undefined && !local.has(session.sessionId)) {
-            const snapshot = snapshotSchema.parse(
-              await fetchSdkSnapshot(server, session.sessionId)
-            );
-            roomId =
-              snapshot.session.roomIds?.[0] ??
-              [...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ??
-              null;
-          }
-          if (roomId)
-            switchRoomService.mirrorRemoteSessionRoom(
-              {
-                sessionId: session.sessionId,
-                providerId: agent.providerId,
-                ptyId: makeHookSessionId(agent.providerId, session.sessionId),
-              },
-              roomId,
-              agent.switchAgentId
-            );
-          if (!roomId && session.roomIds !== undefined)
-            switchRoomService.clearSession(session.sessionId);
-          if (local.has(session.sessionId)) continue;
-          const result = await sessionService.createSession({
-            id: session.sessionId,
-            agentId,
-            title: roomId
-              ? `Session for ${(await fetchRoomDetail(server, roomId)).name}`
-              : 'Shared session',
-            attach: false,
-            startSource: 'adopted',
-          });
-          if (!result.success) {
-            if (result.error.type === 'already-exists') continue;
-            throw new Error(`Could not adopt SDK session: ${JSON.stringify(result.error)}`);
-          }
-          if (roomId)
-            switchRoomService.mirrorRemoteSessionRoom(
-              {
-                sessionId: session.sessionId,
-                providerId: agent.providerId,
-                ptyId: makeHookSessionId(agent.providerId, session.sessionId),
-              },
-              roomId,
-              agent.switchAgentId
-            );
-        } catch (error) {
-          failures.push(String(error));
         }
-      }
-      if (failures.length)
-        throw new Error(
-          `${failures.length} SDK session(s) could not be discovered. ${failures[0]}`
-        );
+        if (failures.length)
+          throw new Error(
+            `${failures.length} SDK session(s) could not be discovered. ${failures[0]}`
+          );
+      });
       this.failures.delete(agentId);
     } catch (error) {
       const message = `Session discovery failed: ${String(error)}`;

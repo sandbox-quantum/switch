@@ -20,12 +20,14 @@ vi.mock('./getAgentById', () => ({
     id: 'local',
     switchAgentId: 'agent',
     serverId: 'server',
+    workspaceId: 'workspace',
     providerId: 'codex',
     autoApprove: false,
   }),
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchSdkSessions: mocks.list,

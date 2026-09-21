@@ -20,11 +20,11 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 
 /**
- * Everything the server has that a template can point at, read once by the
+ * Everything the workspace has that a template can point at, read once by the
  * wizard and handed to every field that offers a choice from it.
  */
 export type EntityLists = {
-  serverId: string;
+  workspaceId: string | null;
   agents: AgentPick[];
   agentsLoading: boolean;
   rooms: RoomPick[];
@@ -32,10 +32,10 @@ export type EntityLists = {
   bridges: RemoteBridge[];
   /** Null while the signed-in user's linked accounts are unknown. */
   identities: LinkedIdentity[] | null;
-  /** Platform users Switch has already seen on this server. */
+  /** Platform users Switch has already seen in this workspace. */
   knownUsers: RemoteExternalUser[];
   /** The bridge the room will land on, for directory lookups. Null when the
-   * template leaves it open and the server has no default. */
+   * template leaves it open and the workspace has no default. */
   bridgeId: string | null;
 };
 
@@ -54,7 +54,7 @@ function agentTileFor(name: string, lists: EntityLists, onRemove: () => void) {
     <ChosenAgentTile
       key={name}
       agent={found}
-      subtitle={agentProviderLabelFor(found.id, lists.serverId)}
+      subtitle={agentProviderLabelFor(found.id, lists.workspaceId)}
       onRemove={onRemove}
     />
   ) : (
@@ -84,7 +84,10 @@ function AgentCombobox({
       onPick={(agent) => onPick(agent.name)}
       searchText={(agent) => agent.name}
       renderItem={(agent) => (
-        <AgentPickerRow agent={agent} subtitle={agentProviderLabelFor(agent.id, lists.serverId)} />
+        <AgentPickerRow
+          agent={agent}
+          subtitle={agentProviderLabelFor(agent.id, lists.workspaceId)}
+        />
       )}
       disabled={lists.agentsLoading}
       placeholder={lists.agentsLoading ? 'Loading agents…' : 'Search agents…'}
@@ -275,12 +278,13 @@ function UserCombobox({
   const [query, setQuery] = useState('');
   const debounced = useDebounce(query.trim(), SEARCH_DEBOUNCE_MS);
   const bridgeId = lists.bridgeId;
-  const searchable = bridgeId !== null && debounced.length >= MIN_QUERY_LENGTH;
+  const searchable =
+    bridgeId !== null && lists.workspaceId !== null && debounced.length >= MIN_QUERY_LENGTH;
   const directory = useQuery({
-    queryKey: ['bridge-directory', lists.serverId, bridgeId, debounced],
+    queryKey: ['bridge-directory', lists.workspaceId, bridgeId, debounced],
     queryFn: () =>
-      rpc.switchServers.searchBridgeDirectory({
-        serverId: lists.serverId,
+      rpc.workspaces.searchBridgeDirectory({
+        workspaceId: lists.workspaceId as string,
         bridgeId: bridgeId as string,
         query: debounced,
       }),

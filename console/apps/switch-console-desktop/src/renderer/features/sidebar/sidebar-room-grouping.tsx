@@ -54,14 +54,14 @@ export function isRoomNameKnown(roomKey: string): boolean {
  */
 export function deleteRoomAction(
   roomKey: string,
-  showDeleteRoomModal: (args: { serverId: string; roomId: string; roomName: string }) => void
+  showDeleteRoomModal: (args: { workspaceId: string; roomId: string; roomName: string }) => void
 ): (() => void) | null {
   if (roomKey === UNASSIGNED_ROOM_KEY) return null;
-  const serverId = switchRoomsStore.roomServerId(roomKey);
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomKey);
   const room = switchRoomsStore.roomSummaryById(roomKey);
-  if (!serverId || !room) return null;
-  if (!switchRoomsStore.canDeleteRoom(serverId, room)) return null;
-  return () => showDeleteRoomModal({ serverId, roomId: roomKey, roomName: room.name });
+  if (!workspaceId || !room) return null;
+  if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
+  return () => showDeleteRoomModal({ workspaceId, roomId: roomKey, roomName: room.name });
 }
 
 /** Show a room's conversation in the main panel (no-op for Unassigned, which

@@ -20,13 +20,14 @@ const AGENT = {
   id: 'agent-1',
   name: 'agent one',
   serverId: 'server-1',
+  workspaceId: 'workspace-1',
   switchAgentId: 'switch-agent-1',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { switchServers: { backfillAgentIcons } },
+  rpc: { workspaces: { backfillAgentIcons } },
 }));
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
   agentsStore: {
