@@ -99,9 +99,9 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/ssh2": "^1.15.5",
     "@vitejs/plugin-react": "^4.7.0",
-    "@vitest/browser": "^4.1.10",
-    "@vitest/browser-playwright": "^4.1.10",
-    "@vitest/browser-preview": "^4.1.10",
+    "@vitest/browser": "^5.0.1",
+    "@vitest/browser-playwright": "^5.0.1",
+    "@vitest/browser-preview": "^5.0.1",
     "allotment": "^1.20.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -147,7 +147,7 @@
     "typescript": "^6.0.2",
     "vite": "^6.4.1",
     "vitest": "^5.0.1",
-    "vitest-browser-react": "^2.1.0"
+    "vitest-browser-react": "^2.3.0"
   },
   "engines": {
     "node": ">=24.0.0",
