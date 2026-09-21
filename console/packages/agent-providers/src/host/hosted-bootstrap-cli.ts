@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url';
 import { runHostedBootstrap } from './hosted-bootstrap';
+import { runGitHubCredentialHelper } from './hosted-github';
 
 async function main(): Promise<void> {
+  if (process.argv[2] === '--git-credential') {
+    if (process.argv.length !== 4) throw new Error('Invalid Git credential helper arguments.');
+    await runGitHubCredentialHelper(process.argv[3]);
+    return;
+  }
   const [stateDirectory, specPath, ...extra] = process.argv.slice(2);
   if (!stateDirectory || !specPath || extra.length)
     throw new Error(

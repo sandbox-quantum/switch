@@ -6,8 +6,8 @@ import json
 import os
 import signal
 import stat
-import sys
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +26,7 @@ BOOT_1 = "11111111-1111-4111-8111-111111111111"
 BOOT_2 = "22222222-2222-4222-8222-222222222222"
 FS_UUID = "33333333-3333-4333-8333-333333333333"
 RUNTIME_FP = "a" * 64
+GITHUB_CREDENTIAL = "synthetic-github-credential"
 
 
 def config() -> worker.WorkerConfig:
@@ -101,6 +102,15 @@ def secret(provider: str = "provider-value", switch_token: str = "switch-value")
     )
 
 
+def github_secret(credential: object = GITHUB_CREDENTIAL) -> str:
+    value = json.loads(secret())
+    value["githubCredential"] = credential
+    value["deployment"]["github"] = {
+        "credentialPath": "/run/switch-hosted/secrets/github"
+    }
+    return json.dumps(value)
+
+
 class Response(io.BytesIO):
     def __enter__(self):
         return self
@@ -149,6 +159,57 @@ class WorkerTests(unittest.TestCase):
         insecure["switchCredentials"]["env"]["SWITCH_API_ENDPOINT"] = "http://switch.invalid/api"
         with self.assertRaisesRegex(worker.WorkerError, "endpoint is invalid"):
             worker.parse_secret_document(json.dumps(insecure), config())
+
+    def test_optional_github_contract_is_strict_and_never_enters_launch(self):
+        legacy = worker.parse_secret_document(secret(), config())
+        self.assertIsNone(legacy.github_credential)
+
+        parsed = worker.parse_secret_document(github_secret(), config())
+        self.assertEqual(parsed.github_credential, GITHUB_CREDENTIAL)
+        identity = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
+        arguments, environment = worker.build_launch(
+            config(),
+            identity,
+            Path("/run/switch-hosted/secrets/deployment.json"),
+            123,
+            456,
+        )
+        serialized = json.dumps({"arguments": arguments, "environment": environment})
+        self.assertNotIn(GITHUB_CREDENTIAL, serialized)
+        self.assertNotIn("githubCredential", json.dumps(parsed.deployment))
+
+        missing_credential = json.loads(github_secret())
+        del missing_credential["githubCredential"]
+        missing_deployment = json.loads(github_secret())
+        del missing_deployment["deployment"]["github"]
+        for invalid in (missing_credential, missing_deployment):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(worker.WorkerError, "provided together"):
+                    worker.parse_secret_document(json.dumps(invalid), config())
+
+        wrong_path = json.loads(github_secret())
+        wrong_path["deployment"]["github"]["credentialPath"] = "/tmp/github"
+        with self.assertRaisesRegex(worker.WorkerError, "path is not fixed"):
+            worker.parse_secret_document(json.dumps(wrong_path), config())
+
+        unexpected = json.loads(github_secret())
+        unexpected["deployment"]["github"]["extra"] = True
+        with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
+            worker.parse_secret_document(json.dumps(unexpected), config())
+
+    def test_github_credential_requires_bounded_printable_ascii_without_whitespace(self):
+        invalid_credentials = [
+            "",
+            "two words",
+            "line\nbreak",
+            "control\x1fvalue",
+            "non-ascii-\N{SNOWMAN}",
+            "x" * (16 * 1024 + 1),
+        ]
+        for credential in invalid_credentials:
+            with self.subTest(credential_length=len(credential)):
+                with self.assertRaisesRegex(worker.WorkerError, "GitHub credential is invalid"):
+                    worker.parse_secret_document(github_secret(credential), config())
 
     def test_secret_arn_supplies_region_without_ambient_aws_configuration(self):
         boto3 = mock.Mock()
@@ -506,7 +567,7 @@ class WorkerTests(unittest.TestCase):
                 cleanup()
 
     def test_secret_directory_is_root_owned_group_read_only_and_cleaned(self):
-        parsed = worker.parse_secret_document(secret(), config())
+        parsed = worker.parse_secret_document(github_secret(), config())
 
         class TmpfsCommands:
             def run(self, arguments, capture=True):
@@ -529,6 +590,8 @@ class WorkerTests(unittest.TestCase):
                 for path in directory.iterdir():
                     self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o440)
                     self.assertEqual(path.stat().st_uid, os.getuid())
+                self.assertEqual((directory / "github").read_text(), GITHUB_CREDENTIAL + "\n")
+                self.assertNotIn(GITHUB_CREDENTIAL, (directory / "deployment.json").read_text())
                 cleanup()
                 self.assertFalse(directory.exists())
 

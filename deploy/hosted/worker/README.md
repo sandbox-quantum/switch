@@ -157,3 +157,54 @@ lifecycle is stop/start or reboot of the same EC2 instance. The worker has no
 inbound service; outbound Internet access is supplied by the isolated worker
 VPC's NAT path, whose hourly and data-processing charges continue independently
 of instance runtime.
+
+## Optional GitHub credential delivery
+
+For GitHub.com HTTPS operations, add both fields to the assignment secret:
+
+- Top-level `githubCredential`: the raw personal access token, delivered through
+  the secret-store workflow, never a room message or repository file.
+- `deployment.github`: `{ "credentialPath": "/run/switch-hosted/secrets/github" }`.
+
+Both fields must be present together or absent together. Existing assignments
+without GitHub remain supported. The token must be nonempty printable ASCII
+without whitespace, at most 16 KiB. The worker writes it into the same private
+0440 tmpfs secret directory and removes it with the rest of the active bundle.
+No GitHub token enters the root launcher's environment or arguments.
+
+The bootstrap validates the personal token against GitHub's authenticated-user
+endpoint before starting the provider. Redirects are refused and errors exclude
+response bodies and credential values. This checks token identity only: repository
+permissions, organization approval/SSO, branch rules and model readiness require
+separate checks. Installation tokens and GitHub Enterprise are outside this slice.
+
+The agent receives `GH_TOKEN` for GitHub CLI and a Git credential helper through
+non-secret environment configuration. The helper answers only HTTPS requests to
+exactly `github.com`, clears ordinary inherited credential helpers, and never
+stores credentials. Git terminal prompts and gh interactive prompts are disabled.
+Git and GitHub CLI must be pinned and installed in the worker image; this change
+supplies authentication, not a repository checkout or automatic PR-creation step.
+Commands such as `git clone https://github.com/OWNER/REPO.git`, `git push`, and
+`gh pr create` use their normal permission checks and error behavior.
+
+Use a personal token restricted to the selected disposable repository, with
+permissions to read/write repository contents and create pull requests. Extra
+operations, such as changing workflow files, may require additional permissions;
+do not grant them implicitly. A rejected startup check prevents the provider
+from launching. Revocation during work is enforced by GitHub on subsequent
+requests, not a continuous platform revocation watcher. Replace a token through
+the same secret reference and perform an explicit stop/start to pick it up;
+rotation does not interrupt/restart a running turn automatically. Adding or removing GitHub
+on an existing saved deployment changes its specification and requires explicit
+reprovisioning; the bootstrap will not silently rewrite persisted configuration.
+
+GitHub tokens are kept out of saved launch plans/configuration. Supervisor output
+redacts the raw token, URL-encoded form and the helper's Basic-auth encoding.
+This is defense against accidental exposure, not a boundary against code running
+as that agent: it can read its own credentials and deliberately transform them.
+Do not run `gh auth login`, configure a persistent credential store, or embed a
+token in a remote URL as part of onboarding.
+
+References: [Git credential helpers](https://git-scm.com/docs/gitcredentials),
+[GitHub CLI environment](https://cli.github.com/manual/gh_help_environment), and
+[authenticated-user API](https://docs.github.com/en/rest/users/users#get-the-authenticated-user).

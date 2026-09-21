@@ -122,6 +122,7 @@ class SecretBundle:
     deployment: dict[str, Any]
     provider_credential: str
     switch_credentials: dict[str, Any]
+    github_credential: str | None = None
 
 
 @dataclass(frozen=True)
@@ -252,7 +253,7 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
     value = _strict(
         value,
         {"version", "assignment", "deployment", "providerCredential", "switchCredentials"},
-        set(),
+        {"githubCredential"},
         "assignment secret",
     )
     if value["version"] != 1:
@@ -281,7 +282,16 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
     )
     if deployment["session"]["agentId"] != config.agent_id:
         raise WorkerError("Hosted deployment belongs to a different agent.")
-    return SecretBundle(deployment, credential, switch_credentials)
+    has_github_credential = "githubCredential" in value
+    has_github_deployment = "github" in deployment
+    if has_github_credential != has_github_deployment:
+        raise WorkerError(
+            "GitHub credential and deployment configuration must be provided together."
+        )
+    github_credential = (
+        _github_credential(value["githubCredential"]) if has_github_credential else None
+    )
+    return SecretBundle(deployment, credential, switch_credentials, github_credential)
 
 
 def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
@@ -297,7 +307,7 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
             "switchCredentialsPath",
             "mcpRuntime",
         },
-        set(),
+        {"github"},
         "hosted deployment",
     )
     if value["version"] != 1:
@@ -357,6 +367,21 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     _text(value["mcpRuntime"], "deployment MCP runtime")
     if value["mcpRuntime"] != config.runtime.mcp_runtime:
         raise WorkerError("Hosted deployment MCP runtime is not the pinned runtime.")
+    if "github" in value:
+        github = _strict(value["github"], {"credentialPath"}, set(), "deployment GitHub")
+        if github["credentialPath"] != str(RUNTIME_DIRECTORY / "secrets/github"):
+            raise WorkerError("Hosted deployment GitHub credential path is not fixed.")
+    return value
+
+
+def _github_credential(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 16 * 1024
+        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
+    ):
+        raise WorkerError("GitHub credential is invalid.")
     return value
 
 
@@ -996,6 +1021,8 @@ def materialize_secrets(
                 "switch.json": json.dumps(bundle.switch_credentials, separators=(",", ":")),
                 "deployment.json": json.dumps(bundle.deployment, separators=(",", ":")),
             }
+            if bundle.github_credential is not None:
+                files["github"] = bundle.github_credential + "\n"
             for name, value in files.items():
                 descriptor = os.open(
                     name,

@@ -8,6 +8,7 @@ import {
   prepareHostedDeployment,
   runHostedBootstrap,
 } from './hosted-bootstrap';
+import { githubLaunchEnvironment } from './hosted-github';
 import type { fenceDeadOwner } from './process-fence';
 import type { superviseSharedHost } from './supervisor';
 
@@ -15,6 +16,7 @@ const roots: string[] = [];
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -71,6 +73,22 @@ async function fixture(): Promise<{
   return { root, state, workspace, providerCredential, switchCredentials, specPath, spec };
 }
 
+async function configureGitHub(
+  input: Awaited<ReturnType<typeof fixture>>,
+  token = 'github-secret-value'
+): Promise<string> {
+  const credentialPath = join(input.root, 'mounted-secrets', 'github');
+  await writeFile(credentialPath, `${token}\n`, { mode: 0o600 });
+  input.spec.github = { credentialPath };
+  return credentialPath;
+}
+
+function mockGitHubValidation(status = 200, body = '{}') {
+  const request = vi.fn(async () => new Response(body, { status }));
+  vi.stubGlobal('fetch', request);
+  return request;
+}
+
 it('persists one stable identity without persisting either credential value', async () => {
   const input = await fixture();
   const first = await prepareHostedDeployment(input.state, input.spec);
@@ -82,6 +100,8 @@ it('persists one stable identity without persisting either credential value', as
   );
   expect(first.providerEnvironment.ANTHROPIC_API_KEY).toBe('provider-secret-value');
   expect(first.providerEnvironment.SWITCH_API_TOKEN).toBeUndefined();
+  expect(first.providerEnvironment.GH_TOKEN).toBeUndefined();
+  expect(first.config.execution?.inheritEnv).not.toContain('GH_TOKEN');
   const persisted = [
     await readFile(join(input.state, 'hosted-deployment.json'), 'utf8'),
     await readFile(join(input.state, 'config.json'), 'utf8'),
@@ -158,6 +178,105 @@ it('reloads a replaced provider secret at bootstrap without changing session ide
   ].join('\n');
   expect(persisted).not.toContain('provider-secret-value');
   expect(persisted).not.toContain('rotated-provider-secret');
+});
+
+it('validates and launches with a GitHub token without persisting it', async () => {
+  const input = await fixture();
+  await configureGitHub(input);
+  const request = mockGitHubValidation();
+  const prepared = await prepareHostedDeployment(input.state, input.spec);
+
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(prepared.providerEnvironment.GH_TOKEN).toBe('github-secret-value');
+  expect(prepared.config.execution?.inheritEnv).toContain('GH_TOKEN');
+  for (const [key, value] of Object.entries(githubLaunchEnvironment())) {
+    expect(prepared.config.start.input.env[key]).toBe(value);
+    expect(prepared.providerEnvironment[key]).toBe(value);
+  }
+  const persisted = [
+    await readFile(join(input.state, 'hosted-deployment.json'), 'utf8'),
+    await readFile(join(input.state, 'config.json'), 'utf8'),
+  ].join('\n');
+  expect(persisted).not.toContain('github-secret-value');
+});
+
+it('reloads and validates a rotated GitHub token without changing the saved plan', async () => {
+  const input = await fixture();
+  const credentialPath = await configureGitHub(input);
+  const request = mockGitHubValidation();
+  const first = await prepareHostedDeployment(input.state, input.spec);
+  await writeFile(credentialPath, 'rotated-github-secret\n', { mode: 0o600 });
+  const second = await prepareHostedDeployment(input.state, input.spec);
+
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(second.config).toEqual(first.config);
+  expect(second.providerEnvironment.GH_TOKEN).toBe('rotated-github-secret');
+  const persisted = [
+    await readFile(join(input.state, 'hosted-deployment.json'), 'utf8'),
+    await readFile(join(input.state, 'config.json'), 'utf8'),
+  ].join('\n');
+  expect(persisted).not.toContain('github-secret-value');
+  expect(persisted).not.toContain('rotated-github-secret');
+});
+
+it('rejects a GitHub credential inside hosted state or workspace before validation', async () => {
+  const input = await fixture();
+  await mkdir(input.state, { mode: 0o700 });
+  const stateCredential = join(input.state, 'github');
+  await writeFile(stateCredential, 'github-secret-value\n', { mode: 0o600 });
+  input.spec.github = { credentialPath: stateCredential };
+  const request = mockGitHubValidation();
+
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    'GitHub credential file must be mounted outside'
+  );
+  const workspaceCredential = join(input.workspace, 'github');
+  await writeFile(workspaceCredential, 'github-secret-value\n', { mode: 0o600 });
+  input.spec.github = { credentialPath: workspaceCredential };
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    'GitHub credential file must be mounted outside'
+  );
+  expect(request).not.toHaveBeenCalled();
+  await expect(readFile(join(input.state, 'hosted-deployment.json'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+});
+
+it('sanitizes GitHub validation rejection and does not launch or persist a plan', async () => {
+  const input = await fixture();
+  await configureGitHub(input);
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  mockGitHubValidation(401, 'remote-body-that-must-not-escape github-secret-value');
+  let launched = false;
+  const supervise: typeof superviseSharedHost = async () => {
+    launched = true;
+  };
+  const fenceDeadWorker: typeof fenceDeadOwner = async () => {};
+  let message = '';
+  try {
+    await runHostedBootstrap(
+      {
+        stateDirectory: input.state,
+        specPath: input.specPath,
+        sharedDaemonEntrypoint: '/opt/switch/shared-host-daemon.mjs',
+        signal: new AbortController().signal,
+      },
+      { supervise, fenceDeadWorker }
+    );
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+
+  expect(message).toContain('GitHub rejected the credential');
+  expect(message).not.toContain('github-secret-value');
+  expect(message).not.toContain('remote-body-that-must-not-escape');
+  expect(launched).toBe(false);
+  await expect(readFile(join(input.state, 'hosted-deployment.json'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+  await expect(readFile(join(input.state, 'config.json'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
 });
 
 it('rejects overlapping state and workspace paths before creating runtime homes', async () => {
@@ -285,6 +404,36 @@ it('wires the existing daemon to the foreground supervisor and forwards shutdown
   expect(launched?.args.join(' ')).not.toContain('switch-secret-value');
   expect(launched?.env.ANTHROPIC_API_KEY).toBe('provider-secret-value');
   expect(launched?.signal.aborted).toBe(true);
+});
+
+it('redacts raw and encoded GitHub credentials from launcher failures', async () => {
+  const input = await fixture();
+  const token = 'github-secret:%value';
+  await configureGitHub(input, token);
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  mockGitHubValidation();
+  const encoded = encodeURIComponent(token);
+  const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
+  const supervise: typeof superviseSharedHost = async () => {
+    throw new Error(`github rejected ${token} encoded ${encoded} basic ${basic}`);
+  };
+  const fenceDeadWorker: typeof fenceDeadOwner = async () => {};
+  let message = '';
+  try {
+    await runHostedBootstrap(
+      {
+        stateDirectory: input.state,
+        specPath: input.specPath,
+        sharedDaemonEntrypoint: '/opt/switch/shared-host-daemon.mjs',
+        signal: new AbortController().signal,
+      },
+      { supervise, fenceDeadWorker }
+    );
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+
+  expect(message).toBe('github rejected [REDACTED] encoded [REDACTED] basic [REDACTED]');
 });
 
 it('redacts the mounted provider credential from launcher failures', async () => {
