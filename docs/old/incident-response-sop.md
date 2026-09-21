@@ -757,27 +757,47 @@ custom — has the same value shape. **No credential, no client, no tool, no
 network call.** If nobody installs the MCP server, the agent reads a paragraph
 telling it to do something it cannot do.
 
-### What this closes
+### What this closes, and what it does not
 
-The SOP's hardest open question — how Switch learns who is on call — stops being
-a Switch question. The agent asks PagerDuty for the on-call for the escalation
-policy, gets names, and passes them to `create_room(user_names=[...])`. Switch
-never models a rotation, never syncs a schedule, and never goes stale.
+**Closed: knowing who is on call.** The agent asks PagerDuty for the on-call on
+the relevant escalation policy and gets an answer that is true at that moment.
+Switch never models a rotation, never syncs a schedule, and never goes stale.
+That is a much better outcome than the alternative that suggested itself first —
+teaching Switch to expand a chat-platform user group into members — which would
+have been a real feature with real maintenance and still a second copy of a
+rotation PagerDuty already owns.
 
-This is a much better outcome than the alternative that suggested itself first
-(teach Switch to expand a Slack user group into members). That would have been a
-real feature with real maintenance, and it would still have been a second copy of
-a rotation PagerDuty already owns.
+**Not closed: reaching the person it names.** This is a genuine hole, found by
+standing an agent up against a real PagerDuty rather than by reading code, and
+earlier drafts of this document understated it.
 
-Two residual constraints, neither fatal:
+PagerDuty identifies a person by name and email. Switch resolves a room invitee
+by the *username the bridge knows*, matched against external users it has already
+seen. An email is not a chat handle, so the lookup and the invite do not join up.
+Concretely, the agent can reliably **say** "the on-call for payments is Jane
+Doe", and cannot reliably **add or mention her**, unless she is already a known
+user on that bridge under a name the agent can derive.
 
-- The people it names must already be known to the bridge — `add_users_to_room`
-  resolves usernames against the external users Switch has seen on that bridge,
-  and an unknown name comes back unresolved rather than failing loudly. The
-  agent should report unresolved names in the room rather than quietly
-  inviting four of five people.
-- PagerDuty's names are not Slack's. The bindings block needs a mapping, or the
-  deployment needs PagerDuty users' Slack handles populated on their profiles.
+Three ways to close it, in increasing order of doing it properly:
+
+1. **A static map**, maintained beside the service-owner map the SOP needs
+   anyway: PagerDuty email → chat handle. One table, goes stale, works today, and
+   costs nothing because the neighbouring table has to be written regardless.
+2. **Populate chat handles on PagerDuty profiles**, so the mapping lives with the
+   people rather than in a file. Better, and dependent on how that PagerDuty is
+   administered.
+3. **Resolve it live**, with a directory lookup from email to platform id. Correct
+   and self-maintaining, and it needs a credential Switch does not hold and has
+   nowhere to put — see [Gaps](#gaps) G20.
+
+Take (1) now; it is a row in a table someone is already writing. But do not
+record this as closed: until one of the three exists, "invite the on-call
+primary" degrades to "name the on-call primary and invite whoever the bindings
+list statically". [Gaps](#gaps) G1.
+
+And the related failure to design against: an unresolvable invitee comes back
+unresolved rather than raising, so a war room can quietly come up short. The
+agent must report the gap by name.
 
 ### The two real constraints on MCP
 
@@ -1276,21 +1296,28 @@ Switch has no rotation, schedule or concept of duty, and after working the desig
 through, **it should not acquire one**. The agent asks PagerDuty and passes the
 answer to `create_room`. What remains is smaller:
 
-**G1 — There is no identity mapping across systems.**
-PagerDuty knows a person by one name, Slack by another, Switch by a third.
-`add_users_to_room` resolves usernames against external users the bridge has
-already seen; a name it cannot place is returned as unresolved rather than
-raising, so a war room can quietly come up with four of the five people it should
-have. There is also no way at all to invite someone the bridge has never seen.
+**G1 — There is no identity mapping across systems, and it is load-bearing.**
+PagerDuty knows a person by name and email; the bridge knows them by a platform
+handle; Switch resolves an invitee against external users it has already seen on
+that bridge. Those do not join up, so the on-call *lookup* does not become an
+on-call *invite*. This was confirmed against a live PagerDuty connection, not
+inferred: an agent can read the schedule and still be unable to add or mention
+the person it read.
+
+Two distinct failures sit here. There is no mapping from an external identity to
+a platform handle. And a name that cannot be resolved is returned as unresolved
+rather than raising, so a war room quietly comes up short unless the caller
+inspects the result.
 
 > **Proposed ticket:** *Surface unresolved invitees as a first-class result* —
 > so a caller must handle "these three could not be added" rather than reading it
 > out of a list. **S**
 
-> **Proposed follow-up:** *Cross-system identity mapping* — a per-bridge map from
-> an external identity to a Switch user, so an agent holding a PagerDuty
-> user can find the Slack account. Until then the mapping lives in the hub's
-> bindings block, by hand. **M**
+> **Proposed ticket:** *Cross-system identity mapping* — a per-bridge map from an
+> external identity (email, or a third-party user id) to a Switch user and its
+> platform handle, so an agent holding a PagerDuty user can reach the person.
+> Until it exists the mapping is a hand-maintained table in the hub's bindings.
+> **M**
 
 ### B. The template format
 
