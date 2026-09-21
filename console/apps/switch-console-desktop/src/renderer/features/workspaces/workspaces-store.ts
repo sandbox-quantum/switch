@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
+import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /**
@@ -22,6 +23,15 @@ export class WorkspacesStore {
 
   constructor() {
     makeAutoObservable(this);
+
+    // The reconcile adds, matches and drops rows without a window asking, so
+    // the calls the servers store makes are not the only times this list moves.
+    // A membership gained or lost since the last launch would otherwise stay
+    // invisible until the next one, and a row the boot sweep deleted would go
+    // on being offered here after it had gone.
+    events.on(workspacesChangedChannel, () => {
+      void this.refresh();
+    });
   }
 
   get active(): Workspace | null {
