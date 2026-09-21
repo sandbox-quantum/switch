@@ -205,9 +205,7 @@ def test_untimed_routes_are_real_routes():
     is a constant of the app module.
     """
     from switch_core.bridges.agent.api.handlers import router
-    from switch_core.observability.http import UNTIMED_ROUTES
-
-    from switch_core.observability.http import MCP_ROUTE
+    from switch_core.observability.http import MCP_ROUTE, UNTIMED_ROUTES
 
     # `app.py` mounts this router at "/agents". The MCP entry is a mount rather
     # than a route, so it is checked by `test_mcp_traffic_is_labelled` instead.
