@@ -1,5 +1,5 @@
 import { log } from '@main/lib/logger';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 export type RemoveLoadableAgentConfigParams = {
@@ -27,7 +27,7 @@ export async function removeLoadableAgentConfig(
   params: RemoveLoadableAgentConfigParams
 ): Promise<RemoveLoadableAgentConfigResult> {
   const relPath = agentSettingsRelativePath(params.name);
-  const ctx = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const ctx = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
     const existing = await ctx.fs.read(relPath);
     if (existing === null) return { removed: false, reason: 'not-found' };

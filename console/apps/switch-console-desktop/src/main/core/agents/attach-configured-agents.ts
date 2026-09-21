@@ -48,7 +48,7 @@ export type AttachConfiguredAgentsResult = Result<Agent[], OnboardAgentError>;
  * provider config — the directory is another install's state and this operation
  * treats it as read-only. That is possible because the API token is never needed
  * here: it stays where it already is, and the launch path reads it from disk when
- * a session spawns. This module deliberately imports no workspace writer, so the
+ * a session spawns. This module deliberately imports no workdir writer, so the
  * guarantee is structural rather than a matter of care.
  *
  * An identity that no longer exists on the chosen server fails the attach loudly

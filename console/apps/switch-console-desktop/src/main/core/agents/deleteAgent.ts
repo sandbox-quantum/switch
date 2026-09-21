@@ -25,7 +25,7 @@ import type { Location } from '@shared/core/locations/locations';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
 import { agentEvents } from './agent-events';
 import { getAgentLocation } from './agent-location';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
@@ -122,7 +122,7 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
  * (visibly) rather than thrown — the credentials being torn down are already dead.
  */
 async function removeProvisionedFiles(agent: Agent, location: Location): Promise<void> {
-  const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const ctx = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
     const behavior = getPlugin(agent.providerId).behavior.repoAgents;
     if (behavior && agent.name) {

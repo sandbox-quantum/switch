@@ -40,7 +40,7 @@ function credsJson(agentId: string): string {
 }
 
 // Shared mock state + spies. Hoisted so the vi.mock factories (which are lifted
-// above imports) can reference them. `agents`/`workspace` are set per test.
+// above imports) can reference them. `agents`/`workdir` are set per test.
 // `repoAgents` is the behavior `getPlugin` returns — set it to null in a test to
 // simulate a provider without repo-agent definitions (e.g. Codex).
 const h = vi.hoisted(() => {
@@ -65,11 +65,11 @@ const h = vi.hoisted(() => {
   };
   const state: {
     agents: Array<Record<string, unknown>>;
-    workspace: PluginFs | null;
+    workdir: PluginFs | null;
     repoAgents: object | null;
   } = {
     agents: [],
-    workspace: null,
+    workdir: null,
     repoAgents: defaultRepoAgents,
   };
   return {
@@ -91,10 +91,10 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 vi.mock('@main/core/locations/store', () => ({
   getLocationById: vi.fn(async () => ({ id: 'loc', sshHost: null, dir: '/repo' })),
 }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({
-    fs: h.state.workspace,
-    homeFs: h.state.workspace,
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: vi.fn(async () => ({
+    fs: h.state.workdir,
+    homeFs: h.state.workdir,
     close: () => {},
   })),
 }));
@@ -134,7 +134,7 @@ describe('migrateAgentStorage', () => {
       '.switch/agents/agent-id-1.json': credsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
     });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -152,7 +152,7 @@ describe('migrateAgentStorage', () => {
     h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-1') });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -172,7 +172,7 @@ describe('migrateAgentStorage', () => {
       '.claude/settings.local.json': credsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
     });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -195,7 +195,7 @@ describe('migrateAgentStorage', () => {
     h.state.repoAgents = null;
     const ws = fakeFs({ '.claude/settings.local.json': credsJson('sw-CLAUDE-MAIN') });
     const read = vi.spyOn(ws, 'read');
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -212,7 +212,7 @@ describe('migrateAgentStorage', () => {
     ];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.claude/settings.local.json': credsJson('sw-CLAUDE-MAIN') });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -226,7 +226,7 @@ describe('migrateAgentStorage', () => {
       '.claude/settings.local.json': credsJson('sw-other'),
       '.claude/agents/cc-hoot-main.md': '# def',
     });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -248,7 +248,7 @@ describe('migrateAgentStorage', () => {
     h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-other') });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -269,7 +269,7 @@ describe('migrateAgentStorage', () => {
       '.claude/agents/cc-hoot-main.md': '# def',
     };
     const ws = fakeFs({ ...seed });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -281,33 +281,33 @@ describe('migrateAgentStorage', () => {
 
   it('writes no credentials when none exist anywhere (unrecoverable token)', async () => {
     const ws = fakeFs({ '.claude/agents/cc-hoot-main.md': '# def' });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
     expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
   });
 
-  it('skips the whole pass (no workspace opened) once the current generation is latched', async () => {
+  it('skips the whole pass (no workdir opened) once the current generation is latched', async () => {
     h.completedGeneration.mockResolvedValueOnce(2);
-    const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
+    const resolveWorkdirFsFor = (await import('./agent-workdir-fs')).resolveWorkdirFsFor;
 
     await migrateAgentStorage();
 
-    expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
+    expect(resolveWorkdirFsFor).not.toHaveBeenCalled();
     expect(h.markComplete).not.toHaveBeenCalled();
   });
 
-  it('re-running for generation 2 opens no workspace for a provider generation 1 already did', async () => {
+  it('re-running for generation 2 opens no workdir for a provider generation 1 already did', async () => {
     // Generation 2 only broadened the credential step to providers WITHOUT a
-    // behavior, so re-opening a Claude agent's workspace — an SSH connect and an
+    // behavior, so re-opening a Claude agent's workdir — an SSH connect and an
     // SFTP channel for a remote one — could not change anything.
     h.completedGeneration.mockResolvedValueOnce(1);
-    const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
+    const resolveWorkdirFsFor = (await import('./agent-workdir-fs')).resolveWorkdirFsFor;
 
     await migrateAgentStorage();
 
-    expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
+    expect(resolveWorkdirFsFor).not.toHaveBeenCalled();
     expect(h.markComplete).toHaveBeenCalledTimes(1);
   });
 
@@ -316,7 +316,7 @@ describe('migrateAgentStorage', () => {
     h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-1') });
-    h.state.workspace = ws;
+    h.state.workdir = ws;
 
     await migrateAgentStorage();
 
@@ -324,7 +324,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('latches the marker after a clean pass', async () => {
-    h.state.workspace = fakeFs({
+    h.state.workdir = fakeFs({
       '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
     });
@@ -335,7 +335,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('does not latch the marker when an agent migration throws', async () => {
-    h.state.workspace = fakeFs({
+    h.state.workdir = fakeFs({
       '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
     });

@@ -1,7 +1,7 @@
 import type { Result } from '@switch-console/shared';
 import { foreignCredentialsOwner } from '@main/core/agents/agent-credentials-slot';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
-import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
+import { resolveWorkdirFsFor } from '@main/core/agents/agent-workdir-fs';
 import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
@@ -674,7 +674,7 @@ export const switchServersController = createRPCController({
 
   /**
    * Search a bridge's own user directory so the signed-in user can find
-   * themselves before they have ever posted in the workspace (CHOO-2137).
+   * themselves before they have ever posted in the chat workspace (CHOO-2137).
    */
   searchBridgeDirectory: async (params: {
     serverId: string;
@@ -819,16 +819,16 @@ export const switchServersController = createRPCController({
 
     // The settings file above carries no token (CHOO-1962), so the per-agent
     // credentials file is what actually provisions this agent.
-    const workspace = await resolveWorkspaceFsFor(null, params.dir);
+    const workdir = await resolveWorkdirFsFor(null, params.dir);
     try {
-      await writeNeutralAgentSettingsFs(workspace.fs, {
+      await writeNeutralAgentSettingsFs(workdir.fs, {
         slug: params.name,
         apiEndpoint: server.apiUrl,
         apiToken: registered.apiKey,
         agentId: registered.id,
       });
     } finally {
-      workspace.close();
+      workdir.close();
     }
 
     return { kind: 'created', agentId: registered.id };
@@ -880,16 +880,16 @@ export const switchServersController = createRPCController({
     // As locally: the settings file names the agent, the per-agent credentials
     // file carries its token — here in the VM's own working directory, which is
     // where its sessions will look.
-    const workspace = await resolveWorkspaceFsFor(params.sshHost, params.remoteRepoDir);
+    const workdir = await resolveWorkdirFsFor(params.sshHost, params.remoteRepoDir);
     try {
-      await writeNeutralAgentSettingsFs(workspace.fs, {
+      await writeNeutralAgentSettingsFs(workdir.fs, {
         slug: params.name,
         apiEndpoint: server.apiUrl,
         apiToken: registered.apiKey,
         agentId: registered.id,
       });
     } finally {
-      workspace.close();
+      workdir.close();
     }
 
     return { kind: 'created', agentId: registered.id };

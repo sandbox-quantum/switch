@@ -15,7 +15,7 @@ import { connectRemoteAgent } from './connect-remote-agent';
  *
  * The profile lives in the home scope, not the working dir, so it is reached
  * through the same home filesystem that wrote it: local disk for a local agent,
- * and the exec-backed remote home for a remote one (the repo-dir `WorkspaceFs`
+ * and the exec-backed remote home for a remote one (the repo-dir `WorkdirFs`
  * used elsewhere in teardown deliberately has no writable home for remote
  * agents). Best-effort and isolated: a filesystem or connection failure is
  * logged, not thrown, so the rest of the agent's teardown still runs — but it is

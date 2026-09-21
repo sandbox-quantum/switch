@@ -40,8 +40,8 @@ const h = vi.hoisted(() => {
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({ behavior: { repoAgents: h.state.repoAgents } }),
 }));
-vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
+vi.mock('./agent-workdir-fs', () => ({
+  resolveWorkdirFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./agent-location', () => ({
   getAgentLocation: vi.fn(async () => ({ sshHost: null, dir: '/repo' })),
