@@ -37,8 +37,14 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
 }));
 
 // Imported after the mocks so the module binds to the mocked db + secrets store.
-const { addServer, ensureManagedServer, removeServer, renameServer } =
-  await import('./servers-store');
+const {
+  addServer,
+  ensureManagedServer,
+  getActiveServerId,
+  removeServer,
+  renameServer,
+  setActiveServerId,
+} = await import('./servers-store');
 
 describe('servers-store: rename & delete', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
@@ -277,5 +283,69 @@ describe('servers-store: rename & delete', () => {
 
       expect(secretMocks.deleteSecret).toHaveBeenCalledWith('switch-server-cookie:srv-1');
     });
+  });
+});
+
+describe('selecting a server', () => {
+  let fixture: Awaited<ReturnType<typeof openFixture>>;
+
+  beforeEach(async () => {
+    fixture = await openFixture('empty');
+    mocks.db = fixture.db;
+    fixture.sqlite.pragma('foreign_keys = OFF');
+    await fixture.db.insert(switchServers).values({
+      id: 'srv-1',
+      name: 'Local dev',
+      gatewayUrl: 'https://srv-1.example.com',
+      apiUrl: 'https://api-srv-1.example.com',
+    });
+  });
+
+  afterEach(() => {
+    fixture.close();
+    mocks.db = undefined;
+  });
+
+  async function seedWorkspace(id: string, tenantId: string | null): Promise<void> {
+    await fixture.db.insert(workspaces).values({ id, serverId: 'srv-1', name: id, tenantId });
+  }
+
+  it('selects the one workspace a server has', async () => {
+    await seedWorkspace('ws-1', 't-1');
+
+    await setActiveServerId('srv-1');
+
+    expect(await getActiveServerId()).toBe('srv-1');
+  });
+
+  /**
+   * Refusing would fail the managed stack start this runs inside, taking a
+   * healthy server down over a question about which of its workspaces to show.
+   */
+  it('picks one rather than refusing when the account has several there', async () => {
+    await seedWorkspace('ws-1', 't-1');
+    await seedWorkspace('ws-2', 't-2');
+
+    await setActiveServerId('srv-1');
+
+    expect(await getActiveServerId()).toBe('srv-1');
+  });
+
+  // Re-selecting the server the user is already in must not move them to
+  // another of its workspaces; a managed stack start does exactly that.
+  it('leaves the selection alone when it is already on that server', async () => {
+    await seedWorkspace('ws-1', 't-1');
+    await seedWorkspace('ws-2', 't-2');
+    await setActiveServerId('srv-1');
+    await fixture.db.update(kv).set({ value: 'ws-2' }).where(eq(kv.key, 'activeWorkspaceId'));
+
+    await setActiveServerId('srv-1');
+
+    const [pointer] = await fixture.db.select().from(kv).where(eq(kv.key, 'activeWorkspaceId'));
+    expect(pointer!.value).toBe('ws-2');
+  });
+
+  it('refuses a server with no workspace at all', async () => {
+    await expect(setActiveServerId('srv-1')).rejects.toThrow('no workspace');
   });
 });

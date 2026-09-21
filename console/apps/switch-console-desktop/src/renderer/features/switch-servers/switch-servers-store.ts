@@ -463,7 +463,9 @@ export class SwitchServersStore {
       });
       return false;
     }
-    await this.refreshStatus(serverId);
+    // Signing in is when the server first says which workspaces the account
+    // belongs to, so the list this app holds is stale the moment it returns.
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
     return true;
   }
 
@@ -480,7 +482,7 @@ export class SwitchServersStore {
       }
       return false;
     }
-    await this.refreshStatus(serverId);
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
     return true;
   }
 

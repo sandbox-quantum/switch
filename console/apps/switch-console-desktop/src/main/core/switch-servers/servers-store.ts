@@ -9,8 +9,8 @@ import {
   ensureServerWorkspace,
   getActiveWorkspaceId,
   insertServerWorkspace,
+  listWorkspacesForServer,
   renameServerWorkspaces,
-  requireSoleWorkspaceForServer,
   serverIdForWorkspace,
   setActiveWorkspaceId,
 } from '@main/core/workspaces/workspaces-store';
@@ -285,11 +285,24 @@ export async function getActiveServerId(): Promise<string | null> {
   return serverIdForWorkspace(activeWorkspaceId);
 }
 
-/** Select a server by selecting its workspace. */
+/**
+ * Select a server by selecting one of its workspaces.
+ *
+ * Picks the first when the account turns out to belong to several on that
+ * server, rather than refusing the way the paths that attach an agent do. The
+ * risks are not the same: showing the wrong workspace is visible and one click
+ * from being corrected, while attaching an agent to it is neither. Refusing
+ * here would instead fail the managed stack start this runs inside, taking a
+ * healthy server down over a question about which of its workspaces to show.
+ */
 export async function setActiveServerId(id: string): Promise<void> {
   const server = await getServer(id);
   if (!server) throw new Error(`No Switch server with id ${id}`);
-  const workspace = await requireSoleWorkspaceForServer(id);
+  const found = await listWorkspacesForServer(id);
+  const workspace = found[0];
+  if (!workspace) throw new Error(`Switch server ${id} has no workspace`);
+  const active = await getActiveWorkspaceId();
+  if (found.some((candidate) => candidate.id === active)) return;
   await setActiveWorkspaceId(workspace.id);
 }
 
