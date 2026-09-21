@@ -213,19 +213,43 @@ Two properties of that table are the design:
 The SOP puts situation reports on a clock: hourly at the top severity, every four
 hours below it. Something has to remember.
 
-**Switch cannot.** There is no scheduling primitive exposed to a room or an
-agent: no cron, no timers, nothing an agent can ask to be woken by. Switch runs
-periodic work internally — connection and runtime-state sweeps, bridge renewal
-loops, timers that batch attachments — but none of it is reachable from a room.
+**Switch cannot.** There is no scheduling primitive exposed to a room: no cron,
+no timers, nothing that wakes an agent on a clock. Switch runs periodic work
+internally — connection and runtime-state sweeps, bridge renewal loops, timers
+that batch attachments — but none of it is reachable from a room.
 
-The SOP's own comment thread already has the answer: a scheduled Slack workflow
-that posts into the hub mentioning the responder agent. That wakes the agent (see
-[the push direction](#the-push-direction-and-why-not-to-rely-on-it)), it drafts
-the SITREP from the room, a human checks and posts it. This works today, needs no
-Switch change, and keeps the clock in the tool that is good at clocks.
+The agent's *host* can keep time — Claude Code has cron — and the temptation is
+to stop there. Do not. A host timer fires only while the session is idle, so it
+slips exactly when an incident is busy; it dies with the session unless made
+durable, and needs a live session to fire into either way; it fires into a
+session rather than a room, so with two incidents running it reaches the wrong
+one; and it is invisible, so nobody can see that an update is scheduled, confirm
+it, or cancel it when the incident ends.
 
-Be honest that it is a workaround: the schedule lives in a Slack workflow created
-per incident that nobody will remember to delete. [Gaps](#gaps) G7.
+So the clock is kept in three layers, and the order matters because the most
+reliable one is also the cheapest:
+
+1. **A deadline posted in the room** — `next update due HH:MM`, kept current by
+   the agent. It survives a dead session, a missed timer and a broken workflow,
+   and it is enforced by the people who can see it. This is the layer that
+   actually works.
+2. **An external scheduled nudge** as the clock of record — the SOP's own comment
+   thread already suggests a scheduled workflow that mentions the agent, which
+   also wakes it when no session is running (see
+   [the push direction](#the-push-direction-and-why-not-to-rely-on-it)).
+   Worth checking whether the paging system's own status-update reminders can do
+   this instead, since the cadence is really a property of the incident and that
+   is where the incident lives.
+3. **A host timer as an in-session backstop**, created with the war room and
+   deleted with it.
+
+Two rules that fall out of this and belong in the agent's instructions: the
+interval runs from the last update **sent**, not from the top of the hour, so a
+late update does not compress the next window; and a draft that was posted and
+never sent must be called out, because from outside the room it is
+indistinguishable from an update nobody wrote.
+
+Be honest that all three layers are workarounds. [Gaps](#gaps) G7.
 
 ## The incident-response agent
 
@@ -1337,14 +1361,28 @@ team wanting fully automatic room creation does.
 > mapping an alerting payload to a room build, field mapping configured per
 > source. **L**
 
-**G7 — There is no scheduling primitive a room or an agent can use.**
-Switch runs periodic work internally; none of it is reachable from a room, and an
-agent cannot ask to be woken. The SITREP cadence therefore lives in an external
-scheduled workflow, created per incident, that nobody will remember to delete.
+**G7 — There is no scheduling primitive a *room* can use.**
+Switch runs periodic work internally; none of it is reachable from a room, and
+nothing in Switch can wake an agent on a clock.
+
+The agent *host* may have a scheduler — Claude Code has cron — and it is worth
+being precise about why that does not close this gap, because it looks as though
+it should. A host timer fires only while the session is **idle**, so during a
+busy incident it slips exactly when the update is due. It dies with the session
+unless made durable, and even then needs a live session to fire into. It is
+invisible to the room: nobody can see that an update is scheduled, verify it, or
+cancel it, and an orphaned one pings a dead room days later. And it fires into a
+*session*, not a room — an agent attending a second incident receives the first
+incident's timer with no way to route it.
+
+None of that makes a host timer useless; it makes it a backstop rather than a
+clock. A room-scoped schedule would be visible, cancellable, disposed of with the
+room, and addressed at a room rather than at whichever session happens to be
+live.
 
 > **Proposed ticket:** *Scheduled room actions* — a room-scoped recurring trigger
 > that posts a message or addresses an agent, created with the room and disposed
-> of with it. **L**
+> of with it, and visible to everyone in the room. **L**
 
 **G8 — There is no relay between rooms.**
 Linked rooms are metadata: a pointer with a label. The SOP wants situation reports
