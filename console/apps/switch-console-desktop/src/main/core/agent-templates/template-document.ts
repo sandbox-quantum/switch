@@ -280,14 +280,15 @@ export function serverDocument(
  * Replace agent names in the server document.
  *
  * `replacements` maps a name as written in the template (`{team}-triager`)
- * to the name the agent has. Two situations need this: the deployer
+ * to the name the agent has, for the slots whose name differs: the deployer
  * chose an existing agent for that slot instead of creating one, or the
- * intended name was taken and the agent was created as `name-2`.
+ * name carried a param the Console filled in itself.
  *
  * Every place a room refers to an agent is updated: the `agents:` list, the
- * keys of `aliases:`, and mentions inside `kickoff:` text. In kickoff text
- * the name is replaced wherever it occurs, with or without a leading `@`,
- * so a mention still names an agent that exists.
+ * keys of `aliases:`, and mentions inside `kickoff:` text. In kickoff text a
+ * name is replaced only as a whole word, with or without a leading `@`, so
+ * renaming `helper` leaves `helper-bot` alone and a mention still names an
+ * agent that exists.
  */
 export function substituteAgentSlots(
   coreYaml: string,
@@ -296,11 +297,21 @@ export function substituteAgentSlots(
   const doc = parseYaml(coreYaml);
   const rename = (name: unknown) =>
     typeof name === 'string' && Object.hasOwn(replacements, name) ? replacements[name] : name;
+  // One pass over the text, longest name first so `{team}-ab` is matched
+  // before `{team}-a`, and a name only counts when the next character
+  // cannot continue an agent name. A dot continues one only when a name
+  // character follows it, so "@helper." at the end of a sentence still matches.
+  const names = Object.keys(replacements).sort((a, b) => b.length - a.length);
+  const pattern =
+    names.length > 0
+      ? new RegExp(
+          `(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`,
+          'g'
+        )
+      : null;
   const inText = (text: unknown) => {
-    if (typeof text !== 'string') return text;
-    let out = text;
-    for (const [from, to] of Object.entries(replacements)) out = out.split(from).join(to);
-    return out;
+    if (typeof text !== 'string' || pattern === null) return text;
+    return text.replace(pattern, (name) => replacements[name]);
   };
   const rooms = [asRecord(doc.room), ...(Array.isArray(doc.rooms) ? doc.rooms.map(asRecord) : [])];
   for (const room of rooms) {

@@ -191,6 +191,27 @@ describe('composeTemplateDocument', () => {
   });
 });
 
+describe('substituteAgentSlots: whole names', () => {
+  it('leaves a longer name alone when a shorter one that starts it is renamed', () => {
+    const core =
+      'room:\n  name: r\n  agents: [helper, helper-bot]\nkickoff: "@helper-bot please brief @helper."\n';
+    const out = load(substituteAgentSlots(core, { helper: 'bob' })) as {
+      room: { agents: string[] };
+      kickoff: string;
+    };
+    expect(out.room.agents).toEqual(['bob', 'helper-bot']);
+    expect(out.kickoff).toBe('@helper-bot please brief @bob.');
+  });
+
+  it('renames both when both change, whichever order the map lists them', () => {
+    const core = 'room:\n  name: r\n  agents: ["{t}-a", "{t}-ab"]\nkickoff: "@{t}-a and @{t}-ab"\n';
+    const out = load(substituteAgentSlots(core, { '{t}-a': 'x-a', '{t}-ab': 'x-ab' })) as {
+      kickoff: string;
+    };
+    expect(out.kickoff).toBe('@x-a and @x-ab');
+  });
+});
+
 describe('formOptions', () => {
   it('reads the advanced fold settings and falls back to a folded "Advanced"', () => {
     expect(
