@@ -28,10 +28,13 @@ from switch_core.db.models import (
     SdkSessionCommand,
 )
 from switch_core.sessions.service import SessionError
+from tests.switch_core.sessions.test_authority import (
+    command as build_command,
+)
 from tests.switch_core.sessions.test_authority import host_event, setup
 
 
-def event():
+def event(message_id="message"):
     return AgentEvent(
         type="message",
         room_id="room-demo",
@@ -40,7 +43,7 @@ def event():
             addressed=True,
             sender="@owner:example.test",
             sender_name="Owner",
-            message_id="message",
+            message_id=message_id,
             body="Run the check",
             timestamp=1,
         ),
@@ -283,6 +286,75 @@ async def test_admission_hands_back_the_command_it_created_without_settling_it(
     # A host that did not ask is answered with the shape it already parses.
     plain = await service.submit_room_message(*args, False, EventBuffer())
     assert "command" not in plain.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_admission_withholds_the_command_when_older_work_is_already_queued(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    stop = await service.submit(
+        build_command(epoch, "stop-demo", {"type": "session.stop"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert stop.status == "accepted"
+    buffer = EventBuffer()
+    sequence = buffer.enqueue("agent-demo", "room-demo", event())
+    receipt = await service.submit_room_message(
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        epoch,
+        "room-demo",
+        "message",
+        sequence,
+        0,
+        None,
+        True,
+        buffer,
+    )
+    assert receipt.status == "accepted"
+    # Running this one now would put it ahead of the stop that was asked for
+    # first, so the host is sent back to the endpoint that orders them.
+    assert receipt.command is None
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert [command.command_id for command in pending] == [
+        "stop-demo",
+        receipt.command_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_of_a_backlog_is_handed_straight_to_the_host(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    receipts = []
+    for message_id in ("first", "second"):
+        sequence = buffer.enqueue("agent-demo", "room-demo", event(message_id))
+        receipts.append(
+            await service.submit_room_message(
+                "agent-demo",
+                "session-demo",
+                "host-demo",
+                epoch,
+                "room-demo",
+                message_id,
+                sequence,
+                0,
+                None,
+                True,
+                buffer,
+            )
+        )
+    assert receipts[0].command is not None
+    assert receipts[1].command is None
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert [command.command_id for command in pending] == [
+        receipt.command_id for receipt in receipts
+    ]
 
 
 @pytest.mark.asyncio

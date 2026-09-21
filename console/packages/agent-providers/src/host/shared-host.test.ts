@@ -325,10 +325,13 @@ it('runs a room message handed back by its admission, and not again when it is r
       }
       if (path.endsWith('/room-message')) {
         admissions += 1;
-        expect(JSON.parse(options.body as string)).toMatchObject({
-          message_id: 'message',
-          include_command: true,
-        });
+        // Asked for in the query string, because a server built before this
+        // existed rejects an unknown field in the body and ignores an unknown
+        // parameter here.
+        expect(new URL(url).searchParams.get('include_command')).toBe('true');
+        const sent = JSON.parse(options.body as string) as Record<string, unknown>;
+        expect(sent).toMatchObject({ message_id: 'message' });
+        expect(sent).not.toHaveProperty('include_command');
         return Response.json({
           type: 'command.status',
           commandId: roomCommand.commandId,
@@ -377,6 +380,172 @@ it('runs a room message handed back by its admission, and not again when it is r
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(adapter.sendTurn).toHaveBeenCalledTimes(1);
     expect(admissions).toBe(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('fetches a room command the admission handed nothing back for', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-room-'));
+  roots.push(root);
+  await writeFile(
+    join(root, 'room-inbox.jsonl'),
+    ['old-server', 'behind-other-work']
+      .map((messageId, index) =>
+        JSON.stringify({ type: 'received', sequence: index + 1, roomId: 'room', messageId })
+      )
+      .join('\n') + '\n'
+  );
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const stop = new AbortController();
+  let listener: (event: ProviderRuntimeEvent) => void = () => {};
+  let live = false;
+  const ran: string[] = [];
+  const emit = (event: Record<string, unknown>) =>
+    listener({
+      ...event,
+      sessionId: 'session',
+      provider: 'claude',
+      eventId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    } as ProviderRuntimeEvent);
+  const adapter: ProviderAdapter = {
+    provider: 'claude',
+    capabilities: {
+      resume: true,
+      steering: false,
+      approvals: true,
+      userInput: true,
+      modelSwitchInSession: false,
+    },
+    startSession: vi.fn(async () => {
+      live = true;
+      emit({ type: 'session.state.changed', status: 'ready' });
+      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+    }),
+    sendTurn: vi.fn(async ({ turnId, text }) => {
+      ran.push(text);
+      emit({ type: 'turn.started', turnId });
+      emit({ type: 'turn.completed', turnId, outcome: 'completed' });
+      return { turnId };
+    }),
+    respondToRequest: vi.fn(async () => {}),
+    respondToUserInput: vi.fn(async () => {}),
+    interruptTurn: vi.fn(async () => {}),
+    stopSession: vi.fn(async () => {
+      live = false;
+    }),
+    stopAll: vi.fn(async () => {}),
+    hasSession: () => live,
+    subscribe: (fn) => {
+      listener = fn;
+      return () => {
+        listener = () => {};
+      };
+    },
+  };
+  const session: Session = {
+    sessionId: 'session',
+    agentId: 'agent',
+    hostId: 'host',
+    epoch: 'proposed',
+    provider: 'claude',
+    status: 'starting',
+    connectivity: 'online',
+    pendingRequestIds: [],
+    capabilities: {
+      input: 'queue',
+      approvals: true,
+      questions: true,
+      interrupt: false,
+      reset: false,
+      compact: false,
+      modelChange: false,
+      attachmentMimeTypes: [],
+    },
+  };
+  const roomCommand = (messageId: string): Command => ({
+    contractVersion: 1,
+    commandId: `command-${messageId}`,
+    sessionId: 'session',
+    epoch: 'server-epoch',
+    origin: {
+      actorId: '@owner:example.test',
+      surface: 'slack',
+      roomId: 'room',
+      threadId: null,
+      messageId,
+    },
+    body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+  });
+  const admitted: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim'))
+        return Response.json({
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...session, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/room-message')) {
+        const { message_id: messageId } = JSON.parse(options.body as string) as {
+          message_id: string;
+        };
+        admitted.push(messageId);
+        const receipt = {
+          type: 'command.status',
+          commandId: `command-${messageId}`,
+          status: 'accepted',
+          code: null,
+          message: null,
+        };
+        // Two ways of being handed nothing that mean the same thing: a server
+        // built before the field existed says nothing at all, and one holding
+        // this message behind other work says null.
+        return Response.json(messageId === 'old-server' ? receipt : { ...receipt, command: null });
+      }
+      if (path.endsWith('/commands'))
+        return Response.json(admitted.length < 2 ? [] : admitted.map(roomCommand));
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const running = runSharedHost(
+    {
+      root,
+      agentApiUrl: 'http://127.0.0.1/agent',
+      token: randomUUID(),
+      session,
+      input: {
+        sessionId: 'session',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+      },
+      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+    },
+    adapter,
+    stop.signal
+  );
+  const outcome = running.then(
+    () => null,
+    (error: unknown) => error
+  );
+  try {
+    await vi.waitFor(() => expect(ran).toHaveLength(2), { timeout: 3000 });
+    expect(ran).toEqual(['old-server', 'behind-other-work']);
   } finally {
     stop.abort();
     expect(await outcome).toBeNull();

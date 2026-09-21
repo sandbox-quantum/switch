@@ -239,10 +239,13 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
   ]),
 });
 // The receipt for a host that asked to be handed the command it just caused.
-// The command is set only when this submission created it; on any other status
-// the command endpoint remains the way to reach it.
+// The command is set only when this submission created it and nothing else was
+// already queued for the session; on any other status, and from a server built
+// before the receipt existed, the command endpoint remains the way to reach it.
+// Absent rather than null is that older server, so the field is optional and
+// its absence means the same thing: fetch.
 export const roomMessageReceiptSchema = commandStatusSchema.extend({
-  command: commandSchema.nullable(),
+  command: commandSchema.nullish(),
 });
 
 export function eventBytes(event: unknown): number {

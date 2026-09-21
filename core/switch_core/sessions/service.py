@@ -828,7 +828,36 @@ class SessionAuthority:
             if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
                 raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
             status = await self._accept(db, row, command, bridge.id if bridge else None)
-            return _receipt(status, command) if include_command else status
+            if not include_command:
+                return status
+            queued = await self._queued_elsewhere(db, row, command.command_id)
+            return _receipt(status, None if queued else command)
+
+    async def _queued_elsewhere(
+        self, db: AsyncSession, row: SdkSession, command_id: str
+    ) -> bool:
+        """Whether this session already has other work queued.
+
+        Commands are served in the order they were accepted, and a stop, a
+        reset or an interrupt queues like any other. Handing a room command
+        straight back to the host would let it run ahead of one of those — the
+        newest message overtaking the instruction to stop reading messages. So
+        the shortcut is offered only when there is nothing to overtake, and the
+        host falls back to the ordered endpoint whenever there is.
+        """
+        other = await db.scalar(
+            select(SdkSessionCommand.command_id)
+            .where(
+                SdkSessionCommand.tenant_id == row.tenant_id,
+                SdkSessionCommand.session_id == row.id,
+                SdkSessionCommand.command_id != command_id,
+                SdkSessionCommand.status["status"].astext.in_(
+                    ["accepted", "dispatched"]
+                ),
+            )
+            .limit(1)
+        )
+        return other is not None
 
     async def _accept(
         self, db: AsyncSession, row: SdkSession, command: Command, bridge_id: str | None

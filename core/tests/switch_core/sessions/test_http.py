@@ -121,7 +121,6 @@ def test_room_message_accepts_an_existing_host_without_context_metadata():
     )
     assert request.missed_count == 0
     assert request.gap_reason is None
-    assert request.include_command is False
 
 
 async def test_room_message_carries_the_command_only_for_a_host_that_asked(
@@ -154,8 +153,8 @@ async def test_room_message_carries_the_command_only_for_a_host_that_asked(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         asked = await client.post(
-            "/host/sessions/session-demo/room-message",
-            json={**body, "include_command": True},
+            "/host/sessions/session-demo/room-message?include_command=true",
+            json=body,
         )
         assert asked.status_code == 200
         payload = asked.json()
@@ -169,3 +168,14 @@ async def test_room_message_carries_the_command_only_for_a_host_that_asked(
         plain = await client.post("/host/sessions/session-demo/room-message", json=body)
         assert plain.status_code == 200
         assert "command" not in plain.json()
+
+        # Why it is asked for in the query string and not the body: the body is
+        # strict, so a server built before this existed answers an unknown
+        # field in it with 422 rather than ignoring it, and the host dies on
+        # its first room message. A query parameter it never reads costs
+        # nothing. Moving the flag back into the body would fail here.
+        in_the_body = await client.post(
+            "/host/sessions/session-demo/room-message",
+            json={**body, "include_command": True},
+        )
+        assert in_the_body.status_code == 422

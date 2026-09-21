@@ -166,7 +166,6 @@ class RoomMessage(HostLease):
     sequence: int = Field(ge=1)
     missed_count: int = Field(default=0, ge=0)
     gap_reason: str | None = None
-    include_command: bool = False
 
 
 # Declared without a response model: the receipt for a host that asked to be
@@ -181,6 +180,13 @@ async def room_message(
     factory: Factory,
     buffer: Annotated[EventBuffer, Depends(get_event_buffer)],
     lifecycle: Lifecycle,
+    # Asked for in the query string rather than the body, because the body is
+    # strict on both ends: a server built before this existed answers an
+    # unknown field with 422 and the host dies on its first room message, while
+    # an unknown query parameter it simply ignores. The default is what makes
+    # the skew work in the other direction too — an older host asks for
+    # nothing and is answered with the shape it already parses.
+    include_command: bool = False,
 ) -> CommandStatus:
     status = await SessionAuthority(factory).submit_room_message(
         agent.id,
@@ -192,7 +198,7 @@ async def room_message(
         body.sequence,
         body.missed_count,
         body.gap_reason,
-        body.include_command,
+        include_command,
         buffer,
     )
 

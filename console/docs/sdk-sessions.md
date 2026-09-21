@@ -65,8 +65,10 @@ it cannot identify a restart once the new buffer has passed that cursor.
 - A lost upload acknowledgement is reconciled with the server. A duplicate
   event or command retains its original identity.
 - An admitted room message may be handed back in its admission response and run
-  from there. The command endpoint still serves it until its result is reported,
-  so a lost response costs a retry rather than the message.
+  from there, but only while nothing else is queued for the session, so it
+  cannot overtake a stop or an interrupt asked for earlier. The command endpoint
+  still serves it until its result is reported, so a lost response costs a retry
+  rather than the message.
 - The server owns session leases, recovery epochs, authorization, answer
   arbitration and room publication. Host events cannot grant publication
   authority.

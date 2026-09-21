@@ -388,7 +388,6 @@ export async function runSharedHost(
     };
     let roomBinding: string | null = null;
     let heldForDecision = false;
-    let servedOnAdmission = false;
     while (!executionSignal.aborted) {
       await flush();
       if (rooms && options.roomConnection) {
@@ -423,14 +422,18 @@ export async function runSharedHost(
         for (const event of rooms?.pending() ?? []) {
           try {
             const receipt = roomMessageReceiptSchema.parse(
-              await request(`${sessionPath}/room-message`, {
+              // Asked for in the query string: a server built before this
+              // existed ignores an unknown parameter there, while the request
+              // body is strict and an unknown field in it is a 422 the host
+              // cannot recover from. Such a server answers the plain receipt,
+              // which carries no command, and this falls back to the fetch.
+              await request(`${sessionPath}/room-message?include_command=true`, {
                 ...hostLease,
                 room_id: event.roomId,
                 message_id: event.messageId,
                 sequence: event.sequence,
                 missed_count: event.missed,
                 gap_reason: event.gap?.reason ?? null,
-                include_command: true,
               })
             );
             if (receipt.command) admitted.push(receipt.command);
@@ -451,16 +454,15 @@ export async function runSharedHost(
           await rooms!.acknowledge(event);
         }
       }
-      // A command handed back by its own admission needs no fetching — but
-      // never twice running, or a steady stream of room messages would keep an
-      // interrupt or a control command waiting behind it indefinitely.
-      // Anything skipped here is still served by the next fetch, because the
-      // server holds a command open until its result is reported.
-      const servedLocally: boolean = admitted.length > 0 && !servedOnAdmission;
-      servedOnAdmission = servedLocally;
-      const commands = servedLocally
-        ? admitted
-        : await request(`${sessionPath}/commands`, hostLease);
+      // A command handed back by its own admission needs no fetching. The
+      // server hands one back only while nothing else is queued for the
+      // session, so running it here cannot put it ahead of a stop, a reset or
+      // an interrupt that was waiting: with any of those pending the receipt
+      // carries no command and this falls through to the ordered endpoint.
+      // Anything queued after the admission is served by the next pass, as a
+      // command arriving just after a fetch always has been.
+      const commands =
+        admitted.length > 0 ? admitted : await request(`${sessionPath}/commands`, hostLease);
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
       for (const value of commands) {
         executionSignal.throwIfAborted();

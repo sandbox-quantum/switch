@@ -338,7 +338,7 @@ it('retains an unverified room event when server replay evidence is unavailable'
   vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const original = f.fetchMock.getMockImplementation()!;
   f.fetchMock.mockImplementation(async (url, options) => {
-    if (url.endsWith('/room-message'))
+    if (new URL(url).pathname.endsWith('/room-message'))
       return Response.json(
         { code: 'ROOM_EVENT_UNAVAILABLE', message: 'Room event is no longer retained' },
         { status: 409 }
