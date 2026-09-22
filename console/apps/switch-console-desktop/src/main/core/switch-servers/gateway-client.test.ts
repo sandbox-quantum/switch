@@ -28,6 +28,8 @@ vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
 const {
+  getGitHubConnection,
+  startGitHubConnection,
   getClaudeConnection,
   connectClaude,
   disconnectClaude,
@@ -826,5 +828,52 @@ describe('Claude cloud connection transport', () => {
       })
     );
     await expect(connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL')).rejects.toThrow();
+  });
+});
+
+describe('GitHub connection transport', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  it('only accepts authorization URLs on the authenticated server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'a'.repeat(43),
+          url:
+            'https://other.example.com/gateway/provider-connections/github/authorize?state=' +
+            'a'.repeat(43),
+        })
+      )
+    );
+    await expect(startGitHubConnection(SERVER)).rejects.toThrow('invalid GitHub authorization URL');
+  });
+  it('checks state matches the returned authorization id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'a'.repeat(43),
+          url: 'https://switch.example.com/gateway/provider-connections/github/authorize?state=wrong',
+        })
+      )
+    );
+    await expect(startGitHubConnection(SERVER)).rejects.toThrow('invalid GitHub authorization URL');
+  });
+  it('validates repository status and strips unexpected secrets', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'connected',
+          login: 'example-user',
+          install_url: 'https://github.com/apps/example/installations/new',
+          installations: [],
+          access_token: 'SYNTHETIC',
+        })
+      )
+    );
+    expect(await getGitHubConnection(SERVER)).not.toHaveProperty('access_token');
   });
 });

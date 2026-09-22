@@ -50,6 +50,10 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- if .Values.switchCore.githubConnectionsSecret }}
+            - name: HOSTED_GITHUB_CONFIG_PATH
+              value: /etc/switch-github/github.json
+            {{- end }}
             {{- include "switch.coreEnv" . | nindent 12 }}
           readinessProbe:
             httpGet:
@@ -65,11 +69,26 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if include "switch.dbCaBundleConfigMap" . }}
+          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret }}
           volumeMounts:
+            {{- if .Values.switchCore.githubConnectionsSecret }}
+            - name: github-connections
+              mountPath: /etc/switch-github
+              readOnly: true
+            {{- end }}
+            {{- if include "switch.dbCaBundleConfigMap" . }}
             {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- if include "switch.dbCaBundleConfigMap" . }}
+      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret }}
       volumes:
+        {{- if .Values.switchCore.githubConnectionsSecret }}
+        - name: github-connections
+          secret:
+            secretName: {{ .Values.switchCore.githubConnectionsSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if include "switch.dbCaBundleConfigMap" . }}
         {{- include "switch.dbCaBundleVolume" . | nindent 8 }}
+        {{- end }}
       {{- end }}

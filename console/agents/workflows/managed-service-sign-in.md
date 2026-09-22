@@ -30,10 +30,27 @@ verification enabled returns a visible unavailable error. GitHub connection,
 worker credential delivery and cloud agent creation are separate steps; connecting
 Claude does not provision a worker or start a room agent.
 
-## GitHub preview
+## GitHub connection
 
-The connected Claude screen continues to a GitHub App introduction. It explains
-repository selection, intended contents and pull request access, and revocation.
-Back reloads the Claude connection; Set up later ends onboarding. The connection
-button is disabled with an explicit preview notice. No authorization flow or
-GitHub credential storage is implemented in this increment.
+The GitHub step opens authorization in the system browser. The user then confirms
+the GitHub account in Console. Only that authenticated confirmation saves the
+credentials. The browser callback uses a short-lived flow, a secure browser cookie
+and PKCE; pending attempts expire after ten minutes or a backend restart.
+
+Credentials are encrypted per tenant and user. Expiring user access tokens are
+refreshed by the backend. Repository access is fetched from GitHub using the
+user token, so the list is limited to repositories both the user and app can
+access. Choose repositories opens GitHub App installation; Refresh access loads
+the updated list. Disconnect removes Switch's stored credentials and pending
+attempts; it does not uninstall the app or revoke GitHub authorization.
+
+The backend requires `HOSTED_GITHUB_CONFIG_PATH`, pointing to a private JSON file
+with `client_id`, `client_secret`, `slug`, and `origin` (the HTTPS Switch origin).
+The Helm chart can mount it from an existing Secret using
+`switchCore.githubConnectionsSecret`; its key must be `github.json`. The callback
+URL is `<origin>/gateway/provider-connections/github/callback`. Keep expiring user
+tokens enabled in the GitHub App. No app secret belongs in Console build settings.
+
+The handoff store is bounded and process-local, matching the singleton backend.
+This step does not issue worker installation tokens or provision agents. The app
+signing key and worker credential renewal belong to cloud-agent setup.

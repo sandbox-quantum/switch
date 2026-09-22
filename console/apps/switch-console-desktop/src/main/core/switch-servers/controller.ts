@@ -88,6 +88,14 @@ import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import { createBridgeOnServer } from './create-bridge';
 import { createRoomOnServer } from './create-room';
 import {
+  getGitHubConnection,
+  startGitHubConnection,
+  getGitHubFlow,
+  confirmGitHubConnection,
+  cancelGitHubConnection,
+  disconnectGitHub,
+} from './gateway-client';
+import {
   getClaudeConnection,
   connectClaude,
   disconnectClaude,
@@ -347,6 +355,36 @@ export const switchServersController = createRPCController({
   renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
+
+  getGitHubConnection: async (serverId: string) =>
+    getGitHubConnection(await requireReachableServer(serverId)),
+  startGitHubConnection: async (serverId: string) => {
+    const server = await requireReachableServer(serverId);
+    const flow = await startGitHubConnection(server);
+    try {
+      await appService.openExternal(flow.url);
+    } catch {
+      await cancelGitHubConnection(server, flow.id);
+      throw new Error('Could not open GitHub in your browser.');
+    }
+    return flow.id;
+  },
+  getGitHubFlow: async (serverId: string, id: string) =>
+    getGitHubFlow(await requireReachableServer(serverId), id),
+  confirmGitHubConnection: async (serverId: string, id: string) =>
+    confirmGitHubConnection(await requireReachableServer(serverId), id),
+  cancelGitHubConnection: async (serverId: string, id: string) =>
+    cancelGitHubConnection(await requireReachableServer(serverId), id),
+  disconnectGitHub: async (serverId: string) =>
+    disconnectGitHub(await requireReachableServer(serverId)),
+  openGitHubInstallation: async (serverId: string) => {
+    const connection = await getGitHubConnection(await requireReachableServer(serverId));
+    if (
+      !/^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(connection.install_url)
+    )
+      throw new Error('The server returned an invalid GitHub installation URL.');
+    await appService.openExternal(connection.install_url);
+  },
 
   getActiveServerId: (): Promise<string | null> => getActiveServerId(),
 

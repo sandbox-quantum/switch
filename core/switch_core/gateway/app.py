@@ -35,6 +35,7 @@ from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
@@ -52,6 +53,7 @@ from switch_core.gateway.sessions import router as sessions_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.providers.claude_verifier import ClaudeVerifier
+from switch_core.providers.github import GitHubConnections
 from switch_core.room_service import RoomService
 from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionError
@@ -104,6 +106,15 @@ def create_gateway_app(
     )
 
     app = FastAPI(title="Switch Gateway API")
+    app.state.github_connections = (
+        GitHubConnections(config.hosted_github_config_path)
+        if config.hosted_github_config_path
+        else None
+    )
+    app.include_router(
+        github_connections_router,
+        tags=["provider-connections"],
+    )
     app.state.claude_verifier = (
         ClaudeVerifier(config.hosted_claude_verifier_path)
         if config.hosted_claude_verifier_path

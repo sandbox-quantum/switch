@@ -213,3 +213,23 @@ revocation at Anthropic and database-backup retention are separate concerns.
 
 This API does not yet deliver credentials into worker assignment bundles. Worker
 provisioning and GitHub setup remain separate from connecting a provider.
+
+### GitHub App connections
+
+To enable browser authorization, set `HOSTED_GITHUB_CONFIG_PATH` to a private JSON
+file containing `client_id`, `client_secret`, `slug`, and the public HTTPS Switch
+`origin`. In the backend Helm chart, `switchCore.githubConnectionsSecret` mounts
+an existing Secret's `github.json` key. Never put the client secret in image layers
+or Console build configuration.
+
+Register `<origin>/gateway/provider-connections/github/callback` as the GitHub App
+callback. Enable expiring user tokens. Contents and pull requests need read/write
+permissions for the planned coding workflow; metadata read access is mandatory.
+The Console requests user authorization, confirms the account, and offers GitHub
+App installation to select repositories. Organization approval may be required.
+
+Stored credentials are encrypted and scoped to the current user and tenant.
+The backend refreshes expiring user tokens and asks GitHub for current repository
+access. Disconnect deletes local connection storage, not the installation on
+GitHub. Authorization attempts expire after ten minutes and on backend restart.
+Worker installation tokens and webhook handling are not part of this increment.

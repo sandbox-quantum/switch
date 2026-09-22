@@ -265,9 +265,12 @@ class ProviderConnection(TenantScoped, Base):
     __tablename__ = "provider_connections"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "user_id", "provider"),
-        CheckConstraint("provider = 'claude'", name="ck_provider_connections_provider"),
         CheckConstraint(
-            "kind IN ('api-key', 'setup-token')", name="ck_provider_connections_kind"
+            "provider IN ('claude', 'github')", name="ck_provider_connections_provider"
+        ),
+        CheckConstraint(
+            "(provider = 'claude' AND kind IN ('api-key', 'setup-token')) OR (provider = 'github' AND kind = 'oauth')",
+            name="ck_provider_connections_kind",
         ),
     )
 

@@ -1,4 +1,5 @@
 import type { ClientCommand } from '@switch-console/shared/session-v1';
+import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -10,6 +11,10 @@ import type {
   ClaudeCredentialKind,
   ClaudeConnection,
 } from '@shared/core/switch-servers/claude-credential';
+import {
+  gitHubConnectionSchema,
+  gitHubFlowSchema,
+} from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import type {
   AddressingPolicy,
@@ -1467,6 +1472,66 @@ export async function connectClaude(
 
 export async function disconnectClaude(server: SwitchServer): Promise<void> {
   await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+export async function getGitHubConnection(server: SwitchServer) {
+  return gitHubConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/github', { authenticated: true })
+    ).json()
+  );
+}
+export async function startGitHubConnection(server: SwitchServer) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('GitHub connections require HTTPS.');
+  const value = z
+    .object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() })
+    .parse(
+      await (
+        await gatewayFetch(server, '/provider-connections/github/flows', {
+          authenticated: true,
+          method: 'POST',
+        })
+      ).json()
+    );
+  const url = new URL(value.url);
+  if (
+    url.origin !== new URL(server.gatewayUrl).origin ||
+    url.pathname !== '/gateway/provider-connections/github/authorize' ||
+    url.searchParams.get('state') !== value.id ||
+    url.username ||
+    url.password
+  )
+    throw new Error('The server returned an invalid GitHub authorization URL.');
+  return value;
+}
+export async function getGitHubFlow(server: SwitchServer, id: string) {
+  return gitHubFlowSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function confirmGitHubConnection(server: SwitchServer, id: string) {
+  await gatewayFetch(
+    server,
+    `/provider-connections/github/flows/${encodeURIComponent(id)}/confirm`,
+    { authenticated: true, method: 'POST' }
+  );
+}
+export async function cancelGitHubConnection(server: SwitchServer, id: string) {
+  await gatewayFetch(server, `/provider-connections/github/flows/${encodeURIComponent(id)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+export async function disconnectGitHub(server: SwitchServer) {
+  await gatewayFetch(server, '/provider-connections/github', {
     authenticated: true,
     method: 'DELETE',
   });

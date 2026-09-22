@@ -110,6 +110,8 @@ secrets:
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
+  # Existing Secret with github.json (client_id, client_secret, slug, origin).
+  githubConnectionsSecret: ""
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO

@@ -270,6 +270,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'managedGitHub' && connected) {
     return (
       <ManagedGitHubStep
+        serverId={connected.id}
         onBack={() => goToStep('managedClaude')}
         onSkip={() => finish(connected.id)}
       />
