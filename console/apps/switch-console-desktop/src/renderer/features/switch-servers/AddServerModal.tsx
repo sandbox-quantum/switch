@@ -1,6 +1,7 @@
 import { CircleCheck, Cloud, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { NewAgentForm } from '@renderer/features/locations/components/add-agent-modal/new-agent-form';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -34,7 +35,6 @@ import type {
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
-import { ManagedAgentStep } from './managed-agent-step';
 import { ManagedClaudeConnectionStep } from './managed-claude-connection-step';
 import { ManagedGitHubStep } from './managed-github-step';
 import { ManagedProvidersStep } from './managed-providers-step';
@@ -272,10 +272,12 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedAgent' && connected) {
     return (
-      <ManagedAgentStep
+      <NewAgentForm
+        entryPoint="onboarding"
+        initialRunLocation="cloud"
         serverId={connected.id}
         onBack={() => goToStep('managedGitHub')}
-        onFinish={() => finish(connected.id)}
+        onClose={() => finish(connected.id)}
       />
     );
   }
