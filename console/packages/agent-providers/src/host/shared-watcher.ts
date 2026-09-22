@@ -31,13 +31,24 @@ const assignmentSchema = z.strictObject({
 
 /** Marks where the server's sequence numbering restarted. */
 const restartSchema = z.strictObject({ restarted: z.literal(true), at: z.string().min(1) });
-const recordSchema = z.union([assignmentSchema, restartSchema]);
+
+/** Marks a sequence whose routing decision has reached disk. */
+const handledSchema = z.strictObject({ handled: z.number().int().positive() });
+const recordSchema = z.union([assignmentSchema, restartSchema, handledSchema]);
 
 type Assignment = z.infer<typeof assignmentSchema>;
 type WatchRecord = z.infer<typeof recordSchema>;
 
 function restarted(record: WatchRecord): record is z.infer<typeof restartSchema> {
   return 'restarted' in record;
+}
+
+function isHandled(record: WatchRecord): record is z.infer<typeof handledSchema> {
+  return 'handled' in record;
+}
+
+function isAssignment(record: WatchRecord): record is Assignment {
+  return !restarted(record) && !isHandled(record);
 }
 
 function sessionIdFor(agentId: string, roomId: string, messageId: string): string {
@@ -127,7 +138,11 @@ export async function replaceSupersededSessions(
   }
 }
 
-/** Each assignment is durable before the watcher lets the stream advance its cursor. */
+/**
+ * Which session serves which room, and how far the watcher has got. Both the
+ * assignment and the routing that follows it are on disk before the stream is
+ * allowed past the event.
+ */
 export class SharedWatchAssignments {
   private constructor(private readonly journal: Journal<WatchRecord>) {}
 
@@ -137,20 +152,46 @@ export class SharedWatchAssignments {
     );
   }
 
-  /** Assignments made under the server's current numbering. */
-  private get current(): Assignment[] {
+  /** Records written under the server's current numbering. */
+  private get current(): WatchRecord[] {
     const records = this.journal.records;
     let index = records.length - 1;
     while (index >= 0 && !restarted(records[index]!)) index--;
-    return records.slice(index + 1) as Assignment[];
+    return records.slice(index + 1);
   }
 
   private get every(): Assignment[] {
-    return this.journal.records.filter((record): record is Assignment => !restarted(record));
+    return this.journal.records.filter(isAssignment);
   }
 
+  /**
+   * Where the stream reopens: the last sequence whose routing reached disk.
+   *
+   * An assignment on its own is not a position. The watcher can die between
+   * recording which session serves a room and handing that session the event,
+   * and reopening past the event would leave nothing holding it — the session's
+   * own connection covers that today, but it is the only copy once the watcher
+   * is the agent's single connection.
+   */
   get cursor(): number {
-    return this.current.at(-1)?.sequence ?? 0;
+    let complete = 0;
+    let assigned = 0;
+    for (const record of this.current) {
+      if (isHandled(record)) complete = Math.max(complete, record.handled);
+      else if (isAssignment(record)) {
+        // An assignment is only made once the one before it has been routed, so
+        // a journal written before routing was recorded still resumes at its
+        // last complete event instead of from the beginning.
+        complete = Math.max(complete, assigned);
+        assigned = record.sequence;
+      }
+    }
+    return complete;
+  }
+
+  /** Records that the event has been routed, or decided not to be. */
+  async handled(sequence: number): Promise<void> {
+    await this.journal.append({ handled: sequence });
   }
 
   /**
@@ -166,7 +207,9 @@ export class SharedWatchAssignments {
     template: SharedHostConfig,
     event: { sequence: number; roomId: string; messageId: string }
   ): Promise<SharedHostConfig> {
-    const duplicate = this.current.find((record) => record.sequence === event.sequence);
+    const duplicate = this.current
+      .filter(isAssignment)
+      .find((record) => record.sequence === event.sequence);
     if (duplicate) {
       if (duplicate.roomId !== event.roomId || duplicate.messageId !== event.messageId)
         throw new Error('Watcher sequence changed message identity.');
@@ -332,6 +375,10 @@ export async function runSharedWatcher(
             assignment
           );
           await route(config, assignment);
+          // Recorded before the session is started, because starting it is
+          // recoverable — every assigned session is launched again when the
+          // watcher restarts — where the routing decision is not.
+          await assignments.handled(assignment.sequence);
           await launch(config);
         });
         return pending.catch((error: Error) => {

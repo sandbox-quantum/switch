@@ -89,7 +89,9 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
       roomConnection: { connectionId: 'watcher', rooms: [], startCursor: 0 },
     });
     const event = { sequence: 7, roomId: 'room', messageId: 'message' };
-    const first = await (await SharedWatchAssignments.open(root)).assign(template, event);
+    const opened = await SharedWatchAssignments.open(root);
+    const first = await opened.assign(template, event);
+    await opened.handled(event.sequence);
     const restarted = await SharedWatchAssignments.open(root);
     expect(restarted.cursor).toBe(7);
     expect(await restarted.assign(template, event)).toEqual(first);
@@ -127,7 +129,9 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     await expect(
       restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
     ).rejects.toThrow('incomplete record');
-    expect(restarted.cursor).toBe(10);
+    // Nine, not ten: the tenth was assigned and never routed, so it is the one
+    // event this journal still owes.
+    expect(restarted.cursor).toBe(9);
   }
 );
 
@@ -207,6 +211,61 @@ it('stays down while a takeover marker says another client holds the connection'
   ).rejects.toThrow('credentials.json');
 });
 
+it('asks again for an event it assigned but died before routing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-unrouted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const routed = await assignments.assign(config, {
+    sequence: 4,
+    roomId: 'room',
+    messageId: 'four',
+  });
+  await assignments.handled(4);
+  // Assigned, and then the watcher dies before the session is handed the event.
+  const unrouted = await assignments.assign(config, {
+    sequence: 6,
+    roomId: 'other',
+    messageId: 'six',
+  });
+
+  const restarted = await SharedWatchAssignments.open(root);
+  expect(restarted.cursor).toBe(4);
+  // Redelivery finds the same session, so the event is routed where it was
+  // always going rather than to a second one.
+  expect(
+    await restarted.assign(config, { sequence: 6, roomId: 'other', messageId: 'six' })
+  ).toEqual(unrouted);
+  await restarted.handled(6);
+  expect(restarted.cursor).toBe(6);
+  expect(restarted.sessions().map((entry) => entry.session.sessionId)).toEqual([
+    routed.session.sessionId,
+    unrouted.session.sessionId,
+  ]);
+});
+
+it('resumes a journal written before routing was recorded at its last complete event', async () => {
+  // Every assignment in an existing journal is unrouted by this reading, and
+  // taking that literally would reopen at the start of the stream — one silent
+  // missed session per agent on the upgrade meant to make delivery stronger.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-legacy-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const older = await SharedWatchAssignments.open(root);
+  for (const [sequence, roomId] of [
+    [4, 'room'],
+    [6, 'other'],
+    [7, 'third'],
+  ] as const)
+    await older.assign(config, { sequence, roomId, messageId: `m${sequence}` });
+
+  // Six, because the watcher only assigns the next event once the one before it
+  // has been routed — so only the last record is still owed.
+  expect((await SharedWatchAssignments.open(root)).cursor).toBe(6);
+});
+
 it('resumes at the server head after its numbering restarts, keeping room sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-'));
   roots.push(root);
@@ -218,6 +277,7 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
     roomId: 'room',
     messageId: 'before',
   });
+  await assignments.handled(13);
   expect(assignments.cursor).toBe(13);
 
   await assignments.restart();
@@ -231,6 +291,7 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
   // Low sequence numbers are fresh events now, not duplicates of old ones.
   const after = await reloaded.assign(config, { sequence: 2, roomId: 'other', messageId: 'after' });
   expect(after.session.sessionId).not.toBe(before.session.sessionId);
+  await reloaded.handled(2);
   expect(reloaded.cursor).toBe(2);
 
   // The room keeps the session it already had.
@@ -435,6 +496,45 @@ it('routes to the worker that reads handoffs and leaves the older one to its own
     legacy.session.sessionId,
   ]);
   expect(started.at(-2)?.handedOver).toContain('message-3');
+  // Both routing decisions are recorded, so a watcher restarted here reopens
+  // past them rather than handing the same two events over again.
+  expect((await SharedWatchAssignments.open(root)).cursor).toBe(4);
+});
+
+it('still owes an event its worker could not be handed', async () => {
+  // The handoff is the only copy of where a routed event was going. Recording
+  // the event as dealt with before that write lands would step the watcher over
+  // it on restart, and nothing would be holding it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-route-fails-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const assigned = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  await assignments.handled(1);
+  const sessionRoot = join(root, assigned.session.sessionId);
+  await mkdir(sessionRoot, { recursive: true });
+  await declareHandoffCapability(sessionRoot);
+  // A directory where the inbox goes: the worker reads handoffs and none can be
+  // written to it.
+  await mkdir(join(sessionRoot, HANDOFF_FILE));
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: true });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await expect(streams[0]!.onEvent!(addressed(2, 'room'))).rejects.toThrow();
+  } finally {
+    abort.abort();
+    await run.catch(() => {});
+  }
+
+  expect((await SharedWatchAssignments.open(root)).cursor).toBe(1);
 });
 
 it('leaves the rest of a restore unstarted once spawning is turned off midway', async () => {
