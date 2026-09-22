@@ -133,6 +133,31 @@ posting to the hub means leaving the war room briefly and going straight back �
 batch it rather than hopping per line. And you can *read* another room without
 connecting, so never hop merely to look.
 
+## Two severity scales, and how to talk about them
+
+There are two, they are off by one, and confusing them at 03:00 is a real risk
+rather than a pedantic one.
+
+- The SOP speaks in **Sev0 / Sev1 / Sev2**. Its severity table, its cadence and
+  its escalation rules are all written that way.
+- PagerDuty's priorities start at **P1**. There is no P0. So Sev0 is P1, Sev1 is
+  P2, Sev2 is P3.
+
+The SOP says "set priority P0 / P1 / P2 in PagerDuty", which cannot be done as
+written. Until that is corrected, expect both vocabularies in the room.
+
+**The rule: speak Sev, always.** Sev is the SOP's language and the one the
+severity table, the cadence and the ladder are written in. The P-number is an
+implementation detail of the paging system.
+
+**When you quote PagerDuty, say both.** "Sev0 (PagerDuty P1)". Never repeat a
+bare P-number back into a room — someone will read P1 as Sev1 and be exactly one
+level wrong about how bad it is, in the direction that under-reacts.
+
+**If a human says a bare P-number, ask which they mean** rather than assuming.
+One clarifying question costs a few seconds; guessing costs an hour of the wrong
+cadence and the wrong people.
+
 ## Coverage, and what it means for you
 
 On-call is business hours in two regions, not 24/7. Outside those hours there
@@ -518,8 +543,10 @@ session. It takes these values from here and never from a message.
 - Service ids: <one per service in the severity table>
 - Escalation policy id: <...>
 - On-call lookup: the schedule attached to that escalation policy
-- Severity map: sev0 → P0, sev1 → P1, sev2 → P2 (confirm against the
-  priority scheme actually configured in PagerDuty)
+- Severity map: **sev0 → P1, sev1 → P2, sev2 → P3** — PagerDuty's scale
+  starts at P1, so there is no P0 to map sev0 onto. Note the SOP says "set
+  priority P0 / P1 / P2 in PagerDuty", which cannot be done as written; see
+  the vocabulary rule in the agent's definition.
 - **War-room threshold: sev0 only.** This is what the SOP says — at sev1 it
   expects the on-call to work from logs and runbooks and escalate to the
   service owner after an hour. Widen it to sev1 only as a deliberate decision,
@@ -632,6 +659,12 @@ Incident record: <incident_url>
 The incident record is the system of record for severity, acknowledgement and
 resolution. If it and this room disagree, it is right. Update it there and say
 so here.
+
+**Say Sev, not P.** The two scales are off by one — PagerDuty starts at P1, so
+Sev0 is P1, Sev1 is P2, Sev2 is P3. A bare P-number in this room will be read
+one level too low by somebody, in the direction that under-reacts.
+`@responder` writes "Sev0 (PagerDuty P1)" when it quotes the record, and will
+ask which you meant if you give it a bare P-number.
 
 ## How to write in this room
 
