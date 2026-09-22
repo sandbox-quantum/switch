@@ -125,6 +125,31 @@ it('drops the record a dying controller left unfinished, before writing over it'
   expect(await inbox.drain()).toEqual([{ sequence: 6, roomId: 'room', messageId: 'six' }]);
 });
 
+it('keeps the records before a torn tail when the scan back reads short', async () => {
+  // The scan back decides where to truncate. A read that stops early looks like
+  // a file with no record terminator in it at all, and the repair would take
+  // every complete record with the tail it was there to drop.
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  await handOff(session, { sequence: 4, roomId: 'room', messageId: 'four' });
+  await appendFile(join(session, HANDOFF_FILE), '{"sequence":5,"roomId":"room","mess');
+  const sample = await open(join(session, HANDOFF_FILE), 'r');
+  const handles = Object.getPrototypeOf(sample);
+  await sample.close();
+  const whole = handles.read;
+  vi.spyOn(handles, 'read').mockImplementation(function (this: FileHandle, ...args: unknown[]) {
+    const [buffer, offset, length, position] = args as [Buffer, number, number, number];
+    return whole.call(this, buffer, offset, Math.min(length, 7), position);
+  });
+
+  await handOff(session, { sequence: 6, roomId: 'room', messageId: 'six' });
+  expect(await inbox.drain()).toEqual([
+    { sequence: 4, roomId: 'room', messageId: 'four' },
+    { sequence: 6, roomId: 'room', messageId: 'six' },
+  ]);
+});
+
 it('refuses a complete record it cannot read rather than passing over it', async () => {
   // Only the writer knows a tail was abandoned, and it drops those bytes
   // itself. Anything else that will not read is damage, and skipping it would

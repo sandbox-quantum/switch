@@ -114,11 +114,33 @@ async function lastRecordEnd(file: FileHandle, size: number): Promise<number> {
   const chunk = Buffer.alloc(Math.min(size, 8192));
   for (let end = size; end > 0; end -= chunk.byteLength) {
     const length = Math.min(chunk.byteLength, end);
-    await file.read(chunk, 0, length, end - length);
-    const at = chunk.subarray(0, length).lastIndexOf(NEWLINE);
+    const filled = await readFully(file, chunk, length, end - length);
+    const at = chunk.subarray(0, filled).lastIndexOf(NEWLINE);
     if (at !== -1) return end - length + at + 1;
   }
   return 0;
+}
+
+/**
+ * Reads `length` bytes from `position`. A read is allowed to return less than
+ * it was asked for, and the rest of the file is on disk rather than lost, so
+ * what it returns is what was actually read — never what was requested. Both
+ * ends of this file depend on that: the reader advances its position by it, and
+ * the writer decides where to truncate by it.
+ */
+async function readFully(
+  file: FileHandle,
+  buffer: Buffer,
+  length: number,
+  position: number
+): Promise<number> {
+  let filled = 0;
+  while (filled < length) {
+    const { bytesRead } = await file.read(buffer, filled, length - filled, position + filled);
+    if (bytesRead === 0) break;
+    filled += bytesRead;
+  }
+  return filled;
 }
 
 /**
@@ -207,20 +229,7 @@ export class HandoffInbox {
         throw new Error('The controller handoff journal shrank; recovery review is required.');
       if (size === this.offset) return [];
       const buffer = Buffer.alloc(size - this.offset);
-      let filled = 0;
-      // A read is allowed to return less than it was asked for, and the rest of
-      // the record is on disk rather than lost — so what was actually read is
-      // what the position advances by.
-      while (filled < buffer.byteLength) {
-        const { bytesRead } = await file.read(
-          buffer,
-          filled,
-          buffer.byteLength - filled,
-          this.offset + filled
-        );
-        if (bytesRead === 0) break;
-        filled += bytesRead;
-      }
+      const filled = await readFully(file, buffer, buffer.byteLength, this.offset);
       const complete = buffer.subarray(0, filled).lastIndexOf(NEWLINE) + 1;
       this.offset += complete;
       return records(buffer.subarray(0, complete));
