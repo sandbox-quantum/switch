@@ -162,6 +162,13 @@ class RoomAdmission:
     already been issued for — or that nothing holds it and the caller may not
     start one; either way the delivery waits and the question is asked again.
     `none` comes with the right to start exactly one session for the room.
+
+    An `unavailable` answer names a session and host where the room is held by
+    exactly one unfinished session whose host was killed rather than stood
+    down. That is the only case a controller can act on: it says which session
+    would have to come back, so the one holding it can start it again instead
+    of waiting for a host nothing is going to bring up. Two sessions claiming
+    one room names neither, being a state no delivery should be decided from.
     """
 
     status: str
@@ -274,6 +281,17 @@ def _host_holds(row: SdkSession, now: datetime) -> bool:
     return not row.recovery.get("quiesced") and row.lease_expires_at > now
 
 
+def _host_lapsed(row: SdkSession, now: datetime) -> bool:
+    """Has this session's host stopped without standing the session down?
+
+    A host that quiesced said it was going, and a session stood down that way
+    is not waiting for anybody. One whose lease merely ran out was killed: the
+    session is still in its room, still unfinished, and nothing is left running
+    to answer for it.
+    """
+    return not row.recovery.get("quiesced") and row.lease_expires_at <= now
+
+
 def _attends(
     row: SdkSession, room_id: str, now: datetime, connections: ConnectionRegistry
 ) -> bool:
@@ -327,8 +345,8 @@ def _occupies(
 
 def _room_claimants(
     rows: Iterable[SdkSession], room_id: str, now: datetime
-) -> tuple[SdkSession | None, bool]:
-    """The session working in `room_id`, and whether any unfinished one claims it.
+) -> tuple[SdkSession | None, list[SdkSession]]:
+    """The session working in `room_id`, and every unfinished one claiming it.
 
     The two answers come apart exactly where a controller reading its own disk
     goes wrong. A session that has stopped or been retired leaves its claim on
@@ -337,15 +355,15 @@ def _room_claimants(
     the room to a session started in the meantime would take it away.
     """
     owner: SdkSession | None = None
-    claimed = False
+    claimants: list[SdkSession] = []
     for row in rows:
         state = _stored_snapshot(row).session
         if room_id not in state.room_ids or state.retired or _session_is_over(row):
             continue
-        claimed = True
+        claimants.append(row)
         if _host_holds(row, now):
             owner = row
-    return owner, claimed
+    return owner, claimants
 
 
 def _spoken_for(rows: Iterable[SdkSession], claimant: Connection, room_id: str) -> bool:
@@ -590,8 +608,8 @@ class SessionAuthority:
             .order_by(SdkSession.id)
             .with_for_update()
         )
-        owner, claimed = _room_claimants(list(rows), grant.room_id, now)
-        if owner is not None or claimed:
+        _, claimants = _room_claimants(list(rows), grant.room_id, now)
+        if claimants:
             raise SessionError(
                 "ROOM_GRANT_LAPSED", "Another session took the room while it was free."
             )
@@ -1170,7 +1188,7 @@ class SessionAuthority:
                 )
                 db.add(reservation)
                 await db.flush()
-            owner, claimed = _room_claimants(rows, room_id, now)
+            owner, claimants = _room_claimants(rows, room_id, now)
             if owner is not None:
                 return RoomAdmission(
                     status="owner",
@@ -1179,8 +1197,17 @@ class SessionAuthority:
                     epoch=owner.epoch,
                     grant_expires_at=None,
                 )
-            if claimed:
-                return RoomAdmission("unavailable", None, None, None, None)
+            if claimants:
+                lapsed = [row for row in claimants if _host_lapsed(row, now)]
+                if len(lapsed) != 1:
+                    return RoomAdmission("unavailable", None, None, None, None)
+                return RoomAdmission(
+                    status="unavailable",
+                    session_id=lapsed[0].id,
+                    host_id=lapsed[0].host_id,
+                    epoch=None,
+                    grant_expires_at=None,
+                )
             live = await db.scalars(
                 select(SdkRoomAdmission).where(
                     SdkRoomAdmission.tenant_id == require_tenant_id(),

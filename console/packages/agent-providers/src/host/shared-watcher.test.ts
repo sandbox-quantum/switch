@@ -39,6 +39,8 @@ const declarations = vi.hoisted(() => [] as boolean[]);
 const server = vi.hoisted(() => ({
   owners: new Map<string, { sessionId: string; hostId: string; epoch: string }>(),
   claimed: new Set<string>(),
+  /** Rooms claimed by a session whose host was killed, named per room. */
+  stalled: new Map<string, { sessionId: string; hostId: string }>(),
   grants: new Map<string, string>(),
   asked: [] as { roomId: string; messageId: string; sequence: number; spawning: boolean }[],
   reservations: [] as { roomId: string; messageId: string; sequence: number; expired: boolean }[],
@@ -74,12 +76,16 @@ vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
         if (refusal) throw refuse(refusal);
         const owner = server.owners.get(delivery.roomId);
         if (owner) return { status: 'owner', ...owner };
-        if (server.claimed.has(delivery.roomId)) return { status: 'unavailable' };
+        if (server.claimed.has(delivery.roomId))
+          return {
+            status: 'unavailable',
+            stalled: server.stalled.get(delivery.roomId) ?? null,
+          };
         const granted = server.grants.get(delivery.roomId);
         if (granted !== undefined && granted !== delivery.messageId)
-          return { status: 'unavailable' };
+          return { status: 'unavailable', stalled: null };
         if (granted === undefined) {
-          if (!delivery.spawning) return { status: 'unavailable' };
+          if (!delivery.spawning) return { status: 'unavailable', stalled: null };
           server.grants.set(delivery.roomId, delivery.messageId);
         }
         return { status: 'none', grantExpiresAt: new Date(Date.now() + 120000).toISOString() };
@@ -103,6 +109,7 @@ vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
 function owns(roomId: string, sessionId: string) {
   server.owners.set(roomId, { sessionId, hostId: 'host', epoch: 'epoch' });
   server.claimed.delete(roomId);
+  server.stalled.delete(roomId);
   server.grants.delete(roomId);
 }
 
@@ -113,6 +120,7 @@ afterEach(async () => {
   supervisors.clear();
   server.owners.clear();
   server.claimed.clear();
+  server.stalled.clear();
   server.grants.clear();
   server.asked.length = 0;
   server.reservations.length = 0;
@@ -843,6 +851,81 @@ it('holds a room nothing can take yet instead of starting a second session', asy
   expect(journal.sessions()).toHaveLength(1);
   expect(journal.pending()).toEqual([]);
   expect(journal.cursor).toBe(7);
+});
+
+it('starts a killed worker again for the room its session still holds', async () => {
+  // The worker was killed outright, so it never stood its session down: the
+  // room is still that session's and no other may be started for it. Nothing
+  // here restarts a worker on its own, so without this the messages wait for a
+  // host that is never coming back.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-killed-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const journal = await SharedWatchAssignments.open(root);
+  const assigned = await journal.assign(config, { sequence: 1, roomId: 'room', messageId: 'old' });
+  await journal.handled(1);
+  const killed = assigned.session.sessionId;
+  const sessionRoot = join(root, killed);
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: false });
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  server.claimed.add('room');
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    // The restore every controller does on opening. What follows is this
+    // controller staying up while the worker under it dies.
+    expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
+      sessionRoot,
+    ]);
+    vi.mocked(ensureSharedProcess).mockClear();
+
+    // Claimed, but by nothing this controller is told about: a grant already
+    // issued, or a session on another machine. Starting anything here would be
+    // a second session for a room that has one.
+    await streams[0]!.onEvent!(addressed(5, 'room'));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+
+    // Named, but on a host this controller's bundle is not: the session has
+    // been started again somewhere else, and this bundle is the stale one.
+    server.stalled.set('room', { sessionId: killed, hostId: randomUUID() });
+    await streams[0]!.onEvent!(addressed(6, 'room'));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+
+    // Named on the host this controller has, but still running: adopted rather
+    // than replaced, so there is nothing to start.
+    server.stalled.set('room', { sessionId: killed, hostId: assigned.session.hostId });
+    supervisors.set(sessionRoot, { build: 'build' });
+    await streams[0]!.onEvent!(addressed(7, 'room'));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+
+    supervisors.delete(sessionRoot);
+    await streams[0]!.onEvent!(addressed(8, 'room'));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const [started] = vi.mocked(ensureSharedProcess).mock.calls;
+  expect(vi.mocked(ensureSharedProcess).mock.calls).toHaveLength(1);
+  expect(started![0].root).toBe(sessionRoot);
+  expect(started![0].config.session).toEqual(assigned.session);
+  expect(started![0].restart).toBe(false);
+  expect(warning.mock.calls.some((call) => String(call[0]).includes('starting it again'))).toBe(
+    true
+  );
+  // Starting the worker is not answering the messages. They are still owed,
+  // and go to that same session once it says it has the room again.
+  const reopened = await SharedWatchAssignments.open(root);
+  expect(reopened.sessions().map((entry) => entry.session.sessionId)).toEqual([killed]);
+  expect(reopened.pending().map((entry) => entry.messageId)).toEqual([
+    'message-5',
+    'message-6',
+    'message-7',
+    'message-8',
+  ]);
 });
 
 it('delivers what it was holding after a restart the server never replays', async () => {

@@ -69,6 +69,32 @@ it('reads the right to start a session, and how long it lasts', async () => {
   });
 });
 
+it('reads which session a room is waiting on, and takes no answer as none', async () => {
+  answering(200, { status: 'unavailable', session_id: 'session-1', host_id: 'host-1' });
+
+  expect(await new SwitchRoomAdmissions(creds).admit(delivery, live())).toEqual({
+    status: 'unavailable',
+    stalled: { sessionId: 'session-1', hostId: 'host-1' },
+  });
+
+  // The wait is something else — a grant already issued, or a controller that
+  // may not start a session. There is nothing here to bring back.
+  answering(200, { status: 'unavailable', session_id: null, host_id: null });
+  expect(await new SwitchRoomAdmissions(creds).admit(delivery, live())).toEqual({
+    status: 'unavailable',
+    stalled: null,
+  });
+});
+
+it('refuses a half-named stalled session rather than starting from a guess', async () => {
+  answering(200, { status: 'unavailable', session_id: 'session-1', host_id: null });
+
+  await expect(new SwitchRoomAdmissions(creds).admit(delivery, live())).rejects.toMatchObject({
+    code: 'INVALID_RESPONSE',
+    retryable: false,
+  });
+});
+
 it('refuses a grant with no expiry rather than acting on one that never lapses', async () => {
   answering(200, { status: 'none' });
 

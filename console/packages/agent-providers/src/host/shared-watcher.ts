@@ -497,6 +497,35 @@ export async function runSharedWatcher(
       });
     };
     /**
+     * Starts the session Switch says still holds the room but has no host left
+     * running it.
+     *
+     * A killed worker takes nothing away: its session is unfinished and the
+     * room is still its own, so no other session can be started for it and the
+     * messages wait for a host that nothing else is going to bring up. Only a
+     * restart of that same session ends the wait.
+     *
+     * The session is the server's answer, never this journal's: the journal
+     * says which session was started for a delivery, which is not the same as
+     * the one holding the room now. What the journal supplies is the bundle to
+     * start it from, and only where that bundle is the host Switch has on
+     * record — a session whose host identity has moved on is being run
+     * somewhere else, and one this controller has no bundle for is not its
+     * session to start. Either way the delivery goes on waiting rather than
+     * being answered by a second session for a room that already has one.
+     */
+    const revive = async (stalled: { sessionId: string; hostId: string }, roomId: string) => {
+      const config = assignments
+        .sessions()
+        .find((saved) => saved.session.sessionId === stalled.sessionId);
+      if (!config || config.session.hostId !== stalled.hostId) return;
+      if (await liveSupervisor(sharedSessionRoot(stalled.sessionId))) return;
+      console.warn(
+        `Session ${stalled.sessionId} still holds room ${roomId} but nothing is running it; starting it again from its saved state.`
+      );
+      await launch(config);
+    };
+    /**
      * Puts the event in the inbox of the session that serves its room, for a
      * worker that has said it reads one.
      *
@@ -569,7 +598,10 @@ export async function runSharedWatcher(
         await settle();
         return true;
       }
-      if (answer.status === 'unavailable') return false;
+      if (answer.status === 'unavailable') {
+        if (answer.stalled) await revive(answer.stalled, event.roomId);
+        return false;
+      }
       if (answer.status === 'owner') {
         if (!(await route(answer.sessionId, event)))
           console.error(

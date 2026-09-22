@@ -29,13 +29,17 @@ export interface RoomDelivery {
  * - `owner` — a running session holds the room; the delivery goes to it.
  * - `unavailable` — the room is spoken for by something that cannot take the
  *   delivery yet, or nothing holds it and this controller may not start one.
- *   The delivery waits and the question is asked again.
+ *   The delivery waits and the question is asked again. `stalled` is set where
+ *   the room is held by one unfinished session whose host was killed: it names
+ *   the session that would have to come back for the room to be served again,
+ *   and is null wherever the wait is something else — a grant already issued,
+ *   or a controller that may not start a session.
  * - `none` — nothing holds the room, and this answer carries the right to
  *   start exactly one session for it. The right lapses at `grantExpiresAt`.
  */
 export type RoomAdmission =
   | { status: 'owner'; sessionId: string; hostId: string; epoch: string }
-  | { status: 'unavailable' }
+  | { status: 'unavailable'; stalled: { sessionId: string; hostId: string } | null }
   | { status: 'none'; grantExpiresAt: string };
 
 /** A verified delivery the server is still holding for this agent. */
@@ -149,7 +153,17 @@ export class SwitchRoomAdmissions {
         hostId: text(body.host_id, "the room owner's host"),
         epoch: text(body.epoch, "the room owner's epoch"),
       };
-    if (body.status === 'unavailable') return { status: 'unavailable' };
+    if (body.status === 'unavailable')
+      return {
+        status: 'unavailable',
+        stalled:
+          body.session_id === null || body.session_id === undefined
+            ? null
+            : {
+                sessionId: text(body.session_id, 'the session that holds the room'),
+                hostId: text(body.host_id, "the stalled session's host"),
+              },
+      };
     if (body.status === 'none')
       return {
         status: 'none',

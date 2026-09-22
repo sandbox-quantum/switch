@@ -23,7 +23,7 @@ from sqlalchemy import select
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import SdkRoomAdmission, SdkSession, require_tenant_id
-from switch_core.sessions.contract import HostEvent, Session
+from switch_core.sessions.contract import HostEvent, Session, Snapshot
 from switch_core.sessions.service import (
     ADMISSION_SECONDS,
     RoomGrant,
@@ -98,6 +98,27 @@ async def _lapse_lease(session_factory, session_id: str) -> None:
         row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
 
 
+async def _reclaim(session_factory, session_id: str) -> None:
+    """Put the room claim back on a session the binder took it off.
+
+    Binding evicts every other claimant, so two sessions holding one room is
+    not a state the service produces. It is what an eviction that never reached
+    a session's stored state would leave behind, and the answer has to be safe
+    in it.
+    """
+    async with session_factory() as db, db.begin():
+        row = await db.scalar(
+            select(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.id == session_id,
+            )
+        )
+        snapshot = Snapshot.model_validate(row.snapshot)
+        row.snapshot = snapshot.model_copy(
+            update={"session": snapshot.session.model_copy(update={"room_ids": [ROOM]})}
+        ).model_dump(by_alias=True)
+
+
 async def _age_admission(
     session_factory, message_id: str, *, grant: bool, promise: bool
 ) -> None:
@@ -166,6 +187,9 @@ async def test_a_stopped_session_is_not_the_room_owner_but_a_crashed_host_still_
     await _lapse_lease(session_factory, SECOND[0])
     held = await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
     assert (held.status, held.grant_expires_at) == ("unavailable", None)
+    # Named, so the controller that has this session can start it again rather
+    # than wait for a host nothing else is going to bring back.
+    assert (held.session_id, held.host_id) == SECOND
 
 
 @pytest.mark.asyncio
@@ -282,7 +306,55 @@ async def test_a_controller_that_may_not_start_a_session_is_told_to_wait(
 
     admission = await service.admit_room(AGENT, ROOM, "first", sequence, False, buffer)
     assert (admission.status, admission.grant_expires_at) == ("unavailable", None)
+    # Nothing to bring back: waiting on the setting is not waiting on a session.
+    assert (admission.session_id, admission.host_id) == (None, None)
     assert [r.message_id for r in await service.room_reservations(AGENT)] == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_a_session_stood_down_on_purpose_is_not_offered_for_restarting(
+    session_factory,
+) -> None:
+    """A host that said it was going is not one that was killed.
+
+    Both leave the room claimed by a session that has not finished, and only
+    one of them is waiting to be brought back. Naming the other would restart a
+    session whose host stopped it deliberately.
+    """
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    sequence = buffer.enqueue(AGENT, ROOM, _event("first"))
+    await service.bind_room(AGENT, *FIRST, epoch, ROOM)
+    await service.quiesce(AGENT, *FIRST, epoch)
+
+    admission = await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
+    assert admission.status == "unavailable"
+    assert (admission.session_id, admission.host_id) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_room_two_sessions_claim_names_neither_of_them(
+    session_factory,
+) -> None:
+    """Which one to bring back is not a question this answer should guess at.
+
+    Both are unfinished, both have the room, and neither has a host running
+    it. Starting either would be picking a winner from a state nothing here
+    can tell apart, so the delivery waits for the room to settle instead.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service, None)
+    buffer = EventBuffer()
+    sequence = buffer.enqueue(AGENT, ROOM, _event("first"))
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await service.bind_room(AGENT, *SECOND, second, ROOM)
+    await _reclaim(session_factory, FIRST[0])
+    await _lapse_lease(session_factory, FIRST[0])
+    await _lapse_lease(session_factory, SECOND[0])
+
+    admission = await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
+    assert admission.status == "unavailable"
+    assert (admission.session_id, admission.host_id) == (None, None)
 
 
 @pytest.mark.asyncio
@@ -444,6 +516,48 @@ async def test_a_given_up_delivery_stops_being_kept_once_nothing_can_rebuild_it(
     await service.admit_room(AGENT, ROOM, "second", second, True, buffer)
 
     assert [message for message, _ in await _reserved(session_factory)] == ["second"]
+
+
+@pytest.mark.asyncio
+async def test_a_given_up_delivery_is_still_refused_once_its_mark_has_gone(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mark is dropped on the promise that the event is unreadable by then.
+
+    Nothing else arrives for this agent, so nothing appends and nothing would
+    otherwise expire the event it was built from. The delivery has to be
+    refused on the copy being gone rather than on the mark still being there.
+    """
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "switch_core.bridges.agent.protocol.event_buffer.time.monotonic",
+        lambda: clock["now"],
+    )
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer(retention_seconds=60)
+    sequence = buffer.enqueue(AGENT, ROOM, _event("first"))
+    kept = buffer.enqueue(AGENT, ROOM, _event("kept"))
+    await service.bind_room(AGENT, *FIRST, epoch, ROOM)
+    await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
+    await service.admit_room(AGENT, ROOM, "kept", kept, True, buffer)
+    await _age_admission(session_factory, "first", grant=False, promise=True)
+    await service.discard_room_reservation(AGENT, ROOM, "first")
+
+    clock["now"] += 61
+    await _discard_long_ago(session_factory, "first")
+    # An admission for a delivery already reserved prunes the mark without any
+    # event being appended, so this is the whole of what ages the buffer.
+    await service.admit_room(AGENT, ROOM, "kept", kept, True, buffer)
+    assert [message for message, _ in await _reserved(session_factory)] == ["kept"]
+
+    with pytest.raises(SessionError) as refused:
+        await service.submit_room_message(
+            AGENT, *FIRST, epoch, ROOM, "first", sequence, False, buffer
+        )
+
+    assert refused.value.code == "ROOM_EVENT_UNAVAILABLE"
+    assert await service.pending(AGENT, *FIRST, epoch) == []
 
 
 @pytest.mark.asyncio

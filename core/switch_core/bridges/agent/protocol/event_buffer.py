@@ -245,7 +245,14 @@ class EventBuffer:
         `rooms=None` means every room the agent has events for; otherwise only
         the given rooms. Raises `CursorExpiredError` if `after_seq` predates
         what the buffer still holds.
+
+        The window is enforced here as well as on append, because an agent
+        that goes quiet appends nothing and would otherwise go on serving
+        events long past it. Elsewhere the promise that an event stops being
+        readable when its window ends is relied on to decide how long a record
+        about it has to be kept.
         """
+        self._trim(agent_id)
         self._check_cursor(agent_id, after_seq)
 
         out: list[BufferedEvent] = []
