@@ -108,19 +108,32 @@ it('holds a character split across two reads as bytes rather than as halves', as
   expect(await inbox.drain()).toEqual([{ sequence: 4, roomId: 'raum-✅', messageId: 'four' }]);
 });
 
-it('keeps reading a journal a dying controller tore in half', async () => {
+it('drops the record a dying controller left unfinished, before writing over it', async () => {
   // The next append would otherwise run onto the end of the abandoned record,
   // and the worker would fail on that line for as long as the session lives.
   const session = await root();
   const inbox = new HandoffInbox(session);
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  await writeFile(join(session, HANDOFF_FILE), '{"sequence":4,"roomId":"room","mess');
+  await handOff(session, { sequence: 3, roomId: 'room', messageId: 'three' });
+  await inbox.drain();
+  await appendFile(join(session, HANDOFF_FILE), '{"sequence":4,"roomId":"room","mess');
 
   await handOff(session, { sequence: 5, roomId: 'room', messageId: 'five' });
-  expect(await inbox.drain()).toEqual([{ sequence: 5, roomId: 'room', messageId: 'five' }]);
   expect(warning).toHaveBeenCalledOnce();
+  expect(await inbox.drain()).toEqual([{ sequence: 5, roomId: 'room', messageId: 'five' }]);
   await handOff(session, { sequence: 6, roomId: 'room', messageId: 'six' });
   expect(await inbox.drain()).toEqual([{ sequence: 6, roomId: 'room', messageId: 'six' }]);
+});
+
+it('refuses a complete record it cannot read rather than passing over it', async () => {
+  // Only the writer knows a tail was abandoned, and it drops those bytes
+  // itself. Anything else that will not read is damage, and skipping it would
+  // lose the only copy of an event while the controller counts it delivered.
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  await handOff(session, { sequence: 4, roomId: 'room', messageId: 'four' });
+  await appendFile(join(session, HANDOFF_FILE), '{"sequence":5,"roomId":"room"}\n');
+  await expect(inbox.drain()).rejects.toThrow();
 });
 
 it('waits for the rest of a record still being written', async () => {

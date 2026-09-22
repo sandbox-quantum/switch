@@ -80,7 +80,7 @@ export async function readsHandoffs(root: string): Promise<boolean> {
 export async function handOff(root: string, event: Handoff): Promise<void> {
   const file = await open(join(root, HANDOFF_FILE), 'a+', 0o600);
   try {
-    await closeTornRecord(file);
+    await discardTornRecord(file);
     await file.writeFile(`${JSON.stringify(handoffSchema.parse(event))}\n`);
     await file.sync();
   } finally {
@@ -89,28 +89,46 @@ export async function handOff(root: string, event: Handoff): Promise<void> {
 }
 
 /**
- * A controller killed mid-append leaves a record with no terminator. Ending the
- * line before the next one is written keeps the loss to the record that was cut
- * off: without it the worker reads the two as one line and can never parse the
- * journal again.
+ * A controller killed mid-append leaves a record with no terminator, which the
+ * next append would run onto the end of. The writer is the only party that
+ * knows those bytes were abandoned rather than damaged, so it is the one that
+ * drops them — leaving the reader free to treat anything it cannot read as
+ * damage. The bytes discarded are a record that was never completed, so nothing
+ * that reached the journal is lost with them.
  */
-async function closeTornRecord(file: FileHandle): Promise<void> {
+async function discardTornRecord(file: FileHandle): Promise<void> {
   const { size } = await file.stat();
   if (size === 0) return;
   const tail = Buffer.alloc(1);
   const { bytesRead } = await file.read(tail, 0, 1, size - 1);
-  if (bytesRead === 1 && tail[0] !== NEWLINE) await file.write('\n');
+  if (bytesRead !== 1 || tail[0] === NEWLINE) return;
+  const complete = await lastRecordEnd(file, size);
+  console.warn(
+    `Discarding ${size - complete} unfinished bytes at the end of ${HANDOFF_FILE}; the controller that began that record did not finish it.`
+  );
+  await file.truncate(complete);
+}
+
+/** Where the last complete record ends, which is where a reader's position sits. */
+async function lastRecordEnd(file: FileHandle, size: number): Promise<number> {
+  const chunk = Buffer.alloc(Math.min(size, 8192));
+  for (let end = size; end > 0; end -= chunk.byteLength) {
+    const length = Math.min(chunk.byteLength, end);
+    await file.read(chunk, 0, length, end - length);
+    const at = chunk.subarray(0, length).lastIndexOf(NEWLINE);
+    if (at !== -1) return end - length + at + 1;
+  }
+  return 0;
 }
 
 /**
  * The worker's end of the handoff: what the controller has appended since the
- * last read. Written by one process and read by another, so a trailing partial
- * line is a write in flight rather than damage, and is held until the rest of
- * it lands.
+ * last read. Written by one process and read by another, so the position only
+ * ever moves to the end of a complete record — a write still in flight is read
+ * again, whole, on the next pass.
  */
 export class HandoffInbox {
   private offset = 0;
-  private partial = Buffer.alloc(0);
   private appended = false;
   private watcher: FSWatcher | null = null;
   private wake: (() => void) | null = null;
@@ -203,44 +221,34 @@ export class HandoffInbox {
         if (bytesRead === 0) break;
         filled += bytesRead;
       }
-      this.offset += filled;
-      return this.records(Buffer.concat([this.partial, buffer.subarray(0, filled)]));
+      const complete = buffer.subarray(0, filled).lastIndexOf(NEWLINE) + 1;
+      this.offset += complete;
+      return records(buffer.subarray(0, complete));
     } finally {
       await file.close();
     }
   }
-
-  /**
-   * Splits on the record terminator before decoding, so a character carried
-   * across two reads is decoded from its own bytes rather than twice in halves.
-   * A line that will not parse is the tail of a controller that died mid-write:
-   * it is reported and dropped, because failing the worker on it would take the
-   * session down on every restart and lose every later record with it.
-   */
-  private records(pending: Buffer): Handoff[] {
-    const handoffs: Handoff[] = [];
-    let start = 0;
-    for (
-      let end = pending.indexOf(NEWLINE, start);
-      end !== -1;
-      end = pending.indexOf(NEWLINE, start)
-    ) {
-      const line = pending.subarray(start, end).toString('utf8');
-      start = end + 1;
-      if (!line) continue;
-      const record = handoffSchema.safeParse(readRecord(line));
-      if (record.success) handoffs.push(record.data);
-      else console.warn(`Discarding an unreadable record in ${HANDOFF_FILE}: ${line}`);
-    }
-    this.partial = Buffer.from(pending.subarray(start));
-    return handoffs;
-  }
 }
 
-function readRecord(line: string): unknown {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return null;
+/**
+ * Splits on the record terminator before decoding, so a character that spanned
+ * two reads is decoded from its own bytes rather than twice in halves. Every
+ * line here is terminated, and the writer drops a record it abandoned before
+ * appending the next, so a line that will not read is damage and is refused
+ * rather than skipped past.
+ */
+function records(complete: Buffer): Handoff[] {
+  const handoffs: Handoff[] = [];
+  let start = 0;
+  for (
+    let end = complete.indexOf(NEWLINE, start);
+    end !== -1;
+    end = complete.indexOf(NEWLINE, start)
+  ) {
+    const line = complete.subarray(start, end).toString('utf8');
+    start = end + 1;
+    if (!line) continue;
+    handoffs.push(handoffSchema.parse(JSON.parse(line)));
   }
+  return handoffs;
 }
