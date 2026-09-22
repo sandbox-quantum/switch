@@ -40,8 +40,8 @@ and PKCE; pending attempts expire after ten minutes or a backend restart.
 Credentials are encrypted per tenant and user. Expiring user access tokens are
 refreshed by the backend. Repository access is fetched from GitHub using the
 user token, so the list is limited to repositories both the user and app can
-access. Choose repositories opens GitHub App installation; Refresh access loads
-the updated list. Disconnect removes Switch's stored credentials and pending
+access. Choose repositories opens GitHub App installation; Console checks every five seconds and when it regains focus
+until access changes. Checks stop after ten minutes or when the step closes. Disconnect removes Switch's stored credentials and pending
 attempts; it does not uninstall the app or revoke GitHub authorization.
 
 The backend requires `HOSTED_GITHUB_CONFIG_PATH`, pointing to a private JSON file

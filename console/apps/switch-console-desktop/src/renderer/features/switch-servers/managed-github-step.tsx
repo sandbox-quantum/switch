@@ -27,6 +27,7 @@ export function ManagedGitHubStep({
   const [flow, setFlow] = useState<GitHubFlow | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [watching, setWatching] = useState<{ baseline: string; expiresAt: number } | null>(null);
   useCloseGuard(busy || flowId !== null);
   const load = useCallback(async () => {
     setBusy(true);
@@ -68,7 +69,51 @@ export function ManagedGitHubStep({
       clearTimeout(timer);
     };
   }, [serverId, flowId]);
+  useEffect(() => {
+    if (!watching) return;
+    let alive = true;
+    let checking = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      if (checking || !alive) return;
+      clearTimeout(timer);
+      if (Date.now() >= watching.expiresAt) {
+        setWatching(null);
+        setError('Repository selection timed out. Choose repositories again to continue.');
+        return;
+      }
+      checking = true;
+      try {
+        const result = await rpc.switchServers.getGitHubConnection(serverId);
+        if (!alive) return;
+        setConnection(result);
+        if (JSON.stringify(result) !== watching.baseline) setWatching(null);
+        else timer = setTimeout(() => void check(), 5000);
+      } catch (cause) {
+        if (alive) {
+          setWatching(null);
+          setError(
+            failureText(
+              cause,
+              'Could not check repository access. Choose repositories to try again.'
+            )
+          );
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const onFocus = () => void check();
+    window.addEventListener('focus', onFocus);
+    void check();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [serverId, watching]);
   const act = async (action: () => Promise<void>) => {
+    setWatching(null);
     setBusy(true);
     setError(null);
     try {
@@ -116,7 +161,8 @@ export function ManagedGitHubStep({
                   <div key={installation.id} className="rounded-lg border p-3">
                     <h3 className="text-sm font-medium">{installation.account}</h3>
                     <p className="text-xs text-foreground-muted">
-                      {installation.repositories.length} accessible repositories
+                      {installation.repositories.length} accessible{' '}
+                      {installation.repositories.length === 1 ? 'repository' : 'repositories'}
                     </p>
                     <ul className="mt-2 max-h-40 overflow-auto text-sm">
                       {installation.repositories.map((repo) => (
@@ -136,14 +182,24 @@ export function ManagedGitHubStep({
               <Button
                 variant="outline"
                 disabled={busy}
-                onClick={() => void act(() => rpc.switchServers.openGitHubInstallation(serverId))}
+                onClick={() =>
+                  void act(async () => {
+                    await rpc.switchServers.openGitHubInstallation(serverId);
+                    setWatching({
+                      baseline: JSON.stringify(connection),
+                      expiresAt: Date.now() + 600_000,
+                    });
+                  })
+                }
               >
                 Choose repositories <ExternalLink className="size-4" />
               </Button>
-              <Button variant="outline" disabled={busy} onClick={() => void load()}>
-                Refresh access
-              </Button>
             </div>
+            {watching && (
+              <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted">
+                <Spinner /> Choose repositories in GitHub. Access will update here automatically.
+              </p>
+            )}
             <p className="text-xs text-foreground-muted">
               Disconnecting removes credentials saved by Switch. You can also revoke authorization
               or uninstall the app in GitHub settings. No cloud agent has been started.

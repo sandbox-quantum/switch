@@ -123,7 +123,7 @@ async def callback(
     state = request.query_params.get("state", "")
     if not state:
         return page(
-            "Return to Switch Console and refresh repository access to check your installation.",
+            "Return to Switch Console. Repository access will update automatically.",
             200,
         )
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", state):
