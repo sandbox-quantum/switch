@@ -34,7 +34,7 @@ export function ManagedProvidersStep({
         </p>
         <div role="group" aria-label="Agent providers" className="space-y-2">
           {AGENT_PROVIDERS.map((provider) => {
-            const available = provider.id === 'claude';
+            const available = true;
             return (
               <label
                 key={provider.id}
@@ -62,8 +62,8 @@ export function ManagedProvidersStep({
           })}
         </div>
         <p className="text-xs text-foreground-muted">
-          Claude Code is available for this setup now. Other providers will follow. Selecting an
-          agent does not start it.
+          Credentials are checked on the worker before it becomes ready. Selecting a provider does
+          not start an agent.
         </p>
       </DialogContentArea>
       <DialogFooter>

@@ -77,18 +77,18 @@ spec:
               value: "1"
           startupProbe:
             exec:
-              command: [switch-hosted-controller, --config, /etc/switch-hosted/controller.json, health, --max-age, "600"]
+              command: [python, -m, switch_hosted_controller.health, --max-age, "600"]
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
           readinessProbe:
             exec:
-              command: [switch-hosted-controller, --config, /etc/switch-hosted/controller.json, health, --max-age, "600"]
+              command: [python, -m, switch_hosted_controller.health, --max-age, "600"]
             periodSeconds: 15
             timeoutSeconds: 5
           livenessProbe:
             exec:
-              command: [switch-hosted-controller, --config, /etc/switch-hosted/controller.json, health, --max-age, "900"]
+              command: [python, -m, switch_hosted_controller.health, --max-age, "900"]
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3

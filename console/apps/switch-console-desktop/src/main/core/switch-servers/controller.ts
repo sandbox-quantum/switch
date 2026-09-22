@@ -93,6 +93,12 @@ import {
   getGitHubConnection,
   createCloudLaunch,
   listCloudLaunches,
+  cloudLifecycle,
+  cloudSessionOperation,
+  cloudOperationStatus,
+  getCloudProviderConnection,
+  connectCloudProvider,
+  disconnectCloudProvider,
   startGitHubConnection,
   getGitHubFlow,
   confirmGitHubConnection,
@@ -303,19 +309,43 @@ function reportRoomCreated(
 }
 
 export const switchServersController = createRPCController({
+  getCloudProviderConnection: async (serverId: string, provider: AgentProviderId) =>
+    getCloudProviderConnection(await requireReachableServer(serverId), provider),
+  connectCloudProvider: async (
+    serverId: string,
+    provider: Exclude<AgentProviderId, 'claude'>,
+    kind: 'api-key' | 'auth-json',
+    credential: string
+  ) => connectCloudProvider(await requireReachableServer(serverId), provider, kind, credential),
+  disconnectCloudProvider: async (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
+    disconnectCloudProvider(await requireReachableServer(serverId), provider),
   createCloudLaunch: async (serverId: string, input: CloudLaunchInput) => {
-    const definitions = getPlugin('claude').behavior.repoAgents;
-    if (!definitions) throw new Error('Claude Code agent definitions are unavailable.');
-    const definition = definitions.renderDefinition({
-      ...input.definition_attributes,
-      name: input.name,
-      description: input.description,
-      instructions: input.instructions,
-    });
+    const definitions = getPlugin(input.provider).behavior.repoAgents;
+    const definition = definitions
+      ? definitions.renderDefinition({
+          ...input.definition_attributes,
+          name: input.name,
+          description: input.description,
+          instructions: input.instructions,
+        })
+      : '';
     return createCloudLaunch(await requireReachableServer(serverId), { ...input, definition });
   },
   listCloudLaunches: async (serverId: string) =>
     listCloudLaunches(await requireReachableServer(serverId)),
+  cloudLifecycle: async (
+    serverId: string,
+    requestId: string,
+    action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
+    revision: number
+  ) => cloudLifecycle(await requireReachableServer(serverId), requestId, action, revision),
+  cloudSessionOperation: async (
+    serverId: string,
+    requestId: string,
+    operation: { id: string; session_id: string; action: 'start' | 'restart' }
+  ) => cloudSessionOperation(await requireReachableServer(serverId), requestId, operation),
+  cloudOperationStatus: async (serverId: string, requestId: string, operationId: string) =>
+    cloudOperationStatus(await requireReachableServer(serverId), requestId, operationId),
   getClaudeConnection: async (serverId: string) =>
     getClaudeConnection(await requireServer(serverId)),
   connectClaude: async (serverId: string, kind: ClaudeCredentialKind, credential: string) => {

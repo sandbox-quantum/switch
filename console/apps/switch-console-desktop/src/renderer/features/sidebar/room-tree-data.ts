@@ -16,6 +16,7 @@ export type RoomGroup = {
   /** When the room was created, if its server's room list has been read. */
   createdAt: string | null;
   sessions: SessionStore[];
+  cloudHasLiveSession?: boolean;
 };
 
 /** The value a room is filtered by in the messaging-app dimension. Unbridged
@@ -49,7 +50,8 @@ export function filterRoomGroups(groups: RoomGroup[], filters: RoomFilters): Roo
     ) {
       return false;
     }
-    if (filters.hasLiveSession && !group.sessions.some(isProvisioned)) return false;
+    if (filters.hasLiveSession && !group.cloudHasLiveSession && !group.sessions.some(isProvisioned))
+      return false;
     return true;
   });
 }

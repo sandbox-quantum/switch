@@ -4,10 +4,11 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from time import time
 from typing import Any
@@ -17,6 +18,7 @@ import boto3
 from .cloud import Ec2Cloud
 from .config import ConfigError, ControllerConfig, validate_agent_id
 from .gateway import Gateway, GatewayConfig, GatewayError
+from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import Agent, DesiredState
 from .reconciler import Reconciler
@@ -44,6 +46,13 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--retain-volume", action="store_true")
     cleanup.add_argument("--delete-volume", action="store_true")
 
+    upgrade = subparsers.add_parser(
+        "upgrade", help="use the configured image after the old worker is stopped and terminated"
+    )
+    upgrade.add_argument("agent_id")
+    upgrade.add_argument("--confirm-instance-id", required=True)
+    upgrade.add_argument("--previous-runtime-fingerprint", required=True)
+
     subparsers.add_parser("list")
     health = subparsers.add_parser("health")
     health.add_argument("--max-age", required=True, type=float)
@@ -68,7 +77,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
-    store = AgentStore(config.state_db_path, config.fingerprint())
+    store = AgentStore(
+        config.state_db_path,
+        config.fingerprint(),
+        legacy_fingerprint=config.fingerprint(legacy=True),
+    )
     try:
         if args.command == "create":
             agent_id = validate_agent_id(args.agent_id)
@@ -102,6 +115,38 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
             )
             _print_agent(agent)
             return 0
+        if args.command == "upgrade":
+            agent = store.get(validate_agent_id(args.agent_id))
+            if (
+                agent.desired_state is not DesiredState.STOPPED
+                or agent.instance_id != args.confirm_instance_id
+            ):
+                raise StoreError(
+                    "stop the assignment and confirm its recorded instance before upgrading"
+                )
+            if not re.fullmatch(r"[0-9a-f]{64}", args.previous_runtime_fingerprint):
+                raise ConfigError(
+                    "previous runtime fingerprint must be a SHA256 digest from the trusted disk marker"
+                )
+            cloud = Ec2Cloud(boto3.client("ec2", region_name=config.region), config)
+            instance = cloud.get_instance(agent)
+            volume = cloud.get_volume(agent)
+            if (
+                instance is None
+                or instance["State"]["Name"] != "terminated"
+                or volume is None
+                or volume["State"] != "available"
+                or volume.get("Attachments")
+            ):
+                raise StoreError(
+                    "the old instance must be confirmed terminated and its retained disk detached"
+                )
+            cloud.validate_image(replace(agent, image_id=config.image_id))
+            claim = store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
+            _print_agent(
+                store.upgrade_terminated(claim, config.image_id, args.previous_runtime_fingerprint)
+            )
+            return 0
         if args.command == "status":
             _print_agent(store.get(validate_agent_id(args.agent_id)))
             return 0
@@ -115,7 +160,11 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
 
 def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Path | None) -> int:
     with ControllerLock(config.lock_path):
-        store = AgentStore(config.state_db_path, config.fingerprint())
+        store = AgentStore(
+            config.state_db_path,
+            config.fingerprint(),
+            legacy_fingerprint=config.fingerprint(legacy=True),
+        )
         try:
             ec2 = boto3.client("ec2", region_name=config.region)
             reconciler = Reconciler(store, Ec2Cloud(ec2, config))
@@ -170,13 +219,10 @@ def _touch_health() -> None:
 
 
 def _health(max_age: float) -> int:
-    if not 0 < max_age <= 3600:
-        raise ConfigError("--max-age must be greater than zero and at most 3600 seconds")
     try:
-        updated = float(_HEALTH_PATH.read_text().strip())
-    except (OSError, ValueError):
-        return 1
-    return 0 if time() - updated <= max_age else 1
+        return check_health(_HEALTH_PATH, max_age)
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
 
 
 def _print_agent(agent: Agent) -> None:

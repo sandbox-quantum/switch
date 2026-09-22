@@ -78,7 +78,7 @@ class Reconciler:
             if not agent.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                self._cloud.validate_image()
+                self._cloud.validate_image(agent)
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
@@ -94,11 +94,20 @@ class Reconciler:
             )
 
         state = instance["State"]["Name"]
+        if state == "terminated":
+            if volume.get("State") != "available" or volume.get("Attachments"):
+                return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
+            if not self._unchanged(claim, DesiredState.RUNNING):
+                return self._store.get(claim.agent_id)
+            terminated = self._store.mark_instance_terminal_observed(
+                agent.agent_id, instance["InstanceId"]
+            )
+            return self._store.replace_terminated(terminated)
         if state == "stopped":
             if self._unchanged(claim, DesiredState.RUNNING):
                 self._cloud.start_instance(agent)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
-        if state in {"pending", "stopping"}:
+        if state in {"pending", "stopping", "shutting-down"}:
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state != "running":
             return self._attention(claim, f"instance is {state}; automatic replacement is disabled")

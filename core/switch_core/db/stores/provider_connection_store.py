@@ -50,6 +50,7 @@ class ProviderConnectionStore:
             kind=kind,
             encrypted_credential=encrypted,
             verified_at=verified_at,
+            verification_status="verified",
         )
         await session.execute(
             insert(ProviderConnection)
@@ -60,6 +61,7 @@ class ProviderConnectionStore:
                     "kind": kind,
                     "encrypted_credential": encrypted,
                     "verified_at": verified_at,
+                    "verification_status": "verified",
                 },
             )
         )

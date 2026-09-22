@@ -13,21 +13,30 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import {
+  AGENT_PROVIDERS,
+  providerDisplayName,
+  type AgentProviderId,
+} from '@shared/core/providers/agent-provider-registry';
 import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
 
 export function CloudAgentRepository({
   serverId,
+  providerId,
+  onProviderChange,
   onSelection,
 }: {
   serverId: string;
+  providerId: AgentProviderId;
+  onProviderChange: (provider: AgentProviderId) => void;
   onSelection: (value: CloudRepositorySelection | null) => void;
 }) {
   const [repository, setRepository] = useState<string | null>(null);
   const { data, error, isPending, refetch } = useQuery({
-    queryKey: ['cloud-agent-connections', serverId],
+    queryKey: ['cloud-agent-connections', serverId, providerId],
     queryFn: async () => {
       const [claude, github] = await Promise.all([
-        rpc.switchServers.getClaudeConnection(serverId),
+        rpc.switchServers.getCloudProviderConnection(serverId, providerId),
         rpc.switchServers.getGitHubConnection(serverId),
       ]);
       return { claude, github };
@@ -49,7 +58,7 @@ export function CloudAgentRepository({
     : repositories.length === 1
       ? repositories[0].value
       : null;
-  const connected = data?.claude.status === 'connected';
+  const connected = data?.claude.status === 'connected' || data?.claude.status === 'configured';
   useEffect(() => {
     const ids = selected?.split(':').map(Number);
     onSelection(connected && ids ? { installationId: ids[0], repositoryId: ids[1] } : null);
@@ -60,13 +69,31 @@ export function CloudAgentRepository({
       <Field>
         <FieldLabel>Agent provider</FieldLabel>
         <div className="flex items-center gap-2 rounded-md border p-3 text-sm">
-          <AgentIcon id="claude" className="size-5" />
-          <span>Claude Code</span>
+          <AgentIcon id={providerId} className="size-5" />
+          <Select
+            value={providerId}
+            onValueChange={(value) => {
+              if (value) onProviderChange(value as AgentProviderId);
+            }}
+          >
+            <SelectTrigger aria-label="Cloud provider">
+              <SelectValue>{providerDisplayName(providerId)}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {AGENT_PROVIDERS.map((provider) => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  {provider.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <span className="ml-auto text-xs text-foreground-muted">
             {data
               ? data.claude.status === 'connected'
-                ? 'Connected to Switch'
-                : 'Not connected to Switch'
+                ? 'Verified'
+                : data.claude.status === 'configured'
+                  ? 'Saved · awaiting worker verification'
+                  : 'Not connected'
               : 'Checking connection'}
           </span>
         </div>
@@ -84,9 +111,10 @@ export function CloudAgentRepository({
           </Button>
         </div>
       )}
-      {data && data.claude.status !== 'connected' && (
+      {data && data.claude.status === 'not_connected' && (
         <p role="alert" className="text-sm text-destructive">
-          Connect Claude Code in Switch-managed server setup to use it in the cloud.
+          Connect {providerDisplayName(providerId)} in Switch-managed server setup to use it in the
+          cloud.
         </p>
       )}
       {data && (

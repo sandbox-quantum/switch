@@ -1,8 +1,11 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,16 +16,180 @@ from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
+    HostedOperation,
     ProviderConnection,
+    SdkSession,
     TenantMember,
     require_tenant_id,
 )
 from switch_core.gateway.github_connections import conditions, connection_status
+from switch_core.gateway.hosted_launches import operation_summary
 from switch_core.providers.github import GitHubConnections, GitHubError
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 from switch_core.providers.hosted import HostedControllerSettings
 
 router = APIRouter(prefix="/hosted")
+
+
+@router.post("/provider-credential")
+async def provider_credential(
+    response: Response,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    launch = await worker_launch(session, agent)
+    connection = await session.scalar(
+        select(ProviderConnection).where(
+            ProviderConnection.tenant_id == require_tenant_id(),
+            ProviderConnection.user_id == launch.owner_id,
+            ProviderConnection.provider == launch.spec.get("provider", "claude"),
+        )
+    )
+    if connection is None:
+        return {"status": "revoked"}
+    sessions = list(
+        await session.scalars(
+            select(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id == agent.id,
+            )
+        )
+    )
+    return {
+        "status": "connected",
+        "kind": connection.kind,
+        "provider": connection.provider,
+        "revision": str(connection.verified_at),
+        "credential": decrypt_token(
+            connection.encrypted_credential, config.jwt_secret_key
+        ),
+        "sessions": [
+            {"id": row.id, "status": row.snapshot.get("session", {}).get("status")}
+            for row in sessions
+        ],
+    }
+
+
+async def worker_launch(session: AsyncSession, agent: Agent) -> HostedLaunch:
+    launch = await session.scalar(
+        select(HostedLaunch).where(
+            HostedLaunch.tenant_id == require_tenant_id(),
+            HostedLaunch.agent_id == agent.id,
+            HostedLaunch.owner_id == agent.owner_id,
+            HostedLaunch.desired_state == "running",
+            HostedLaunch.state != "error",
+        )
+    )
+    if (
+        launch is None
+        or await session.get(TenantMember, (require_tenant_id(), launch.owner_id))
+        is None
+    ):
+        raise HTTPException(
+            403, "This worker is not authorized to execute cloud operations."
+        )
+    return launch
+
+
+class ProviderStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authenticated: bool
+    revision: str
+
+
+@router.post("/provider-status")
+async def provider_status(
+    body: ProviderStatus,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    launch = await worker_launch(session, agent)
+    connection = await session.get(
+        ProviderConnection,
+        (require_tenant_id(), launch.owner_id, launch.spec.get("provider", "claude")),
+    )
+    if connection is None:
+        raise HTTPException(409, "The provider was disconnected.")
+    if str(connection.verified_at) != body.revision:
+        raise HTTPException(409, "The provider credential changed during verification.")
+    connection.verification_status = "verified" if body.authenticated else "configured"
+    if not body.authenticated:
+        launch.error = (
+            "The provider could not authenticate on the worker. Reconnect it and retry."
+        )
+        launch.state = "error"
+    await session.commit()
+    return {"verified": body.authenticated}
+
+
+@router.post("/operations/claim")
+async def claim_operation(
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict | None:
+    launch = await worker_launch(session, agent)
+    rows = list(
+        await session.scalars(
+            select(HostedOperation)
+            .where(
+                HostedOperation.tenant_id == require_tenant_id(),
+                HostedOperation.launch_id == launch.id,
+                HostedOperation.state.in_(["queued", "claimed"]),
+            )
+            .order_by(HostedOperation.created_at)
+            .with_for_update()
+        )
+    )
+    now = datetime.now(UTC)
+    for operation in rows:
+        if operation.state == "claimed" and operation.updated_at < now - timedelta(
+            minutes=5
+        ):
+            operation.state = "unknown"
+            operation.error = "The worker did not confirm the outcome. Inspect the session before issuing another operation."
+        elif operation.state == "queued":
+            operation.state = "claimed"
+            operation.updated_at = now
+            await session.commit()
+            return operation_summary(operation)
+    await session.commit()
+    return None
+
+
+class OperationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: Literal["applied", "failed", "unknown"]
+    error: str | None = Field(max_length=512)
+
+
+@router.post("/operations/{operation_id}/result")
+async def operation_result(
+    operation_id: UUID,
+    body: OperationResult,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    launch = await worker_launch(session, agent)
+    operation = await session.scalar(
+        select(HostedOperation)
+        .where(
+            HostedOperation.tenant_id == require_tenant_id(),
+            HostedOperation.id == str(operation_id),
+            HostedOperation.launch_id == launch.id,
+        )
+        .with_for_update()
+    )
+    if operation is None:
+        raise HTTPException(404, "Cloud operation not found.")
+    if operation.state not in ("claimed", body.state):
+        raise HTTPException(409, "This operation is no longer awaiting a result.")
+    operation.state = body.state
+    operation.error = body.error
+    operation.updated_at = datetime.now(UTC)
+    await session.commit()
+    return operation_summary(operation)
 
 
 @router.post("/github-credential")
@@ -46,6 +213,7 @@ async def repository_credential(
             HostedLaunch.agent_id == agent.id,
             HostedLaunch.owner_id == agent.owner_id,
             HostedLaunch.state != "error",
+            HostedLaunch.desired_state == "running",
         )
     )
     if launch is None:

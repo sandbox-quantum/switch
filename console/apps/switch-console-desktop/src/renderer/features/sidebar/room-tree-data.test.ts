@@ -159,3 +159,14 @@ describe('sortRoomGroups', () => {
     expect(groups.map((g) => g.label)).toEqual(['Beta', 'Alpha']);
   });
 });
+
+it('keeps a room with only a live cloud session while still applying bridge filters', () => {
+  const cloud = { ...group('cloud-room', { bridgeType: 'slack' }), cloudHasLiveSession: true };
+  const idle = group('idle-room', { bridgeType: 'slack' });
+  expect(
+    filterRoomGroups([cloud, idle], { bridgeTypes: new Set(['slack']), hasLiveSession: true })
+  ).toEqual([cloud]);
+  expect(
+    filterRoomGroups([cloud], { bridgeTypes: new Set(['discord']), hasLiveSession: true })
+  ).toEqual([]);
+});

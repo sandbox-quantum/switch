@@ -127,6 +127,8 @@ class SwitchConfig(BaseSettings):
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
+    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
     hosted_claude_verifier_path: str | None = None

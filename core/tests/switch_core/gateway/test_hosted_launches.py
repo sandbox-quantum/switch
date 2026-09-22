@@ -46,7 +46,12 @@ async def launch_app(session_factory, monkeypatch):
         tenant_id=require_tenant_id(),
         agent_ids=["00000000-0000-4000-8000-000000000001"],
     )
-    config = SimpleNamespace(hosted_launch_capacity=1, jwt_secret_key="SYNTHETIC-KEY")
+    config = SimpleNamespace(
+        hosted_launch_capacity=1,
+        hosted_agents_per_owner=3,
+        hosted_sessions_per_agent=2,
+        jwt_secret_key="SYNTHETIC-KEY",
+    )
     identity = {"user": owner}
 
     async def sessions():
@@ -139,9 +144,7 @@ async def test_changed_request_and_unexpected_credentials_are_rejected(launch_ap
     ).status_code == 422
 
 
-@pytest.mark.parametrize(
-    "change", [{"auto_session": False}, {"instructions": "x" * 32768}]
-)
+@pytest.mark.parametrize("change", [{"instructions": "x" * 32768}])
 async def test_rejects_unlaunchable_configuration_before_verifying_credentials(
     launch_app, change
 ):
@@ -150,3 +153,71 @@ async def test_rejects_unlaunchable_configuration_before_verifying_credentials(
     assert response.status_code == 422
     verifier.verify.assert_not_awaited()
     access.assert_not_awaited()
+
+
+async def test_manual_cloud_agents_are_supported(launch_app):
+    client, *_ = launch_app
+    assert (
+        await client.post("/hosted-launches", json=body() | {"auto_session": False})
+    ).status_code == 202
+
+
+async def test_lifecycle_owner_revision_and_removal_guards(launch_app):
+    client, _, _, _, identity, factory = launch_app
+    request = body()
+    created = (await client.post("/hosted-launches", json=request)).json()
+    url = f"/hosted-launches/{request['request_id']}/lifecycle"
+    owner = identity["user"]
+    identity["user"] = SimpleNamespace(id="someone-else")
+    assert (
+        await client.post(url, json={"action": "stop", "revision": 1})
+    ).status_code == 404
+    identity["user"] = owner
+    assert (
+        await client.post(url, json={"action": "remove", "revision": 1})
+    ).status_code == 409
+    stopped = await client.post(url, json={"action": "stop", "revision": 1})
+    assert stopped.json()["desired_state"] == "stopped"
+    assert stopped.json()["revision"] == 2
+    assert (
+        await client.post(url, json={"action": "start", "revision": 1})
+    ).status_code == 409
+    async with factory() as session:
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), created["request_id"])
+        )
+        launch.state = "stopped"
+        await session.commit()
+    removed = await client.post(url, json={"action": "remove", "revision": 2})
+    assert removed.json()["desired_state"] == "deleted"
+    assert (
+        await client.post(url, json={"action": "start", "revision": 3})
+    ).status_code == 409
+
+
+async def test_session_operations_are_owner_scoped_and_idempotent(launch_app):
+    client, _, _, _, identity, factory = launch_app
+    request = body()
+    await client.post("/hosted-launches", json=request)
+    url = f"/hosted-launches/{request['request_id']}/sessions"
+    operation = {"id": str(uuid4()), "session_id": str(uuid4()), "action": "start"}
+    assert (await client.post(url, json=operation)).status_code == 409
+    async with factory() as session:
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), request["request_id"])
+        )
+        launch.state = "ready"
+        await session.commit()
+    first = await client.post(url, json=operation)
+    assert first.status_code == 202
+    assert first.json()["state"] == "queued"
+    assert (await client.post(url, json=operation)).json() == first.json()
+    assert (
+        await client.post(url, json=operation | {"session_id": str(uuid4())})
+    ).status_code == 409
+    assert (
+        await client.post(url, json=operation | {"id": str(uuid4())})
+    ).status_code == 409
+    identity["user"] = SimpleNamespace(id="someone-else")
+    assert (await client.get(url + "/" + operation["id"])).status_code == 404
+    assert (await client.post(url, json=operation)).status_code == 404

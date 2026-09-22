@@ -1,6 +1,7 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -78,9 +79,11 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
-        {cloud.data?.map((launch) => (
-          <CloudAgentCard key={launch.request_id} launch={launch} serverId={serverId} />
-        ))}
+        {cloud.data
+          ?.filter((launch) => launch.state !== 'deleted')
+          .map((launch) => (
+            <CloudAgentCard key={launch.request_id} launch={launch} serverId={serverId} />
+          ))}
       </div>
       {cloud.error && (
         <p role="alert" className="mt-3 text-sm text-destructive">
@@ -92,6 +95,24 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 });
 
 function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: string }) {
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const queryClient = useQueryClient();
+  const createSession = useShowModal('sessionModal');
+  const run = async (action: 'stop' | 'start' | 'restart' | 'remove' | 'retry') => {
+    setPending(true);
+    setActionError(null);
+    try {
+      await rpc.switchServers.cloudLifecycle(serverId, launch.request_id, action, launch.revision);
+      await queryClient.invalidateQueries({ queryKey: ['cloud-launches', serverId] });
+      setConfirmRemove(false);
+    } catch (error) {
+      setActionError(failureText(error, 'Cloud operation failed.'));
+    } finally {
+      setPending(false);
+    }
+  };
   const addToRooms = useShowModal('addAgentToRoomModal');
   const { toastPromise } = useToast();
   const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
@@ -99,7 +120,11 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
     queued: 'Queued',
     provisioning: 'Starting…',
     ready: 'Ready',
-    error: 'Could not start',
+    error: 'Needs attention',
+    stopping: 'Stopping…',
+    stopped: 'Stopped',
+    deleting: 'Removing…',
+    deleted: 'Removed',
   }[launch.state];
   const add = () => {
     if (!launch.agent_id) return;
@@ -122,11 +147,83 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
         <AgentAvatar name={launch.name} iconUrl={iconUrl} size={66} />
       </div>
       <div className="truncate text-sm font-medium">{launch.name}</div>
-      <div className="text-xs text-foreground-muted">Claude Code · Cloud · {stateLabel}</div>
+      <div className="text-xs text-foreground-muted">
+        {providerDisplayName(launch.provider)} · Cloud · {stateLabel}
+      </div>
       {launch.error && (
         <p role="alert" className="mt-2 text-xs text-destructive">
           {launch.error}
         </p>
+      )}
+      {actionError && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {actionError}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1">
+        {launch.state === 'ready' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() =>
+                createSession({ cloudRequestId: launch.request_id, entryPoint: 'server_page' })
+              }
+            >
+              New session
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run('restart')}
+            >
+              Restart
+            </Button>
+          </>
+        )}
+        {['ready', 'provisioning', 'queued', 'error'].includes(launch.state) && (
+          <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
+            Stop worker
+          </Button>
+        )}
+        {launch.state === 'error' && (
+          <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
+            Retry
+          </Button>
+        )}
+        {launch.state === 'stopped' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run('start')}
+            >
+              Start worker
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => setConfirmRemove(true)}
+            >
+              Remove
+            </Button>
+          </>
+        )}
+      </div>
+      {confirmRemove && (
+        <div className="mt-2 text-xs">
+          <p>Remove this worker? Its data disk and conversation history will be retained.</p>
+          <Button size="sm" disabled={pending} onClick={() => void run('remove')}>
+            Remove worker
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setConfirmRemove(false)}>
+            Cancel
+          </Button>
+        </div>
       )}
       {launch.state === 'ready' && (
         <Button variant="ghost" size="sm" className="mt-2" onClick={add}>

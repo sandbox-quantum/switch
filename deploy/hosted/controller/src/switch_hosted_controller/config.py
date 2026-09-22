@@ -174,7 +174,7 @@ class ControllerConfig:
             poll_interval_seconds=float(poll_interval),
         )
 
-    def fingerprint(self) -> str:
+    def fingerprint(self, *, legacy: bool = False) -> str:
         immutable = {
             "installation_id": self.installation_id,
             "region": self.region,
@@ -195,6 +195,9 @@ class ControllerConfig:
                 for agent_id, assignment in sorted(self.worker_assignments.items())
             },
         }
+        if not legacy:
+            for key in ("image_id", "max_agents", "worker_assignments"):
+                del immutable[key]
         payload = json.dumps(immutable, separators=(",", ":"), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()
 

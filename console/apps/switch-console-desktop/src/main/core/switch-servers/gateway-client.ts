@@ -6,6 +6,7 @@ import {
   managedServerStoppedPhase,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   ClaudeCredentialKind,
@@ -17,6 +18,7 @@ import {
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
+import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import type {
   AddressingPolicy,
   BridgeConfigField,
@@ -1478,6 +1480,63 @@ export async function listCloudLaunches(server: SwitchServer) {
     .parse(await (await gatewayFetch(server, '/hosted-launches', { authenticated: true })).json());
 }
 
+export async function cloudLifecycle(
+  server: SwitchServer,
+  requestId: string,
+  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
+  revision: number
+) {
+  return cloudLaunchSchema.parse(
+    await (
+      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
+        authenticated: true,
+        method: 'POST',
+        body: { action, revision },
+      })
+    ).json()
+  );
+}
+
+const cloudOperationSchema = z.object({
+  id: z.string().uuid(),
+  session_id: z.string().uuid(),
+  action: z.enum(['start', 'restart']),
+  state: z.enum(['queued', 'claimed', 'applied', 'failed', 'unknown']),
+  error: z.string().nullable(),
+});
+
+export async function cloudSessionOperation(
+  server: SwitchServer,
+  requestId: string,
+  operation: { id: string; session_id: string; action: 'start' | 'restart' }
+) {
+  return cloudOperationSchema.parse(
+    await (
+      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/sessions`, {
+        authenticated: true,
+        method: 'POST',
+        body: operation,
+      })
+    ).json()
+  );
+}
+
+export async function cloudOperationStatus(
+  server: SwitchServer,
+  requestId: string,
+  operationId: string
+) {
+  return cloudOperationSchema.parse(
+    await (
+      await gatewayFetch(
+        server,
+        `/hosted-launches/${encodeURIComponent(requestId)}/sessions/${encodeURIComponent(operationId)}`,
+        { authenticated: true }
+      )
+    ).json()
+  );
+}
+
 export async function connectClaude(
   server: SwitchServer,
   kind: ClaudeCredentialKind,
@@ -1554,6 +1613,43 @@ export async function cancelGitHubConnection(server: SwitchServer, id: string) {
 }
 export async function disconnectGitHub(server: SwitchServer) {
   await gatewayFetch(server, '/provider-connections/github', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
+  return cloudProviderConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function connectCloudProvider(
+  server: SwitchServer,
+  provider: Exclude<AgentProviderId, 'claude'>,
+  kind: 'api-key' | 'auth-json',
+  credential: string
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Provider credentials require HTTPS.');
+  return cloudProviderConnectionSchema.parse(
+    await (
+      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+        authenticated: true,
+        method: 'PUT',
+        body: { kind, credential },
+      })
+    ).json()
+  );
+}
+export async function disconnectCloudProvider(
+  server: SwitchServer,
+  provider: Exclude<AgentProviderId, 'claude'>
+) {
+  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
     authenticated: true,
     method: 'DELETE',
   });

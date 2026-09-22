@@ -20,6 +20,7 @@ class HostedLaunchStore:
         name: str,
         spec: dict,
         capacity: int,
+        owner_capacity: int,
         agent_ids: list[str],
     ) -> HostedLaunch:
         tenant_id = require_tenant_id()
@@ -53,7 +54,12 @@ class HostedLaunchStore:
             raise HostedLaunchConflict(
                 "A cloud launch already reserves this agent name."
             )
-        if len(launches) >= capacity:
+        active = [launch for launch in launches if launch.state != "deleted"]
+        if sum(launch.owner_id == owner_id for launch in active) >= owner_capacity:
+            raise HostedLaunchConflict(
+                "Your cloud agent limit has been reached. Remove a stopped worker before creating another."
+            )
+        if len(active) >= capacity:
             raise HostedLaunchConflict(
                 "Cloud agent capacity is full. Contact your server administrator."
             )

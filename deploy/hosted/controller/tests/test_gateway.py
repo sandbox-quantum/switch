@@ -13,7 +13,13 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
     cfg = config(tmp_path)
     store = AgentStore(cfg.state_db_path, cfg.fingerprint())
     request_id = str(uuid4())
-    job = {"request_id": request_id, "agent_id": "agent-1", "state": "queued"}
+    job = {
+        "request_id": request_id,
+        "agent_id": "agent-1",
+        "state": "queued",
+        "desired_state": "running",
+        "revision": 1,
+    }
     prepared = {
         "agent_id": "agent-1",
         "provider_kind": "setup-token",

@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { buildSharedHostConfig } from './build-shared-config';
+import { hostedRequest } from './hosted-control';
 import {
   ensureHostedRepository,
   githubLaunchEnvironment,
@@ -15,8 +16,10 @@ import {
   validateGitHubCredential,
 } from './hosted-github';
 import { redactHostedText } from './hosted-log';
+import { fetchHostedProvider, materializeHostedProvider } from './hosted-provider';
 import { currentHostedMachineIdentity } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
+import { checkProviderReadiness } from './provider-readiness';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { superviseSharedHost } from './supervisor';
 
@@ -35,9 +38,10 @@ export const hostedDeploymentSpecSchema = z
       nativeSessionId: identifier.optional(),
     }),
     provider: z.strictObject({
-      kind: z.literal('claude'),
+      kind: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity']),
       credential: z.strictObject({
-        kind: z.enum(['api-key', 'setup-token']),
+        kind: z.enum(['api-key', 'setup-token', 'auth-json']),
+        refresh: z.literal(true).optional(),
         path: absolutePath,
       }),
       binaryPath: absolutePath,
@@ -102,8 +106,12 @@ const CONFIG_FILE = 'config.json';
 const BAKED_MCP_RUNTIME_PATH = '/opt/switch/agent-providers/switch-agent-runtime.mjs';
 const BAKED_MCP_RUNTIME_ENV = 'SWITCH_HOSTED_MCP_RUNTIME_PATH';
 
-function credentialVariable(kind: HostedDeploymentSpec['provider']['credential']['kind']): string {
-  return kind === 'api-key' ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
+function credentialVariable(provider: HostedDeploymentSpec['provider']): string {
+  if (provider.kind === 'claude')
+    return provider.credential.kind === 'api-key' ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
+  if (provider.kind === 'codex' && provider.credential.kind === 'api-key') return 'OPENAI_API_KEY';
+  if (provider.kind === 'cursor') return 'CURSOR_API_KEY';
+  return 'SWITCH_HOSTED_AUTH_JSON';
 }
 
 function isWithin(root: string, path: string): boolean {
@@ -375,7 +383,7 @@ export async function prepareHostedDeployment(
       : {}),
   };
   const mcpRuntimePath = bakedMcpRuntimePath();
-  const variable = credentialVariable(spec.provider.credential.kind);
+  const variable = credentialVariable(spec.provider);
   const candidate = hostedDeploymentPlanSchema.parse(
     JSON.parse(
       JSON.stringify({
@@ -483,7 +491,7 @@ export async function prepareHostedDeployment(
   const providerEnvironment: NodeJS.ProcessEnv = { ...environment };
   if (spec.watch !== undefined) {
     const watchPath = join(root, 'watch.json');
-    const expected = { enabled: spec.watch };
+    const expected = { enabled: true };
     if (!(await writeNewJson(watchPath, expected))) {
       const saved = await readJson(watchPath, 'Saved hosted watcher configuration is invalid.');
       if (!sameValue(saved, expected))
@@ -501,6 +509,13 @@ export async function prepareHostedDeployment(
   providerEnvironment[variable] = providerCredential;
   if (githubCredential && !spec.github?.refresh) providerEnvironment.GH_TOKEN = githubCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
+  if (
+    spec.watch !== undefined &&
+    (spec.provider.credential.refresh || currentHostedMachineIdentity())
+  ) {
+    providerEnvironment.SWITCH_HOSTED_CONTROL = '1';
+    providerEnvironment.SWITCH_HOSTED_AUTO_SESSION = String(spec.watch);
+  }
   const machine = currentHostedMachineIdentity();
   if (machine) {
     providerEnvironment.SWITCH_HOST_INSTANCE_ID = machine.instanceId;
@@ -542,6 +557,30 @@ export async function runHostedBootstrap(
   const spec = await readHostedDeploymentSpec(input.specPath);
   const prepared = await prepareHostedDeployment(input.stateDirectory, spec);
   try {
+    if (spec.provider.credential.refresh || currentHostedMachineIdentity()) {
+      const credential = await fetchHostedProvider(prepared.config);
+      if (credential.status === 'connected') prepared.logRedactions.push(credential.credential);
+      const env = Object.fromEntries(
+        Object.entries(prepared.providerEnvironment).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined
+        )
+      );
+      await materializeHostedProvider(prepared.root, env, credential);
+      const readiness = await checkProviderReadiness({
+        provider: spec.provider.kind,
+        binaryPath: spec.provider.binaryPath,
+        cwd: spec.workspacePath,
+        env,
+      });
+      if (credential.status !== 'connected')
+        throw new Error('Reconnect the provider before starting the worker.');
+      await hostedRequest(prepared.config, '/provider-status', {
+        authenticated: readiness.status === 'authenticated',
+        revision: credential.revision,
+      });
+      if (readiness.status !== 'authenticated') throw new Error(readiness.message);
+      Object.assign(prepared.providerEnvironment, env);
+    }
     if (spec.github?.refresh && spec.github.repository)
       await ensureHostedRepository(
         spec.workspacePath,

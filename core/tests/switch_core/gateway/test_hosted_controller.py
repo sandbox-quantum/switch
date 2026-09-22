@@ -18,6 +18,7 @@ from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     HostedLaunch,
+    HostedOperation,
     ProviderConnection,
     TenantMember,
     require_tenant_id,
@@ -205,14 +206,14 @@ async def test_running_vm_is_not_ready_without_the_watcher(controller_app):
     first = await client.post(
         f"/hosted-controller/{request_id}/observation",
         headers=headers,
-        json={"state": "running"},
+        json={"state": "running", "revision": 1},
     )
     assert first.json()["state"] == "provisioning"
     service.connections.for_agent = lambda _: [SimpleNamespace(spawn_capable=True)]
     ready = await client.post(
         f"/hosted-controller/{request_id}/observation",
         headers=headers,
-        json={"state": "running"},
+        json={"state": "running", "revision": 1},
     )
     assert ready.json()["state"] == "ready"
 
@@ -251,3 +252,135 @@ async def test_prepare_reports_a_name_taken_during_provisioning(
     )
     assert response.status_code == 422
     assert "name" in response.json()["detail"]
+
+
+async def test_worker_claim_is_durable_and_stale_claim_is_not_replayed(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    operation_id = str(uuid4())
+    async with factory() as session:
+        session.add(
+            HostedOperation(
+                id=operation_id,
+                launch_id=request_id,
+                session_id=str(uuid4()),
+                action="start",
+            )
+        )
+        await session.commit()
+    claim = await client.post("/hosted/operations/claim")
+    assert claim.json()["id"] == operation_id
+    assert claim.json()["state"] == "claimed"
+    assert (await client.post("/hosted/operations/claim")).json() is None
+    async with factory() as session:
+        row = await session.get(HostedOperation, (require_tenant_id(), operation_id))
+        row.updated_at = datetime.now(UTC) - timedelta(minutes=6)
+        await session.commit()
+    assert (await client.post("/hosted/operations/claim")).json() is None
+    async with factory() as session:
+        row = await session.get(HostedOperation, (require_tenant_id(), operation_id))
+        assert row.state == "unknown"
+    assert (
+        await client.post(
+            f"/hosted/operations/{operation_id}/result",
+            json={"state": "applied", "error": None},
+        )
+    ).status_code == 409
+
+
+async def test_provider_refresh_and_revocation_are_owner_bound(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    response = await client.post("/hosted/provider-credential")
+    assert response.status_code == 200
+    assert response.json()["status"] == "connected"
+    assert response.headers["cache-control"] == "no-store"
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        await ProviderConnectionStore().delete(session, launch.owner_id)
+        await session.commit()
+    assert (await client.post("/hosted/provider-credential")).json() == {
+        "status": "revoked"
+    }
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.desired_state = "deleted"
+        await session.commit()
+    assert (await client.post("/hosted/provider-credential")).status_code == 403
+    assert (await client.post("/hosted/operations/claim")).status_code == 403
+    assert (await client.post("/hosted/github-credential")).status_code == 403
+
+
+async def test_old_controller_observation_cannot_overwrite_new_desired_state(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.revision = 2
+        launch.desired_state = "stopped"
+        launch.state = "stopping"
+        await session.commit()
+    response = await client.post(
+        f"/hosted-controller/{request_id}/observation",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={"state": "running", "revision": 1},
+    )
+    assert response.json()["state"] == "stopping"
+    assert response.json()["desired_state"] == "stopped"
+
+
+async def test_error_is_preserved_until_explicit_lifecycle_retry(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.state = "error"
+        launch.error = "Reconnect the provider."
+        await session.commit()
+    for state in ["stopping", "stopped", "running"]:
+        response = await client.post(
+            f"/hosted-controller/{request_id}/observation",
+            headers={"Authorization": "Bearer " + TOKEN},
+            json={"state": state, "revision": 1},
+        )
+        assert response.json()["state"] == "error"
+        assert response.json()["error"] == "Reconnect the provider."
+
+
+async def test_startup_without_connection_times_out_with_actionable_error(
+    controller_app,
+):
+    client, request_id, _, _, factory, _ = controller_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.state = "provisioning"
+        launch.updated_at = datetime.now(UTC) - timedelta(minutes=11)
+        await session.commit()
+    result = await client.post(
+        f"/hosted-controller/{request_id}/observation",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={"state": "running", "revision": 1},
+    )
+    assert result.json()["state"] == "error"
+    assert "10 minutes" in result.json()["error"]
+
+
+async def test_running_observation_does_not_undo_requested_stop(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.state = "stopping"
+        launch.desired_state = "stopped"
+        await session.commit()
+    result = await client.post(
+        f"/hosted-controller/{request_id}/observation",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={"state": "running", "revision": 1},
+    )
+    assert result.json()["state"] == "stopping"

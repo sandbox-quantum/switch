@@ -20,14 +20,14 @@ class ContractRange(NamedTuple):
 # Where each artifact is. Says nothing about compatibility — that is
 # CONTRACTS below. The two must never be derived from one another.
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
-    "switch-core": "0.26.0",
-    "switch-console": "0.34.0",
+    "switch-core": "0.27.0",
+    "switch-console": "0.35.0",
     "agent-runtime": "0.4.2",
     "sidecar": "1.9.7",
-    "gateway": "0.26.0",
-    "setup": "0.26.0",
-    "helm-chart": "0.26.0",
-    "compose": "0.26.0",
+    "gateway": "0.27.0",
+    "setup": "0.27.0",
+    "helm-chart": "0.27.0",
+    "compose": "0.27.0",
     "switch-connector": "0.9.14",
     "switch-connector-codex": "0.3.15",
     "switch-connector-opencode": "0.1.10",
@@ -41,8 +41,8 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     },
     # The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
     "gateway-api": {
-        "switch-core": ContractRange(speaks=4, accepts=1),
-        "switch-console": ContractRange(speaks=4, accepts=1),
+        "switch-core": ContractRange(speaks=5, accepts=1),
+        "switch-console": ContractRange(speaks=5, accepts=1),
     },
     # The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
     "stack-compose": {
@@ -56,7 +56,7 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     },
     # The database schema switch-core expects. Internal to switch-core — this contract is never disclosed in an externally facing response.
     "db-schema": {
-        "switch-core": ContractRange(speaks=4, accepts=1),
+        "switch-core": ContractRange(speaks=5, accepts=1),
     },
 }
 

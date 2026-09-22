@@ -35,6 +35,15 @@ latest-version packages. The image pipeline must pin and verify every artifact b
 checked-in `runtime.json` shows the generated schema; its zero digests are
 examples and are never installed.
 
+For additional providers, preinstall their pinned runtimes and place a
+`providers.json` beside the three bundles. It maps `codex`, `cursor`, `opencode`,
+and `antigravity` to `{ "path": "/opt/switch/providers/<provider>", "sha256": "<digest>" }`.
+Antigravity uses `/opt/switch/providers/antigravity-acp`.
+Each entry must be a root-owned executable, with no symlink or group/world write
+access. Include all supporting files in the immutable image and verify their
+upstream checksums during the image build. The installer checks the entrypoint
+hashes and includes them in the retained-disk runtime fingerprint.
+
 ## Non-secret assignment metadata
 
 The controller writes root-owned mode 0600
@@ -175,7 +184,19 @@ instance/boot/generation identity, then moves only those records into the
 root-only quarantine. Journals, provider home, deployment plan, workspace and
 session identity are preserved. Missing markers on nonempty disks, legacy
 ownership records, unknown identity, generation changes and EC2 instance
-changes fail closed.
+changes fail closed unless the controller supplies the exact terminated
+`previousInstanceId`. The controller must first observe termination and a detached
+data disk. Replacement has a limit of three automatic attempts.
+
+An operator can upgrade an image after stopping the assignment, terminating its
+old VM, and confirming the retained disk is detached. Set the configured image,
+then run `switch-hosted-controller --config <config> upgrade <agent-id>
+--confirm-instance-id <old-instance-id> --previous-runtime-fingerprint <sha256>`.
+Read the SHA256 from the trusted root-owned disk marker. This command preserves
+the stopped state; start the worker through Console after it succeeds. The
+launcher accepts a runtime change only when both the predecessor instance and
+its previous runtime fingerprint match. It preserves the existing session
+journals and never retries uncertain commands.
 
 The systemd unit uses `Restart=always`, so an unexpected clean runtime exit is
 repaired; explicit unit stops and instance shutdown do not restart it.
@@ -238,3 +259,29 @@ token in a remote URL as part of onboarding.
 References: [Git credential helpers](https://git-scm.com/docs/gitcredentials),
 [GitHub CLI environment](https://cli.github.com/manual/gh_help_environment), and
 [authenticated-user API](https://docs.github.com/en/rest/users/users#get-the-authenticated-user).
+
+## Managed session control and credentials
+
+Managed workers poll owner-authorized operations for manual session start and
+restart. Operations have durable IDs and are claimed once. An unconfirmed result
+becomes `unknown`; the worker does not execute it again. Chat messages, approvals,
+interrupt, stop, and transcript recovery use the same session protocol as local
+agents. `autoSession: false` disables automatic room starts while keeping manual
+session control available.
+
+Provider credentials are fetched over authenticated HTTPS before startup and
+resume. A credential saved for Codex, Cursor, OpenCode, or Antigravity remains
+unverified until the native runtime authenticates on the worker. Claude uses an
+API key or setup token; Codex accepts an API key or its native authentication JSON;
+Cursor uses an API key; OpenCode and Antigravity use their native authentication
+JSON. Authentication files are mode 0600 in the session's provider directory.
+Native OAuth refreshes are preserved until the owner replaces the source
+credential. Rotated credentials apply when an idle session restarts. Disconnecting
+a provider stops running sessions. GitHub renewal is also denied when a worker
+is stopped or removed.
+
+The backend enforces agent limits per owner and session limits per worker.
+Session creation and recovery share the same database lock, so concurrent room
+starts and manual resumes cannot bypass the limit. Scale the installation by
+increasing its configured capacity and adding distinct reserved worker identities,
+secrets, and instance profiles. Existing assignments keep their identity and disk.

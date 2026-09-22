@@ -24,7 +24,9 @@ class AgentNotFoundError(StoreError):
 
 
 class AgentStore:
-    def __init__(self, path: Path, controller_fingerprint: str):
+    def __init__(
+        self, path: Path, controller_fingerprint: str, *, legacy_fingerprint: str | None = None
+    ):
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, timeout=30, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
@@ -67,7 +69,7 @@ class AgentStore:
             """
         )
         self._migrate_schema()
-        self._bind_fingerprint(controller_fingerprint)
+        self._bind_fingerprint(controller_fingerprint, legacy_fingerprint)
 
     def close(self) -> None:
         self._connection.close()
@@ -76,6 +78,16 @@ class AgentStore:
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(agents)")}
+            if "previous_instance_id" not in columns:
+                self._connection.execute("ALTER TABLE agents ADD COLUMN previous_instance_id TEXT")
+            if "previous_runtime_fingerprint" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE agents ADD COLUMN previous_runtime_fingerprint TEXT"
+                )
+            if "recovery_count" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE agents ADD COLUMN recovery_count INTEGER NOT NULL DEFAULT 0"
+                )
             if "observed_revision" not in columns:
                 self._connection.execute(
                     "ALTER TABLE agents ADD COLUMN observed_revision INTEGER NOT NULL DEFAULT 0"
@@ -88,7 +100,7 @@ class AgentStore:
                 self._connection.execute("ROLLBACK")
             raise
 
-    def _bind_fingerprint(self, fingerprint: str) -> None:
+    def _bind_fingerprint(self, fingerprint: str, legacy_fingerprint: str | None) -> None:
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             row = self._connection.execute(
@@ -99,6 +111,11 @@ class AgentStore:
                 self._connection.execute(
                     "INSERT INTO controller_metadata (key, value) VALUES (?, ?)",
                     ("controller_fingerprint", fingerprint),
+                )
+            elif row["value"] == legacy_fingerprint:
+                self._connection.execute(
+                    "UPDATE controller_metadata SET value = ? WHERE key = 'controller_fingerprint'",
+                    (fingerprint,),
                 )
             elif row["value"] != fingerprint:
                 raise StoreError(
@@ -233,6 +250,57 @@ class AgentStore:
 
     def mark_volume_create_intent(self, claim: Agent) -> Agent:
         return self._mark_intent(claim, "volume_create_intent")
+
+    def upgrade_terminated(
+        self, claim: Agent, image_id: str, previous_runtime_fingerprint: str
+    ) -> Agent:
+        if (
+            claim.desired_state is not DesiredState.STOPPED
+            or not claim.instance_id
+            or not claim.instance_terminal_observed
+        ):
+            raise StoreError(
+                "image upgrades require a stopped assignment and confirmed terminated predecessor"
+            )
+        if image_id == claim.image_id:
+            raise StoreError("the worker already uses this image")
+        cursor = self._connection.execute(
+            """UPDATE agents SET previous_instance_id = instance_id, instance_id = NULL,
+            image_id = ?, previous_runtime_fingerprint = ?, recovery_count = recovery_count + 1,
+            desired_revision = desired_revision + 1, operation_id = ?,
+            instance_launch_intent = 0, instance_launch_issued = 0, instance_terminal_observed = 0,
+            observed_state = 'stopped', last_error = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
+            (
+                image_id,
+                previous_runtime_fingerprint,
+                str(uuid.uuid4()),
+                claim.agent_id,
+                claim.desired_revision,
+                claim.operation_id,
+                claim.instance_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise StoreError("worker state changed during image upgrade; refresh before retrying")
+        return self.get(claim.agent_id)
+
+    def replace_terminated(self, claim: Agent) -> Agent:
+        if not claim.instance_terminal_observed or not claim.instance_id:
+            raise StoreError("replacement requires a confirmed terminated predecessor")
+        if claim.recovery_count >= 3:
+            raise StoreError("automatic worker recovery limit reached; operator review is required")
+        self._connection.execute(
+            """UPDATE agents SET previous_instance_id = instance_id, instance_id = NULL,
+            previous_runtime_fingerprint = NULL, recovery_count = recovery_count + 1, instance_launch_intent = 0, instance_launch_issued = 0,
+            instance_terminal_observed = 0, observed_state = 'provisioning', last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ? AND desired_revision = ? AND operation_id = ?
+            AND desired_state = 'running' AND instance_id = ? AND instance_terminal_observed = 1""",
+            (claim.agent_id, claim.desired_revision, claim.operation_id, claim.instance_id),
+        )
+        return self.get(claim.agent_id)
 
     def mark_instance_launch_intent(self, claim: Agent) -> Agent:
         return self._mark_intent(claim, "instance_launch_intent")
@@ -379,6 +447,9 @@ def _agent(row: sqlite3.Row) -> Agent:
         assignment_secret_arn=row["assignment_secret_arn"],
         instance_profile_arn=row["instance_profile_arn"],
         instance_id=row["instance_id"],
+        previous_instance_id=row["previous_instance_id"],
+        previous_runtime_fingerprint=row["previous_runtime_fingerprint"],
+        recovery_count=row["recovery_count"],
         volume_id=row["volume_id"],
         volume_az=row["volume_az"],
         observed_state=ObservedState(row["observed_state"]),

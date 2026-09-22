@@ -263,12 +263,13 @@ export async function runSharedWatcher(
       connectionId: template.roomConnection.connectionId,
       scope: 'all',
       filter: 'addressed',
-      spawnCapable: true,
+      spawnCapable: process.env.SWITCH_HOSTED_AUTO_SESSION !== 'false',
       rooms: [],
       startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
       onEvent: (event) => {
+        if (process.env.SWITCH_HOSTED_AUTO_SESSION === 'false') return;
         pending = pending.then(async () => {
           const messageId = roomInputId(event);
           if (!messageId) return;

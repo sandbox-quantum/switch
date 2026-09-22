@@ -6,9 +6,11 @@ import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reac
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { useCloudLaunches } from '@renderer/features/switch-servers/use-cloud-launches';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { AgentTree } from './agent-tree';
+import { CloudSessionList } from './cloud-session-list';
 import { RoomTree } from './room-tree';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
 import { refreshSidebarRoomState } from './sidebar-tree-data';
@@ -37,6 +39,10 @@ const loadSidebarState = refreshSidebarRoomState;
 export const SidebarGroupedList = observer(function SidebarGroupedList() {
   // The tree's only scroller, and so the only place that has to keep the
   // selected row — session, agent, agent-under-room or room — in view.
+  const cloudLaunches = useCloudLaunches(switchServersStore.activeServerId);
+  const hasCloudAgents = cloudLaunches.data?.some(
+    (launch) => launch.agent_id && launch.state !== 'deleted'
+  );
   const scrollerRef = useRef<HTMLDivElement>(null);
   useScrollSelectionIntoView(scrollerRef);
 
@@ -95,6 +101,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
   // A server with nothing on it yet left the panel blank, which reads as the
   // list having failed to load rather than as there being nothing to list.
   const showEmptyState =
+    !hasCloudAgents &&
     !showFilterEmptyState &&
     !sidebarStore.hasActiveFilters &&
     switchServersStore.activeServerId !== null &&
@@ -107,6 +114,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
       className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto px-2 pt-0 pb-3"
     >
       <RoomStateDisclosure />
+      {sidebarStore.grouping !== 'room' && <CloudSessionList />}
       {showFilterEmptyState ? (
         <p className="px-2 py-3 text-xs text-foreground-muted">No agents match filters</p>
       ) : showEmptyState ? (

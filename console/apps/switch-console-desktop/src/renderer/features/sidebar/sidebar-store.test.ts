@@ -628,3 +628,13 @@ describe('SidebarStore drag-to-reorder ordering', () => {
     expect(restored.agentOrder).toEqual(['agent-2', 'agent-1']);
   });
 });
+
+it('retains cloud session names per server when restoring the sidebar', () => {
+  const first = new SidebarStore(locationManager([]));
+  first.setCloudSessionName('server-one', 'session', 'First conversation');
+  first.setCloudSessionName('server-two', 'session', 'Second conversation');
+  const restored = new SidebarStore(locationManager([]));
+  restored.restoreSnapshot(first.snapshot);
+  expect(restored.cloudSessionNames['server-one:session']).toBe('First conversation');
+  expect(restored.cloudSessionNames['server-two:session']).toBe('Second conversation');
+});

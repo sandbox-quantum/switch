@@ -35,8 +35,8 @@ import type {
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
-import { ManagedClaudeConnectionStep } from './managed-claude-connection-step';
 import { ManagedGitHubStep } from './managed-github-step';
+import { ManagedProviderConnectionStep } from './managed-provider-connection-step';
 import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
@@ -158,6 +158,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
   const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
   const [step, setStep] = useState<Step>(openedAt);
+  const [providerIndex, setProviderIndex] = useState(0);
   const [selectedProviders, setSelectedProviders] = useState<AgentProviderId[]>([]);
   // Which path was taken at the chooser, carried so every later step can be
   // attributed to it. `none` while still on the chooser, which is what makes a
@@ -263,10 +264,17 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedClaude' && connected) {
     return (
-      <ManagedClaudeConnectionStep
+      <ManagedProviderConnectionStep
+        provider={selectedProviders[providerIndex] ?? 'claude'}
         serverId={connected.id}
-        onBack={() => goToStep('managedReady')}
-        onDone={() => goToStep('managedGitHub')}
+        onBack={() =>
+          providerIndex > 0 ? setProviderIndex(providerIndex - 1) : goToStep('managedReady')
+        }
+        onDone={() =>
+          providerIndex + 1 < selectedProviders.length
+            ? setProviderIndex(providerIndex + 1)
+            : goToStep('managedGitHub')
+        }
       />
     );
   }
@@ -296,7 +304,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       <ManagedProvidersStep
         selected={selectedProviders}
         onSelectionChange={setSelectedProviders}
-        onContinue={() => goToStep('managedClaude')}
+        onContinue={() => {
+          setProviderIndex(0);
+          goToStep('managedClaude');
+        }}
         onSkip={() => finish(connected.id)}
       />
     );

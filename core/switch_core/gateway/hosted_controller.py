@@ -1,12 +1,12 @@
 import json
 import secrets
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,7 +21,6 @@ from switch_core.db.models import (
     TenantMember,
     require_tenant_id,
 )
-from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.dependencies import (
     get_config,
     get_protocol,
@@ -108,8 +107,11 @@ async def prepare(
     github_connection = await session.scalar(
         select(ProviderConnection).where(*conditions(launch.owner_id))
     )
-    claude = await ProviderConnectionStore().get(session, launch.owner_id)
-    if github_connection is None or claude is None:
+    provider = launch.spec.get("provider", "claude")
+    connection = await session.get(
+        ProviderConnection, (require_tenant_id(), launch.owner_id, provider)
+    )
+    if github_connection is None or connection is None:
         raise HTTPException(
             422, "Reconnect your providers before launching the cloud agent."
         )
@@ -130,7 +132,8 @@ async def prepare(
         raise HTTPException(422, str(error)) from None
     agent = await session.get(Agent, launch.agent_id)
     if agent is None:
-        known = KNOWN_AGENTS["claude-code"]
+        known_type = "claude-code" if provider == "claude" else provider
+        known = KNOWN_AGENTS[known_type]
         options = known.parse_options(
             {
                 "channels_enabled": True,
@@ -150,7 +153,7 @@ async def prepare(
                 tools=known.tools,
                 models=known.models,
                 metadata={
-                    "known_agent_type": "claude-code",
+                    "known_agent_type": known_type,
                     "known_agent_options": options.model_dump(),
                     "hosted_launch_id": launch.id,
                 },
@@ -177,9 +180,9 @@ async def prepare(
     await session.commit()
     return {
         "agent_id": agent.id,
-        "provider_kind": claude.kind,
+        "provider_kind": connection.kind,
         "provider_credential": decrypt_token(
-            claude.encrypted_credential, config.jwt_secret_key
+            connection.encrypted_credential, config.jwt_secret_key
         ),
         "switch_credentials": {
             "env": {
@@ -199,7 +202,11 @@ async def prepare(
 
 class Observation(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    state: Literal["provisioning", "running", "error"]
+    state: Literal[
+        "provisioning", "running", "error", "stopping", "stopped", "deleting", "deleted"
+    ]
+    revision: int = Field(ge=1)
+    error: str | None = Field(default=None, max_length=512)
 
 
 @router.post("/{request_id}/observation")
@@ -210,15 +217,37 @@ async def observe(
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
     launch = await launch_by_id(session, request_id)
-    if body.state == "error":
+    if body.revision != launch.revision:
+        return summary(launch)
+    if launch.state == "error" and launch.desired_state == "running":
+        return summary(launch)
+    previous_state = launch.state
+    if launch.desired_state in {"stopped", "restart", "deleted"} and body.state not in {
+        "stopped",
+        "deleted",
+        "error",
+    }:
+        launch.state = "deleting" if launch.desired_state == "deleted" else "stopping"
+    elif launch.desired_state == "deleted" and body.state == "stopped":
+        launch.state = "deleting"
+    elif launch.desired_state == "restart" and body.state == "stopped":
+        launch.desired_state = "running"
+        launch.revision += 1
+        launch.state = "queued"
+        launch.error = None
+    elif body.state in {"stopping", "stopped", "deleting", "deleted"}:
+        launch.state = body.state
+        launch.error = None
+    elif body.state == "error":
         launch.state = "error"
         launch.error = (
-            "The cloud worker could not start. Contact your server administrator."
+            body.error
+            or "The cloud worker could not start. Retry after checking provider access and server capacity."
         )
     else:
         listening = (
             any(
-                connection.spawn_capable
+                (connection.spawn_capable or not launch.spec["auto_session"])
                 for connection in protocol.connections.for_agent(launch.agent_id)
             )
             if launch.agent_id
@@ -228,6 +257,14 @@ async def observe(
             "ready" if body.state == "running" and listening else "provisioning"
         )
         launch.error = None
-    launch.updated_at = datetime.now(UTC)
+        if (
+            launch.state == "provisioning"
+            and previous_state == "provisioning"
+            and datetime.now(UTC) - launch.updated_at > timedelta(minutes=10)
+        ):
+            launch.state = "error"
+            launch.error = "The worker did not connect within 10 minutes. Check provider access and worker startup logs, then retry."
+    if launch.state != previous_state:
+        launch.updated_at = datetime.now(UTC)
     await session.commit()
     return summary(launch)

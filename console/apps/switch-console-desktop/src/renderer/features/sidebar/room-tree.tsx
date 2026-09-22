@@ -4,6 +4,11 @@ import type { SessionStore } from '@renderer/features/sessions/stores/session-st
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
+import {
+  CloudSessionDiscoveryError,
+  CloudSessionGroups,
+  useCloudSessions,
+} from './cloud-session-list';
 import { RoomAgentRow } from './room-agent-row';
 import { filterRoomGroups, sortRoomGroups } from './room-tree-data';
 import { SidebarSessionItem } from './session-item';
@@ -88,6 +93,15 @@ export function listedRoomKeys(): string[] {
 }
 
 export const RoomTree = observer(function RoomTree() {
+  const cloud = useCloudSessions();
+  const cloudSessions =
+    cloud.sessions.data?.filter(
+      (session) =>
+        !session.retired &&
+        cloud.launches.data?.some(
+          (launch) => launch.agent_id === session.agentId && launch.state !== 'deleted'
+        )
+    ) ?? [];
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
   const showDeleteRoomModal = useShowModal('deleteRoomModal');
 
@@ -102,7 +116,9 @@ export const RoomTree = observer(function RoomTree() {
   }
 
   const members = membersByRoom();
-  const alwaysShow = listedRoomKeys();
+  const alwaysShow = [
+    ...new Set([...listedRoomKeys(), ...cloudSessions.flatMap((session) => session.roomIds ?? [])]),
+  ];
 
   const sorted = sortRoomGroups(
     filterRoomGroups(
@@ -117,6 +133,9 @@ export const RoomTree = observer(function RoomTree() {
           bridgeType: switchRoomsStore.roomBridgeTypeById(roomKey),
           createdAt: switchRoomsStore.roomSummaryById(roomKey)?.createdAt ?? null,
           sessions,
+          cloudHasLiveSession: cloudSessions.some(
+            (session) => session.roomIds?.includes(roomKey) && session.connectivity === 'online'
+          ),
         })),
       {
         bridgeTypes: sidebarStore.filterBridgeTypes,
@@ -134,72 +153,79 @@ export const RoomTree = observer(function RoomTree() {
   }
 
   return (
-    <SortableList
-      containerId={ROOMS_CONTAINER}
-      itemIds={groups.map((group) => group.roomKey)}
-      onReorder={(orderedIds) => sidebarStore.setRoomOrder(orderedIds)}
-    >
-      {groups.map(({ roomKey, sessions: roomSessions }) => {
-        const roomViewKey = roomViewGroupKey(roomKey);
-        const expanded = sidebarStore.isGroupExpanded(roomViewKey);
-        const agentsInRoom = members.get(roomKey) ?? [];
-        return (
-          <SortableBranch
-            key={roomKey}
-            id={makeDndId(ROOMS_CONTAINER, roomKey)}
-            header={
-              <RoomRow
-                label={roomLabel(roomKey)}
-                nameKnown={isRoomNameKnown(roomKey)}
-                nameBlockedBySignIn={switchRoomsStore.roomNameBlockedBySignIn(roomKey)}
-                hasChildren={agentsInRoom.length > 0}
-                expanded={expanded}
-                depth={0}
-                bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
-                onToggle={() => sidebarStore.toggleGroupExpanded(roomViewKey)}
-                onSelect={() => openRoomView(roomKey)}
-                isActive={isRoomViewActive(roomKey)}
-                onOpenChannel={
-                  switchRoomsStore.roomChannelUrl(roomKey)
-                    ? () => openRoomInMessagingApp(roomKey)
-                    : null
-                }
-                onAddAgent={() => showAddAgentsToRoomModal({ roomId: roomKey })}
-                onDelete={deleteRoomAction(roomKey, showDeleteRoomModal)}
-              />
-            }
-          >
-            {expanded &&
-              agentsInRoom.map((entry) => {
-                const sessionsHere = roomSessions.filter(
-                  (session) => bySession.get(session.data.id)?.agent.id === entry.agent.id
-                );
-                const agentExpanded = sidebarStore.isGroupExpanded(
-                  roomAgentGroupKey(roomKey, entry.agent.id)
-                );
-                return (
-                  <Fragment key={entry.agent.id}>
-                    <RoomAgentRow
-                      agent={entry.agent}
-                      roomId={roomKey}
-                      hasSessions={sessionsHere.length > 0}
-                      depth={1}
-                    />
-                    {agentExpanded &&
-                      sessionsHere.map((session) => (
-                        <SidebarSessionItem
-                          key={session.data.id}
-                          locationId={entry.agent.locationId}
-                          sessionId={session.data.id}
-                          depth={2}
-                        />
-                      ))}
-                  </Fragment>
-                );
-              })}
-          </SortableBranch>
-        );
-      })}
-    </SortableList>
+    <>
+      <CloudSessionDiscoveryError data={cloud} />
+      <SortableList
+        containerId={ROOMS_CONTAINER}
+        itemIds={groups.map((group) => group.roomKey)}
+        onReorder={(orderedIds) => sidebarStore.setRoomOrder(orderedIds)}
+      >
+        {groups.map(({ roomKey, sessions: roomSessions }) => {
+          const roomViewKey = roomViewGroupKey(roomKey);
+          const expanded = sidebarStore.isGroupExpanded(roomViewKey);
+          const agentsInRoom = members.get(roomKey) ?? [];
+          return (
+            <SortableBranch
+              key={roomKey}
+              id={makeDndId(ROOMS_CONTAINER, roomKey)}
+              header={
+                <RoomRow
+                  label={roomLabel(roomKey)}
+                  nameKnown={isRoomNameKnown(roomKey)}
+                  nameBlockedBySignIn={switchRoomsStore.roomNameBlockedBySignIn(roomKey)}
+                  hasChildren={
+                    agentsInRoom.length > 0 ||
+                    cloudSessions.some((session) => session.roomIds?.includes(roomKey))
+                  }
+                  expanded={expanded}
+                  depth={0}
+                  bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
+                  onToggle={() => sidebarStore.toggleGroupExpanded(roomViewKey)}
+                  onSelect={() => openRoomView(roomKey)}
+                  isActive={isRoomViewActive(roomKey)}
+                  onOpenChannel={
+                    switchRoomsStore.roomChannelUrl(roomKey)
+                      ? () => openRoomInMessagingApp(roomKey)
+                      : null
+                  }
+                  onAddAgent={() => showAddAgentsToRoomModal({ roomId: roomKey })}
+                  onDelete={deleteRoomAction(roomKey, showDeleteRoomModal)}
+                />
+              }
+            >
+              {expanded && <CloudSessionGroups data={cloud} roomId={roomKey} />}
+              {expanded &&
+                agentsInRoom.map((entry) => {
+                  const sessionsHere = roomSessions.filter(
+                    (session) => bySession.get(session.data.id)?.agent.id === entry.agent.id
+                  );
+                  const agentExpanded = sidebarStore.isGroupExpanded(
+                    roomAgentGroupKey(roomKey, entry.agent.id)
+                  );
+                  return (
+                    <Fragment key={entry.agent.id}>
+                      <RoomAgentRow
+                        agent={entry.agent}
+                        roomId={roomKey}
+                        hasSessions={sessionsHere.length > 0}
+                        depth={1}
+                      />
+                      {agentExpanded &&
+                        sessionsHere.map((session) => (
+                          <SidebarSessionItem
+                            key={session.data.id}
+                            locationId={entry.agent.locationId}
+                            sessionId={session.data.id}
+                            depth={2}
+                          />
+                        ))}
+                    </Fragment>
+                  );
+                })}
+            </SortableBranch>
+          );
+        })}
+      </SortableList>
+    </>
   );
 });

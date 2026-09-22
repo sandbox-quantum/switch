@@ -77,6 +77,15 @@ class Gateway:
         self.config = config
         self.store = store
         self.secrets = secrets_client
+        for agent in store.list():
+            assignment = config.assignment(agent.agent_id)
+            if (
+                assignment.assignment_secret_arn != agent.assignment_secret_arn
+                or assignment.instance_profile_arn != agent.instance_profile_arn
+            ):
+                raise ConfigError(
+                    "An existing worker assignment cannot change its secret or IAM identity."
+                )
 
     def request(self, path: str, body: dict | None = None) -> Any:
         request = Request(
@@ -114,9 +123,22 @@ class Gateway:
                     instance_profile_arn=assignment.instance_profile_arn,
                     max_agents=self.config.max_agents,
                 )
+            desired = job["desired_state"]
+            if desired in {"stopped", "restart", "deleted"}:
+                if (
+                    desired == "deleted"
+                    and agent.desired_state == DesiredState.STOPPED
+                    and agent.observed_state == ObservedState.STOPPED
+                ):
+                    self.store.set_desired(agent_id, DesiredState.DELETED)
+                elif agent.desired_state != DesiredState.DELETED:
+                    self.store.set_desired(agent_id, DesiredState.STOPPED)
+                continue
             if job["state"] == "error":
                 self.store.set_desired(agent_id, DesiredState.STOPPED)
                 continue
+            if agent.desired_state == DesiredState.STOPPED:
+                agent = self.store.set_desired(agent_id, DesiredState.RUNNING)
             if agent.volume_id is None or agent.instance_launch_issued:
                 continue
             try:
@@ -139,7 +161,14 @@ class Gateway:
                 )
                 if error.status == 422:
                     self.store.set_desired(agent_id, DesiredState.STOPPED)
-                    self.request(f"/{request_id}/observation", {"state": "error"})
+                    self.request(
+                        f"/{request_id}/observation",
+                        {
+                            "state": "error",
+                            "revision": job["revision"],
+                            "error": "Provider or repository access could not be verified. Reconnect your accounts and retry.",
+                        },
+                    )
                 else:
                     raise
 
@@ -156,10 +185,28 @@ class Gateway:
                 state = "running"
             elif agent.observed_state == ObservedState.NEEDS_ATTENTION:
                 state = "error"
-            self.request(f"/{UUID(job['request_id'])}/observation", {"state": state})
+            elif agent.observed_state in {
+                ObservedState.STOPPING,
+                ObservedState.STOPPED,
+                ObservedState.DELETING,
+                ObservedState.DELETED,
+            }:
+                state = agent.observed_state.value
+            self.request(
+                f"/{UUID(job['request_id'])}/observation",
+                {"state": state, "revision": job["revision"], "error": agent.last_error},
+            )
 
     def bundle(self, prepared: dict, volume_id: str) -> dict:
         spec = prepared["spec"]
+        provider = spec.get("provider", "claude")
+        binary = {
+            "claude": "/opt/switch/claude/bin/claude",
+            "codex": "/opt/switch/providers/codex",
+            "cursor": "/opt/switch/providers/cursor",
+            "opencode": "/opt/switch/providers/opencode",
+            "antigravity": "/opt/switch/providers/antigravity-acp",
+        }[provider]
         deployment = {
             "version": 1,
             "session": {
@@ -167,15 +214,20 @@ class Gateway:
                 "agentId": prepared["agent_id"],
             },
             "provider": {
-                "kind": "claude",
+                "kind": provider,
                 "credential": {
                     "kind": prepared["provider_kind"],
                     "path": "/run/switch-hosted/secrets/provider",
+                    "refresh": True,
                 },
-                "binaryPath": "/opt/switch/claude/bin/claude",
+                "binaryPath": binary,
                 "context": "Use the Switch tools to read room context and post replies to the room.\n"
                 + spec["instructions"],
-                "definition": {"name": spec["name"], "content": spec["definition"]},
+                **(
+                    {"definition": {"name": spec["name"], "content": spec["definition"]}}
+                    if provider == "claude"
+                    else {}
+                ),
             },
             "github": {
                 "credentialPath": "/run/switch-hosted/secrets/github",

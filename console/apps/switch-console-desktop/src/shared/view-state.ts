@@ -24,6 +24,7 @@ export type SidebarGrouping = 'agent' | 'room';
 
 /** Persisted sidebar UI state; fields may be absent in older DB blobs. */
 export type SidebarSnapshot = {
+  cloudSessionNames?: Record<string, string>;
   expandedLocationIds?: string[];
   /**
    * Manual order of the top-level agents in the agent-focused grouping, by

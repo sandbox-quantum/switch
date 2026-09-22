@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { hostedRequest, runHostedControl } from './hosted-control';
+import { fetchHostedProvider, materializeHostedProvider } from './hosted-provider';
 import { detachedSupervision, ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { fenceDeadOwner, ownProcessGroup } from './process-fence';
@@ -114,7 +116,17 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    await runSharedWatcher(root, config, stop.signal, detachedSupervision(process.argv[1]!));
+    const supervision = detachedSupervision(process.argv[1]!);
+    if (process.env.SWITCH_HOSTED_CONTROL === '1') {
+      try {
+        await Promise.all([
+          runSharedWatcher(root, config, stop.signal, supervision),
+          runHostedControl(config, stop.signal, supervision),
+        ]);
+      } finally {
+        stop.abort();
+      }
+    } else await runSharedWatcher(root, config, stop.signal, supervision);
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
@@ -132,13 +144,23 @@ async function main(): Promise<void> {
   } else {
     const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
     const authenticate = async () => {
-      if (config.start.provider !== 'claude') return;
+      if (config.start.provider !== 'claude' && process.env.SWITCH_HOSTED_CONTROL !== '1') return;
+      const cloudCredential =
+        process.env.SWITCH_HOSTED_CONTROL === '1' ? await fetchHostedProvider(config) : null;
+      if (cloudCredential) await materializeHostedProvider(root, input.env, cloudCredential);
       const readiness = await checkProviderReadiness({
         provider: config.start.provider,
         binaryPath: config.execution?.binaryPath ?? 'claude',
         cwd: input.cwd,
         env: input.env,
       });
+      if (cloudCredential?.status === 'connected') {
+        await hostedRequest(config, '/provider-status', {
+          authenticated: readiness.status === 'authenticated',
+          revision: cloudCredential.revision,
+        });
+        if (readiness.status !== 'authenticated') throw new Error(readiness.message);
+      }
       if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
       if (readiness.status === 'unknown') console.warn(readiness.message);
     };

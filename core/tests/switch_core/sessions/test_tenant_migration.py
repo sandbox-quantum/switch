@@ -127,10 +127,11 @@ async def test_cascade_migration_preserves_history_until_agent_deletion(
     try:
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to_head)
-            await connection.run_sync(downgrade_before_cascade)
         authority, _ = await seed(
             SimpleNamespace(owner=factory, restricted=factory), "cascade-tenant"
         )
+        async with engine.begin() as connection:
+            await connection.run_sync(downgrade_before_cascade)
         with tenant_scope("cascade-tenant"):
             await authority.upload_attachment(
                 "session-demo",

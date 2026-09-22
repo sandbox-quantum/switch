@@ -1,3 +1,4 @@
+import { SessionChatClient } from '@switch-console/shared/session-v1';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -7,10 +8,11 @@ import { getLocationManagerStore } from '@renderer/features/locations/stores/loc
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { useCloudLaunches } from '@renderer/features/switch-servers/use-cloud-launches';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { appState } from '@renderer/lib/stores/app-state';
+import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import {
   Combobox,
   ComboboxContent,
@@ -40,8 +42,11 @@ import { Textarea } from '@renderer/lib/ui/textarea';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
+import type { CloudLaunch } from '@shared/core/switch-servers/cloud-launch';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
+import { runCloudSessionOperation } from '../cloud-session-operation';
+import { sharedSessionTransport } from '../components/transcript/shared-session-transport';
 import { buildConnectPrompt } from './build-connect-prompt';
 
 // In Switch Console a "session" is a *session*: a `claude` process spawned in the agent's
@@ -51,6 +56,7 @@ import { buildConnectPrompt } from './build-connect-prompt';
 // optional Switch room (and role in it) to connect to on start.
 
 const NO_ROLE = '__none__';
+type AgentChoice = Agent | { id: string; name: string; locationId?: undefined; cloud: CloudLaunch };
 
 function useDefaultLocationId(propLocationId?: string): string | undefined {
   return useMemo(() => {
@@ -85,6 +91,7 @@ function useRoomMemberAgents(roomId: string | undefined): {
   agents: Agent[];
   serverId: string | null;
   loading: boolean;
+  memberIds: Set<string>;
 } {
   const serverId = roomId ? switchRoomsStore.roomServerId(roomId) : null;
 
@@ -104,7 +111,7 @@ function useRoomMemberAgents(roomId: string | undefined): {
     .filter((a) => a.serverId === serverId && a.switchAgentId && memberIds.has(a.switchAgentId))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { agents, serverId, loading: membersQuery.isLoading || !agentsStore.loaded };
+  return { agents, serverId, memberIds, loading: membersQuery.isLoading || !agentsStore.loaded };
 }
 
 /**
@@ -130,6 +137,7 @@ function useAllServerAgents(enabled: boolean): { agents: Agent[]; loading: boole
 
 export const CreateSessionModal = observer(function CreateSessionModal({
   locationId,
+  cloudRequestId,
   agentName,
   roomId,
   entryPoint,
@@ -142,6 +150,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
    */
   entryPoint: UiEntryPoint;
   locationId?: string;
+  cloudRequestId?: string;
   /** When set, start the session as this Claude Code subagent of the agent. */
   agentName?: string;
   /** When set, the session connects to THIS room and the modal asks which agent
@@ -159,27 +168,51 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   const [prompt, setPrompt] = useState('');
   const [room, setRoom] = useState<RemoteAgentRoom | null>(null);
   const [roleName, setRoleName] = useState<string>(NO_ROLE);
-  const [pickedAgent, setPickedAgent] = useState<Agent | null>(null);
+  const [pickedAgent, setPickedAgent] = useState<AgentChoice | null>(null);
 
   // Room-first mode: the room is fixed and the agent is the open question —
   // unless the caller already answered it (a "+" on an agent row listed under
   // the room), in which case the picker just shows that agent, still switchable.
   const roomFirst = !!roomId;
   const roomMembers = useRoomMemberAgents(roomId);
+  const cloudServerId = roomMembers.serverId ?? switchServersStore.activeServerId;
+  const cloudLaunches = useCloudLaunches(cloudServerId);
+  const cloudAgents: AgentChoice[] = (cloudLaunches.data ?? [])
+    .filter((launch) => launch.state === 'ready' && launch.agent_id)
+    .map((cloud) => ({ id: cloud.request_id, name: `${cloud.name} · Cloud`, cloud }));
+  const roomAgents: AgentChoice[] = [
+    ...roomMembers.agents,
+    ...cloudAgents.filter(
+      (choice) => 'cloud' in choice && roomMembers.memberIds.has(choice.cloud.agent_id!)
+    ),
+  ];
+  const [pending, setPending] = useState(false);
+  const [spawnError, setSpawnError] = useState<string | null>(null);
+  const [createdCloud, setCreatedCloud] = useState<{
+    sessionId: string;
+    requestId: string;
+    name: string;
+  } | null>(null);
   // Opened from the sidebar's own New Session row, which names neither an agent
   // nor a room. A session is owned by an agent, so one has to be chosen here;
   // falling back to the most recent location would start the session as
   // whichever agent happened to be last, with nothing on screen saying which.
   const agentFirstNeedsPick = !roomId && !agentName && !locationId;
-  const pickableAgents = useAllServerAgents(agentFirstNeedsPick);
+  const localAgents = useAllServerAgents(agentFirstNeedsPick);
+  const pickableAgents = {
+    agents: [...localAgents.agents, ...cloudAgents] as AgentChoice[],
+    loading: localAgents.loading || cloudLaunches.isLoading,
+  };
   const presetAgent =
-    roomMembers.agents.find(
-      (a) => a.name === agentName && (!locationId || a.locationId === locationId)
-    ) ?? null;
+    cloudAgents.find((a) => a.id === cloudRequestId) ??
+    roomAgents.find((a) => a.name === agentName && (!locationId || a.locationId === locationId)) ??
+    null;
   // Auto-pick when there is only one candidate — the choice would be a
   // formality, and the user still sees which agent it resolved to.
   const effectiveAgent =
-    pickedAgent ?? presetAgent ?? (roomMembers.agents.length === 1 ? roomMembers.agents[0] : null);
+    pickedAgent ?? presetAgent ?? (roomAgents.length === 1 ? roomAgents[0] : null);
+  const cloudAgent = agentFirstNeedsPick ? (pickedAgent ?? presetAgent) : effectiveAgent;
+  const selectedCloud = cloudAgent && 'cloud' in cloudAgent ? cloudAgent.cloud : null;
   const selectedLocationId = roomFirst
     ? effectiveAgent?.locationId
     : agentFirstNeedsPick
@@ -211,10 +244,16 @@ export const CreateSessionModal = observer(function CreateSessionModal({
     ? (locationAgents.find((a) => a.name === effectiveAgentName) ?? null)
     : null;
 
-  const serverId = effectiveAgentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
-  const switchAgentId = effectiveAgentName
-    ? (subagent?.switchAgentId ?? null)
-    : (agent?.switchAgentId ?? null);
+  const serverId = selectedCloud
+    ? cloudServerId
+    : effectiveAgentName
+      ? (subagent?.serverId ?? null)
+      : (agent?.serverId ?? null);
+  const switchAgentId = selectedCloud
+    ? selectedCloud.agent_id
+    : effectiveAgentName
+      ? (subagent?.switchAgentId ?? null)
+      : (agent?.switchAgentId ?? null);
 
   useEffect(() => {
     if (!roomFirst && serverId && switchAgentId) {
@@ -255,9 +294,68 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   });
   const roles = rolesQuery.data ?? [];
 
-  const canCreate = !!selectedLocationId;
+  const canCreate = !pending && (!!selectedCloud || !!selectedLocationId);
 
   const handleSpawn = () => {
+    if (pending) return;
+    if (createdCloud && cloudServerId) {
+      navigate('cloudSession', { serverId: cloudServerId, ...createdCloud });
+      onClose();
+      return;
+    }
+    if (selectedCloud && cloudServerId) {
+      const sessionId = crypto.randomUUID();
+      const params = {
+        sessionId,
+        requestId: selectedCloud.request_id,
+        name: name.trim() || selectedCloud.name,
+      };
+      if (name.trim()) sidebarStore.setCloudSessionName(cloudServerId, sessionId, name.trim());
+      setCreatedCloud(params);
+      setPending(true);
+      setSpawnError(null);
+      void (async () => {
+        await runCloudSessionOperation(cloudServerId, selectedCloud.request_id, sessionId, 'start');
+        const initialPrompt = buildConnectPrompt(
+          activeRoom?.roomName ?? null,
+          roleName !== NO_ROLE ? roleName : null,
+          prompt
+        );
+        if (initialPrompt) {
+          const client = new SessionChatClient(sessionId, sharedSessionTransport(cloudServerId));
+          try {
+            await client.connect();
+            const deadline = Date.now() + 120000;
+            while (true) {
+              const view = client.getSnapshot();
+              if (
+                view.connected &&
+                view.snapshot?.session.connectivity === 'online' &&
+                view.snapshot.session.status === 'ready'
+              )
+                break;
+              if (Date.now() > deadline)
+                throw new Error('The session is not ready for its initial prompt.');
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+            const receipt = await client.send(initialPrompt, crypto.randomUUID());
+            if (receipt.status === 'rejected' || receipt.status === 'unknown')
+              throw new Error('The initial prompt was rejected.');
+          } finally {
+            client.dispose();
+          }
+        }
+        navigate('cloudSession', { serverId: cloudServerId, ...params });
+        onClose();
+      })()
+        .catch((error) =>
+          setSpawnError(
+            `${String(error)} Open the session to check its state and initial prompt before retrying.`
+          )
+        )
+        .finally(() => setPending(false));
+      return;
+    }
     if (!selectedLocationId) return;
     const sessionManager = getSessionManagerStore(selectedLocationId);
     if (!sessionManager) return;
@@ -332,10 +430,10 @@ export const CreateSessionModal = observer(function CreateSessionModal({
               <FieldLabel>Agent</FieldLabel>
               <Combobox
                 items={pickableAgents.agents}
-                value={pickedAgent}
-                onValueChange={(next: Agent | null) => setPickedAgent(next)}
-                isItemEqualToValue={(a: Agent, b: Agent) => a.id === b.id}
-                filter={(item: Agent, query) =>
+                value={pickedAgent ?? presetAgent}
+                onValueChange={(next: AgentChoice | null) => setPickedAgent(next)}
+                isItemEqualToValue={(a: AgentChoice, b: AgentChoice) => a.id === b.id}
+                filter={(item: AgentChoice, query) =>
                   item.name.toLowerCase().includes(query.toLowerCase())
                 }
                 autoHighlight
@@ -351,11 +449,11 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                   <span
                     className={cn(
                       'flex-1 truncate text-left',
-                      !pickedAgent && 'text-foreground-muted'
+                      !(pickedAgent ?? presetAgent) && 'text-foreground-muted'
                     )}
                   >
-                    {pickedAgent
-                      ? pickedAgent.name
+                    {(pickedAgent ?? presetAgent)
+                      ? (pickedAgent ?? presetAgent)!.name
                       : pickableAgents.loading
                         ? 'Loading agents…'
                         : 'Choose an agent'}
@@ -365,7 +463,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                 <ComboboxContent className="min-w-(--anchor-width)">
                   <ComboboxInput showTrigger={false} placeholder="Search agents…" />
                   <ComboboxList>
-                    {(item: Agent) => (
+                    {(item: AgentChoice) => (
                       <ComboboxItem key={item.id} value={item}>
                         <span className="min-w-0 flex-1 truncate">{item.name}</span>
                       </ComboboxItem>
@@ -385,20 +483,20 @@ export const CreateSessionModal = observer(function CreateSessionModal({
             <Field>
               <FieldLabel>Agent</FieldLabel>
               <Combobox
-                items={roomMembers.agents}
+                items={roomAgents}
                 value={effectiveAgent}
-                onValueChange={(next: Agent | null) => setPickedAgent(next)}
-                isItemEqualToValue={(a: Agent, b: Agent) => a.id === b.id}
-                filter={(item: Agent, query) =>
+                onValueChange={(next: AgentChoice | null) => setPickedAgent(next)}
+                isItemEqualToValue={(a: AgentChoice, b: AgentChoice) => a.id === b.id}
+                filter={(item: AgentChoice, query) =>
                   item.name.toLowerCase().includes(query.toLowerCase())
                 }
                 autoHighlight
               >
                 <ComboboxTrigger
-                  disabled={roomMembers.loading || roomMembers.agents.length === 0}
+                  disabled={roomMembers.loading || roomAgents.length === 0}
                   className={cn(
                     'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
-                    (roomMembers.loading || roomMembers.agents.length === 0) &&
+                    (roomMembers.loading || roomAgents.length === 0) &&
                       'cursor-not-allowed opacity-60'
                   )}
                 >
@@ -419,7 +517,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                 <ComboboxContent className="min-w-(--anchor-width)">
                   <ComboboxInput showTrigger={false} placeholder="Search agents…" />
                   <ComboboxList>
-                    {(item: Agent) => (
+                    {(item: AgentChoice) => (
                       <ComboboxItem key={item.id} value={item}>
                         <span className="min-w-0 flex-1 truncate">{item.name}</span>
                       </ComboboxItem>
@@ -428,7 +526,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                   <ComboboxEmpty>No agents found</ComboboxEmpty>
                 </ComboboxContent>
               </Combobox>
-              {!roomMembers.loading && roomMembers.agents.length === 0 && (
+              {!roomMembers.loading && roomAgents.length === 0 && (
                 <p className="mt-1 text-xs text-foreground-muted">
                   None of your agents is a member of this room yet. Add one from the room's page in
                   the gateway, then try again.
@@ -542,9 +640,18 @@ export const CreateSessionModal = observer(function CreateSessionModal({
           </Field>
         </div>
       </DialogContentArea>
+      {spawnError && (
+        <p role="alert" className="px-6 text-sm text-foreground-destructive">
+          {spawnError}
+        </p>
+      )}
       <DialogFooter>
-        <ConfirmButton size="sm" onClick={handleSpawn} disabled={!canCreate}>
-          Spawn
+        <ConfirmButton
+          size="sm"
+          onClick={handleSpawn}
+          disabled={pending || (!createdCloud && !canCreate)}
+        >
+          {pending ? 'Starting…' : createdCloud ? 'Open session' : 'Spawn'}
         </ConfirmButton>
       </DialogFooter>
     </>

@@ -238,7 +238,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
-    (isCloudRun ? cloudRepository !== null && form.autoSession : dir.trim().length > 0) &&
+    (isCloudRun ? cloudRepository !== null : dir.trim().length > 0) &&
     runHostReachable &&
     runHostReady &&
     submitState === 'idle';
@@ -247,33 +247,31 @@ export const NewAgentForm = observer(function NewAgentForm({
   const disabledReason: string | null =
     submitState !== 'idle'
       ? null
-      : isCloudRun && !form.autoSession
-        ? 'Enable auto-create sessions for cloud agents.'
-        : isCloudRun && !cloudRepository
-          ? 'Connect Claude Code and choose a GitHub repository.'
-          : !pickState.serverId
-            ? 'Add a Switch server to register this agent on.'
-            : form.agentName.trim().length === 0
-              ? 'Enter a name for the agent.'
-              : !form.nameIsValid
-                ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-                : form.description.trim().length === 0
-                  ? 'Add a description so people and agents know what this agent is for.'
-                  : !runHostReachable
-                    ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                    : hostReadiness.checking
-                      ? `Checking what ${runLocationLabel} has installed…`
-                      : hostReadiness.blocked
-                        ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                        : !pickState.providerId
-                          ? 'Choose an agent type.'
-                          : !isCloudRun && dir.trim().length === 0
-                            ? isRemoteRun
-                              ? 'Enter the agent’s working directory on the host.'
-                              : 'Choose the agent’s working directory.'
-                            : policyHasDeadRule(form.addressingPolicy)
-                              ? 'One addressing rule can never match — fix it under Settings.'
-                              : null;
+      : isCloudRun && !cloudRepository
+        ? 'Connect the provider and choose a GitHub repository.'
+        : !pickState.serverId
+          ? 'Add a Switch server to register this agent on.'
+          : form.agentName.trim().length === 0
+            ? 'Enter a name for the agent.'
+            : !form.nameIsValid
+              ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
+              : form.description.trim().length === 0
+                ? 'Add a description so people and agents know what this agent is for.'
+                : !runHostReachable
+                  ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                  : hostReadiness.checking
+                    ? `Checking what ${runLocationLabel} has installed…`
+                    : hostReadiness.blocked
+                      ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                      : !pickState.providerId
+                        ? 'Choose an agent type.'
+                        : !isCloudRun && dir.trim().length === 0
+                          ? isRemoteRun
+                            ? 'Enter the agent’s working directory on the host.'
+                            : 'Choose the agent’s working directory.'
+                          : policyHasDeadRule(form.addressingPolicy)
+                            ? 'One addressing rule can never match — fix it under Settings.'
+                            : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -348,6 +346,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     try {
       if (isCloudRun && cloudRepository) {
         await rpc.switchServers.createCloudLaunch(pickState.serverId, {
+          provider: pickState.providerId ?? 'claude',
           request_id: cloudRequestId.current,
           name: form.agentName,
           description: form.description.trim(),
@@ -582,7 +581,12 @@ export const NewAgentForm = observer(function NewAgentForm({
         )}
 
         {isCloudRun && pickState.serverId && (
-          <CloudAgentRepository serverId={pickState.serverId} onSelection={setCloudRepository} />
+          <CloudAgentRepository
+            serverId={pickState.serverId}
+            providerId={pickState.providerId ?? 'claude'}
+            onProviderChange={setProviderId}
+            onSelection={setCloudRepository}
+          />
         )}
 
         {canConfigureAgent && !!pickState.providerId && (
@@ -615,12 +619,6 @@ export const NewAgentForm = observer(function NewAgentForm({
               if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
             }}
           />
-        )}
-        {isCloudRun && !form.autoSession && (
-          <p role="alert" className="text-sm text-destructive">
-            Cloud agents currently need auto-create sessions enabled. They start a session when
-            addressed in a room.
-          </p>
         )}
       </DialogContentArea>
     </ModalLayout>

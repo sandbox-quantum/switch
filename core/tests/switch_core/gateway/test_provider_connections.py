@@ -8,7 +8,13 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from switch_core.crypto import decrypt_token
-from switch_core.db.models import ProviderConnection, Tenant, User
+from switch_core.db.models import (
+    HostedLaunch,
+    ProviderConnection,
+    Tenant,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
@@ -187,3 +193,114 @@ async def test_simultaneous_connection_changes_fail_without_waiting(connection_a
         assert result.status_code == 409
         assert (await client.delete("/provider-connections/claude")).status_code == 409
         verifier.verify.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "provider,kind,credential",
+    [
+        ("codex", "api-key", "SYNTHETIC-PLACEHOLDER"),
+        ("codex", "auth-json", '{"tokens":{"access_token":"SYNTHETIC-PLACEHOLDER"}}'),
+        ("cursor", "api-key", "SYNTHETIC-PLACEHOLDER"),
+        (
+            "opencode",
+            "auth-json",
+            '{"example":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}',
+        ),
+        ("antigravity", "auth-json", '{"access_token":"SYNTHETIC-PLACEHOLDER"}'),
+    ],
+)
+async def test_other_provider_credentials_remain_unverified_until_worker_checks_them(
+    connection_app, provider, kind, credential
+):
+    client, identity, _, factory, _ = connection_app
+    url = f"/provider-connections/{provider}"
+    response = await client.put(url, json={"kind": kind, "credential": credential})
+    assert response.status_code == 200
+    assert response.json()["status"] == "configured"
+    assert "SYNTHETIC" not in response.text
+    async with factory() as session:
+        row = await session.get(
+            ProviderConnection, (require_tenant_id(), "first", provider)
+        )
+        assert row is not None
+        assert row.encrypted_credential != credential
+        assert (
+            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
+            == credential
+        )
+    identity["user"] = SimpleNamespace(id="second")
+    assert (await client.get(url)).json() == {"status": "not_connected"}
+    await client.delete(url)
+    identity["user"] = SimpleNamespace(id="first")
+    with tenant_scope("other"):
+        assert (await client.get(url)).json() == {"status": "not_connected"}
+        await client.delete(url)
+    assert (await client.get(url)).json()["status"] == "configured"
+    assert (await client.delete(url)).status_code == 204
+    assert (await client.get(url)).json() == {"status": "not_connected"}
+
+
+@pytest.mark.parametrize(
+    "provider,kind,credential",
+    [
+        ("cursor", "auth-json", '{"PRIVATE":"PLACEHOLDER"}'),
+        ("opencode", "api-key", "PRIVATE-PLACEHOLDER"),
+        ("codex", "auth-json", "PRIVATE-INVALID-JSON"),
+        ("codex", "api-key", "PRIVATE PLACEHOLDER"),
+        ("antigravity", "auth-json", "[]"),
+    ],
+)
+async def test_other_provider_invalid_credentials_are_not_echoed(
+    connection_app, provider, kind, credential
+):
+    client, _, _, _, _ = connection_app
+    response = await client.put(
+        f"/provider-connections/{provider}",
+        json={"kind": kind, "credential": credential},
+    )
+    assert response.status_code == 400
+    assert "PRIVATE" not in response.text
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+async def test_disconnect_stops_only_owners_workers_for_that_provider(
+    connection_app, provider
+):
+    client, _, _, factory, _ = connection_app
+    async with factory() as session:
+        session.add_all(
+            [
+                HostedLaunch(
+                    id="matching",
+                    name="matching",
+                    owner_id="first",
+                    spec={"provider": provider},
+                    state="ready",
+                ),
+                HostedLaunch(
+                    id="other-owner",
+                    name="other-owner",
+                    owner_id="second",
+                    spec={"provider": provider},
+                    state="ready",
+                ),
+                HostedLaunch(
+                    id="other-provider",
+                    name="other-provider",
+                    owner_id="first",
+                    spec={"provider": "cursor"},
+                    state="ready",
+                ),
+            ]
+        )
+        await session.commit()
+    assert (await client.delete(f"/provider-connections/{provider}")).status_code == 204
+    async with factory() as session:
+        matching = await session.get(HostedLaunch, (require_tenant_id(), "matching"))
+        assert matching.state == "error"
+        assert matching.revision == 2
+        assert "disconnected" in matching.error
+        for key in ["other-owner", "other-provider"]:
+            assert (
+                await session.get(HostedLaunch, (require_tenant_id(), key))
+            ).state == "ready"

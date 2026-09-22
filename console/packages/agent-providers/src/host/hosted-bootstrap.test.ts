@@ -527,3 +527,18 @@ it('redacts the mounted provider credential from launcher failures', async () =>
     )
   ).rejects.toThrow('provider rejected [REDACTED] with [REDACTED]');
 });
+
+it('enables managed controls for a retained watcher from an older worker image', async () => {
+  const input = await fixture();
+  delete input.spec.room;
+  input.spec.watch = true;
+  const original = await prepareHostedDeployment(input.state, input.spec);
+  expect(original.providerEnvironment.SWITCH_HOSTED_CONTROL).toBeUndefined();
+  vi.stubEnv('SWITCH_HOST_INSTANCE_ID', 'i-0123456789abcdef0');
+  vi.stubEnv('SWITCH_HOST_BOOT_ID', '11111111-1111-4111-8111-111111111111');
+  vi.stubEnv('SWITCH_HOST_ASSIGNMENT_GENERATION', '1');
+  const upgraded = await prepareHostedDeployment(input.state, input.spec);
+  expect(upgraded.config).toEqual(original.config);
+  expect(upgraded.providerEnvironment.SWITCH_HOSTED_CONTROL).toBe('1');
+  expect(upgraded.providerEnvironment.SWITCH_HOSTED_AUTO_SESSION).toBe('true');
+});

@@ -26,11 +26,11 @@ workers never join that cluster.
 - `chart/`: a digest-pinned controller image, one replica with Recreate rollout,
   private durable database volume and no exposed application port.
 
-Only same-instance stop/start is supported in this slice. The worker rejects a
-disk from a different instance or assignment generation. Automatic replacement,
-cross-AZ migration and arbitrary retained-disk adoption remain disabled. A retained
-disk can be recovered through a separately reviewed operator recovery workflow;
-blind deletion of ownership locks is not that workflow.
+Stop/start preserves the disk and saved sessions. Automatic replacement requires
+confirmed termination of the old VM, a detached disk, and matching assignment
+identity. The new worker accepts only that exact predecessor. Recovery attempts
+are bounded. Cross-AZ migration and arbitrary disk adoption remain disabled.
+See [worker image upgrades](worker/README.md) for the explicit operator workflow.
 
 ## GitHub App credential preparation
 
@@ -41,12 +41,23 @@ It signs with an operator-supplied RSA key and requests only contents and pull
 request write access. Credentials must stay on the backend and in the worker's
 private credential transport, never in Console responses or persisted launch specs.
 
-Console uses the shared New Agent form, saved Claude connection and a selected
+Console uses the shared New Agent form, a saved provider connection and a selected
 GitHub repository. The gateway reserves an identity from the operator-configured
 pool. The controller creates the data volume, writes the assignment secret with
 that volume ID, and then starts the VM. A worker is ready only after its shared
-watcher connects. Cloud creation currently requires automatic sessions; manual
-cloud session control is not available.
+watcher connects. Agents can start sessions automatically when addressed or use
+manual sessions. Both paths use the existing session form and conversation view.
+
+Cloud sessions appear in the agent sidebar and under their connected rooms.
+The conversation supports messages, permission requests, interruption, stop,
+resume and restart. Worker cards provide start, stop, restart, retry and removal.
+Removal retains the data disk and history. Uncertain operations are reported
+explicitly and are not automatically repeated.
+
+`HOSTED_AGENTS_PER_OWNER` limits agents per user (default 3).
+`HOSTED_SESSIONS_PER_AGENT` limits sessions per worker (default 8).
+The server launch capacity and controller assignment pool impose separate global
+limits. Each agent has its own VM, encrypted disk and scoped credentials.
 
 Managed workers request a fresh installation token before checkout and each Git
 or GitHub CLI command. The agent-authenticated renewal route checks the saved
@@ -249,8 +260,15 @@ previous connection intact. Back up and rotate the server encryption key with th
 same care as other encrypted credentials. Removal deletes the database record;
 revocation at Anthropic and database-backup retention are separate concerns.
 
-This API does not yet deliver credentials into worker assignment bundles. Worker
-provisioning and GitHub setup remain separate from connecting a provider.
+Worker assignment bundles carry the initial credential through private tmpfs
+files. Managed runtimes fetch current credentials from the authenticated worker
+API. Revocation denies further credential and control requests and stops the
+affected workers. Reconnect the provider, then use Retry to start them again.
+
+Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
+under their provider IDs. Saved credentials remain marked as configured until a
+native worker check succeeds. Native readiness is not proof of a successful model
+request; verify each provider with its intended account before deployment acceptance.
 
 ### GitHub App connections
 

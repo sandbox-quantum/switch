@@ -45,6 +45,7 @@ async def reserve(store, factory, request_id, name):
             name=name,
             spec={"repository_id": 123},
             capacity=1,
+            owner_capacity=3,
             agent_ids=["00000000-0000-4000-8000-000000000001"],
         )
         await session.commit()

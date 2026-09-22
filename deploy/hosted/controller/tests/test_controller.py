@@ -286,3 +286,105 @@ def test_config_rejects_duplicate_assignment_credentials(tmp_path: Path):
     }
     with pytest.raises(ConfigError, match="secrets must be unique"):
         ControllerConfig.from_dict(raw)
+
+
+def test_recovery_requires_terminated_predecessor_and_retains_disk(tmp_path):
+    cfg = config(tmp_path)
+    store, agent = store_and_agent(cfg)
+    store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    with pytest.raises(StoreError, match="terminated"):
+        store.replace_terminated(agent)
+    agent = store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
+    replacement = store.replace_terminated(agent)
+    assert replacement.instance_id is None
+    assert replacement.previous_instance_id == "i-0123456789abcdef0"
+    assert replacement.volume_id == "vol-0123456789abcdef0"
+    assert replacement.recovery_count == 1
+    assert not replacement.instance_launch_issued
+    cloud = Ec2Cloud(ec2_client(), cfg)
+    assert cloud._token(agent, "instance-0") != cloud._token(replacement, "instance-1")
+    for index in range(2, 5):
+        current = store.record_instance(agent.agent_id, f"i-{index:017x}")
+        current = store.mark_instance_terminal_observed(agent.agent_id, current.instance_id)
+        if index == 4:
+            with pytest.raises(StoreError, match="limit"):
+                store.replace_terminated(current)
+        else:
+            store.replace_terminated(current)
+    store.close()
+
+
+def test_capacity_and_image_can_change_after_verified_legacy_migration(tmp_path):
+    cfg = config(tmp_path)
+    old = AgentStore(cfg.state_db_path, cfg.fingerprint(legacy=True))
+    old.close()
+    migrated = AgentStore(
+        cfg.state_db_path, cfg.fingerprint(), legacy_fingerprint=cfg.fingerprint(legacy=True)
+    )
+    migrated.close()
+    expanded = config(tmp_path, max_agents=2)
+    current = AgentStore(expanded.state_db_path, expanded.fingerprint())
+    current.close()
+    incompatible = replace(expanded, subnet_id="subnet-11111111111111111")
+    with pytest.raises(StoreError, match="immutable"):
+        AgentStore(incompatible.state_db_path, incompatible.fingerprint())
+
+
+def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_path):
+    cfg = config(tmp_path)
+    store, agent = store_and_agent(cfg)
+    store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    with pytest.raises(StoreError, match="stopped"):
+        store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
+    agent = store.set_desired(agent.agent_id, DesiredState.STOPPED)
+    with pytest.raises(StoreError, match="terminated"):
+        store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
+    agent = store.mark_instance_terminal_observed(agent.agent_id, agent.instance_id)
+    upgraded = store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
+    assert upgraded.instance_id is None
+    assert upgraded.previous_instance_id == agent.instance_id
+    assert upgraded.volume_id == agent.volume_id
+    assert upgraded.previous_runtime_fingerprint == "a" * 64
+    assert upgraded.desired_state is DesiredState.STOPPED
+    assert upgraded.image_id != agent.image_id
+    with pytest.raises(StoreError, match="changed"):
+        store.upgrade_terminated(agent, "ami-11111111111111111", "a" * 64)
+    store.close()
+
+
+@pytest.mark.parametrize("desired", [DesiredState.RUNNING, DesiredState.STOPPED])
+def test_terminating_worker_waits_without_profile_or_replacement(tmp_path, desired):
+    cfg = config(tmp_path)
+    store, agent = store_and_agent(cfg)
+    agent = store.record_volume(agent.agent_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    agent = store.record_instance(agent.agent_id, "i-0123456789abcdef0")
+    agent = store.set_desired(agent.agent_id, desired)
+    worker = instance(cfg, agent, "shutting-down")
+    worker.pop("IamInstanceProfile")
+    worker.pop("NetworkInterfaces")
+    client = ec2_client()
+    with Stubber(client) as stubber:
+        if desired is DesiredState.RUNNING:
+            stubber.add_response(
+                "describe_volumes",
+                {"Volumes": [volume(cfg, agent)]},
+                {"VolumeIds": [agent.volume_id]},
+            )
+        stubber.add_response(
+            "describe_instances",
+            {"Reservations": [{"Instances": [worker]}]},
+            {"InstanceIds": [agent.instance_id]},
+        )
+        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(agent.agent_id)
+        expected = (
+            ObservedState.PROVISIONING
+            if desired is DesiredState.RUNNING
+            else ObservedState.STOPPING
+        )
+        assert result.observed_state is expected
+        assert result.instance_id == agent.instance_id
+        assert result.last_error is None
+        stubber.assert_no_pending_responses()
+    store.close()
