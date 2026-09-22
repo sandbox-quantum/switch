@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, open, rm, writeFile, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -69,6 +69,58 @@ it('hands over only what the worker has not already been given', async () => {
   expect(await inbox.drain()).toEqual([]);
   await handOff(session, { sequence: 7, roomId: 'room', messageId: 'seven' });
   expect(await inbox.drain()).toMatchObject([{ sequence: 7 }]);
+});
+
+it('reads the whole of what is waiting when a read returns short', async () => {
+  // A read may return less than it was asked for. Trusting the requested length
+  // would leave the rest of the buffer zeroed and step the position past
+  // records nothing has read.
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  await handOff(session, { sequence: 4, roomId: 'room', messageId: 'four' });
+  await handOff(session, { sequence: 6, roomId: 'other', messageId: 'six' });
+  const sample = await open(join(session, HANDOFF_FILE), 'r');
+  const handles = Object.getPrototypeOf(sample);
+  await sample.close();
+  const whole = handles.read;
+  vi.spyOn(handles, 'read').mockImplementation(function (this: FileHandle, ...args: unknown[]) {
+    const [buffer, offset, length, position] = args as [Buffer, number, number, number];
+    return whole.call(this, buffer, offset, Math.min(length, 7), position);
+  });
+
+  expect(await inbox.drain()).toEqual([
+    { sequence: 4, roomId: 'room', messageId: 'four' },
+    { sequence: 6, roomId: 'other', messageId: 'six' },
+  ]);
+  expect(await inbox.drain()).toEqual([]);
+});
+
+it('holds a character split across two reads as bytes rather than as halves', async () => {
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  const record = Buffer.from(
+    `${JSON.stringify({ sequence: 4, roomId: 'raum-✅', messageId: 'four' })}\n`
+  );
+  const inside = record.indexOf(Buffer.from('✅')) + 1;
+  await writeFile(join(session, HANDOFF_FILE), record.subarray(0, inside));
+  expect(await inbox.drain()).toEqual([]);
+  await appendFile(join(session, HANDOFF_FILE), record.subarray(inside));
+  expect(await inbox.drain()).toEqual([{ sequence: 4, roomId: 'raum-✅', messageId: 'four' }]);
+});
+
+it('keeps reading a journal a dying controller tore in half', async () => {
+  // The next append would otherwise run onto the end of the abandoned record,
+  // and the worker would fail on that line for as long as the session lives.
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  await writeFile(join(session, HANDOFF_FILE), '{"sequence":4,"roomId":"room","mess');
+
+  await handOff(session, { sequence: 5, roomId: 'room', messageId: 'five' });
+  expect(await inbox.drain()).toEqual([{ sequence: 5, roomId: 'room', messageId: 'five' }]);
+  expect(warning).toHaveBeenCalledOnce();
+  await handOff(session, { sequence: 6, roomId: 'room', messageId: 'six' });
+  expect(await inbox.drain()).toEqual([{ sequence: 6, roomId: 'room', messageId: 'six' }]);
 });
 
 it('waits for the rest of a record still being written', async () => {

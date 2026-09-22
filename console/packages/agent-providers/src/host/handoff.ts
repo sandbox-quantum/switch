@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { watch, type FSWatcher } from 'node:fs';
-import { open, readFile, rename, writeFile } from 'node:fs/promises';
+import { open, readFile, rename, writeFile, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 
 export const HANDOFF_FILE = 'handoff.jsonl';
 const CAPABILITY_FILE = 'worker.json';
+const NEWLINE = 0x0a;
 
 /**
  * One routed event, in the sequence numbering the controller's connection and
@@ -77,13 +78,28 @@ export async function readsHandoffs(root: string): Promise<boolean> {
  * while its own connection can see the same one.
  */
 export async function handOff(root: string, event: Handoff): Promise<void> {
-  const file = await open(join(root, HANDOFF_FILE), 'a', 0o600);
+  const file = await open(join(root, HANDOFF_FILE), 'a+', 0o600);
   try {
+    await closeTornRecord(file);
     await file.writeFile(`${JSON.stringify(handoffSchema.parse(event))}\n`);
     await file.sync();
   } finally {
     await file.close();
   }
+}
+
+/**
+ * A controller killed mid-append leaves a record with no terminator. Ending the
+ * line before the next one is written keeps the loss to the record that was cut
+ * off: without it the worker reads the two as one line and can never parse the
+ * journal again.
+ */
+async function closeTornRecord(file: FileHandle): Promise<void> {
+  const { size } = await file.stat();
+  if (size === 0) return;
+  const tail = Buffer.alloc(1);
+  const { bytesRead } = await file.read(tail, 0, 1, size - 1);
+  if (bytesRead === 1 && tail[0] !== NEWLINE) await file.write('\n');
 }
 
 /**
@@ -94,7 +110,7 @@ export async function handOff(root: string, event: Handoff): Promise<void> {
  */
 export class HandoffInbox {
   private offset = 0;
-  private partial = '';
+  private partial = Buffer.alloc(0);
   private appended = false;
   private watcher: FSWatcher | null = null;
   private wake: (() => void) | null = null;
@@ -173,13 +189,58 @@ export class HandoffInbox {
         throw new Error('The controller handoff journal shrank; recovery review is required.');
       if (size === this.offset) return [];
       const buffer = Buffer.alloc(size - this.offset);
-      await file.read(buffer, 0, buffer.byteLength, this.offset);
-      this.offset = size;
-      const lines = (this.partial + buffer.toString('utf8')).split('\n');
-      this.partial = lines.pop()!;
-      return lines.filter(Boolean).map((line) => handoffSchema.parse(JSON.parse(line)));
+      let filled = 0;
+      // A read is allowed to return less than it was asked for, and the rest of
+      // the record is on disk rather than lost — so what was actually read is
+      // what the position advances by.
+      while (filled < buffer.byteLength) {
+        const { bytesRead } = await file.read(
+          buffer,
+          filled,
+          buffer.byteLength - filled,
+          this.offset + filled
+        );
+        if (bytesRead === 0) break;
+        filled += bytesRead;
+      }
+      this.offset += filled;
+      return this.records(Buffer.concat([this.partial, buffer.subarray(0, filled)]));
     } finally {
       await file.close();
     }
+  }
+
+  /**
+   * Splits on the record terminator before decoding, so a character carried
+   * across two reads is decoded from its own bytes rather than twice in halves.
+   * A line that will not parse is the tail of a controller that died mid-write:
+   * it is reported and dropped, because failing the worker on it would take the
+   * session down on every restart and lose every later record with it.
+   */
+  private records(pending: Buffer): Handoff[] {
+    const handoffs: Handoff[] = [];
+    let start = 0;
+    for (
+      let end = pending.indexOf(NEWLINE, start);
+      end !== -1;
+      end = pending.indexOf(NEWLINE, start)
+    ) {
+      const line = pending.subarray(start, end).toString('utf8');
+      start = end + 1;
+      if (!line) continue;
+      const record = handoffSchema.safeParse(readRecord(line));
+      if (record.success) handoffs.push(record.data);
+      else console.warn(`Discarding an unreadable record in ${HANDOFF_FILE}: ${line}`);
+    }
+    this.partial = Buffer.from(pending.subarray(start));
+    return handoffs;
+  }
+}
+
+function readRecord(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
   }
 }
