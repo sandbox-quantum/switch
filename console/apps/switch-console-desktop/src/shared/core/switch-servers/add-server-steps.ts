@@ -11,6 +11,7 @@ export const ADD_SERVER_STEPS = [
   'managedReady',
   'managedClaude',
   'managedGitHub',
+  'managedAgent',
   'local',
   'remoteHost',
   'external',
