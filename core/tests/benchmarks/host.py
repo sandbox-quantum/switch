@@ -58,6 +58,36 @@ SESSION_CAPABILITIES = {
 }
 
 
+#: Namespace Switch Console derives a controller's connection id under. It is
+#: mirrored here rather than read from the app because the watcher takes the id
+#: from the template it is handed, so a harness that minted its own would test a
+#: connection identity no Console ever opens.
+CONTROLLER_CONNECTION_NAMESPACE = uuid.UUID("c3f2b0de-2e5a-5a1e-9d4a-1f7c2a6b8e05")
+
+
+def controller_connection_id(agent_id: str) -> str:
+    """The connection a controller for this agent opens, as Console derives it.
+
+    Derived from the agent rather than minted, so two controllers started for
+    one agent collide on the server and one takes the connection from the
+    other, and so a controller that is restarted reopens the connection it had
+    instead of leaving a second one to be swept.
+    """
+    return str(uuid.uuid5(CONTROLLER_CONNECTION_NAMESPACE, agent_id))
+
+
+def minted_connection_id() -> str:
+    """A connection identity the way the app this topology replaced chose one.
+
+    That app minted a fresh id for every watcher and every session it started,
+    so nothing about the identity tied it to the agent. A scenario standing in
+    for that app has to mint too: derive the id and the older build would
+    collide with the newer one on the server, which is a takeover rather than
+    the upgrade being measured.
+    """
+    return str(uuid.uuid4())
+
+
 def new_marker() -> str:
     """A token identifying one benchmark message, as the host will report it."""
     return str(uuid.uuid4())
@@ -119,6 +149,7 @@ class BenchWatcher:
     home: Path
     trace_path: Path
     bundle: Path
+    connection_id: str
     template_path: Path
     environment: Mapping[str, str]
     supervisor_pid: int
@@ -135,6 +166,23 @@ class BenchWatcher:
         for path in sorted(self.home.rglob("failure.json")):
             return str(json.loads(path.read_text())["message"])
         return None
+
+    def taken_over(self) -> dict[str, str] | None:
+        """The record this controller left if another took its connection.
+
+        Written when the server evicts it in favour of a second controller for
+        the same agent, and kept: standing down is durable, so a controller
+        that has this file is one that will not reopen the connection on its
+        own.
+        """
+        record = self.root / "taken-over.json"
+        if not record.exists():
+            return None
+        return {str(k): str(v) for k, v in json.loads(record.read_text()).items()}
+
+    def controller_running(self) -> bool:
+        """Whether this controller's supervisor is still up."""
+        return _alive(self.supervisor_pid)
 
     def sessions_by_room(self) -> dict[str, str]:
         """Which session the watcher assigned to each room.
@@ -158,6 +206,30 @@ class BenchWatcher:
                 continue
             assigned[record["roomId"]] = record["config"]["session"]["sessionId"]
         return assigned
+
+    def releases(self) -> list[tuple[str, str]]:
+        """The deliveries this controller handed back to Switch unserved.
+
+        A controller that cannot route a delivery to the session already
+        serving the room releases it rather than answering for it, so Switch
+        keeps holding it. Returned as (room, message) pairs in the order the
+        journal records them, repeats included: releasing the same delivery
+        again is a retry, and how many there were is part of what happened.
+        """
+        journal = self.root / "assignments.jsonl"
+        if not journal.exists():
+            return []
+        released: list[tuple[str, str]] = []
+        for line in journal.read_text().splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if "released" not in record:
+                continue
+            released.append(
+                (record["released"]["roomId"], record["released"]["messageId"])
+            )
+        return released
 
     def session_tree(self, session_id: str) -> list[int]:
         """The processes serving one session, supervisor first."""
@@ -201,6 +273,21 @@ class BenchWatcher:
                 continue
         return pids
 
+    def kill_sessions(self) -> int:
+        """Kill every process still serving a session this controller assigned.
+
+        A controller that stands down leaves its workers running and detached,
+        so they outlive the tree this harness stops on the way out. Returns how
+        many processes were hit.
+        """
+        pids = sorted(self.session_pids(), reverse=True)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        return len(pids)
+
     def stop_controller(self) -> None:
         """Kill the controller outright, leaving its sessions running.
 
@@ -231,16 +318,29 @@ class BenchWatcher:
                 )
             time.sleep(0.05)
 
-    def start_controller(self) -> None:
+    def start_controller(self, bundle: Path, connection_id: str) -> None:
         """Start a controller on this root again, after one was stopped.
 
         The state it starts from is whatever the last one left on disk, which
         after a kill includes its own owner record: reclaiming that is part of
         what a restart has to do.
+
+        `bundle` is the build to start it from — the same one to restart the
+        controller that was there, a different one to put the machine through
+        the upgrade a user performs by updating the app over its own state.
+        `connection_id` is the identity that build opens with, rewritten into
+        the template the same way an upgraded app rewrites what it wrote
+        before: the build decides the connection, so a restart that kept the
+        old one would measure an upgrade no release performs.
         """
         superseded = self.supervisor_pid
+        self.bundle = bundle
+        self.connection_id = connection_id
+        template = json.loads(self.template_path.read_text())
+        template["roomConnection"] = {"connectionId": connection_id, "rooms": []}
+        self.template_path.write_text(json.dumps(template))
         _start_watcher(
-            bundle=self.bundle,
+            bundle=bundle,
             root=self.root,
             template_path=self.template_path,
             environment=self.environment,
@@ -253,6 +353,7 @@ def _template(
     agent_id: str,
     credentials_path: Path,
     cwd: Path,
+    connection_id: str,
 ) -> dict[str, object]:
     session_id = str(uuid.uuid4())
     return {
@@ -277,7 +378,7 @@ def _template(
                 "mcpServers": {},
             },
         },
-        "roomConnection": {"connectionId": str(uuid.uuid4()), "rooms": []},
+        "roomConnection": {"connectionId": connection_id, "rooms": []},
         "execution": {
             "credentialsPath": str(credentials_path),
             "inheritEnv": [],
@@ -297,8 +398,15 @@ def bench_watcher(
     base_url: str,
     agent_id: str,
     api_key: str,
+    connection_id: str,
 ) -> Iterator[BenchWatcher]:
-    """Start a watcher for one agent and stop its whole tree afterwards."""
+    """Start a watcher for one agent and stop its whole tree afterwards.
+
+    `connection_id` is the connection identity the controller opens with.
+    `controller_connection_id` is the one Switch Console derives, and is what a
+    scenario measuring today's app passes; a scenario standing in for an older
+    app passes the id that app would have minted for itself.
+    """
     root = home / "watch"
     root.mkdir(parents=True)
     trace_path = home / "host-trace.jsonl"
@@ -322,7 +430,12 @@ def bench_watcher(
     template_path = home / "template.json"
     template_path.write_text(
         json.dumps(
-            _template(agent_id=agent_id, credentials_path=credentials_path, cwd=home)
+            _template(
+                agent_id=agent_id,
+                credentials_path=credentials_path,
+                cwd=home,
+                connection_id=connection_id,
+            )
         )
     )
 
@@ -339,6 +452,7 @@ def bench_watcher(
         home=home,
         trace_path=trace_path,
         bundle=bundle,
+        connection_id=connection_id,
         template_path=template_path,
         environment=environment,
         supervisor_pid=_await_supervisor(root, None),

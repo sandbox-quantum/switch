@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from tests.benchmarks.host import BenchWatcher, await_dispatches, marked, new_marker
 from tests.benchmarks.metrics import ResourceReport, ResourceSampler
-from tests.benchmarks.server import BenchAgent, BenchServer
+from tests.benchmarks.server import BenchAgent, BenchCore, BenchServer
 from tests.benchmarks.trace import (
     ADMISSION_RECEIVED,
     ADMISSION_RESPONDED,
@@ -105,15 +106,44 @@ async def await_stream(bench: BenchServer, agent_id: str, timeout: float) -> Non
 def sampler_for(
     bench: BenchServer, watcher: BenchWatcher, agent_id: str
 ) -> ResourceSampler:
-    # Both trees: the server runs in this process, and the hosts hang off the
-    # detached watcher supervisor, which is not a descendant of it.
-    return ResourceSampler(
-        root_pids=lambda: [os.getpid(), watcher.supervisor_pid],
+    return _sampler(
+        watcher=watcher,
         port=bench.port,
         # The registry is in this process, so the server's own count of the
         # agent's open protocol connections is free to read alongside the
         # kernel's count of sockets.
         count_streams=lambda: len(bench.connections.for_agent(agent_id)),
+    )
+
+
+def sampler_for_core(
+    core: BenchCore, watcher: BenchWatcher, agent_id: str
+) -> ResourceSampler:
+    """`sampler_for`, for a scenario that replaces the Core while it samples.
+
+    The connection count is read off whichever Core is serving at the moment of
+    the sample. Bound to one of them instead, every sample after a restart
+    would be taken from a registry nothing is connected to any more, and the
+    peak would be whatever the count happened to be when the old Core died.
+    """
+    return _sampler(
+        watcher=watcher,
+        # Kept across a restart by design, so reading it once is reading the
+        # address the hosts are still pointed at.
+        port=core.server.port,
+        count_streams=lambda: len(core.server.connections.for_agent(agent_id)),
+    )
+
+
+def _sampler(
+    *, watcher: BenchWatcher, port: int, count_streams: Callable[[], int]
+) -> ResourceSampler:
+    # Both trees: the server runs in this process, and the hosts hang off the
+    # detached watcher supervisor, which is not a descendant of it.
+    return ResourceSampler(
+        root_pids=lambda: [os.getpid(), watcher.supervisor_pid],
+        port=port,
+        count_streams=count_streams,
         interval_seconds=SAMPLE_INTERVAL_SECONDS,
     )
 

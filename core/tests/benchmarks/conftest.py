@@ -12,7 +12,12 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from tests.benchmarks.server import BenchServer, bench_server
+from tests.benchmarks.server import (
+    BenchCore,
+    BenchServer,
+    bench_server,
+    restartable_bench_server,
+)
 from tests.benchmarks.trace import TraceCollector
 from tests.integration.conftest import (  # noqa: F401
     SessionEnv,
@@ -33,3 +38,13 @@ async def bench(
 ) -> AsyncIterator[BenchServer]:
     async with bench_server(session_env, collector) as server:
         yield server
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def core(
+    session_env: SessionEnv,  # noqa: F811
+    collector: TraceCollector,
+) -> AsyncIterator[BenchCore]:
+    """The same server, for a scenario that has to restart it mid-run."""
+    async with restartable_bench_server(session_env, collector) as running:
+        yield running

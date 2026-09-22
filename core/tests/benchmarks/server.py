@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
 
@@ -46,6 +46,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    SdkRoomAdmission,
     SdkSession,
     User,
     require_tenant_id,
@@ -66,7 +67,7 @@ from switch_core.sessions.service import (
     _room_claimants,
     _stored_snapshot,
 )
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from tests.benchmarks.instrumentation import TracingMiddleware, trace_commits
@@ -153,6 +154,7 @@ class BenchServer:
         collector: TraceCollector,
         owner_id: str,
         session_factory: async_sessionmaker[AsyncSession],
+        agents: tuple[BenchAgent, ...],
     ) -> None:
         self.base_url = base_url
         self.port = port
@@ -164,7 +166,16 @@ class BenchServer:
         self.collector = collector
         self.owner_id = owner_id
         self._session_factory = session_factory
-        self._agents: list[BenchAgent] = []
+        self._agents: list[BenchAgent] = list(agents)
+
+    @property
+    def agents(self) -> tuple[BenchAgent, ...]:
+        """The agents registered here, for a Core that takes this one's place.
+
+        Their keys are held by host processes that outlive a restart, so a
+        replacement adopts them rather than registering the agents again.
+        """
+        return tuple(self._agents)
 
     async def room_states(self, agent_id: str) -> dict[str, RoomState]:
         """Per room of this agent, the sessions an admission answer is read off.
@@ -197,6 +208,27 @@ class BenchServer:
                 ),
             )
         return states
+
+    async def reserved_deliveries(self, agent_id: str) -> tuple[str, ...]:
+        """Message ids this agent has been promised it may still deliver.
+
+        A reservation is held in the database rather than in the replay buffer,
+        so it is what a delivery survives a restart on. Reading it is how a
+        scenario stages the restart on a delivery that is genuinely outstanding
+        instead of on a guess at the window.
+        """
+        async with self._session_factory() as db:
+            rows = await db.scalars(
+                select(SdkRoomAdmission.message_id)
+                .where(
+                    SdkRoomAdmission.tenant_id == require_tenant_id(),
+                    SdkRoomAdmission.agent_id == agent_id,
+                    SdkRoomAdmission.consumed_at.is_(None),
+                    SdkRoomAdmission.discarded_at.is_(None),
+                )
+                .order_by(SdkRoomAdmission.message_id)
+            )
+        return tuple(rows)
 
     async def register_agent(self, name: str) -> BenchAgent:
         result = await self.protocol.register_agent(
@@ -255,14 +287,140 @@ class BenchServer:
 async def bench_server(
     session_env: SessionEnv, collector: TraceCollector
 ) -> AsyncIterator[BenchServer]:
-    """Boot the agent bridge on a loopback port for the life of the block.
+    """Boot the agent bridge on a loopback port for the life of the block."""
+    owner_id = await _prepare(session_env)
+    async with _serve(
+        session_env=session_env,
+        collector=collector,
+        owner_id=owner_id,
+        port=0,
+        agents=(),
+    ) as server:
+        yield server
+
+
+class BenchCore:
+    """A bench server that can be stopped and started again on its own database.
+
+    Restarting is the whole point of it. The agent bridge holds the replay
+    buffer and the connection registry in memory, so a Core that comes back is
+    one whose buffer is gone while every row it wrote is still there — the state
+    a delivery reserved before the restart has to survive on.
+
+    The port is kept across the restart. Hosts that outlived the Core were
+    pointed at an address and go on retrying it, as they would against a
+    restarted server at a fixed address; moving the port would make the
+    scenario measure reconfiguration instead of recovery.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_env: SessionEnv,
+        collector: TraceCollector,
+        owner_id: str,
+        server: BenchServer,
+        running: AbstractAsyncContextManager[BenchServer],
+    ) -> None:
+        self._session_env = session_env
+        self._collector = collector
+        self._owner_id = owner_id
+        self._server = server
+        self._running = running
+
+    @property
+    def server(self) -> BenchServer:
+        """The Core that is serving now, which a restart replaces."""
+        return self._server
+
+    async def restart(self) -> None:
+        port, agents = self._server.port, self._server.agents
+        await self._running.__aexit__(None, None, None)
+        self._running = _serve(
+            session_env=self._session_env,
+            collector=self._collector,
+            owner_id=self._owner_id,
+            port=port,
+            agents=agents,
+        )
+        self._server = await self._running.__aenter__()
+
+    async def aclose(self) -> None:
+        await self._running.__aexit__(None, None, None)
+
+
+@asynccontextmanager
+async def restartable_bench_server(
+    session_env: SessionEnv, collector: TraceCollector
+) -> AsyncIterator[BenchCore]:
+    """The same server, wrapped so a scenario can restart it mid-run."""
+    owner_id = await _prepare(session_env)
+    running = _serve(
+        session_env=session_env,
+        collector=collector,
+        owner_id=owner_id,
+        port=0,
+        agents=(),
+    )
+    core = BenchCore(
+        session_env=session_env,
+        collector=collector,
+        owner_id=owner_id,
+        server=await running.__aenter__(),
+        running=running,
+    )
+    try:
+        yield core
+    finally:
+        await core.aclose()
+
+
+async def _prepare(session_env: SessionEnv) -> str:
+    """Empty the database and seed what a Core needs before it serves.
+
+    Separate from serving because a Core that replaces another one must not do
+    it: the agents, rooms and sessions in that database are exactly what the
+    restart is supposed to come back to.
+    """
+    await _truncate_all(session_env.owner_engine)
+    session_factory = cast(
+        "async_sessionmaker[AsyncSession]", session_env.session_factory
+    )
+    with tenant_scope(TENANT_ZERO_ID):
+        owner = User(name="Admin", email=GATEWAY_ADMIN_EMAIL, role="admin")
+        async with session_factory() as session:
+            await session_env.user_store.create(session, owner)
+            await session.commit()
+        await _seed_agent_registration_bootstrap_key(
+            session_factory,
+            session_env.user_store,
+            session_env.api_key_store,
+            session_env.agent_store,
+            session_env.config,
+        )
+    return owner.id
+
+
+@asynccontextmanager
+async def _serve(
+    *,
+    session_env: SessionEnv,
+    collector: TraceCollector,
+    owner_id: str,
+    port: int,
+    agents: tuple[BenchAgent, ...],
+) -> AsyncIterator[BenchServer]:
+    """Serve the agent bridge until the block ends.
 
     Only one may run per process: `init_dependencies` stores the wiring in a
     module-level dict that the HTTP routes resolve against, so a second server
-    would silently repoint the first one's routes at its own stores.
-    """
-    await _truncate_all(session_env.owner_engine)
+    would silently repoint the first one's routes at its own stores. One after
+    another is what a restart is, and is fine.
 
+    `port` is 0 for a free port, or the port a previous Core was serving on.
+    `agents` are the ones already registered in the database, whose keys the
+    hosts still hold.
+    """
     config = session_env.config
     # The fixture types this as `object`; every consumer below needs the real
     # signature, so narrow it once here rather than at each call.
@@ -270,175 +428,167 @@ async def bench_server(
         "async_sessionmaker[AsyncSession]", session_env.session_factory
     )
 
-    with tenant_scope(TENANT_ZERO_ID):
-        owner = User(name="Admin", email=GATEWAY_ADMIN_EMAIL, role="admin")
-        async with session_factory() as session:
-            await session_env.user_store.create(session, owner)
-            await session.commit()
+    # Bound rather than scoped, and deliberately never unbound: a benchmark
+    # process serves one tenant, and a Core that replaces another is entered
+    # and left from different asyncio contexts, where resetting the token
+    # raises instead of unbinding.
+    bind_tenant_id(TENANT_ZERO_ID)
+    event_buffer = EventBuffer()
+    connections = ConnectionRegistry()
+    collab_lifecycle = _BenchBridges()
 
-        await _seed_agent_registration_bootstrap_key(
-            session_factory,
-            session_env.user_store,
-            session_env.api_key_store,
-            session_env.agent_store,
-            config,
+    message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    await message_listener.start()
+    invites = InviteBus()
+    ephemeral = EphemeralBus()
+
+    resource_service = ResourceService(
+        reference_store=session_env.reference_store,
+        reference_type_store=session_env.reference_type_store,
+        document_store=session_env.document_store,
+        package_store=session_env.package_store,
+        room_link_store=session_env.room_link_store,
+        session_factory=session_factory,
+    )
+
+    provisioning: Provisioning = PostgresProvisioning(
+        session_factory=session_factory,
+        room_store=session_env.room_store,
+        client_store=session_env.client_store,
+        message_store=session_env.message_store,
+        invites=invites,
+    )
+
+    client_factory = ClientFactory(
+        client_store=session_env.client_store,
+        session_factory=session_factory,
+        config=config,
+        room_store=session_env.room_store,
+        message_store=session_env.message_store,
+        media_store=session_env.media_store,
+        listener=message_listener,
+        invites=invites,
+        ephemeral=ephemeral,
+    )
+    client_factory.register(
+        "agent",
+        AgentClient,
+        event_buffer=event_buffer,
+        agent_store=session_env.agent_store,
+        room_store=session_env.room_store,
+        bridge_store=session_env.bridge_store,
+        document_store=session_env.document_store,
+        reference_store=session_env.reference_store,
+        agent_session_store=session_env.agent_session_store,
+        room_role_store=session_env.room_role_store,
+        external_user_store=session_env.external_user_store,
+        connections=connections,
+        frontend_base_url=config.frontend_base_url,
+    )
+    client_factory.register("user", ClientBase)
+    client_factory.register("bridge", ClientBase)
+
+    client_lifecycle = ClientLifecycleService(
+        matrix_admin=provisioning,
+        client_store=session_env.client_store,
+        tenant_store=TenantStore(),
+        client_factory=client_factory,
+        session_factory=session_factory,
+        config=config,
+    )
+
+    room_service = RoomService(
+        matrix_admin=provisioning,
+        room_store=session_env.room_store,
+        agent_store=session_env.agent_store,
+        client_lifecycle=client_lifecycle,
+        collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+        collab_bridge_store=session_env.bridge_store,
+        resource_service=resource_service,
+        session_factory=session_factory,
+    )
+
+    app, protocol = create_agent_bridge_app(
+        agent_store=session_env.agent_store,
+        agent_session_store=session_env.agent_session_store,
+        room_store=session_env.room_store,
+        room_service=room_service,
+        client_lifecycle=client_lifecycle,
+        collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+        event_buffer=event_buffer,
+        task_store=session_env.task_store,
+        resource_service=resource_service,
+        api_key_store=session_env.api_key_store,
+        external_user_store=session_env.external_user_store,
+        bridge_store=session_env.bridge_store,
+        session_factory=session_factory,
+        config=config,
+        connections=connections,
+    )
+
+    detach_commits = trace_commits(session_env.engine, collector)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    sock.listen(2048)
+    served_port = sock.getsockname()[1]
+
+    server = _Server(
+        uvicorn.Config(
+            TracingMiddleware(app, collector),
+            log_level="warning",
+            access_log=False,
+            lifespan="on",
+            # The agent protocol's own liveness is the heartbeat; a
+            # keep-alive timeout shorter than an idle stream's keepalive
+            # interval would close streams the server considers healthy and
+            # show up as reconnect churn that the code under study did not
+            # cause.
+            timeout_keep_alive=120,
         )
+    )
+    serving = asyncio.create_task(server.serve(sockets=[sock]))
+    await _await_started(server, serving)
 
-        event_buffer = EventBuffer()
-        connections = ConnectionRegistry()
-        collab_lifecycle = _BenchBridges()
+    # The background sweeps live in `switch_core.main`'s lifespan rather
+    # than in the app factory, so a server assembled from the factory alone
+    # never reaps a connection whose client stopped beating. The real
+    # functions are started here, not copies of them: without the
+    # connection sweep a host killed mid-run keeps its stream slot for
+    # ever, the server goes on routing that room to a process that is gone,
+    # and both the connection count and the recovery case measure a
+    # harness defect instead of the topology.
+    sweeps = [
+        asyncio.create_task(_connection_sweep_loop(protocol)),
+        asyncio.create_task(_runtime_state_sweep_loop(protocol)),
+    ]
 
-        message_listener = MessageListener(lambda: create_unpooled_engine(config))
-        await message_listener.start()
-        invites = InviteBus()
-        ephemeral = EphemeralBus()
-
-        resource_service = ResourceService(
-            reference_store=session_env.reference_store,
-            reference_type_store=session_env.reference_type_store,
-            document_store=session_env.document_store,
-            package_store=session_env.package_store,
-            room_link_store=session_env.room_link_store,
-            session_factory=session_factory,
-        )
-
-        provisioning: Provisioning = PostgresProvisioning(
-            session_factory=session_factory,
-            room_store=session_env.room_store,
-            client_store=session_env.client_store,
-            message_store=session_env.message_store,
-            invites=invites,
-        )
-
-        client_factory = ClientFactory(
-            client_store=session_env.client_store,
-            session_factory=session_factory,
-            config=config,
-            room_store=session_env.room_store,
-            message_store=session_env.message_store,
-            media_store=session_env.media_store,
-            listener=message_listener,
-            invites=invites,
-            ephemeral=ephemeral,
-        )
-        client_factory.register(
-            "agent",
-            AgentClient,
-            event_buffer=event_buffer,
-            agent_store=session_env.agent_store,
-            room_store=session_env.room_store,
-            bridge_store=session_env.bridge_store,
-            document_store=session_env.document_store,
-            reference_store=session_env.reference_store,
-            agent_session_store=session_env.agent_session_store,
-            room_role_store=session_env.room_role_store,
-            external_user_store=session_env.external_user_store,
-            connections=connections,
-            frontend_base_url=config.frontend_base_url,
-        )
-        client_factory.register("user", ClientBase)
-        client_factory.register("bridge", ClientBase)
-
-        client_lifecycle = ClientLifecycleService(
-            matrix_admin=provisioning,
-            client_store=session_env.client_store,
-            tenant_store=TenantStore(),
-            client_factory=client_factory,
-            session_factory=session_factory,
-            config=config,
-        )
-
-        room_service = RoomService(
-            matrix_admin=provisioning,
-            room_store=session_env.room_store,
-            agent_store=session_env.agent_store,
-            client_lifecycle=client_lifecycle,
-            collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-            collab_bridge_store=session_env.bridge_store,
-            resource_service=resource_service,
-            session_factory=session_factory,
-        )
-
-        app, protocol = create_agent_bridge_app(
-            agent_store=session_env.agent_store,
-            agent_session_store=session_env.agent_session_store,
-            room_store=session_env.room_store,
-            room_service=room_service,
-            client_lifecycle=client_lifecycle,
-            collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-            event_buffer=event_buffer,
-            task_store=session_env.task_store,
-            resource_service=resource_service,
-            api_key_store=session_env.api_key_store,
-            external_user_store=session_env.external_user_store,
-            bridge_store=session_env.bridge_store,
-            session_factory=session_factory,
-            config=config,
-            connections=connections,
-        )
-
-        detach_commits = trace_commits(session_env.engine, collector)
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(2048)
-        port = sock.getsockname()[1]
-
-        server = _Server(
-            uvicorn.Config(
-                TracingMiddleware(app, collector),
-                log_level="warning",
-                access_log=False,
-                lifespan="on",
-                # The agent protocol's own liveness is the heartbeat; a
-                # keep-alive timeout shorter than an idle stream's keepalive
-                # interval would close streams the server considers healthy and
-                # show up as reconnect churn that the code under study did not
-                # cause.
-                timeout_keep_alive=120,
-            )
-        )
-        serving = asyncio.create_task(server.serve(sockets=[sock]))
-        await _await_started(server, serving)
-
-        # The background sweeps live in `switch_core.main`'s lifespan rather
-        # than in the app factory, so a server assembled from the factory alone
-        # never reaps a connection whose client stopped beating. The real
-        # functions are started here, not copies of them: without the
-        # connection sweep a host killed mid-run keeps its stream slot for
-        # ever, the server goes on routing that room to a process that is gone,
-        # and both the connection count and the recovery case measure a
-        # harness defect instead of the topology.
-        sweeps = [
-            asyncio.create_task(_connection_sweep_loop(protocol)),
-            asyncio.create_task(_runtime_state_sweep_loop(protocol)),
-        ]
-
-        bench = BenchServer(
-            base_url=f"http://127.0.0.1:{port}",
-            port=port,
-            protocol=protocol,
-            room_service=room_service,
-            client_lifecycle=client_lifecycle,
-            event_buffer=event_buffer,
-            connections=connections,
-            collector=collector,
-            owner_id=owner.id,
-            session_factory=session_factory,
-        )
-        try:
-            yield bench
-        finally:
-            for sweep in sweeps:
-                sweep.cancel()
-            await asyncio.gather(*sweeps, return_exceptions=True)
-            server.should_exit = True
-            await serving
-            detach_commits()
-            await client_lifecycle.stop_all()
-            await message_listener.stop()
-            await provisioning.close()
+    bench = BenchServer(
+        base_url=f"http://127.0.0.1:{served_port}",
+        port=served_port,
+        protocol=protocol,
+        room_service=room_service,
+        client_lifecycle=client_lifecycle,
+        event_buffer=event_buffer,
+        connections=connections,
+        collector=collector,
+        owner_id=owner_id,
+        session_factory=session_factory,
+        agents=agents,
+    )
+    try:
+        yield bench
+    finally:
+        for sweep in sweeps:
+            sweep.cancel()
+        await asyncio.gather(*sweeps, return_exceptions=True)
+        server.should_exit = True
+        await serving
+        detach_commits()
+        await client_lifecycle.stop_all()
+        await message_listener.stop()
+        await provisioning.close()
 
 
 async def _await_started(server: _Server, serving: asyncio.Task[None]) -> None:
