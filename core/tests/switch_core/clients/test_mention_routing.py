@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import _addressed_by_name_or_role
 from switch_core.clients.agent_client import (
@@ -418,44 +422,61 @@ def _here() -> SimpleNamespace:
     return SimpleNamespace(room_id="room-A", name="Room A")
 
 
+@pytest_asyncio.fixture
+async def db(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """A real session, for the arm that reads the sessions Switch has.
+
+    Empty throughout: these cases are about what the heartbeat rows say, and an
+    agent Switch holds no session record for is the shape they describe.
+    """
+    async with session_factory() as session:
+        yield session
+
+
 class TestUnavailableHereReply:
     """An agent addressed in room A while its session is elsewhere should say
     where it actually is, not the generic 'no active session'."""
 
-    async def test_role_holder_session_elsewhere_says_role_elsewhere(self) -> None:
+    async def test_role_holder_session_elsewhere_says_role_elsewhere(
+        self, db: AsyncSession
+    ) -> None:
         # Holds a role here, but its assuming session is attending room-B.
         client = _unavailable_client(live_rooms=["room-B"], role_here=True)
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == _role_elsewhere_message("Room room-B")
         assert "Room room-B" in msg
 
-    async def test_no_role_lists_other_sessions(self) -> None:
+    async def test_no_role_lists_other_sessions(self, db: AsyncSession) -> None:
         # No role here, but the agent has live sessions in two other rooms.
         # Defers to the known-agent reply (paste-ready connect command) with
         # the other rooms threaded in, rather than the role-flavoured wording.
         client = _unavailable_client(live_rooms=["room-B", "room-C"], role_here=False)
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == "ELSEWHERE: Room room-B, Room room-C"
 
-    async def test_only_session_is_here_falls_back_to_offline(self) -> None:
+    async def test_only_session_is_here_falls_back_to_offline(
+        self, db: AsyncSession
+    ) -> None:
         # The only live session is the addressed room itself → nothing elsewhere.
         client = _unavailable_client(live_rooms=["room-A"], role_here=False)
         assert (
             await AgentClient._reply_when_unavailable_here(
-                client, None, client.agent, _here(), "asker"
+                client, db, client.agent, _here(), "asker"
             )
             == "OFFLINE"
         )
 
-    async def test_no_live_sessions_is_offline(self) -> None:
+    async def test_no_live_sessions_is_offline(self, db: AsyncSession) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False)
         assert (
             await AgentClient._reply_when_unavailable_here(
-                client, None, client.agent, _here(), "asker"
+                client, db, client.agent, _here(), "asker"
             )
             == "OFFLINE"
         )
@@ -465,21 +486,25 @@ class TestConnectedNotLive:
     """A session_addressable agent with a session bound here but not live (and
     no live session in a distinct room) gets the connected-not-live reply."""
 
-    async def test_bound_but_not_live_says_connected_not_live(self) -> None:
+    async def test_bound_but_not_live_says_connected_not_live(
+        self, db: AsyncSession
+    ) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False, bound_here=True)
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == "NOT_LIVE"
 
-    async def test_no_binding_is_offline(self) -> None:
+    async def test_no_binding_is_offline(self, db: AsyncSession) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False, bound_here=False)
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == "OFFLINE"
 
-    async def test_passive_never_says_connected_not_live(self) -> None:
+    async def test_passive_never_says_connected_not_live(
+        self, db: AsyncSession
+    ) -> None:
         # session_passive has no dev-channels flag; this branch must not apply.
         client = _unavailable_client(
             live_rooms=[],
@@ -488,27 +513,31 @@ class TestConnectedNotLive:
             bound_here=True,
         )
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == "OFFLINE"
 
-    async def test_same_named_live_room_not_offered_as_elsewhere(self) -> None:
+    async def test_same_named_live_room_not_offered_as_elsewhere(
+        self, db: AsyncSession
+    ) -> None:
         # The reported bug: a live session in a DIFFERENT room that shows the
         # same name as this one must not be offered as "elsewhere". Bound here +
         # not live → connected-not-live, not a confusing same-name pointer.
         # _here() is room-A / "Room A"; room id "A" → name "Room A" (collision).
         client = _unavailable_client(live_rooms=["A"], role_here=False, bound_here=True)
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == "NOT_LIVE"
 
-    async def test_distinct_named_live_room_still_points_elsewhere(self) -> None:
+    async def test_distinct_named_live_room_still_points_elsewhere(
+        self, db: AsyncSession
+    ) -> None:
         # A genuinely different (distinct-named) live room still wins.
         client = _unavailable_client(
             live_rooms=["room-B"], role_here=False, bound_here=True
         )
         msg = await AgentClient._reply_when_unavailable_here(
-            client, None, client.agent, _here(), "asker"
+            client, db, client.agent, _here(), "asker"
         )
         assert msg == "ELSEWHERE: Room room-B"

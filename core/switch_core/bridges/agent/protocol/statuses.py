@@ -6,6 +6,7 @@ from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_session_store import AgentSessionStore
+from switch_core.sessions.service import agents_attending
 
 
 async def compute_agent_statuses(
@@ -17,19 +18,23 @@ async def compute_agent_statuses(
 ) -> dict[str, AgentStatus]:
     """Derive each agent's presence status in a room, keyed by agent id.
 
-    Presence is the **union of two sources** during the transport migration
+    Presence is the **union of three sources** during the transport migration
     (CHOO-1857):
 
     - the ``agent_sessions`` rows, maintained by clients still polling and
       still sending ``/connection/renew`` and ``/watch/heartbeat``;
     - the live connection registry, which is all a client on the push
-      transport maintains — it sends one heartbeat and no renews.
+      transport maintains — it sends one heartbeat and no renews;
+    - the sessions Switch holds a record of, whose binding and host lease say
+      where they are working. Their connection cannot: it is shared with their
+      siblings, so its rooms are the union of theirs and it stays up while any
+      one of them does.
 
-    Neither alone is correct while both kinds of client exist: without the
-    connection arm a migrated client reads DISCONNECTED while demonstrably
-    alive on its stream, and without the DB arm an un-migrated one does. When
-    the old clients are gone the DB arm goes with them, and what remains is the
-    connection arm — this is the shape the code keeps, minus one branch.
+    No one of them alone is correct while all three kinds of client exist:
+    without the connection arm a migrated client reads DISCONNECTED while
+    demonstrably alive on its stream, and without the DB arm an un-migrated one
+    does. When the old clients are gone both of those go with them, and what
+    remains is the session arm.
 
     ``connections`` is required rather than defaulted: a call site that forgot
     it would report a migrated agent as offline, and that failure is invisible
@@ -81,12 +86,23 @@ async def compute_agent_statuses(
     # agent being up, and its scope is room-agnostic.
     live_always_on |= connections.live_agents(always_on_ids)
     # For the session-shaped models, LIVE means a session is *attending* the
-    # room — a claimed room slot. An `all`-scope watcher covers rooms it has
-    # not yielded, which is the delivery rule, not presence: treating it as
-    # LIVE would report an agent as present in a room where nothing but a
-    # watcher is listening, suppressing both the "no session" reply and the
-    # auto_session promise to start one.
+    # room, which is two different facts about two kinds of client. A session
+    # Switch holds a record of says so by the room it is bound to and the lease
+    # its host is still renewing; a client Switch has no record of leaves only
+    # the room slot its connection claimed.
+    #
+    # Neither is coverage. An `all`-scope watcher covers rooms it has not
+    # yielded, which is the delivery rule, not presence: treating it as LIVE
+    # would report an agent as present in a room where nothing but a watcher is
+    # listening, suppressing both the "no session" reply and the auto_session
+    # promise to start one.
+    live_auto_room |= await agents_attending(
+        session, auto_session_ids, room_id, connections
+    )
     live_auto_room |= connections.agents_with_session_in(auto_session_ids, room_id)
+    live_addressable |= await agents_attending(
+        session, addressable_ids, room_id, connections
+    )
     live_addressable |= connections.agents_with_session_in(addressable_ids, room_id)
     # …whereas watching is exactly "has any live connection": that is what the
     # /watch/heartbeat loop used to assert, and what DORMANT means.

@@ -6,6 +6,7 @@ import logging
 import secrets
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import get_args
@@ -170,6 +171,14 @@ def _stored_snapshot(row: SdkSession) -> Snapshot:
         ) from error
 
 
+async def _now(db: AsyncSession) -> datetime:
+    """The database clock, which is the one every lease is measured against."""
+    now = await db.scalar(select(func.clock_timestamp()))
+    if not isinstance(now, datetime):
+        raise RuntimeError("PostgreSQL did not return its current time.")
+    return now
+
+
 def _claims_room(row: SdkSession, room_id: str, connection: Connection) -> bool:
     """Does this session claim `room_id`, for picking one of an agent's many.
 
@@ -234,16 +243,67 @@ def _attends(
     return _claims_room(row, room_id, connection)
 
 
+async def agents_attending(
+    db: AsyncSession,
+    agent_ids: Iterable[str],
+    room_id: str,
+    connections: ConnectionRegistry,
+) -> set[str]:
+    """Which of these agents has a managed session attending `room_id`.
+
+    The authoritative answer for sessions Switch holds a record of, and the one
+    that keeps working when their connection is shared with their siblings.
+    Presence readers union it with the connection-claim arm, which is all a
+    client Switch has no session record for ever leaves behind.
+    """
+    wanted = list(agent_ids)
+    if not wanted:
+        return set()
+    rows = (
+        await db.scalars(
+            select(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id.in_(wanted),
+            )
+        )
+    ).all()
+    if not rows:
+        return set()
+    now = await _now(db)
+    return {row.agent_id for row in rows if _attends(row, room_id, now, connections)}
+
+
+async def rooms_attended(
+    db: AsyncSession, agent_id: str, connections: ConnectionRegistry
+) -> set[str]:
+    """Every room this agent has a managed session working in right now.
+
+    The set behind "it has a session, but not here — ask it over there", which
+    otherwise reads the rooms off the connections and so names every room a
+    controller covers rather than the ones anything is actually in.
+    """
+    rows = (
+        await db.scalars(
+            select(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id == agent_id,
+            )
+        )
+    ).all()
+    if not rows:
+        return set()
+    now = await _now(db)
+    return {
+        room_id
+        for row in rows
+        for room_id in _stored_snapshot(row).session.room_ids
+        if _attends(row, room_id, now, connections)
+    }
+
+
 class SessionAuthority:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
-
-    @staticmethod
-    async def _now(db: AsyncSession) -> datetime:
-        now = await db.scalar(select(func.clock_timestamp()))
-        if not isinstance(now, datetime):
-            raise RuntimeError("PostgreSQL did not return its current time.")
-        return now
 
     async def acquire(
         self, agent_id: str, session: Session, operation_id: str | None = None
@@ -271,7 +331,7 @@ class SessionAuthority:
                 )
                 .with_for_update()
             )
-            now = await self._now(db)
+            now = await _now(db)
             if row is not None:
                 if row.agent_id != agent_id:
                     raise SessionError(
@@ -345,7 +405,7 @@ class SessionAuthority:
             if row.recovery.get("quiesced"):
                 return
             row.recovery = {**row.recovery, "quiesced": True}
-            row.lease_expires_at = await self._now(db)
+            row.lease_expires_at = await _now(db)
             await self._append(
                 db,
                 row,
@@ -365,7 +425,7 @@ class SessionAuthority:
                 return _stored_snapshot(row)
             if row.epoch != epoch:
                 raise SessionError("STALE_EPOCH", "Session generation changed.")
-            now = await self._now(db)
+            now = await _now(db)
             if row.lease_expires_at > now:
                 raise SessionError(
                     "LEASE_BUSY", "Stop the active host before retiring this session."
@@ -502,9 +562,7 @@ class SessionAuthority:
             await self._interrupt_pending(db, row, snapshot, "HOST_RESTARTED")
             row.epoch = str(uuid.uuid4())
             row.host_sequence = 0
-            row.lease_expires_at = (await self._now(db)) + timedelta(
-                seconds=LEASE_SECONDS
-            )
+            row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
             row.recovery = {
                 "operation_id": operation_id,
                 "previous_epoch": previous_epoch,
@@ -535,9 +593,7 @@ class SessionAuthority:
             db.begin(),
         ):
             row = await self._host(db, agent_id, session_id, host_id, epoch)
-            row.lease_expires_at = (await self._now(db)) + timedelta(
-                seconds=LEASE_SECONDS
-            )
+            row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
 
     async def ingest(
         self, agent_id: str, host_id: str, event: HostEvent, *, reconcile: bool = False
@@ -609,7 +665,7 @@ class SessionAuthority:
                     }
                 )
             elif isinstance(body, RequestOpened):
-                deadline = (await self._now(db)) + timedelta(minutes=30)
+                deadline = (await _now(db)) + timedelta(minutes=30)
                 if body.request.expires_at:
                     deadline = min(
                         deadline, datetime.fromisoformat(body.request.expires_at)
@@ -1017,7 +1073,7 @@ class SessionAuthority:
             )
             await self._append(db, row, status)
             return status
-        if row.lease_expires_at <= (await self._now(db)):
+        if row.lease_expires_at <= (await _now(db)):
             raise SessionError("HOST_OFFLINE", "The session host is offline.")
         snapshot = _stored_snapshot(row)
         body = command.body
@@ -1062,7 +1118,7 @@ class SessionAuthority:
                     "REQUEST_BUSY", "Another answer has reserved this request."
                 )
             if request.expires_at and datetime.fromisoformat(request.expires_at) <= (
-                await self._now(db)
+                await _now(db)
             ):
                 raise SessionError("REQUEST_CLOSED", "The request expired.")
             try:
@@ -1195,7 +1251,7 @@ class SessionAuthority:
         ):
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             snapshot = _stored_snapshot(row)
-            now = await self._now(db)
+            now = await _now(db)
             for request in snapshot.requests:
                 if (
                     request.state != "open"
@@ -1304,7 +1360,7 @@ class SessionAuthority:
                     )
                 ).all()
             )
-            now = await self._now(db)
+            now = await _now(db)
             live = [
                 row for row in candidates if _attends(row, room_id, now, connections)
             ]
@@ -1433,7 +1489,7 @@ class SessionAuthority:
         if (
             row.recovery.get("quiesced")
             or snapshot.session.status not in ("ready", "running")
-            or row.lease_expires_at <= await self._now(db)
+            or row.lease_expires_at <= await _now(db)
         ):
             return
         records = (
@@ -1649,7 +1705,7 @@ class SessionAuthority:
         for no change in where the events go.
         """
         displaced: str | None = None
-        now = await self._now(db)
+        now = await _now(db)
         siblings = await db.scalars(
             select(SdkSession).where(
                 SdkSession.tenant_id == require_tenant_id(),
@@ -1782,7 +1838,7 @@ class SessionAuthority:
                     .order_by(SdkSession.id)
                 )
             ).all()
-            now = await self._now(db)
+            now = await _now(db)
             result: list[Session | UnavailableSession] = []
             for row in rows:
                 try:
@@ -1825,7 +1881,7 @@ class SessionAuthority:
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
             snapshot = _stored_snapshot(row)
-            if row.lease_expires_at <= (await self._now(db)):
+            if row.lease_expires_at <= (await _now(db)):
                 snapshot = snapshot.model_copy(
                     update={
                         "session": snapshot.session.model_copy(
@@ -1846,7 +1902,7 @@ class SessionAuthority:
             await self._owner(db, row, user_id)
             snapshot = _stored_snapshot(row)
             if (
-                row.lease_expires_at <= (await self._now(db))
+                row.lease_expires_at <= (await _now(db))
                 and snapshot.session.connectivity == "online"
             ):
                 await self._append(
@@ -1912,7 +1968,7 @@ class SessionAuthority:
         row = await self._host_identity(db, agent_id, session_id, host_id, epoch)
         if row.recovery.get("quiesced"):
             raise SessionError("HOST_OFFLINE", "Host execution is quiesced.")
-        if row.lease_expires_at <= (await self._now(db)):
+        if row.lease_expires_at <= (await _now(db)):
             raise SessionError("HOST_OFFLINE", "Host lease expired.")
         return row
 

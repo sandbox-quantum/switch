@@ -29,7 +29,12 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.db.models import ClientRoom, Room, SdkSession, require_tenant_id
 from switch_core.sessions.contract import HostEvent, Session
-from switch_core.sessions.service import SessionAuthority, SessionError
+from switch_core.sessions.service import (
+    SessionAuthority,
+    SessionError,
+    agents_attending,
+    rooms_attended,
+)
 
 from .test_authority import EXAMPLES, setup
 
@@ -410,6 +415,51 @@ async def test_a_quiesced_session_stops_claiming_its_room(session_factory) -> No
 
     assert receipt.status == "accepted"
     assert len(await service.pending(AGENT, *SECOND, second)) == 1
+
+
+@pytest.mark.asyncio
+async def test_presence_reads_the_rooms_its_sessions_are_in(session_factory) -> None:
+    """What the room reports as present, once the connection cannot say.
+
+    Presence asked the connection which rooms an agent had a session in. The
+    shared one answers with the union of its sessions' rooms for every session
+    at once, and with every room the agent belongs to for a session that has
+    taken none — so the rooms come from the sessions themselves.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    await _second_room(session_factory)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
+
+    async with session_factory() as db:
+        assert await agents_attending(db, [AGENT], ROOM, connections) == {AGENT}
+        assert await agents_attending(db, [AGENT], OTHER_ROOM, connections) == set()
+        assert await rooms_attended(db, AGENT, connections) == {ROOM}
+
+
+@pytest.mark.asyncio
+async def test_presence_drops_a_session_whose_host_stopped(session_factory) -> None:
+    """The agent goes absent from the room even though its connection is up.
+
+    The connection is the agent's, not the session's, and it is kept alive by
+    whatever else the agent is running. Left to answer this, it would report a
+    session in the room for as long as the agent had any connection at all.
+    """
+    service, first = await setup(session_factory)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await _stop_host(session_factory, FIRST[0])
+
+    async with session_factory() as db:
+        assert await agents_attending(db, [AGENT], ROOM, connections) == set()
+        assert await rooms_attended(db, AGENT, connections) == set()
+    assert connections.get(connection.id) is not None
 
 
 @pytest.mark.asyncio

@@ -100,6 +100,7 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.sessions.attachments import normalise_mime_type
+from switch_core.sessions.service import rooms_attended
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -1701,11 +1702,14 @@ class ProtocolService:
 
         Liveness is the same union every other reader takes (CHOO-1857): the
         heartbeat rows for clients still polling, the live connections for
-        clients on the push transport. Checking only the rows made this sweep
-        clear the state of a perfectly live session on every pass — and because
-        the bridge deletes the "working on it…" message on idle and posts a new
-        one on the next update, the visible effect was the status message being
-        deleted and recreated on every refresh rather than edited in place.
+        clients on the push transport, and the binding and host lease for a
+        session Switch has a record of — whose connection says nothing about
+        which room it is in once its siblings share it. Checking only the rows
+        made this sweep clear the state of a perfectly live session on every
+        pass — and because the bridge deletes the "working on it…" message on
+        idle and posts a new one on the next update, the visible effect was the
+        status message being deleted and recreated on every refresh rather than
+        edited in place.
         """
         # This sweep spans every tenant by nature — it is the one place that
         # decides whether *any* stale row anywhere needs resetting — so it
@@ -1721,19 +1725,31 @@ class ProtocolService:
         # the upsert and leaving the tail outside it would put exactly the
         # visible half of the work back on whatever was ambient.
         rows: list[AgentRuntimeState] = []
+        attended: set[tuple[str, str]] = set()
         for tenant_id in await all_tenant_ids(self.session_factory):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 # Filtered on the row's own tenant, not left to the policy: on an
                 # owner connection no policy narrows this read, and the fan-out
                 # would act on every tenant's rows once per tenant. See
                 # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                rows.extend(
+                active = [
                     row
                     for row in await self.agent_runtime_state_store.get_active(session)
                     if row.tenant_id == tenant_id
-                )
+                ]
+                rows.extend(active)
+                for agent_id in {row.agent_id for row in active}:
+                    attended.update(
+                        (agent_id, room)
+                        for room in await rooms_attended(
+                            session, agent_id, self.connections
+                        )
+                    )
         for row in rows:
-            if self.connections.has_session_in(row.agent_id, row.room_id):
+            if (
+                self.connections.has_session_in(row.agent_id, row.room_id)
+                or (row.agent_id, row.room_id) in attended
+            ):
                 continue
             with tenant_scope(row.tenant_id):
                 await self._sweep_one_runtime_state(row.agent_id, row.room_id)
