@@ -7,6 +7,7 @@ import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-
 import { afterEach, expect, it, vi } from 'vitest';
 import { CAPABILITY_FILE, declareHandoffCapability, HANDOFF_FILE } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { SharedRoomInbox } from './room-inbox';
 import { sharedConfigSchema } from './shared-config';
 import {
   replaceSupersededSessions,
@@ -152,7 +153,7 @@ it('keeps a room with the session it started for it until the server moves that 
     messageId: 'first',
   });
   const inbox = join(root, first.session.sessionId, 'room-inbox.jsonl');
-  await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: [] }) + '\n');
+  await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: [], first: true }) + '\n');
   expect(
     (await assignments.assign(config, { sequence: 2, roomId: 'room', messageId: 'second' })).session
       .sessionId
@@ -186,9 +187,9 @@ it('stops serving a room with the session the server has taken it from', async (
   const inbox = join(root, first.session.sessionId, 'room-inbox.jsonl');
   await writeFile(
     inbox,
-    JSON.stringify({ type: 'rooms', rooms: ['room'] }) +
+    JSON.stringify({ type: 'rooms', rooms: ['room'], first: true }) +
       '\n' +
-      JSON.stringify({ type: 'rooms', rooms: [] }) +
+      JSON.stringify({ type: 'rooms', rooms: [], first: false }) +
       '\n'
   );
   expect(await assignments.serving(config.session.agentId, 'room')).toBeNull();
@@ -198,6 +199,40 @@ it('stops serving a room with the session the server has taken it from', async (
   expect(
     await (await SharedWatchAssignments.open(root)).serving(config.session.agentId, 'room')
   ).toBeNull();
+});
+
+it('keeps a room with a session restored holding none, and not with an evicted one', async () => {
+  // Restoring a session clears its rooms server-side, so the first answer of a
+  // run is empty however long the session served the room before. That is a
+  // session waiting to register again, not one that has been evicted — and an
+  // evicted session must not pass for it by restarting.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restored-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const held = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  // One open of the inbox is one run of the session.
+  const sessionRoot = join(root, held.session.sessionId);
+  await (await SharedRoomInbox.open(sessionRoot)).serves(['room']);
+  await (await SharedRoomInbox.open(sessionRoot)).serves([]);
+  expect((await assignments.serving(config.session.agentId, 'room'))?.session.sessionId).toBe(
+    held.session.sessionId
+  );
+
+  // The evicted session restarts and is answered the same nothing. The run is
+  // new; the answer is not, and the room stays with whoever took it.
+  const evicted = await mkdtemp(join(tmpdir(), 'shared-watch-evicted-restart-'));
+  roots.push(evicted);
+  const inbox = await SharedRoomInbox.open(evicted);
+  await inbox.serves(['room']);
+  await inbox.serves([]);
+  await (await SharedRoomInbox.open(evicted)).serves([]);
+  expect(await SharedRoomInbox.savedRooms(evicted)).toEqual({ rooms: [], revoked: true });
 });
 
 it('reaches an upgraded session over the controller, not the connection it used to open', async () => {
