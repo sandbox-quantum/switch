@@ -21,6 +21,7 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -34,6 +35,7 @@ import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import { ManagedClaudeStep } from './managed-claude-step';
+import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { switchServersStore } from './switch-servers-store';
@@ -152,6 +154,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
   const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
   const [step, setStep] = useState<Step>(openedAt);
+  const [selectedProviders, setSelectedProviders] = useState<AgentProviderId[]>([]);
   // Which path was taken at the chooser, carried so every later step can be
   // attributed to it. `none` while still on the chooser, which is what makes a
   // drop-off before choosing distinguishable from one after.
@@ -292,26 +295,12 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedReady' && connected) {
     return (
-      <>
-        <DialogHeader>
-          <DialogTitle>You're connected to Switch</DialogTitle>
-        </DialogHeader>
-        <DialogContentArea className="space-y-4 pt-0">
-          <p className="text-sm">Your account is signed in. No agent or worker has been started.</p>
-          <Alert>
-            <AlertTitle>Next: connect your providers and GitHub</AlertTitle>
-            <AlertDescription>
-              Start with Claude Code. Choose an API key or a subscription setup token.
-            </AlertDescription>
-          </Alert>
-        </DialogContentArea>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => finish(connected.id)}>
-            Open server
-          </Button>
-          <Button onClick={() => goToStep('managedClaude')}>Connect Claude Code</Button>
-        </DialogFooter>
-      </>
+      <ManagedProvidersStep
+        selected={selectedProviders}
+        onSelectionChange={setSelectedProviders}
+        onContinue={() => goToStep('managedClaude')}
+        onSkip={() => finish(connected.id)}
+      />
     );
   }
   if (step === 'signIn' && connected) {
