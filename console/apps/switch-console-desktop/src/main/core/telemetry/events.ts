@@ -53,7 +53,7 @@ export type TelemetryAgentCreateFailure =
   | 'credentials_conflict'
   | 'already_configured'
   | 'invalid_name'
-  | 'directory_missing'
+  | 'directory_unusable'
   /**
    * The two the other way into this — dropping a folder on the sidebar — hits
    * most: the directory holds no agent configuration, or it holds one belonging

@@ -98,17 +98,41 @@ describe('inspectRemoteDir', () => {
     await expect(inspectRemoteDir('host', REPO_DIR)).rejects.toThrow('Permission denied');
   });
 
-  it('rejects a relative path rather than resolving it against the login dir', async () => {
-    await expect(inspectRemoteDir('host', 'switch-agents/repo')).rejects.toThrow(
-      'must be an absolute path'
-    );
+  // Refused as a status rather than a throw: a throw reaches the user as the
+  // generic "nothing was created" toast carrying a raw error string, which is
+  // the outcome this check exists to remove.
+  it('refuses a relative path rather than resolving it against the login dir', async () => {
+    expect(await inspectRemoteDir('host', 'switch-agents/repo')).toEqual({
+      dir: 'switch-agents/repo',
+      status: 'relative',
+    });
     expect(stat).not.toHaveBeenCalled();
+    // Nothing to probe, so nothing should have been dialled either.
+    expect(constructedWith).toEqual([]);
   });
 
   it('normalises a trailing slash', async () => {
     existingDirs([REPO_DIR]);
 
     expect(await inspectRemoteDir('host', `${REPO_DIR}/`)).toMatchObject({ dir: REPO_DIR });
+  });
+
+  it('resolves . and .. before probing, so one directory has one spelling', async () => {
+    existingDirs([REPO_DIR]);
+
+    expect(
+      await inspectRemoteDir('host', '/home/ubuntu/switch-agents/./x/../internal-deployments')
+    ).toEqual({ dir: REPO_DIR, status: 'directory' });
+  });
+
+  it('closes the SFTP channel on the success path', async () => {
+    existingDirs([REPO_DIR]);
+
+    await inspectRemoteDir('host', REPO_DIR);
+
+    // Every remote add takes this path. SFTP channels do not self-close, and
+    // enough leaks exhaust the host's MaxSessions.
+    expect(close).toHaveBeenCalled();
   });
 
   it('closes the SFTP channel even when the probe throws', async () => {

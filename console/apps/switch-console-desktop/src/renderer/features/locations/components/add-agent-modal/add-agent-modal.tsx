@@ -45,7 +45,10 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
-import { type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
+import {
+  describeRemoteDirRefusal,
+  isAbsoluteRemoteDir,
+} from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
@@ -233,6 +236,11 @@ export const AddAgentModal = observer(function AddAgentModal({
   const canChooseAgentType = runHostReachable && !hostLevelBlocked;
   const canConfigureAgent = canChooseAgentType && runHostReady;
 
+  // A remote working directory is typed by hand, and a relative one would
+  // resolve against whatever directory the SSH session starts in. Caught here so
+  // it reads as a greyed-out button with a reason rather than a failed create.
+  const remoteDirIsAbsolute = !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
+
   const canSubmit =
     form.isValid &&
     !nameTaken &&
@@ -240,6 +248,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     !!pickState.serverId &&
     !!pickState.providerId &&
     dir.trim().length > 0 &&
+    remoteDirIsAbsolute &&
     runHostReachable &&
     runHostReady &&
     submitState === 'idle';
@@ -270,9 +279,11 @@ export const AddAgentModal = observer(function AddAgentModal({
                           ? isRemoteRun
                             ? 'Enter the agent’s working directory on the host.'
                             : 'Choose the agent’s working directory.'
-                          : policyHasDeadRule(form.addressingPolicy)
-                            ? 'One addressing rule can never match — fix it under Settings.'
-                            : null;
+                          : !remoteDirIsAbsolute
+                            ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                            : policyHasDeadRule(form.addressingPolicy)
+                              ? 'One addressing rule can never match — fix it under Settings.'
+                              : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -284,7 +295,11 @@ export const AddAgentModal = observer(function AddAgentModal({
     navigate('location', { locationId: agent.locationId, agentName: agent.name });
   };
 
-  const reportProvisionError = (result: ProvisionAgentResult) => {
+  /** Typed off the RPC rather than `ProvisionAgentResult`: the only thing ever
+   * passed here is an `addAgent` result, and typing it as the provision union
+   * meant every variant `addAgent` gained had to be added there too — claiming a
+   * refusal `provisionAgent`/`provisionRemoteAgent` cannot actually make. */
+  const reportProvisionError = (result: Awaited<ReturnType<typeof rpc.agents.addAgent>>) => {
     if (result.kind === 'unauthenticated' && pickState.serverId) {
       toast({
         title: 'Sign in to register the agent',
@@ -311,13 +326,10 @@ export const AddAgentModal = observer(function AddAgentModal({
       });
       return;
     }
-    if (result.kind === 'directory-missing') {
+    if (result.kind === 'directory-unusable') {
       toast({
         title: 'That working directory cannot be used. Nothing was created.',
-        description:
-          result.inspection.status === 'file'
-            ? `${result.inspection.dir} is a file on ${result.sshHost}.`
-            : `${result.inspection.dir} cannot be created on ${result.sshHost}: its parent directory is missing or is not a directory. Create the parent first.`,
+        description: describeRemoteDirRefusal(result.inspection, result.sshHost),
         variant: 'destructive',
       });
       return;

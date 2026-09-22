@@ -140,6 +140,10 @@ describe('addAgent', () => {
     h.state.repoAgents = h.repoAgents;
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
+    // `clearAllMocks` resets call records but not implementations, so without a
+    // default here whichever test last set one decides the answer for every test
+    // after it — and a remote add would otherwise read `status` off `undefined`.
+    inspectRemoteDir.mockResolvedValue({ dir: '/repo', status: 'directory' });
   });
 
   it('refuses a remote directory whose parent is missing, before minting (CHOO-1416)', async () => {
@@ -147,13 +151,36 @@ describe('addAgent', () => {
 
     const result = await addAgent(params({ sshHost: 'vm-1', dir: '/home/u/agents/deploy' }));
 
-    expect(result.kind).toBe('directory-missing');
+    expect(result.kind).toBe('directory-unusable');
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
   });
 
   it('never inspects the remote directory for a local add', async () => {
     await addAgent(params());
     expect(inspectRemoteDir).not.toHaveBeenCalled();
+  });
+
+  it('refuses a relative remote directory without probing the host', async () => {
+    const result = await addAgent(params({ sshHost: 'vm-1', dir: 'agents/deploy' }));
+
+    expect(result).toMatchObject({
+      kind: 'directory-unusable',
+      inspection: { status: 'relative' },
+    });
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  // One directory, one spelling: the location row, the gateway's `repo_dir` and
+  // the credential slot are all keyed by this path, so the one that was checked
+  // has to be the one they get.
+  it('settles on a canonical remote path before anything keys off it', async () => {
+    await addAgent(params({ sshHost: 'vm-1', dir: '/home/u/./x/../agents/deploy/' }));
+
+    expect(inspectRemoteDir).toHaveBeenCalledWith('vm-1', '/home/u/agents/deploy');
+    expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ repoDir: '/home/u/agents/deploy' })
+    );
   });
 
   it('writes name-keyed credentials for a provider with no repo-agent definitions', async () => {
@@ -328,9 +355,13 @@ describe('addAgent', () => {
 
       await addAgent(params({ sshHost: 'build-box', entryPoint: 'server_page' }));
 
+      // `failure_reason` is asserted alongside `location` so this keeps covering
+      // the gateway refusal it names: `location: 'remote'` alone is also what a
+      // preflight refusal reports, so a directory check that short-circuits before
+      // minting would satisfy it without ever reaching `registerAgentIdentity`.
       expect(trackEvent).toHaveBeenCalledWith(
         'agent_created',
-        expect.objectContaining({ location: 'remote' })
+        expect.objectContaining({ location: 'remote', failure_reason: 'unauthenticated' })
       );
     });
 

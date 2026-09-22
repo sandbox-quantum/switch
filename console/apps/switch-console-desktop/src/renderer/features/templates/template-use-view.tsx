@@ -45,6 +45,7 @@ import {
   type AgentProviderId,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
+import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
@@ -1725,6 +1726,8 @@ function provisionErrorText(
       return 'This directory already holds credentials for an agent of that name. Load it instead.';
     case 'invalid-name':
       return result.message;
+    case 'directory-unusable':
+      return describeRemoteDirRefusal(result.inspection, result.sshHost);
     default:
       return result.message;
   }
