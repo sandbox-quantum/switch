@@ -39,9 +39,8 @@ It signs with an operator-supplied RSA key and requests only contents and pull
 request write access. Credentials must stay on the backend and in the worker's
 private credential transport, never in Console responses or persisted launch specs.
 
-This helper is not yet connected to the worker lifecycle. The current worker
-bootstrap validates personal tokens, and the controller still accepts operator
-commands. Installation-token delivery, renewal, durable Console launch requests,
+This helper is not yet connected to the worker lifecycle. The worker bootstrap accepts repository-scoped tokens when the deployment
+selects a repository; the controller still accepts operator commands. Installation-token delivery, renewal, durable Console launch requests,
 and worker status reporting must be implemented before enabling cloud creation.
 An installation token expires after one hour; a one-time token at startup is not
 sufficient for a long-running worker. See the

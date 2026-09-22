@@ -339,6 +339,17 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
             worker.parse_secret_document(json.dumps(unexpected), config())
 
+    def test_github_repository_is_optional_but_must_be_a_safe_full_name(self):
+        document = json.loads(github_secret())
+        document["deployment"]["github"]["repository"] = "example/project"
+        parsed = worker.parse_secret_document(json.dumps(document), config())
+        self.assertEqual(parsed.deployment["github"]["repository"], "example/project")
+        for name in ["../project", "example/..", "example/project?token=x", "example/project/extra"]:
+            with self.subTest(name=name):
+                document["deployment"]["github"]["repository"] = name
+                with self.assertRaisesRegex(worker.WorkerError, "owner/repository"):
+                    worker.parse_secret_document(json.dumps(document), config())
+
     def test_github_credential_requires_bounded_printable_ascii_without_whitespace(self):
         invalid_credentials = [
             "",

@@ -135,3 +135,26 @@ it('authenticates real Git credential requests without writing credentials or co
   expect(await readFile(config, 'utf8')).not.toContain(token);
   await expect(readFile(join(root, '.git-credentials'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+it('validates installation tokens against the selected repository instead of a user identity', async () => {
+  const request = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+  vi.stubGlobal('fetch', request);
+  await validateGitHubCredential(token, 'example/project');
+  expect(request).toHaveBeenCalledWith(
+    'https://api.github.com/repos/example/project',
+    expect.objectContaining({ redirect: 'error' })
+  );
+});
+
+it.each([
+  '../project',
+  'example/..',
+  'example/project?token=secret',
+  'example/project/extra',
+  'https://example.com/project',
+])('rejects unsafe repository selection %s', async (repository) => {
+  const request = vi.fn();
+  vi.stubGlobal('fetch', request);
+  await expect(validateGitHubCredential(token, repository)).rejects.toThrow('repository');
+  expect(request).not.toHaveBeenCalled();
+});

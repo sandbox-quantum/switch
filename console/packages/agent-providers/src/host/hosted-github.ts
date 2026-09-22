@@ -17,20 +17,27 @@ export async function readGitHubCredential(path: string): Promise<string> {
   }
 }
 
-/** Personal tokens only. This validates identity, not access to a particular repository. */
-export async function validateGitHubCredential(token: string): Promise<void> {
+export async function validateGitHubCredential(token: string, repository?: string): Promise<void> {
   if (!validToken(token)) throw new Error('GitHub credential is invalid.');
+  if (
+    repository !== undefined &&
+    !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/.test(repository)
+  )
+    throw new Error('GitHub repository must be an owner/repository name.');
   let response: Response;
   try {
-    response = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      redirect: 'error',
-      signal: AbortSignal.timeout(10_000),
-    });
+    response = await fetch(
+      repository ? `https://api.github.com/repos/${repository}` : 'https://api.github.com/user',
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
   } catch {
     throw new Error('GitHub credential validation could not reach GitHub; retry when connected.');
   }
@@ -41,9 +48,7 @@ export async function validateGitHubCredential(token: string): Promise<void> {
     throw new Error('GitHub credential validation failed while closing the response.');
   }
   if (response.status === 401)
-    throw new Error(
-      'GitHub rejected the credential; replace the expired or revoked personal token.'
-    );
+    throw new Error('GitHub rejected the credential; replace the expired or revoked token.');
   if (response.status === 403)
     throw new Error(
       'GitHub denied the credential check; check token permissions, organization policy or rate limits.'

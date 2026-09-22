@@ -384,7 +384,15 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     if value["mcpRuntime"] != config.runtime.mcp_runtime:
         raise WorkerError("Hosted deployment MCP runtime is not the pinned runtime.")
     if "github" in value:
-        github = _strict(value["github"], {"credentialPath"}, set(), "deployment GitHub")
+        github = _strict(value["github"], {"credentialPath"}, {"repository"}, "deployment GitHub")
+        if "repository" in github and (
+            not isinstance(github["repository"], str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}",
+                github["repository"],
+            )
+        ):
+            raise WorkerError("Hosted GitHub repository must be an owner/repository name.")
         if github["credentialPath"] != str(RUNTIME_DIRECTORY / "secrets/github"):
             raise WorkerError("Hosted deployment GitHub credential path is not fixed.")
     return value

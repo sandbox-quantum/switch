@@ -126,6 +126,21 @@ existing exact-value log redaction before worker output reaches the journal.
 Repository code running as the agent can still read credentials assigned to
 that agent; the boundary is the per-assignment IAM role and VM.
 
+## GitHub repository credentials
+
+An optional `github` deployment object contains `credentialPath`, fixed to
+`/run/switch-hosted/secrets/github`, and may contain `repository` in
+`owner/repository` form. Supply its token as `githubCredential` in the assignment
+secret. With a repository selected, bootstrap checks access to that repository;
+this supports GitHub App installation tokens, which cannot authenticate through
+the personal-user endpoint. Existing deployments without a repository retain the
+personal-user check.
+
+Tokens are currently read at bootstrap. Automatic installation-token renewal is
+not implemented; do not treat this as support for unattended, long-running App
+sessions. The controller must supply and renew credentials before cloud launch
+can be enabled in Console.
+
 ## Disk and boot ownership
 
 The launcher resolves the instance ID only through an IMDSv2 token request and

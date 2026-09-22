@@ -48,6 +48,10 @@ export const hostedDeploymentSpecSchema = z.strictObject({
   github: z
     .strictObject({
       credentialPath: absolutePath,
+      repository: z
+        .string()
+        .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/)
+        .optional(),
     })
     .optional(),
   workspacePath: absolutePath,
@@ -331,7 +335,7 @@ export async function prepareHostedDeployment(
   const githubCredential = githubCredentialPath
     ? await readGitHubCredential(githubCredentialPath)
     : undefined;
-  if (githubCredential) await validateGitHubCredential(githubCredential);
+  if (githubCredential) await validateGitHubCredential(githubCredential, spec.github?.repository);
   const controlled = controlledEnvironment(root);
   await createControlledDirectories(controlled);
   const environment = {
