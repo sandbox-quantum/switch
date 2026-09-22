@@ -120,6 +120,24 @@ it('refreshes renamed agent configuration without changing the saved session or 
   });
 });
 
+it('gives a controller the connection it was asked for rather than the one on disk', async () => {
+  const input = await fixture();
+  input.restart = false;
+  input.watcher = true;
+  input.config.roomConnection = { connectionId: 'written-at-first-launch', rooms: [] };
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await mkdir(join(input.root, 'supervisor'));
+  await writeFile(
+    join(input.root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: process.pid, build: input.supervision.build })
+  );
+  input.config = structuredClone(input.config);
+  input.config.roomConnection = { connectionId: 'derived-from-the-agent', rooms: [] };
+  expect(await ensureSharedProcess(input)).toEqual({ created: false });
+  const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
+  expect(saved.roomConnection).toEqual({ connectionId: 'derived-from-the-agent', rooms: [] });
+});
+
 it.skipIf(process.platform === 'win32')(
   'replaces a supervisor an earlier deployment left running',
   async () => {

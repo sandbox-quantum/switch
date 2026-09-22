@@ -7,6 +7,7 @@ import {
   clearTakenOver,
   ensureSharedProcess,
   runSharedWatcher,
+  sharedConfigSchema,
   type SharedHostConfig,
   sharedSessionRoot,
   superviseSharedHost,
@@ -232,12 +233,17 @@ export async function startLocalWatcher(
     restart: false,
     supervision: {
       build: consoleSupervision.build,
-      start: async ({ root: prepared }) => {
+      start: async ({ root: prepared, configPath }) => {
+        // The configuration that was written, not the one that was asked for.
+        // A deployed host reads this same file, and a watcher whose root was
+        // prepared by an earlier call would otherwise run on settings the file
+        // does not hold.
+        const written = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
         await note(prepared, 'Room watcher started inside Console.');
         track(
           watchers,
           prepared,
-          (signal) => runSharedWatcher(prepared, config, signal, consoleSupervision),
+          (signal) => runSharedWatcher(prepared, written, signal, consoleSupervision),
           'Local room watcher stopped',
           true
         );

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +24,7 @@ vi.mock('@switch-console/agent-providers', () => ({
   clearTakenOver: mocks.clearTakenOver,
   WATCH_FLAGS_FILE: 'watch.json',
   watchFlagsSchema: { parse: (value: unknown) => value },
+  sharedConfigSchema: { parse: (value: unknown) => value },
 }));
 vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: mocks.bundle,
@@ -39,10 +41,15 @@ beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'local-host-'));
   roots.push(home);
   mocks.home.mockReturnValue(home);
-  // Stand in for the launch path, which prepares the root then hands it over.
+  // Stand in for the launch path, which writes the configuration to the root
+  // and then hands the root and that file over to the supervisor.
   mocks.ensure.mockImplementation(
-    async (input: { root: string; supervision: { start: Function } }) =>
-      input.supervision.start({ root: input.root, configPath: 'config.json', watcher: true })
+    async (input: { root: string; config: unknown; supervision: { start: Function } }) => {
+      const configPath = join(input.root, 'config.json');
+      await mkdir(input.root, { recursive: true });
+      if (!existsSync(configPath)) await writeFile(configPath, JSON.stringify(input.config));
+      return input.supervision.start({ root: input.root, configPath, watcher: true });
+    }
   );
 });
 afterEach(async () => {
@@ -96,6 +103,18 @@ it.each([true, false])('writes whether the watcher may spawn (%s)', async (spawn
   await startLocalWatcher(config, { intent: 'explicit', spawning });
   const flags = join(localWatcherRoot('switch-agent-1'), 'watch.json');
   expect(JSON.parse(await readFile(flags, 'utf8'))).toEqual({ enabled: true, spawn: spawning });
+});
+
+it('runs the watcher on the configuration the root holds, not the one asked for', async () => {
+  mocks.runWatcher.mockReturnValue(new Promise(() => {}));
+  const root = localWatcherRoot('switch-agent-1');
+  await mkdir(root, { recursive: true });
+  const saved = { session: { sessionId: 'watcher', agentId: 'switch-agent-1' }, kept: true };
+  await writeFile(join(root, 'config.json'), JSON.stringify(saved));
+  await startLocalWatcher(config, { intent: 'explicit', spawning: true });
+  // The same file a deployed watcher reads, so both transports run one agent's
+  // controller on the same settings.
+  expect(mocks.runWatcher.mock.calls[0][1]).toEqual(saved);
 });
 
 it('appends start and failure lines to the log the panel tails', async () => {
