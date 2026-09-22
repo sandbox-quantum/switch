@@ -109,7 +109,8 @@ function rewriteScalars(text: string, substitute: (s: string) => string): string
         const inAliases = aliasesIndent !== null && indent > aliasesIndent;
         const newKey = inAliases ? substituteWhole(key, substitute) : key;
         if (key === 'aliases' && (val === undefined || val === '')) aliasesIndent = indent;
-        if (val === undefined || val === '') return `${prefix}${lead}${newKey}${colon}${tail ?? ''}`;
+        if (val === undefined || val === '')
+          return `${prefix}${lead}${newKey}${colon}${tail ?? ''}`;
         if (isBlockHeader(val)) {
           blockIndent = indent;
           return `${prefix}${lead}${newKey}${colon}${tail}`;
@@ -176,7 +177,11 @@ function yamlScalar(val: string): string {
   if (/[:{}[\],&*?|>'"%@`#!]/.test(val) || val.includes('\n')) {
     return singleQuote(val);
   }
-  if (/^(?:true|false|yes|no|on|off|null|~|[-+]?(?:\d[\d_]*)?(?:\.\d*)?(?:e[-+]?\d+)?|0x[0-9a-f]+|0o[0-7]+|[-+]?\.(?:inf|nan))$/i.test(val)) {
+  if (
+    /^(?:true|false|yes|no|on|off|null|~|[-+]?(?:\d[\d_]*)?(?:\.\d*)?(?:e[-+]?\d+)?|0x[0-9a-f]+|0o[0-7]+|[-+]?\.(?:inf|nan))$/i.test(
+      val
+    )
+  ) {
     return singleQuote(val);
   }
   if (val !== val.trim()) return singleQuote(val);

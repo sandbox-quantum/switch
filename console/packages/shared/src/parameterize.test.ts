@@ -148,9 +148,13 @@ describe('parameterize: block scalars', () => {
   });
 
   it('recognises an indented block header with the chomping sign after the indent', () => {
-    const yaml = ['room:', '  name: r', '  instructions: |2-', '     - Ask agent-alpha.', '  topic: agent-alpha'].join(
-      '\n'
-    );
+    const yaml = [
+      'room:',
+      '  name: r',
+      '  instructions: |2-',
+      '     - Ask agent-alpha.',
+      '  topic: agent-alpha',
+    ].join('\n');
     const out = parameterize(yaml, [{ key: 'a', value: 'agent-alpha' }]);
     expect(out).toContain('     - Ask {a}.');
     expect(out).toContain("  topic: '{a}'");
@@ -167,9 +171,14 @@ describe('parameterize: structure and keys', () => {
   });
 
   it('quotes an alias key that becomes a placeholder', () => {
-    const yaml = ['room:', '  name: r', '  agents:', '  - helper', '  aliases:', '    helper: buddy'].join(
-      '\n'
-    );
+    const yaml = [
+      'room:',
+      '  name: r',
+      '  agents:',
+      '  - helper',
+      '  aliases:',
+      '    helper: buddy',
+    ].join('\n');
     const out = parameterize(yaml, [{ key: 'a', value: 'helper' }]);
     expect(out).toContain("  - '{a}'");
     expect(out).toContain("    '{a}': buddy");
