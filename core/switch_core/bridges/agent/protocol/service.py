@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.task_store import TaskStore
     from switch_core.gateway.schemas import AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
+    from switch_core.rooms_yaml import RoomYamlService
 
 logger = logging.getLogger(__name__)
 
@@ -2567,6 +2568,28 @@ class ProtocolService:
             return await self.room_service.add_users_to_room(room_id, user_names)
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
+
+    def room_yaml_service(self) -> RoomYamlService:
+        """The template engine over this service's collaborators.
+
+        Built here so the gateway's dependency and the agent operation wire
+        it the same way; a collaborator added to ``RoomYamlService`` is then
+        added once.
+        """
+        from switch_core.rooms_yaml import RoomYamlService
+
+        return RoomYamlService(
+            room_service=self.room_service,
+            resource_service=self.resource_service,
+            room_store=self.room_store,
+            agent_store=self.agent_store,
+            bridge_store=self.bridge_store,
+            external_user_store=self.external_user_store,
+            room_role_store=self.room_role_store,
+            session_factory=self.session_factory,
+            room_group_store=self.room_group_store,
+            client_lifecycle=self.client_lifecycle,
+        )
 
     async def _resolve_acting_identity(
         self, session: AsyncSession, agent_id: str

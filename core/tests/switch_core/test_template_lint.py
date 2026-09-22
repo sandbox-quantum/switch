@@ -172,7 +172,7 @@ class TestBuiltins:
         assert "$creator" in warning.message
 
     @pytest.mark.parametrize(
-        "builtin", ["$creator", "$creator_email", "$date", "$timestamp"]
+        "builtin", ["$creator", "$creator_email", "$date", "$timestamp", "$agents_dir"]
     )
     def test_each_known_builtin_passes(self, builtin: str) -> None:
         result = lint_template(f'room:\n  name: "{{{builtin}}}"\n')
@@ -224,7 +224,7 @@ class TestShapeAgnosticism:
         assert result.warnings == []
 
     def test_a_group_template_is_clean_too(self) -> None:
-        """No `room:` key at all — the shape CHOO-2657 introduces.
+        """No `room:` key at all: the group shape.
 
         The linter must not have learned that a template is a room, or it
         starts rejecting valid documents the moment a second shape exists.
@@ -243,9 +243,34 @@ class TestShapeAgnosticism:
         assert result.warnings == []
 
     def test_a_shape_nobody_has_invented_yet_is_a_warning_not_an_error(self) -> None:
-        result = lint_template("agent:\n  name: helper\n  model: sonnet\n")
+        result = lint_template("workflow:\n  name: helper\n  steps: []\n")
         assert result.ok, "an unknown shape must still be storable"
         assert _codes(result.warnings) == {"unknown_top_level_key"}
+
+    def test_an_agent_template_is_a_known_shape(self) -> None:
+        """Agent templates ride beside room templates: `agent:` plus an
+        optional `room:` and `kickoff:` for the room it is dispatched into."""
+        result = lint_template(
+            "agent:\n"
+            "  name: switch-expert\n"
+            "  description: Answers questions about Switch.\n"
+            "  instructions: You are the Switch expert.\n"
+            "  repo: https://github.com/sandbox-quantum/switch\n"
+            "room:\n"
+            "  name: Ask switch-expert\n"
+            "  agents: ['{agent}']\n"
+            "  users: ['{$creator}']\n"
+            "kickoff: '@{agent} say hello'\n"
+        )
+        assert result.ok, [f.message for f in result.errors]
+        assert "unknown_top_level_key" not in _codes(result.warnings)
+        assert "undeclared_placeholder" not in _codes(result.warnings), (
+            "{agent} is the Console's to fill in an agent template"
+        )
+
+    def test_a_room_template_still_has_to_declare_agent(self) -> None:
+        result = lint_template("room:\n  name: r\n  agents: ['{agent}']\n")
+        assert "undeclared_placeholder" in _codes(result.warnings)
 
     def test_a_document_with_no_recognised_key_is_still_only_warned_about(self) -> None:
         result = lint_template("whatever:\n  - 1\n  - 2\n")
@@ -425,3 +450,61 @@ class TestItNeverBlocksAnUpload:
         result = lint_template("a: [unclosed\n")
         assert not result.ok
         assert isinstance(result.errors, list)
+
+
+def test_group_and_agents_keys_are_known():
+    result = lint_template(
+        "params:\n  team:\n    type: string\n"
+        "agents:\n  - name: '{team}-triager'\n"
+        "group:\n  name: '{team}'\nrooms:\n  - name: '{team} lobby'\n"
+        "    description: d\nlinks: []\n"
+    )
+    assert result.errors == []
+    assert [f.code for f in result.warnings] == []
+
+
+def test_provider_param_type_is_accepted():
+    """The Console answers `type: provider` itself; a stored document that
+    declares one must still lint, or it could never be saved to a server."""
+    result = lint_template(
+        "params:\n  provider:\n    type: provider\n"
+        "agents:\n  - name: helper\n    provider: '{provider}'\n"
+        "room:\n  name: r\n  description: d\n"
+    )
+    assert result.errors == []
+
+
+def test_new_in_a_room_chain_needs_a_room_to_create():
+    text = (
+        "params:\n  where:\n    type: room\n    default: [$new]\n"
+        'agent:\n  name: a\n  join: ["{where}"]\n'
+    )
+    result = lint_template(text)
+    assert "new_without_room" in {e.code for e in result.errors}
+    with_room = text + 'room:\n  name: r\n  agents: ["{agent}"]\n'
+    assert "new_without_room" not in {e.code for e in lint_template(with_room).errors}
+
+
+def test_form_is_a_known_top_level_key():
+    result = lint_template("form:\n  advanced:\n    open: true\nroom:\n  name: r\n")
+    assert "unknown_top_level_key" not in {w.code for w in result.warnings}
+
+
+def test_the_policy_fields_are_known_param_fields():
+    text = (
+        "params:\n  name:\n    type: string\n    label: Agent name\n"
+        "    default: x\n    required: true\n    input: advanced\n"
+        "    pattern: '[a-z]+'\n"
+        "  bridge:\n    type: bridge\n    default: [Slack, $first]\n"
+        "  location:\n    type: location\n    default: local\n    input: fixed\n"
+        'room:\n  name: "{name}"\n  bridge: "{bridge}"\n'
+        'agent:\n  location: "{location}"\n'
+    )
+    result = lint_template(text)
+    assert result.errors == []
+    assert "unknown_param_field" not in {w.code for w in result.warnings}
+
+
+def test_an_agent_template_without_a_room_is_not_told_agent_is_unused():
+    result = lint_template("agent:\n  name: a\n  instructions: x\n")
+    assert "unused_param" not in {w.code for w in result.warnings}

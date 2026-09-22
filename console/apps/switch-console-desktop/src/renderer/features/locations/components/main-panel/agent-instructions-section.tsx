@@ -1,8 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import {
+  loadAgentTemplateByOrigin,
+  templateOriginExists,
+} from '@renderer/features/templates/agent-template-data';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
+import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { log } from '@renderer/utils/logger';
@@ -35,6 +40,43 @@ export function AgentInstructionsSection({
       agentId ? rpc.agents.readInstructions({ agentId }) : Promise.resolve<string>(''),
     enabled: !!agentId,
   });
+
+  // The template this agent was created from, if any. A template's
+  // instructions change over time (the Switch expert's are maintained in the
+  // repository) while the agent keeps the copy it was created with, so the
+  // page offers to load the current version into the editor. Nothing is
+  // saved until the user saves the edit.
+  const { data: origin } = useQuery({
+    queryKey: ['agent-template-origin', agentId],
+    queryFn: () => (agentId ? rpc.agents.readTemplateOrigin({ agentId }) : Promise.resolve(null)),
+    enabled: !!agentId,
+  });
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshFromTemplate = async () => {
+    if (!origin) return;
+    setRefreshing(true);
+    try {
+      const template = await loadAgentTemplateByOrigin(origin);
+      if (template.instructions === value) {
+        toast({ title: `Already up to date with "${origin.name}"` });
+        return;
+      }
+      setValue(template.instructions);
+      setExpanded(true);
+      toast({
+        title: `Instructions replaced with the current "${origin.name}"`,
+        description: 'Nothing is saved yet. Read them over, then save or revert.',
+      });
+    } catch (error) {
+      const { headline, detail } = describeFailure(
+        error,
+        `Could not load the template "${origin.name}".`
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const savedValue = saved ?? '';
   const [value, setValue] = useState('');
@@ -105,19 +147,33 @@ export function AgentInstructionsSection({
         <FieldLabel htmlFor={fieldId}>
           Agent instructions <span className="text-foreground-muted">(optional)</span>
         </FieldLabel>
-        {/* Offered only once there is something being withheld, so a two-line
+        <span className="flex items-center gap-3">
+          {origin && templateOriginExists(origin) && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              disabled={refreshing}
+              onClick={() => void refreshFromTemplate()}
+              title={`This agent was created from the "${origin.name}" template`}
+            >
+              {refreshing ? 'Loading…' : `Update from "${origin.name}"`}
+            </Button>
+          )}
+          {/* Offered only once there is something being withheld, so a two-line
             instruction does not carry a control that would do nothing. */}
-        {(clipped || expanded) && (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={fieldId}
-            onClick={() => setExpanded((open) => !open)}
-            className="cursor-pointer text-sm text-foreground-muted hover:text-foreground"
-          >
-            {expanded ? 'Collapse' : 'Expand'}
-          </button>
-        )}
+          {(clipped || expanded) && (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={fieldId}
+              onClick={() => setExpanded((open) => !open)}
+              className="cursor-pointer text-sm text-foreground-muted hover:text-foreground"
+            >
+              {expanded ? 'Collapse' : 'Expand'}
+            </button>
+          )}
+        </span>
       </div>
       <Textarea
         ref={boxRef}

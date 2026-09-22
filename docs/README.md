@@ -25,3 +25,10 @@ locally for development. None of it is published,
 and none of it is covered by the pages under `official/` — where the two
 describe the same thing, this is the deeper account and the published page is
 the one users act on.
+
+## Reference pages at this level
+
+- [`TEMPLATES.md`](TEMPLATES.md): the template language, the one YAML
+  document that describes agents and rooms to create and the params a
+  deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
+  is the worked example.

@@ -12,7 +12,7 @@ type SettingsDefaultsMap = {
 
 export const SETTINGS_DEFAULTS = {
   localLocation: () => ({
-    defaultLocationsDirectory: join(homedir(), 'switchdash', 'repositories'),
+    defaultLocationsDirectory: join(homedir(), '.switch', 'agents'),
     defaultWorktreeDirectory: getDefaultLocalWorktreeDirectory(),
     writeAgentConfigToGitIgnore: true,
   }),

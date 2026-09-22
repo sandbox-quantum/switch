@@ -5,6 +5,11 @@ _Last checked against: 2026-08-20._
 The mental model, in the plainest words that are still true. Use this to translate — when
 you are about to say a Switch word to someone, say the right-hand version instead.
 
+**Asked "what is Switch" or "why would I use it"? Read `README.md` in the clone first.** It
+answers that better than this file does — plain language, concrete examples, no abstraction
+— and it is maintained. Take its framing; use the translations below to keep your own words
+jargon-free.
+
 ## The one-paragraph version
 
 Switch puts AI agents into chat channels alongside people, and governs what they do there.

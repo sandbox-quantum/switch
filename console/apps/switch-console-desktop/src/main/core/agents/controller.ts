@@ -10,7 +10,11 @@ import {
   readAgentAdvancedConfig,
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
-import { readAgentInstructions, setAgentInstructions } from './agent-config';
+import {
+  readAgentInstructions,
+  readAgentTemplateOrigin,
+  setAgentInstructions,
+} from './agent-config';
 import { getAgentModelCatalogue, getProviderReadiness } from './agent-model-catalogue';
 import { assignAgentServer } from './assignAgentServer';
 import {
@@ -69,6 +73,7 @@ export const agentsController = createRPCController({
    * the agent rather than one of its provider's settings.
    */
   readInstructions: (params: { agentId: string }) => readAgentInstructions(params.agentId),
+  readTemplateOrigin: (params: { agentId: string }) => readAgentTemplateOrigin(params.agentId),
   updateInstructions: (params: { agentId: string; instructions: string }): Promise<void> =>
     setAgentInstructions(params).then(() => undefined),
   readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),

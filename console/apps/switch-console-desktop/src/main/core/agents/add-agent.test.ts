@@ -2,6 +2,9 @@ import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
+const inspectRemoteDir = vi.hoisted(() => vi.fn());
+vi.mock('./remote-dir', () => ({ inspectRemoteDir }));
+
 /** In-memory {@link PluginFs} keyed by the exact relative paths the writers use. */
 function fakeFs(seed: Record<string, string> = {}): PluginFs {
   const files = new Map<string, string>(Object.entries(seed));
@@ -137,6 +140,43 @@ describe('addAgent', () => {
     h.state.repoAgents = h.repoAgents;
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
+    // `clearAllMocks` resets call records but not implementations: without a
+    // default, whichever test last set one decides the answer for the rest.
+    inspectRemoteDir.mockResolvedValue({ dir: '/repo', status: 'directory' });
+  });
+
+  it('refuses a remote directory whose parent is missing, before minting (CHOO-1416)', async () => {
+    inspectRemoteDir.mockResolvedValue({ dir: '/home/u/agents/deploy', status: 'missing' });
+
+    const result = await addAgent(params({ sshHost: 'vm-1', dir: '/home/u/agents/deploy' }));
+
+    expect(result.kind).toBe('directory-unusable');
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  it('never inspects the remote directory for a local add', async () => {
+    await addAgent(params());
+    expect(inspectRemoteDir).not.toHaveBeenCalled();
+  });
+
+  it('refuses a relative remote directory without probing the host', async () => {
+    const result = await addAgent(params({ sshHost: 'vm-1', dir: 'agents/deploy' }));
+
+    expect(result).toMatchObject({
+      kind: 'directory-unusable',
+      inspection: { status: 'relative' },
+    });
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  it('settles on a canonical remote path before anything keys off it', async () => {
+    await addAgent(params({ sshHost: 'vm-1', dir: '/home/u/./x/../agents/deploy/' }));
+
+    expect(inspectRemoteDir).toHaveBeenCalledWith('vm-1', '/home/u/agents/deploy');
+    expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ repoDir: '/home/u/agents/deploy' })
+    );
   });
 
   it('writes name-keyed credentials for a provider with no repo-agent definitions', async () => {
@@ -311,9 +351,12 @@ describe('addAgent', () => {
 
       await addAgent(params({ sshHost: 'build-box', entryPoint: 'server_page' }));
 
+      // `failure_reason` too: `location: 'remote'` alone is also what a preflight
+      // refusal reports, so asserting it by itself would pass without ever
+      // reaching `registerAgentIdentity`.
       expect(trackEvent).toHaveBeenCalledWith(
         'agent_created',
-        expect.objectContaining({ location: 'remote' })
+        expect.objectContaining({ location: 'remote', failure_reason: 'unauthenticated' })
       );
     });
 
