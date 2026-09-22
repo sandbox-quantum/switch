@@ -30,6 +30,23 @@ cross-AZ migration and arbitrary retained-disk adoption remain disabled. A retai
 disk can be recovered through a separately reviewed operator recovery workflow;
 blind deletion of ownership locks is not that workflow.
 
+## GitHub App credential preparation
+
+The backend helper `switch_core.providers.github_installation` can issue a
+repository-scoped installation token after checking that the initiating user's
+GitHub account still has access to that repository in the selected installation.
+It signs with an operator-supplied RSA key and requests only contents and pull
+request write access. Credentials must stay on the backend and in the worker's
+private credential transport, never in Console responses or persisted launch specs.
+
+This helper is not yet connected to the worker lifecycle. The current worker
+bootstrap validates personal tokens, and the controller still accepts operator
+commands. Installation-token delivery, renewal, durable Console launch requests,
+and worker status reporting must be implemented before enabling cloud creation.
+An installation token expires after one hour; a one-time token at startup is not
+sufficient for a long-running worker. See the
+[GitHub installation-token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+
 ## Prepare a deployable environment
 
 1. Select a dedicated test account/environment and read-only inventory its EKS
