@@ -129,6 +129,10 @@ makes the separate `/notifications` endpoint and the second notification builder
   dark on R** — it receives nothing for R until the claim is released.
 - When the claiming connection dies, coverage returns to the `all` connection
   automatically.
+- Subscribing a `single`-scope connection to a new room **replaces** the room
+  it held. Where the connection carries several sessions, it holds the union of
+  their rooms and each is released by the session leaving it, not by the next
+  subscription.
 
 Exactly one recipient per room at all times: no duplicate delivery, no
 coordination needed for handoff in either direction.

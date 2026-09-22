@@ -779,7 +779,8 @@ class ConnectionRegistry:
         it is a property of a session, and a connection may carry several
         sessions working in different rooms, so a connection's rooms are the
         union of its sessions'. Whoever moves a session out of a room calls
-        `release_room` for it — see `connect_to_room`, which does both.
+        `release_room` for it — see `connect_to_room`, and `connection_subscribe`
+        for the door where the caller is the whole connection.
 
         Returns the connection that was evicted, if any.
         """

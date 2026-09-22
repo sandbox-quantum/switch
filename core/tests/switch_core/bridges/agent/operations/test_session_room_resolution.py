@@ -36,6 +36,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
+from switch_core.sessions.service import RoomBinding, SessionError
 
 AGENT = "agent-1"
 CONNECTION = "connection-1"
@@ -161,17 +162,31 @@ async def test_a_caller_with_no_session_still_reads_its_connection(registry) -> 
 # ── moving a session between rooms ───────────────────────────────────────────
 
 
-def _authority(bound: list[tuple[str, str]], displaces: str | None) -> Any:
-    """A `SessionAuthority` that records binds and reports a displaced session."""
+def _authority(
+    bound: list[tuple[str, str]], *, vacated: tuple[str, ...], displaces: str | None
+) -> Any:
+    """A `SessionAuthority` whose bind reports what the locked write found."""
 
     class _Authority:
         def __init__(self, _factory: Any) -> None: ...
 
         async def bind_room(
             self, _agent: str, session_id: str, _host: str, _epoch: str, room_id: str
-        ) -> str | None:
+        ) -> RoomBinding:
             bound.append((session_id, room_id))
-            return displaces
+            return RoomBinding(vacated=vacated, displaced=displaces)
+
+    return _Authority
+
+
+def _refusing_authority() -> Any:
+    """A `SessionAuthority` whose bind does not commit."""
+
+    class _Authority:
+        def __init__(self, _factory: Any) -> None: ...
+
+        async def bind_room(self, *_a: Any) -> RoomBinding:
+            raise SessionError("STALE_EPOCH", "The session has moved on.")
 
     return _Authority
 
@@ -193,7 +208,11 @@ async def test_connecting_vacates_only_the_callers_own_room(
 
     bound: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(definitions, "SessionAuthority", _authority(bound, None))
+    monkeypatch.setattr(
+        definitions,
+        "SessionAuthority",
+        _authority(bound, vacated=(ROOM_A,), displaces=None),
+    )
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -204,6 +223,57 @@ async def test_connecting_vacates_only_the_callers_own_room(
     # ROOM_A vacated because this caller was in it; ROOM_B untouched because
     # its session did not move.
     assert connection.rooms == {ROOM_B, "room-c"}
+
+
+@pytest.mark.asyncio
+async def test_a_room_a_sibling_has_taken_is_not_vacated(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller's room is what the bind found, not what the caller arrived with.
+
+    `CallerSession.room_id` is read when the request enters. A sibling binding
+    the same room in that window takes it durably and keeps the connection's
+    claim on it, so acting on the stale value would release a room this caller
+    no longer holds — silently cutting the sibling off from the events it was
+    just given.
+    """
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_A)
+    monkeypatch.setattr(
+        definitions, "SessionAuthority", _authority([], vacated=(), displaces=None)
+    )
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", ROOM_A)):
+        await definitions.connect_to_room("room-c", include_general_instructions=False)
+
+    assert connection.rooms == {ROOM_A, "room-c"}
+
+
+@pytest.mark.asyncio
+async def test_a_bind_that_does_not_commit_moves_no_routing(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Routing is where events go, so it follows the write rather than leading it.
+
+    Claiming before the bind leaves a refused connect having moved the agent's
+    room slot anyway: the session is still in the room it was in, and its
+    events are being delivered to a room it never reached.
+    """
+    connection = _open(registry)
+    registry.claim_room(connection, ROOM_A)
+    monkeypatch.setattr(definitions, "SessionAuthority", _refusing_authority())
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", ROOM_A)):
+        with pytest.raises(SessionError):
+            await definitions.connect_to_room(
+                "room-c", include_general_instructions=False
+            )
+
+    assert connection.rooms == {ROOM_A}
 
 
 @pytest.mark.asyncio
@@ -219,7 +289,11 @@ async def test_displacing_a_sibling_names_it_in_the_warning(
     """
     connection = _open(registry)
     registry.claim_room(connection, "room-c")
-    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], "session-b"))
+    monkeypatch.setattr(
+        definitions,
+        "SessionAuthority",
+        _authority([], vacated=(), displaces="session-b"),
+    )
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -237,7 +311,9 @@ async def test_displacing_nobody_warns_about_nothing(
 ) -> None:
     """An ordinary connect is not dressed up as a takeover."""
     _open(registry)
-    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], None))
+    monkeypatch.setattr(
+        definitions, "SessionAuthority", _authority([], vacated=(), displaces=None)
+    )
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -272,7 +348,11 @@ async def test_one_eviction_is_reported_once_and_names_the_session(
     )
     registry.claim_room(incumbent, "room-c")
     _open(registry)
-    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], "session-b"))
+    monkeypatch.setattr(
+        definitions,
+        "SessionAuthority",
+        _authority([], vacated=(), displaces="session-b"),
+    )
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -307,7 +387,9 @@ async def test_evicting_another_connection_still_names_the_connection(
     )
     registry.claim_room(incumbent, "room-c")
     _open(registry)
-    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], None))
+    monkeypatch.setattr(
+        definitions, "SessionAuthority", _authority([], vacated=(), displaces=None)
+    )
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 

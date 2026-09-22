@@ -291,26 +291,27 @@ async def connect_to_room(
     if not key:
         raise ValueError("MCP session has no session id; cannot connect to room")
 
-    # Where the caller was, read before the claim makes it where it is. Its own
-    # room, not its connection's: under a connection shared by several sessions
-    # those also include its siblings', which it has no business vacating.
+    # The durable bind goes first and says what it changed, and the connection
+    # is then reconciled to that. Routing is where events actually go, so
+    # moving it on a bind that then fails would send them somewhere the
+    # session is not — and the rooms to vacate are the caller's own, read
+    # under the bind's lock rather than from what it believed on arrival.
     caller = caller_session()
-    previous = (
-        {caller.room_id}
-        if caller is not None and caller.room_id is not None
-        else rooms_on_caller_connection(protocol, agent_id, key)
-    )
+    displaced_session_id = None
+    if caller is not None:
+        binding = await SessionAuthority(protocol.session_factory).bind_room(
+            agent_id, caller.id, caller.host_id, caller.epoch, room.id
+        )
+        previous = set(binding.vacated)
+        displaced_session_id = binding.displaced
+    else:
+        previous = rooms_on_caller_connection(protocol, agent_id, key)
+
     evicted_connection_id = claim_room_on_caller_connection(
         protocol, agent_id, key, room.id
     )
     for departed in previous - {room.id}:
         release_room_on_caller_connection(protocol, agent_id, key, departed)
-
-    displaced_session_id = None
-    if caller is not None:
-        displaced_session_id = await SessionAuthority(
-            protocol.session_factory
-        ).bind_room(agent_id, caller.id, caller.host_id, caller.epoch, room.id)
 
     await bind_room_for_connectionless_caller(
         protocol,

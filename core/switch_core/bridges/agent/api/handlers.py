@@ -976,6 +976,12 @@ async def connection_subscribe(
     already belongs to: subscribing is not joining. On a `single`-scope
     connection this also drops whichever room it held before, which is how
     "one room at a time" stops being a convention and becomes a guarantee.
+
+    That replacement is done here rather than in `claim_room`, because the
+    registry can no longer tell whose room it would be dropping: a connection
+    carrying several sessions holds the union of their rooms. A caller at this
+    door names no session, so the connection is the whole of what it is, and
+    replacing is what it has always been promised.
     """
     try:
         conn = protocol.connections.require_current(
@@ -995,12 +1001,17 @@ async def connection_subscribe(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    held = set(conn.rooms)
     try:
         evicted = protocol.connections.claim_room(
             conn, req.room_id, takeover=req.takeover
         )
     except RoomOccupiedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if conn.scope == "single":
+        for departed in held - {req.room_id}:
+            protocol.connections.release_room(conn, departed)
 
     if evicted is not None:
         logger.warning(

@@ -299,10 +299,57 @@ async def test_binding_a_room_displaces_the_sibling_already_in_it(
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
 
-    assert await service.bind_room(AGENT, *SECOND, second, ROOM) == FIRST[0]
+    assert (await service.bind_room(AGENT, *SECOND, second, ROOM)).displaced == FIRST[0]
 
     assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == []
     assert (await service.snapshot(SECOND[0], "owner")).session.room_ids == [ROOM]
+
+
+@pytest.mark.asyncio
+async def test_a_bind_reports_the_room_the_caller_actually_left(
+    session_factory,
+) -> None:
+    """The room to stop routing, read where it is still true.
+
+    Its caller cannot supply it: what it believed on the way in may be a room a
+    sibling has taken since, and releasing that from the shared connection
+    would cut the sibling off. A first bind and a rebind each leave nothing
+    behind, so neither releases a room somebody is in.
+    """
+    service, first = await setup(session_factory)
+    await _second_room(session_factory)
+    connections = ConnectionRegistry()
+    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+
+    assert (await service.bind_room(AGENT, *FIRST, first, ROOM)).vacated == ()
+    assert (await service.bind_room(AGENT, *FIRST, first, ROOM)).vacated == ()
+    assert (await service.bind_room(AGENT, *FIRST, first, OTHER_ROOM)).vacated == (
+        ROOM,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_displaced_session_leaves_nothing_for_its_next_bind_to_vacate(
+    session_factory,
+) -> None:
+    """What the interleaving looks like from the displaced session's side.
+
+    Its room was taken while it was mid-request, so its own next bind finds it
+    holding nothing — and reports nothing to release, which is what keeps the
+    shared connection subscribed for the sibling that took it.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    await _second_room(session_factory)
+    connections = ConnectionRegistry()
+    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
+    await service.bind_room(AGENT, *SECOND, second, ROOM)
+
+    assert (await service.bind_room(AGENT, *FIRST, first, OTHER_ROOM)).vacated == ()
 
 
 @pytest.mark.asyncio
@@ -323,7 +370,7 @@ async def test_a_stopped_sibling_is_not_reported_as_displaced(session_factory) -
     through = (await service.snapshot(FIRST[0], "owner")).through_sequence
     await _stop_host(session_factory, FIRST[0])
 
-    assert await service.bind_room(AGENT, *SECOND, second, ROOM) is None
+    assert (await service.bind_room(AGENT, *SECOND, second, ROOM)).displaced is None
 
     stale = await service.snapshot(FIRST[0], "owner")
     assert stale.session.room_ids == [ROOM]

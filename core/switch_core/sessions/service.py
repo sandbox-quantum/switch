@@ -106,6 +106,21 @@ class SessionBinding:
     room_id: str | None
 
 
+@dataclass(frozen=True)
+class RoomBinding:
+    """What binding a session to a room changed, as the locked write saw it.
+
+    Neither fact can be read before the write. A sibling may have taken the
+    caller's room between the request arriving and the bind committing, so
+    what the caller believed it was in is not what it is in, and acting on the
+    stale value takes the room off the sibling that now holds it. Routing is
+    reconciled from this instead.
+    """
+
+    vacated: tuple[str, ...]
+    displaced: str | None
+
+
 def _receipt(status: CommandStatus, command: Command | None) -> RoomMessageReceipt:
     return RoomMessageReceipt(
         **status.model_dump(),
@@ -1490,8 +1505,8 @@ class SessionAuthority:
 
     async def bind_room(
         self, agent_id: str, session_id: str, host_id: str, epoch: str, room_id: str
-    ) -> str | None:
-        """Record which room this session is working in. Returns who it displaced.
+    ) -> RoomBinding:
+        """Record which room this session is working in, and what that changed.
 
         A session's room, not its connection's. Several sessions of one agent
         may share a controller connection, so the connection holds the union of
@@ -1510,6 +1525,11 @@ class SessionAuthority:
         would see the room already claimed by the connection they are both on
         and let the two of them sit in it, receiving the same events with
         nothing to say which of them is meant to answer.
+
+        The rooms the caller is leaving are returned with it, because this is
+        the only place they are known: they are read inside the lock this
+        write holds, and the caller's own idea of where it was may be a room a
+        sibling has since taken from it.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
@@ -1538,6 +1558,7 @@ class SessionAuthority:
                 )
             displaced = await self._evict_siblings(db, agent_id, session_id, room_id)
             snapshot = _stored_snapshot(row)
+            vacated = tuple(r for r in snapshot.session.room_ids if r != room_id)
             if snapshot.session.room_ids != [room_id]:
                 await self._append(
                     db,
@@ -1549,7 +1570,7 @@ class SessionAuthority:
                         ),
                     ),
                 )
-            return displaced
+            return RoomBinding(vacated=vacated, displaced=displaced)
 
     async def _evict_siblings(
         self, db: AsyncSession, agent_id: str, session_id: str, room_id: str
