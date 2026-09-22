@@ -118,7 +118,25 @@ POLICY_NAME = "tenant_isolation"
 # switch, and a flag that needs to vary per customer is a new scoped table
 # rather than a nullable column here. Alembic's `alembic_version` needs no
 # entry: Alembic owns that table and never registers it on this metadata.
-GLOBAL_TABLES = frozenset({"users", "oidc_identities", "feature_flags"})
+#
+# The three telemetry tables are global because each records a fact about the
+# *installation* rather than about anything inside it: which deployment this
+# is to the analytics relay, when it was installed, which once-ever milestones
+# it has already reported, and when its last usage snapshot went out. None
+# holds customer data — that is the whole design of the telemetry catalogue,
+# which reports counts and never an identifier — and scoping them would be
+# incoherent: a deployment running three tenants has one identity, not three,
+# and a milestone reported once per tenant would not be once-ever at all.
+GLOBAL_TABLES = frozenset(
+    {
+        "users",
+        "oidc_identities",
+        "feature_flags",
+        "deployment_identity",
+        "telemetry_milestones",
+        "telemetry_snapshot_watermark",
+    }
+)
 
 
 class UnscopedTableError(RuntimeError):

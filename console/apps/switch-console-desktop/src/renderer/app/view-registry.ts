@@ -3,12 +3,16 @@ import { homeView } from '@renderer/app/home-view';
 import { locationView } from '@renderer/features/locations/view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
+import { templateImportView } from '@renderer/features/room-templates/room-template-import-view';
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
 import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-view';
 import { serverView } from '@renderer/features/switch-servers/view';
+import { templateDetailView } from '@renderer/features/templates/template-detail-view';
+import { templateUseView } from '@renderer/features/templates/template-use-view';
+import { templatesView } from '@renderer/features/templates/templates-view';
 import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { ViewIdName } from '@shared/core/views/view-ids';
@@ -27,6 +31,10 @@ export const views = {
   serverRooms: serverRoomsView,
   remoteHosts: remoteHostsView,
   remoteHost: remoteHostView,
+  templateImport: templateImportView,
+  templates: templatesView,
+  templateDetail: templateDetailView,
+  templateUse: templateUseView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

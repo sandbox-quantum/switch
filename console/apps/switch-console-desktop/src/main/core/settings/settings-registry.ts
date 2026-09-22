@@ -2,7 +2,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_BROWSER_PROFILE_ID, DEFAULT_BROWSER_PROFILES } from '@shared/browser';
 import type { AppSettings, AppSettingsKey } from '@shared/core/app-settings';
-import { TERMINAL_FONT_SIZE_DEFAULT } from '@shared/core/terminals/terminal-settings';
 import { getDefaultLocalWorktreeDirectory } from './worktree-defaults';
 
 export const DEFAULT_AGENT_ID = 'claude';
@@ -12,11 +11,8 @@ type SettingsDefaultsMap = {
 };
 
 export const SETTINGS_DEFAULTS = {
-  location: {
-    tmuxByDefault: false,
-  },
   localLocation: () => ({
-    defaultLocationsDirectory: join(homedir(), 'switchdash', 'repositories'),
+    defaultLocationsDirectory: join(homedir(), '.switch', 'agents'),
     defaultWorktreeDirectory: getDefaultLocalWorktreeDirectory(),
     writeAgentConfigToGitIgnore: true,
   }),
@@ -30,12 +26,6 @@ export const SETTINGS_DEFAULTS = {
     sound: true,
     customSoundPath: '',
     soundFocusMode: 'always' as const,
-  },
-  terminal: {
-    fontSize: TERMINAL_FONT_SIZE_DEFAULT,
-    autoCopyOnSelection: false,
-    macOptionIsMeta: false,
-    defaultShell: 'system' as const,
   },
   theme: null,
   defaultAgent: DEFAULT_AGENT_ID,
@@ -54,9 +44,6 @@ export const SETTINGS_DEFAULTS = {
     relaxCorsForLocalhost: false,
     profiles: DEFAULT_BROWSER_PROFILES,
   },
-  remote: {
-    maxAttachedSessionsPerHost: 4,
-  },
   onboarding: {
     showChecklist: true,
   },
@@ -66,7 +53,7 @@ export const SETTINGS_DEFAULTS = {
     pr: 'flat' as const,
   },
   telemetry: {
-    enabled: false,
+    enabled: true,
     askedAt: null,
   },
 } satisfies SettingsDefaultsMap;

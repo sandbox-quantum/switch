@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from switch_core.deeplinks import (
     DEEPLINK_REDIRECT_PATH,
     deeplink_for_platform,
     gateway_query_to_switchdash,
+    gateway_url_is_loopback,
+    gateway_url_warning,
     switchdash_to_gateway,
 )
 
@@ -69,6 +73,72 @@ class TestSwitchdashToGateway:
             switchdash_to_gateway("switchdash://other?a=b", "https://gw.example")
             is None
         )
+
+
+class TestGatewayUrlIsLoopback:
+    """A configured origin that only the Switch host can reach.
+
+    A locally managed server hands Switch Console's own `http://localhost:<port>`
+    to GATEWAY_PUBLIC_URL, which makes every posted link clickable and useless to
+    anyone reading from a phone.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:8000",
+            "http://LOCALHOST",
+            "http://localhost.:8000",
+            "http://switch.localhost",
+            "http://127.0.0.1:54212",
+            "http://127.1.2.3",
+            "http://[::1]:8000",
+        ],
+    )
+    def test_an_origin_only_this_machine_can_reach_is_loopback(self, url: str) -> None:
+        assert gateway_url_is_loopback(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://gw.example",
+            "https://localhost.example",
+            "http://10.0.0.1:8000",
+            "http://0.0.0.0:8000",
+            "https://[2001:db8::1]",
+        ],
+    )
+    def test_an_origin_someone_else_could_reach_is_not(self, url: str) -> None:
+        assert gateway_url_is_loopback(url) is False
+
+
+class TestGatewayUrlWarning:
+    def test_a_loopback_origin_is_announced_rather_than_left_silent(self) -> None:
+        warning = gateway_url_warning("http://localhost:54212", False)
+        assert warning is not None
+        assert "http://localhost:54212" in warning
+        assert "loopback" in warning
+
+    def test_a_loopback_origin_is_announced_even_where_no_rewrite_happens(
+        self,
+    ) -> None:
+        # The deeplink is posted raw here, but it still carries the origin as
+        # the server Switch Console is told to reach.
+        assert gateway_url_warning("http://127.0.0.1:54212", True) is not None
+
+    def test_an_unset_origin_costs_a_clickable_link_on_an_http_only_platform(
+        self,
+    ) -> None:
+        warning = gateway_url_warning(None, False)
+        assert warning is not None
+        assert "not set" in warning
+
+    def test_an_unset_origin_costs_nothing_where_the_scheme_renders(self) -> None:
+        assert gateway_url_warning(None, True) is None
+
+    @pytest.mark.parametrize("renders", [True, False])
+    def test_a_reachable_origin_warns_about_nothing(self, renders: bool) -> None:
+        assert gateway_url_warning("https://gw.example", renders) is None
 
 
 class TestGatewayQueryToSwitchdash:

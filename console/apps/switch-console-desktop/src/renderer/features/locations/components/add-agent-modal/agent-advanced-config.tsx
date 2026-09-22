@@ -14,6 +14,7 @@ import {
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
+import { fieldCatalogueState } from '../agent-model-catalogue';
 
 /**
  * Collapsed "Advanced configuration" section for the add-agent modal. Renders the
@@ -24,12 +25,22 @@ import {
  */
 export function AgentAdvancedConfig({
   providerId,
+  sshHost,
+  dir,
   onChange,
 }: {
   providerId: AgentProviderId | null;
+  sshHost: string | null;
+  dir: string;
   onChange: (attributes: RepoAgentAttributes) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const { data: catalogue } = useQuery({
+    queryKey: ['agent-model-catalogue', providerId, sshHost ?? 'local', dir],
+    queryFn: () => rpc.agents.modelCatalogue({ providerId: providerId!, sshHost, dir }),
+    enabled: !!providerId && !!dir.trim(),
+    staleTime: 60000,
+  });
   const { data: allFields } = useQuery({
     queryKey: ['agentDefinitionFields', providerId],
     queryFn: () => (providerId ? rpc.agents.definitionFields({ providerId }) : Promise.resolve([])),
@@ -80,10 +91,16 @@ export function AgentAdvancedConfig({
                 {field.required || field.type === 'boolean' ? '' : ' (optional)'}
               </FieldLabel>
               <DefinitionFieldInput
+                suggestions={fieldCatalogueState(field, state, catalogue).suggestions}
                 field={field}
                 value={state[field.key] ?? (field.type === 'boolean' ? false : '')}
                 onChange={(value) => setField(field.key, value)}
               />
+              {fieldCatalogueState(field, state, catalogue).note && (
+                <FieldDescription>
+                  {fieldCatalogueState(field, state, catalogue).note}
+                </FieldDescription>
+              )}
               {field.help && (
                 <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
               )}

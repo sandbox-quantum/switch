@@ -11,9 +11,13 @@ import {
   readAgentAdvancedConfig,
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
-import { readAgentInstructions, setAgentInstructions } from './agent-config';
+import {
+  readAgentInstructions,
+  readAgentTemplateOrigin,
+  setAgentInstructions,
+} from './agent-config';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
-import { getAgentModelCatalogue } from './agent-model-catalogue';
+import { getAgentModelCatalogue, getProviderReadiness } from './agent-model-catalogue';
 import { assignAgentServer } from './assignAgentServer';
 import {
   attachConfiguredAgents,
@@ -68,6 +72,11 @@ export const agentsController = createRPCController({
    * fields that declare a catalogue binding. Reports why it could not be read
    * rather than throwing: the form degrades to plain text and says so.
    */
+  providerReadiness: (params: {
+    providerId: AgentProviderId;
+    sshHost: string | null;
+    dir: string;
+  }) => getProviderReadiness(params, false),
   modelCatalogue: (params: { providerId: AgentProviderId; sshHost: string | null; dir: string }) =>
     getAgentModelCatalogue(params),
   /**
@@ -77,6 +86,7 @@ export const agentsController = createRPCController({
    * the agent rather than one of its provider's settings.
    */
   readInstructions: (params: { agentId: string }) => readAgentInstructions(params.agentId),
+  readTemplateOrigin: (params: { agentId: string }) => readAgentTemplateOrigin(params.agentId),
   updateInstructions: (params: { agentId: string; instructions: string }): Promise<void> =>
     setAgentInstructions(params).then(() => undefined),
   readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),

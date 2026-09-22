@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
@@ -91,6 +92,7 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_KEY_TYPE,
     REGISTRATION_KEY_TYPES,
     resolve_registration_owner_id,
 )
@@ -151,6 +153,13 @@ async def _resolve_registration_user_id(
     key = await api_key_store.get_by_hash(session, token_hash)
     if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
+    # Which credential this was is worth keeping: a deployment bootstrapping
+    # its first agents through the shared key and a user minting a key of
+    # their own are different moments in adoption, and the key type is the
+    # only place that distinction exists.
+    _REGISTRATION_PATH.set(
+        "bootstrap" if key.type == BOOTSTRAP_KEY_TYPE else "personal_key"
+    )
     try:
         return await resolve_registration_owner_id(session, protocol.user_store, key)
     except RuntimeError as exc:
@@ -158,6 +167,18 @@ async def _resolve_registration_user_id(
         raise HTTPException(
             status_code=503, detail="Agent registration is temporarily unavailable"
         ) from exc
+
+
+# How the current registration authenticated. A contextvar rather than a
+# parameter because the owner-id dependency is where the credential is
+# resolved and the endpoint body is where the agent is registered — threading
+# it would mean changing the dependency's return type and every caller of it.
+_REGISTRATION_PATH: ContextVar[str] = ContextVar("switch_registration_path")
+
+
+def registration_path() -> str:
+    """How this registration authenticated, or `other` outside one."""
+    return _REGISTRATION_PATH.get("other")
 
 
 # Registration endpoints
@@ -171,6 +192,7 @@ async def register_agent_endpoint(
 ) -> RegisterAgentResponse:
     try:
         result = await protocol.register_agent(
+            registration_path=registration_path(),
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
@@ -231,6 +253,7 @@ async def _register_known(
 
     try:
         result = await protocol.register_agent(
+            registration_path=registration_path(),
             name=name,
             description=description,
             icon_url=icon_url,
@@ -828,6 +851,17 @@ async def _open_event_stream(
         except ConnectionError_ as exc:
             protocol.connections.close(conn.id, "room already claimed")
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Every claim succeeded and the stream is about to be returned, so this is
+    # the first moment a session exists. Reporting it where the connection was
+    # created instead counted every rejected attempt as a session that began
+    # and ended at once, which a retrying client repeats indefinitely.
+    #
+    # `stream_generation == 0` keeps a supervisor reattaching to a connection
+    # it already had from reading as a new session: `open()` hands back the
+    # existing Connection and bumps the generation rather than making another.
+    if conn.stream_generation == 0:
+        await protocol.sessions.started(agent, conn)
 
     return StreamingResponse(
         event_stream(

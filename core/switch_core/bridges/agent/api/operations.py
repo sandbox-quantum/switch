@@ -26,11 +26,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_protocol
 from switch_core.bridges.agent.operations import all_operations, get_operation
-from switch_core.bridges.agent.operations.callctx import (
-    CallContext,
-    reset_call_context,
-    set_call_context,
-)
+from switch_core.bridges.agent.operations.callctx import CallContext, call_context
 from switch_core.bridges.agent.protocol.connections import UnknownConnectionError
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent
@@ -103,14 +99,11 @@ async def call_operation(
     if missing:
         raise BadArgumentsError(f"{operation} requires: {', '.join(missing)}")
 
-    token = set_call_context(CallContext(agent_id=agent_id, session_key=connection_id))
-    try:
+    with call_context(CallContext(agent_id=agent_id, session_key=connection_id)):
         result = fn(**call_args)
         if inspect.isawaitable(result):
             result = await result
         return result
-    finally:
-        reset_call_context(token)
 
 
 # ── HTTP router ──────────────────────────────────────────────────────────────

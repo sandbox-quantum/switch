@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -49,6 +50,11 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+from switch_core.bridges.collaboration.install_routes import (
+    create_messaging_install_router,
+)
+from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -60,6 +66,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.slack.install import SlackAppInstaller
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -97,8 +104,11 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -107,7 +117,9 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -115,9 +127,19 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
+from switch_core.observability.bootstrap import (
+    Observability,
+    RuntimeProbes,
+    start_observability,
+)
+from switch_core.observability.pool import pool_stats
+from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.telemetry.reporter import SnapshotReporter
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -135,6 +157,11 @@ _RUNTIME_STATE_SWEEP_INTERVAL = 5.0
 # promptly rather than at the next unrelated request.
 _CONNECTION_SWEEP_INTERVAL = 2.0
 
+# The window the lifespan's teardown runs in before the process is killed
+# regardless. Anything with a deadline of its own must fit inside it — see
+# `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
+_FORCED_EXIT_GRACE_SECONDS = 3.0
+
 
 async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
     # `no_tenant` for the reason every other long-lived task does it: a task
@@ -150,7 +177,7 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: ProtocolService) -> None:
+async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -159,11 +186,16 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
     leases, then every client reconnects together, which is a worse stall. The
     clients were never given the chance to beat, so the honest reading is "we
     were not listening", not "they went away".
+
+    Its short fixed interval also makes it the most sensitive witness to the
+    loop being blocked, so every round's oversleep is reported — not only the
+    ones large enough to skip a sweep.
     """
     while True:
         started = time.monotonic()
         await asyncio.sleep(_CONNECTION_SWEEP_INTERVAL)
         overslept = (time.monotonic() - started) - _CONNECTION_SWEEP_INTERVAL
+        lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
                 "Connection sweep skipped: the event loop was blocked for %.1fs, "
@@ -184,6 +216,46 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
                 )
         except Exception:
             logger.exception("Connection sweep failed")
+
+
+# The innermost of three nested budgets: under
+# `observability.logs.SHUTDOWN_FLUSH_SECONDS`, itself under
+# `_FORCED_EXIT_GRACE_SECONDS`.
+_TELEMETRY_DRAIN_SECONDS = 1.0
+
+
+async def _drain_telemetry(
+    telemetry: TelemetryService, http_client: httpx.AsyncClient | None
+) -> None:
+    """Let in-flight product events finish, then close their client.
+
+    Never raises and never overruns: a relay that stopped answering must not
+    hold the process past the point where it is killed.
+    """
+    try:
+        async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
+            await telemetry.aclose()
+    except TimeoutError:
+        logger.warning(
+            "Gave up waiting for in-flight telemetry after %.1fs; those events "
+            "are lost.",
+            _TELEMETRY_DRAIN_SECONDS,
+        )
+    except Exception:
+        logger.warning("Telemetry shutdown failed; continuing.", exc_info=True)
+    if http_client is not None:
+        try:
+            await http_client.aclose()
+        except Exception:
+            logger.warning("Telemetry HTTP client did not close.", exc_info=True)
+
+
+async def _snapshot_loop(reporter: SnapshotReporter) -> None:
+    # `no_tenant` for the reason every other long-lived task does it: the
+    # snapshot binds each tenant in turn as it counts, and must not inherit
+    # whichever one happened to be bound when the task was created.
+    with no_tenant():
+        await reporter.run_forever()
 
 
 class _QuietPollFilter(logging.Filter):
@@ -278,8 +350,10 @@ async def run(config: SwitchConfig) -> None:
     bridge_store = CollaborationBridgeStore()
     external_user_store = ExternalUserStore()
     bridge_message_map_store = BridgeMessageMapStore()
+    session_request_post_store = SessionRequestPostStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
+    invitation_store = InvitationStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -290,6 +364,7 @@ async def run(config: SwitchConfig) -> None:
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
     media_store = MediaStore()
+    template_store = TemplateStore()
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -311,6 +386,12 @@ async def run(config: SwitchConfig) -> None:
     event_buffer = EventBuffer()
     connector_store = ServerConnectorStore()
 
+    # ── Product telemetry ────────────────────────────────────────────────────
+    # Before the services that report through it, switched on or not.
+    telemetry, installed_at, telemetry_http = await build_telemetry(
+        config, session_factory, switch_core_version()
+    )
+
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -319,6 +400,7 @@ async def run(config: SwitchConfig) -> None:
         package_store=package_store,
         room_link_store=room_link_store,
         session_factory=session_factory,
+        telemetry=telemetry,
     )
     # Once per tenant, not once for the deployment: `reference_types` is
     # scoped, so "every stored type a built-in shadows" is a question asked of
@@ -400,6 +482,7 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         external_user_store=external_user_store,
         bridge_message_map_store=bridge_message_map_store,
+        session_request_post_store=session_request_post_store,
         room_store=room_store,
         agent_store=agent_store,
         client_store=client_store,
@@ -409,6 +492,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
+        telemetry=telemetry,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
@@ -421,6 +505,7 @@ async def run(config: SwitchConfig) -> None:
         collab_bridge_store=bridge_store,
         resource_service=resource_service,
         session_factory=session_factory,
+        telemetry=telemetry,
     )
     collab_lifecycle._room_service = room_service
 
@@ -458,7 +543,12 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         connections=connections,
+        telemetry=telemetry,
     )
+    # Every close reports, whichever of the five paths did it — and only for a
+    # connection the handler saw start.
+    connections.set_close_listener(protocol.sessions.on_close)
+
     # ── Server-side connector lifecycle ─────────────────────────────────────
     connector_lifecycle = ServerSideConnectorLifecycleService(
         connector_store=connector_store,
@@ -466,10 +556,42 @@ async def run(config: SwitchConfig) -> None:
         protocol=protocol,
         session_factory=session_factory,
         encryption_secret=config.jwt_secret_key,
+        telemetry=telemetry,
     )
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
     )
+
+    # ── Messaging app installs ──────────────────────────────────────────────
+    # Registration is the feature flag. An installer exists for a platform when
+    # this deployment holds that platform's app credentials, and the whole
+    # install surface refuses when none does — a deployment that registered no
+    # app cannot half-offer the button. Config validation has already required
+    # the three Slack values all together and a public origin with them.
+    installers = MessagingInstallerRegistry()
+    if config.slack_app_client_id:
+        assert config.slack_app_client_secret is not None
+        assert config.slack_app_signing_secret is not None
+        installers.register(
+            SlackAppInstaller(
+                client_id=config.slack_app_client_id,
+                client_secret=config.slack_app_client_secret,
+                signing_secret=config.slack_app_signing_secret,
+            )
+        )
+
+    install_service: MessagingInstallService | None = None
+    if installers.platforms():
+        assert config.messaging_public_url is not None
+        install_service = MessagingInstallService(
+            session_factory=session_factory,
+            store=MessagingInstallStore(),
+            receipts=MessagingEventReceiptStore(),
+            installers=installers,
+            lifecycle=collab_lifecycle,
+            public_origin=config.messaging_public_url,
+            secret=config.jwt_secret_key,
+        )
 
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
@@ -487,8 +609,11 @@ async def run(config: SwitchConfig) -> None:
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        invitation_store=invitation_store,
+        template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
+        install_service=install_service,
         config=config,
     )
 
@@ -505,26 +630,85 @@ async def run(config: SwitchConfig) -> None:
         "telegram", TelegramAdapter, TelegramConnectionConfig
     )
 
-    # Health check mounted on the agent bridge app
+    # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
+    # wait on it at boot, so anything it checked would become a boot-ordering
+    # dependency for them. Readiness is /health/ready below.
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    # Set by the lifespan; before that the honest answer is "no".
+    observability: Observability | None = None
+
+    @agent_bridge_app.get("/health/ready")
+    async def readiness_check() -> JSONResponse:
+        if observability is None:
+            return JSONResponse(
+                {"status": "not ready", "checks": {"startup": {"healthy": False}}},
+                status_code=503,
+            )
+        report = observability.monitor.current()
+        return JSONResponse(
+            report.as_response(), status_code=200 if report.ready else 503
+        )
+
+    # Mounted on the agent-bridge app, not inside /gateway: this is the leg a
+    # platform and a customer's browser reach, and /gateway is neither routed
+    # here from outside nor reachable without a cookie they do not have.
+    if install_service is not None:
+        agent_bridge_app.include_router(
+            create_messaging_install_router(install_service),
+            tags=["messaging-installs"],
+        )
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
     await client_lifecycle.ensure_system_client("admin")
 
+    probes = RuntimeProbes(
+        listener_connected=message_listener.connected.is_set,
+        bridges_running=collab_lifecycle.running_count,
+        bridges_configured=collab_lifecycle.expected_count,
+        clients_running=client_lifecycle.running_count,
+        connectors_running=connector_lifecycle.running_count,
+        connectors_configured=connector_lifecycle.expected_count,
+        agents_connected=lambda: len(connections.live_agent_ids()),
+        pool_stats=lambda: pool_stats(engine),
+    )
+
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
+    snapshot_reporter = SnapshotReporter(
+        telemetry=telemetry,
+        session_factory=session_factory,
+        interval_hours=config.telemetry_snapshot_interval_hours,
+        installed_at=installed_at,
+        live_session_count=connections.live_connection_count,
+    )
+
     @asynccontextmanager
     async def lifespan(app: object) -> AsyncIterator[None]:
+        nonlocal observability
         async with original_lifespan(app):  # type: ignore[arg-type]
+            observability = start_observability(
+                config=config,
+                version=switch_core_version(),
+                session_factory=session_factory,
+                probes=probes,
+            )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             connection_sweep_task = asyncio.create_task(
-                _connection_sweep_loop(protocol)
+                _connection_sweep_loop(protocol, observability.lag)
+            )
+            # Only when telemetry is on: the chart tells a customer that off
+            # means nothing is collected, and the fan-out is not free.
+            snapshot_task = (
+                asyncio.create_task(_snapshot_loop(snapshot_reporter))
+                if telemetry.enabled
+                else None
             )
             await message_listener.start()
             try:
@@ -532,7 +716,18 @@ async def run(config: SwitchConfig) -> None:
             finally:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
+                if snapshot_task is not None:
+                    snapshot_task.cancel()
                 await message_listener.stop()
+                # Before the operational flush, and bounded: the whole
+                # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
+                # product event is the least valuable thing in it.
+                await protocol.sessions.aclose()
+                await _drain_telemetry(telemetry, telemetry_http)
+                await observability.aclose()
+                # So a probe during teardown gets a 503 rather than the last
+                # cached answer, which may still say ready.
+                observability = None
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 
@@ -548,6 +743,10 @@ async def run(config: SwitchConfig) -> None:
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
+
+    telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
+    # The funnel's first step, and only for a deployment with an install date.
+    await telemetry.emit_milestone("deployment_installed")
 
     server_config = uvicorn.Config(
         agent_bridge_app,
@@ -1024,7 +1223,9 @@ async def _shutdown(
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 
-    await asyncio.sleep(1)
+    # `should_exit` starts uvicorn's shutdown, which runs the lifespan's
+    # teardown; this sleep is all the time that teardown gets.
+    await asyncio.sleep(_FORCED_EXIT_GRACE_SECONDS)
     logger.info("Forcing exit")
     os._exit(0)
 
@@ -1071,6 +1272,33 @@ async def _migrate_and_grant(config: SwitchConfig) -> None:
         "Database migrations applied as %s",
         config.db_owner_user or config.db_user,
     )
+
+
+def migrate() -> None:
+    """Entry point for migrating a deployment without starting a server.
+
+    Exists so a deploy can bring the schema up in a job of its own, ahead of
+    the pods that will serve on it, and still run *this* code rather than a
+    bare `alembic upgrade head`. The difference is everything `_migrate_and_grant`
+    adds around the upgrade: the boot lock, so the job and a replica that
+    starts while it is running cannot both be applying DDL, and the grant
+    re-issue, without which a table the migration just created is invisible to
+    the runtime role. A job that skipped either would leave the deployment in a
+    state the server then has to repair at boot, one replica at a time.
+
+    Boot runs the same function, and must keep doing so: nothing guarantees a
+    deployment has a migration job, and a developer running the server against
+    a fresh database has none. Running it twice is not wasted work — the second
+    pass finds no pending revisions and re-issues grants that are already
+    correct.
+    """
+    config = SwitchConfig()
+    running_version = switch_core_version()
+    configure_logging(config, running_version)
+
+    logger.info("Migrating switch-core %s", running_version or "(version unknown)")
+
+    asyncio.run(_migrate_and_grant(config))
 
 
 def main() -> None:

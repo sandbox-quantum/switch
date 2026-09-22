@@ -124,9 +124,12 @@ class ConnectorCore:
         logger.info("Stopped connector core %s", self._connector_id)
 
     async def delete_agents(self) -> None:
+        # Removing the connector's agents is one unit of work for its row, so
+        # it binds that row's tenant here — as registration and each poll do.
         for handle in self._agents.values():
             try:
-                await self._protocol.delete_agent(agent_id=handle.agent_id)
+                with tenant_scope(self._connector_tenant_id):
+                    await self._protocol.delete_agent(agent_id=handle.agent_id)
             except Exception:
                 logger.exception(
                     "Failed to delete agent %s during connector removal",

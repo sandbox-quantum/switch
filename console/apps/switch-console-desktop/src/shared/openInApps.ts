@@ -55,7 +55,6 @@ const ICON_PATHS = {
   rubymine: 'rubymine.svg',
   rustrover: 'rustrover.svg',
   athas: 'athas.svg',
-  kiro: 'kiro.png',
   antigravity: 'antigravity.png',
 } as const;
 
@@ -405,31 +404,6 @@ const _OPEN_IN_APPS = {
       linux: {
         openCommands: ['athas {{path}}'],
         checkCommands: ['athas'],
-      },
-    },
-  },
-  kiro: {
-    id: 'kiro',
-    label: 'Kiro',
-    iconPath: ICON_PATHS.kiro,
-    autoInstall: true,
-    platforms: {
-      darwin: {
-        openCommands: [
-          'command -v kiro >/dev/null 2>&1 && kiro {{path}}',
-          'open -a "Kiro" {{path}}',
-        ],
-        checkCommands: ['kiro'],
-        bundleIds: ['dev.kiro.desktop'],
-        appNames: ['Kiro'],
-      },
-      win32: {
-        openCommands: ['kiro {{path}}'],
-        checkCommands: ['kiro'],
-      },
-      linux: {
-        openCommands: ['kiro {{path}}'],
-        checkCommands: ['kiro'],
       },
     },
   },

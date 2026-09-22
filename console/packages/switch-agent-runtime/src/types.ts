@@ -24,6 +24,12 @@ export interface MessagePayload {
   addressed: boolean;
   sender: string;
   sender_name: string;
+  /** "user", "agent", or "platform" (the Switch app itself). Absent from
+   * servers that predate the field. */
+  sender_kind?: string | null;
+  /** For a platform message: the person whose authority it carries, such as
+   * the creator behind a template's kickoff. */
+  on_behalf_of?: string | null;
   message_id: string;
   body: string;
   timestamp: number;

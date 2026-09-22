@@ -102,6 +102,14 @@ export interface AddressingRule {
   room_groups: AddressingDimension;
   users: AddressingDimension;
   agents: AddressingDimension;
+  // Symbolic subjects, resolved when a message arrives. Absent reads as
+  // false, as it does server-side.
+  owner?: boolean;
+  owner_agents?: boolean;
+  // Admit the Switch platform on its own account. Denied by default even for
+  // an open policy. A platform message sent for a person is judged as that
+  // person instead.
+  platform?: boolean;
 }
 
 export interface AddressingPolicy {
@@ -808,11 +816,12 @@ export async function fetchAllExternalUsers(): Promise<
   return [...byId.values()];
 }
 
-export async function deleteBridge(bridgeId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/collaborations/${bridgeId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+// Throws rather than returning false: a connection created by installing the
+// Switch app is refused here with a 409 saying to disconnect the app instead,
+// and a caller that only sees "it didn't work" would leave the operator
+// clicking Delete at a row that will never go.
+export async function deleteBridge(bridgeId: string): Promise<{ ok: boolean }> {
+  return jsonRequest<{ ok: boolean }>(`/collaborations/${bridgeId}`, "DELETE");
 }
 
 export interface BridgeUpdateInput {
@@ -829,6 +838,62 @@ export async function updateBridge(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
+}
+
+// ── Installed apps ───────────────────────────────────────────────────────────
+//
+// The other way a connection comes into being: instead of an operator
+// registering their own app and pasting its credentials, they install this
+// deployment's app into their workspace and the platform hands the credential
+// back. Most deployments have no app of their own, so `fetchInstallablePlatforms`
+// answering with an empty list is the ordinary case and not a failure.
+
+export interface InstalledApp {
+  id: string;
+  platform: string;
+  external_workspace_id: string;
+  // "active", "disconnected" (ended here) or "revoked" (ended at the
+  // platform). The last two are kept apart because an operator whose
+  // connection stopped working needs to know which of the two it was.
+  status: string;
+  // The platform's own spelling of what was granted, shown verbatim.
+  scopes: string;
+  bridge_id: string | null;
+  installed_at: string;
+  ended_at: string | null;
+}
+
+export async function fetchInstallablePlatforms(): Promise<string[] | null> {
+  const res = await fetchJson<{ platforms: string[] }>("/messaging-apps");
+  return res === null ? null : res.platforms;
+}
+
+export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
+  const res = await fetchJson<{ installs: InstalledApp[] }>(
+    "/messaging-apps/installs",
+  );
+  return res === null ? null : res.installs;
+}
+
+// Answers with a URL rather than redirecting, because the install has to begin
+// in a top-level window on the platform's own domain — a redirect returned to
+// this fetch would be followed by the fetch.
+export async function beginAppInstall(platform: string): Promise<string> {
+  const res = await jsonRequest<{ authorize_url: string }>(
+    `/messaging-apps/${platform}/install`,
+    "POST",
+  );
+  return res.authorize_url;
+}
+
+// Throwing, because 502 here means the platform refused to revoke, nothing was
+// destroyed, and trying again is the right next move — all of which is in the
+// message and none of which survives a boolean.
+export async function disconnectApp(installId: string): Promise<InstalledApp> {
+  return jsonRequest<InstalledApp>(
+    `/messaging-apps/installs/${installId}`,
+    "DELETE",
+  );
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -1494,4 +1559,108 @@ export async function detachPackageFromRoom(
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
   }
+}
+
+// ── Templates ────────────────────────────────────────────────────────────────
+
+export interface TemplateSummary {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  name: string;
+  description: string;
+  kind: string;
+  version: number;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateDetail extends TemplateSummary {
+  content: string;
+}
+
+export interface TemplateCreateInput {
+  name: string;
+  description: string;
+  kind: string;
+  content: string;
+}
+
+export interface TemplateUpdateInput {
+  name?: string;
+  description?: string;
+  kind?: string;
+  content?: string;
+}
+
+export interface TemplateDeleteResult {
+  deleted_id: string;
+}
+
+export async function fetchTemplates(): Promise<TemplateSummary[] | null> {
+  return fetchJson<TemplateSummary[]>("/templates");
+}
+
+export async function fetchTemplate(id: string): Promise<TemplateDetail | null> {
+  return fetchJson<TemplateDetail>(`/templates/${id}`);
+}
+
+export async function createTemplate(
+  input: TemplateCreateInput,
+): Promise<TemplateDetail> {
+  return jsonRequest<TemplateDetail>("/templates", "POST", input);
+}
+
+export async function updateTemplate(
+  id: string,
+  input: TemplateUpdateInput,
+): Promise<TemplateDetail> {
+  return jsonRequest<TemplateDetail>(`/templates/${id}`, "PATCH", input);
+}
+
+export async function deleteTemplate(id: string): Promise<TemplateDeleteResult> {
+  return jsonRequest<TemplateDeleteResult>(`/templates/${id}`, "DELETE");
+}
+
+/** The stored document itself, exactly as uploaded — for download and copy. */
+export async function fetchTemplateContent(id: string): Promise<string> {
+  const res = await fetch(`${BASE}/templates/${id}/content`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+  }
+  return res.text();
+}
+
+export interface TemplateFinding {
+  code: string;
+  message: string;
+  subject: string | null;
+  blocking: boolean;
+}
+
+export interface TemplateValidation {
+  ok: boolean;
+  /** The server refuses an upload of this document. */
+  blocked: boolean;
+  errors: TemplateFinding[];
+  warnings: TemplateFinding[];
+}
+
+/**
+ * Check a document without storing it.
+ *
+ * Mostly advisory — but `blocked` is not. The server refuses an upload that
+ * is not YAML at all, so a form that ignored it would offer a button that
+ * always fails.
+ */
+export async function validateTemplate(
+  content: string,
+): Promise<TemplateValidation> {
+  return jsonRequest<TemplateValidation>("/templates/validate", "POST", {
+    content,
+  });
 }

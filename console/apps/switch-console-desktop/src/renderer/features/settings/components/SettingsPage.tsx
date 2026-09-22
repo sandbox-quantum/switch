@@ -7,15 +7,12 @@ import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
-import RemoteAttachmentSettingsCard from './RemoteAttachmentSettingsCard';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
-  EnableTmuxRow,
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
 import TelemetrySettingsCard from './TelemetrySettingsCard';
-import TerminalSettingsCard from './TerminalSettingsCard';
 import ThemeCard from './ThemeCard';
 import { UpdateCard } from './UpdateCard';
 
@@ -45,7 +42,6 @@ function GeneralSettingsPage() {
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
-      <EnableTmuxRow />
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
       <TelemetrySettingsCard />
@@ -62,8 +58,6 @@ function InterfaceSettingsPage() {
         description="Customize the appearance and behavior of the app."
       />
       <ThemeCard />
-      <TerminalSettingsCard />
-      <RemoteAttachmentSettingsCard />
     </div>
   );
 }

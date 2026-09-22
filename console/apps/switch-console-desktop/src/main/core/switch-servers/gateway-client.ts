@@ -1,3 +1,4 @@
+import type { ClientCommand } from '@switch-console/shared/session-v1';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -1043,6 +1044,180 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
   });
 }
 
+/** The result of provisioning a room from a YAML template. */
+export type TemplateProvisionResult = {
+  roomId: string;
+  roomName: string;
+  failedAttachments: Array<{ kind: string; id: string; error: string }>;
+};
+
+/** The result of provisioning a room group from a YAML template. */
+export type GroupProvisionResult = {
+  groupId: string;
+  groupName: string;
+  rooms: TemplateProvisionResult[];
+  /** Rooms or links that could not be created. The others were. */
+  errors: Array<Record<string, unknown> & { error: string }>;
+};
+
+export type ProvisionFromTemplateResult =
+  | ({ kind: 'room' } & TemplateProvisionResult)
+  | ({ kind: 'group' } & GroupProvisionResult);
+
+type RoomJson = {
+  room_id: string;
+  room_name: string;
+  failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+};
+
+function toRoomResult(json: RoomJson): TemplateProvisionResult {
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
+/**
+ * Create a room, or a group of rooms, from a YAML template
+ * (`POST /rooms/from-yaml`). Sends the template as a JSON body with the YAML
+ * text and any user-supplied inputs. The server parses the template,
+ * interpolates inputs, and provisions everything in one call; the document's
+ * shape decides which result comes back.
+ *
+ * A 400 carries a `detail` naming the bad input; the caller maps it back to
+ * the form field.
+ */
+export async function createRoomFromTemplate(
+  server: SwitchServer,
+  yamlText: string,
+  inputs: Record<string, string | number | boolean>
+): Promise<ProvisionFromTemplateResult> {
+  const res = await gatewayFetch(server, '/rooms/from-yaml', {
+    authenticated: true,
+    method: 'POST',
+    body: { yaml: yamlText, inputs },
+  });
+  const json = (await res.json()) as
+    | RoomJson
+    | {
+        group_id: string;
+        group_name: string;
+        rooms?: RoomJson[];
+        errors?: Array<Record<string, unknown> & { error: string }>;
+      };
+  if ('group_id' in json) {
+    return {
+      kind: 'group',
+      groupId: json.group_id,
+      groupName: json.group_name,
+      rooms: (json.rooms ?? []).map(toRoomResult),
+      errors: json.errors ?? [],
+    };
+  }
+  return { kind: 'room', ...toRoomResult(json) };
+}
+
+// ── Stored templates (template registry) ────────────────────────────────────
+
+export type StoredTemplateSummary = {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+  creator: string;
+  /** The owner's user id, so the Console can mark the signed-in user's own templates. */
+  ownerId: string | null;
+};
+
+export type StoredTemplateDetail = StoredTemplateSummary & {
+  definition: string;
+};
+
+type RegistryTemplateSummary = {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  name: string;
+  description: string;
+  kind: string;
+};
+
+function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    creator: t.owner_name ?? t.owner_id,
+    ownerId: t.owner_id,
+  };
+}
+
+export async function fetchTemplates(
+  server: SwitchServer,
+  kind?: string
+): Promise<StoredTemplateSummary[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await gatewayFetch(server, `/templates${qs}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as RegistryTemplateSummary[];
+  return json.map(toSummary);
+}
+
+/** Store a template document on the server's registry (`POST /templates`). */
+export async function createTemplate(
+  server: SwitchServer,
+  params: { name: string; description: string; kind: string; content: string }
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, '/templates', {
+    authenticated: true,
+    method: 'POST',
+    body: params,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
+/** Remove a template from the server's registry (`DELETE /templates/{id}`). */
+export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
+  await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+export async function fetchTemplateDetail(
+  server: SwitchServer,
+  templateId: string
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
+/**
+ * Fetch the JSON Schema describing a valid room template. Returns null when
+ * the server does not support the endpoint (404): older servers without
+ * `params:` support.
+ */
+export async function fetchTemplateSchema(
+  server: SwitchServer
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await gatewayFetch(server, '/rooms/template-schema', {
+      authenticated: true,
+    });
+    return (await res.json()) as Record<string, unknown>;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return null;
+    throw e;
+  }
+}
+
 export async function fetchRoomRoles(
   server: SwitchServer,
   roomId: string
@@ -1246,4 +1421,118 @@ export async function createRoom(
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
+}
+
+export async function fetchSdkSessions(server: SwitchServer): Promise<unknown> {
+  return (await gatewayFetch(server, '/sessions', { authenticated: true })).json();
+}
+export async function fetchSdkSnapshot(server: SwitchServer, sessionId: string): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}`, {
+      authenticated: true,
+    })
+  ).json();
+}
+export async function fetchSdkEvents(
+  server: SwitchServer,
+  sessionId: string,
+  after: number
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, {
+      authenticated: true,
+    })
+  ).json();
+}
+export async function fetchSdkCommandStatus(
+  server: SwitchServer,
+  sessionId: string,
+  commandId: string
+): Promise<unknown> {
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,
+      { authenticated: true }
+    )
+  ).json();
+}
+export async function submitSdkCommand(
+  server: SwitchServer,
+  command: ClientCommand
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(command.sessionId)}/commands`, {
+      authenticated: true,
+      method: 'POST',
+      body: {
+        commandId: command.commandId,
+        epoch: command.epoch,
+        surface: 'console',
+        roomId: null,
+        body: command.body,
+      },
+    })
+  ).json();
+}
+
+export async function reconcileSdkCommand(
+  server: SwitchServer,
+  command: ClientCommand
+): Promise<unknown> {
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(command.sessionId)}/commands/reconcile`,
+      {
+        authenticated: true,
+        method: 'POST',
+        body: {
+          commandId: command.commandId,
+          epoch: command.epoch,
+          surface: 'console',
+          roomId: null,
+          body: command.body,
+        },
+      }
+    )
+  ).json();
+}
+
+export async function uploadSdkAttachment(
+  server: SwitchServer,
+  sessionId: string,
+  file: {
+    attachmentId: string;
+    name: string;
+    mimeType: string;
+    data: string;
+  }
+): Promise<unknown> {
+  if (file.data.length > 14 * 1024 * 1024) throw new Error('Attachment exceeds 10 MiB.');
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(file.attachmentId)}`,
+      {
+        authenticated: true,
+        method: 'PUT',
+        body: { name: file.name, mimeType: file.mimeType, data: file.data },
+      }
+    )
+  ).json();
+}
+
+export async function retireSdkSession(
+  server: SwitchServer,
+  sessionId: string,
+  epoch: string
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/retire`, {
+      authenticated: true,
+      method: 'POST',
+      body: { epoch },
+    })
+  ).json();
 }

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.db.models import Client, Message, MessageAttachment, Room
 from switch_core.db.stores.message_store import MessageStore
 
@@ -290,6 +291,74 @@ class TestEntries:
         result = await _service(session_factory).read_context("agent-1", room_id)
 
         assert result["threads"][0]["root"]["sender_name"] == "@x:s"
+
+    async def test_a_platform_message_carries_its_kind_and_the_person_behind_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A kickoff the platform posted for someone reads back with both
+        facts, from the stored content; an ordinary row carries neither."""
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(session, room_id, client_id, "$plain", at=0)
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$kick",
+                at=1,
+                sender="@switch-admin:s",
+                sender_name=None,
+                body="@scout go",
+                content={
+                    "body": "@scout go",
+                    PLATFORM_MARKER: {
+                        "on_behalf_of": {"user_id": "user-9", "name": "Abel"}
+                    },
+                },
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        by_id = {t["root"]["id"]: t["root"] for t in result["threads"]}
+        assert "sender_kind" not in by_id["$plain"]
+        assert "on_behalf_of" not in by_id["$plain"]
+        assert by_id["$kick"]["sender_kind"] == "platform"
+        assert by_id["$kick"]["on_behalf_of"] == "Abel"
+
+    async def test_a_kickoff_flagged_for_the_channel_reads_as_its_own_root(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Threaded under the headline in the room, top-level in the history
+        an agent reads, so the work it starts is answered in the channel."""
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(
+                session, room_id, client_id, "$head", at=0, body="Template kickoff"
+            )
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$kick",
+                at=1,
+                thread_root="$head",
+                body="@scout go",
+                content={
+                    "body": "@scout go",
+                    PLATFORM_MARKER: {
+                        "on_behalf_of": {"user_id": "user-9", "name": "Abel"},
+                        "reply_in_channel": True,
+                    },
+                },
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        roots = {t["root"]["id"]: t for t in result["threads"]}
+        assert set(roots) == {"$head", "$kick"}
+        assert roots["$head"]["replies"] == []
 
 
 class TestTruncation:

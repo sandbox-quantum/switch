@@ -8,19 +8,12 @@ export type NotificationType =
   | 'permission_prompt'
   | 'idle_prompt'
   | 'auth_success'
-  | 'elicitation_dialog'
-  /**
-   * The session never reported that it started. Raised by Switch Console
-   * itself, not by the agent — a CLI stopped on its own first-run prompt has
-   * nothing to send. See session-startup-watch.
-   */
-  | 'startup_prompt';
+  | 'elicitation_dialog';
 
 export const ATTENTION_NOTIFICATION_TYPES: ReadonlySet<NotificationType> = new Set([
   'permission_prompt',
   'idle_prompt',
   'elicitation_dialog',
-  'startup_prompt',
 ]);
 
 export function isAttentionNotification(nt: NotificationType | undefined): nt is NotificationType {
@@ -48,5 +41,5 @@ export interface AgentSessionExited {
   sessionId: string;
 }
 
-/** Emitted when an agent PTY session exits. Topic = sessionId. */
+/** Emitted when an agent session exits. Topic = sessionId. */
 export const agentSessionExitedChannel = defineEvent<AgentSessionExited>('agent:session-exited');

@@ -111,15 +111,15 @@ class _NoBridges:
     """Stand-in for CollaborationBridgeLifecycleService when no bridge is configured.
 
     Room creation only calls `.get(bridge_id)` when a bridge_id is set (ours is
-    None), and agent registration calls `.all_bridges()` for bridge-identity
-    creation. Both paths are exercised here as no-ops — the feature under test
-    involves no collaboration bridge.
+    None), and agent registration calls `.bridges_for_tenant()` for
+    bridge-identity creation. Both paths are exercised here as no-ops — the
+    feature under test involves no collaboration bridge.
     """
 
     def get(self, _bridge_id: str) -> None:
         return None
 
-    def all_bridges(self) -> list:
+    def bridges_for_tenant(self, tenant_id: str) -> list:
         return []
 
 

@@ -30,7 +30,7 @@ describe('getEffectiveSessionSettings', () => {
       sessionFs: makeSessionFs({
         scripts: { setup: 'pnpm install', run: 'npm run dev' },
         shellSetup: 'source .envrc',
-        tmux: true,
+        autoRunSetupScriptOnSessionCreation: true,
         remote: 'upstream',
       }),
     });
@@ -43,7 +43,7 @@ describe('getEffectiveSessionSettings', () => {
         run: 'pnpm dev',
       },
     });
-    expect(settings).not.toHaveProperty('tmux');
+    expect(settings).not.toHaveProperty('autoRunSetupScriptOnSessionCreation');
     expect(settings).not.toHaveProperty('remote');
     expect(settings).not.toHaveProperty('baseRemote');
   });

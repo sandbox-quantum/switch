@@ -1,27 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
-import { MessageSquare, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
-import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import {
+  AgentPickerRow,
+  ChosenAgentTile,
+  agentProviderLabelFor,
+} from '@renderer/lib/components/agent-picker';
+import { BridgeTile, bridgeUnusableReason } from '@renderer/lib/components/bridge-tile';
+import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
-import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from '@renderer/lib/ui/combobox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
@@ -32,12 +26,7 @@ import {
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import { cn } from '@renderer/utils/utils';
-import type {
-  LinkedIdentity,
-  RemoteAgentSummary,
-  RemoteBridge,
-} from '@shared/core/switch-servers/switch-servers';
+import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';
 import { useMyIdentities } from './use-my-identities';
 
@@ -215,6 +204,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   bridge={bridge}
                   identity={identities?.find((i) => i.bridgeId === bridge.id) ?? null}
                   identitiesKnown={identities !== null}
+                  unusable={bridgeUnusableReason(bridge, { needsChannelCreation: true })}
                   selected={selectedBridge?.id === bridge.id}
                   onSelect={() => setBridgeId(bridge.id)}
                 />
@@ -296,7 +286,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
-                    serverId={serverId}
+                    subtitle={agentProviderLabelFor(agent.id, serverId)}
                     onRemove={() =>
                       setAgents((current) => current.filter((a) => a.id !== agent.id))
                     }
@@ -305,43 +295,17 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               </div>
             )}
 
-            <Combobox
+            <PickerCombobox
               items={invitableAgents.filter((a) => !agents.some((s) => s.id === a.id))}
-              value={null}
-              onValueChange={(next: RemoteAgentSummary | null) => {
-                if (next) setAgents((current) => [...current, next]);
-              }}
-              isItemEqualToValue={(a: RemoteAgentSummary, b: RemoteAgentSummary) => a.id === b.id}
-              filter={(item: RemoteAgentSummary, query) =>
-                item.name.toLowerCase().includes(query.toLowerCase())
-              }
-              autoHighlight
-            >
-              {/* The search box is the control, rather than a button that opens
-                  one: adding several agents is the normal case, and a picker
-                  that has to be reopened per agent makes the normal case the
-                  laborious one. */}
-              <ComboboxInput
-                showTrigger={false}
-                disabled={agentsQuery.isLoading}
-                placeholder={agentsQuery.isLoading ? 'Loading agents…' : 'Search agents to add...'}
-                leftAddon={<Search className="size-3.5 text-foreground-muted" />}
-              />
-              <ComboboxContent className="min-w-(--anchor-width)">
-                <ComboboxList>
-                  {(item: RemoteAgentSummary) => (
-                    <ComboboxItem key={item.id} value={item} showCheck={false}>
-                      <AgentAvatar name={item.name} iconUrl={item.iconUrl} size={22} />
-                      <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                      <span className="shrink-0 text-xs text-foreground-muted">
-                        {providerLabelFor(item.id, serverId)}
-                      </span>
-                    </ComboboxItem>
-                  )}
-                </ComboboxList>
-                <ComboboxEmpty>No agents found</ComboboxEmpty>
-              </ComboboxContent>
-            </Combobox>
+              onPick={(next) => setAgents((current) => [...current, next])}
+              searchText={(item) => item.name}
+              renderItem={(item) => (
+                <AgentPickerRow agent={item} subtitle={agentProviderLabelFor(item.id, serverId)} />
+              )}
+              disabled={agentsQuery.isLoading}
+              placeholder={agentsQuery.isLoading ? 'Loading agents…' : 'Search agents to add...'}
+              emptyText="No agents found"
+            />
 
             <span className="text-xs text-foreground-muted">
               Optional — agents can be added to the room later.
@@ -389,130 +353,6 @@ function FormRow({ label, children }: { label: string; children: React.ReactNode
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">{children}</div>
     </div>
   );
-}
-
-/**
- * One messaging app to put the room in, with the account the user has on it.
- *
- * Every connected app is drawn, including the ones that cannot back a new room
- * — those are disabled and say why. Omitting them would be quieter and worse:
- * the user knows their server has Telegram on it, and a grid that simply does
- * not mention it reads as a bug rather than as a refusal.
- */
-function BridgeTile({
-  bridge,
-  identity,
-  identitiesKnown,
-  selected,
-  onSelect,
-}: {
-  bridge: RemoteBridge;
-  identity: LinkedIdentity | null;
-  identitiesKnown: boolean;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const platform = bridgePlatformLabel(bridge.type);
-  const unusable =
-    bridge.status !== 'active'
-      ? 'Not running'
-      : !bridge.channelCreationSupported
-        ? `${platform} cannot create channels`
-        : !bridge.canCreateChannels
-          ? 'Channel creation is off'
-          : null;
-
-  return (
-    <button
-      type="button"
-      disabled={unusable !== null}
-      aria-pressed={selected}
-      onClick={onSelect}
-      className={cn(
-        'flex cursor-pointer items-center gap-2.5 rounded-[10px] border p-3 text-left transition-colors',
-        // Overlay tokens rather than `background-1`, which in dark mode is
-        // exactly the dialog's own surface — the hover was being drawn, in the
-        // colour of the thing behind it.
-        selected ? 'border-foreground bg-[var(--sel)]' : 'border-border hover:bg-[var(--sel-soft)]',
-        unusable !== null && 'cursor-not-allowed opacity-50 hover:bg-transparent'
-      )}
-    >
-      <span className="flex size-6 shrink-0 items-center justify-center">
-        {hasBridgeIcon(bridge.type) ? (
-          <BridgeIcon bridgeType={bridge.type} size={20} />
-        ) : (
-          <MessageSquare className="size-5 text-foreground-muted" />
-        )}
-      </span>
-      <span className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">{bridge.displayName}</span>
-        {/* Three different things, never conflated: why this app cannot be
-            used, which account on it is you, or that Switch cannot tell. */}
-        {unusable !== null ? (
-          <span className="truncate text-xs text-foreground-muted">{unusable}</span>
-        ) : !identitiesKnown ? null : identity === null ? (
-          <span className="truncate text-xs text-amber-600 dark:text-amber-500">
-            No account linked
-          </span>
-        ) : (
-          <span className="truncate text-xs text-foreground-muted">{handleOf(identity)}</span>
-        )}
-      </span>
-    </button>
-  );
-}
-
-/** An agent already added to the room, with the way to take it back out. */
-function ChosenAgentTile({
-  agent,
-  serverId,
-  onRemove,
-}: {
-  agent: RemoteAgentSummary;
-  serverId: string;
-  onRemove: () => void;
-}) {
-  return (
-    // `--fill` rather than `--surface-2`: in dark mode that surface is the
-    // dialog's own background, so a tile drawn in it was a tile nobody could
-    // see.
-    <div className="group relative flex flex-col gap-2 rounded-[10px] bg-[var(--fill)] p-3">
-      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={26} />
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">{agent.name}</span>
-        <span className="truncate text-xs text-foreground-muted">
-          {providerLabelFor(agent.id, serverId)}
-        </span>
-      </div>
-      <button
-        type="button"
-        aria-label={`Remove ${agent.name}`}
-        onClick={onRemove}
-        className="absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100"
-      >
-        <X className="size-3.5" />
-      </button>
-    </div>
-  );
-}
-
-/** This install's record of a Switch agent, which is where its provider is
- * known — the server's summary says what type it is, not what runs it here. */
-function localAgentFor(switchAgentId: string, serverId: string) {
-  return (
-    agentsStore.agentsOnServer(serverId).find((a) => a.switchAgentId === switchAgentId) ?? null
-  );
-}
-
-function providerLabelFor(switchAgentId: string, serverId: string): string {
-  return agentProviderLabel(localAgentFor(switchAgentId, serverId)?.providerId);
-}
-
-/** The claimed account as a handle. Platforms differ on whether the username
- * they report already carries the sigil, so add one only when it is missing. */
-function handleOf(identity: LinkedIdentity): string {
-  const username = identity.externalUsername;
-  return username.startsWith('@') ? username : `@${username}`;
 }
 
 /** Turn a failed create into something the user can act on. */

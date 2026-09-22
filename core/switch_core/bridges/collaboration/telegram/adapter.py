@@ -7,12 +7,15 @@ import re
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, NamedTuple
 
 from telegram import (
     BotCommand,
     ForceReply,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaDocument,
     InputMediaPhoto,
     LinkPreviewOptions,
@@ -21,14 +24,29 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ChatType, ParseMode
-from telegram.error import BadRequest, Conflict, TelegramError
+from telegram.error import (
+    BadRequest,
+    ChatMigrated,
+    Conflict,
+    Forbidden,
+    RetryAfter,
+    TelegramError,
+)
 from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
 from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
+    ActivityMarkRefused,
     CollaborationAdapter,
-    LiveRuntimeIndicator,
+    RemovalFailed,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
 )
+from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -39,14 +57,32 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+)
+from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    INTERRUPT_LABEL,
+    INTERRUPT_QUEUED_NOTE,
+    Control,
+    Drawn,
+    Markup,
+    offered_controls,
+    position_action,
+)
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    activity_log,
+    in_activity_log,
+    render_request,
+    turn_status,
 )
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
     chunk_message,
 )
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +98,138 @@ _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 _MEDIA_GROUP_MIN = 2
 _MEDIA_GROUP_MAX = 10
 
-_ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member"]
+_ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member", "callback_query"]
+
+# What a press on a card's button hands back. Telegram allows 64 bytes for the
+# whole of it, so it holds the request token and the option's position on the
+# card and nothing else — the prefix is two characters for the same reason.
+# Every byte spent here is one the token cannot have.
+_CALLBACK_PREFIX = "sw"
+_MAX_CALLBACK_BYTES = 64
+
+# And what a press on a status message's stop button hands back: the turn to
+# end. A card's button can leave its option out of the payload because the
+# record it names holds the form; a turn id has no such record here, so it
+# travels whole and takes the rest of the budget. Two characters again, and
+# this time they are worth more than style — a provider chooses how long its
+# turn ids are, and the prefix is the only part of the payload this bridge can
+# make smaller.
+_INTERRUPT_PREFIX = "sx"
+
+# Bot API 9.4 gave an inline button a colour, and `danger` is the red one it
+# reserves for a destructive action. python-telegram-bot did not take the field
+# as a parameter until 22.7 and this project is pinned below that, so it is sent
+# through `api_kwargs` — which the library serialises into the button exactly as
+# a named argument would be, and which is what that escape hatch is for. A
+# client older than the field ignores it and draws an ordinary button, so the
+# label still has to carry the warning on its own.
+_DANGER_STYLE = "danger"
+
+# A button's label is one line on a phone, and Telegram truncates the middle of
+# an over-long one rather than wrapping it. Cut here instead, at the end, where
+# the reader can tell something was cut. The renderer is given the same number,
+# because an option the button says in full is one the body stops repeating and
+# an option the button had to cut is one the body has to keep.
+_MAX_BUTTON_LABEL = 48
+
+# Telegram's own limit on the text of a reply to a press.
+_MAX_ALERT = 200
+
+# The block a finished turn's tool calls travel in: Telegram's own expandable
+# quote, drawn and opened by the reader's client rather than by the bot.
+_FOLD_OPEN = "<blockquote expandable>"
+_FOLD_CLOSE = "</blockquote>"
+
+# The notice a press is owed, collected while the press is being handled.
+#
+# A refusal is raised deep inside the shared inbound path, which knows the
+# person and the reason and nothing about Telegram; the only private way to
+# tell them is a reply to the callback query, and the id for that belongs to
+# the press rather than to the person. A context variable is what joins the
+# two: `tell_actor` leaves the notice here and the press answers with it, so
+# nothing has to be looked up by actor — two people pressing at once are two
+# tasks with a context each, and the same person pressing twice is two presses
+# rather than one notice overwriting another.
+_PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
+    "switch_telegram_press_notice", default=None
+)
+
+
+def _callback_data(token: str, position: int) -> str:
+    return f"{_CALLBACK_PREFIX}:{token}:{position}"
+
+
+def _parse_callback(data: str) -> tuple[str, int] | None:
+    """The request and the control a press names, or None if it is not ours.
+
+    Telegram hands back exactly what was put in the button, so this is read as
+    strictly as it is written: a prefix this bridge minted, a token, and a
+    count in ASCII digits from one. Neither value is trusted past its shape —
+    the token is resolved against the record and the position against the form
+    that record holds.
+    """
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != _CALLBACK_PREFIX:
+        return None
+    token, digits = parts[1], parts[2]
+    if not token or not digits.isascii() or not digits.isdecimal():
+        return None
+    position = int(digits)
+    return (token, position) if position > 0 else None
+
+
+def _interrupt_data(turn_id: str) -> str:
+    return f"{_INTERRUPT_PREFIX}:{turn_id}"
+
+
+def _parse_interrupt(data: str) -> str | None:
+    """The turn a stop press names, or None if the press is not one.
+
+    Split once, so a turn id a provider chose to put a colon in comes back
+    whole — unlike a card's payload, which is read as three fixed fields
+    because every one of them is Switch's own. What comes back is a claim and
+    is treated as one: the session it stops is the one behind the message the
+    press arrived on, and this says only which of that session's turns the
+    button was drawn against.
+    """
+    prefix, separator, turn_id = data.partition(":")
+    if prefix != _INTERRUPT_PREFIX or not separator or not turn_id:
+        return None
+    return turn_id
+
+
+def _press_action(data: str) -> tuple[str, str] | None:
+    """The Switch action a press carries and what it names, or None if not ours.
+
+    Two keyboards arrive here and they name different things — a card's button
+    names the card, a stop names the turn — but they leave by the same door,
+    because what happens next is the same for both: hand the press to the
+    shared inbound path, then close the press on the presser's own client with
+    whatever came back.
+    """
+    turn_id = _parse_interrupt(data)
+    if turn_id is not None:
+        return INTERRUPT_ACTION, turn_id
+    press = _parse_callback(data)
+    if press is None:
+        return None
+    token, position = press
+    return position_action(position), token
+
+
+def _button_label(control: Control) -> str:
+    """What the button says: the option's number, and as much of it as fits.
+
+    Numbered because the body numbers it. A card is answerable by typing
+    whether or not it has buttons, and a reader looking at "2" in the text and
+    "Decline" on a button should not have to work out that they are the same
+    thing.
+    """
+    label = control.label.strip() or f"Option {control.position}"
+    if len(label) > _MAX_BUTTON_LABEL:
+        label = label[: _MAX_BUTTON_LABEL - 1].rstrip() + "…"
+    return f"{control.position}. {label}"
+
 
 # Switch's own in-room prefix, plus Telegram's native one.
 _COMMAND_PREFIXES = ("!", "/")
@@ -116,6 +283,115 @@ _AGENT_MARKERS = (
 )
 
 
+# Waited when Telegram says to slow down without saying for how long. Every
+# real 429 carries `retry_after`, so this is only reached when the field is
+# missing or unreadable — a floor, not a figure Telegram committed to.
+_THROTTLE_FALLBACK = 5.0
+
+# The shortest gap the bridge will leave between two publications in one chat,
+# counting sends and edits alike. Telegram's published figures are send limits —
+# roughly twenty messages a minute to one group — and say nothing about what an
+# edit costs, so this is a self-imposed floor under an unknown, not a quota
+# Telegram stated. It is charged to the chat because Telegram's own 429 is:
+# every agent publishing there shares one budget, and being paced by Telegram
+# costs the conversation rather than only the redraw.
+#
+# Only intermediate progress is held back. A turn's last state, the attention
+# slot and every request card go through immediately, because a reader waiting
+# on one of those is waiting on the thing this pacing would delay.
+_REDRAW_INTERVAL = 1.5
+
+
+def _throttle_delay(error: RetryAfter) -> float:
+    """How long Telegram's 429 asks us to wait.
+
+    `retry_after` is documented as seconds and arrives as an int, but it is
+    read defensively and floored: a zero or a missing value would turn a
+    throttle into a tight retry loop, which is how a throttled bot becomes a
+    blocked one.
+    """
+    raw: Any = getattr(error, "retry_after", None)
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return _THROTTLE_FALLBACK
+
+
+def _as_rich_failure(
+    error: Exception, *, description: str, text: str
+) -> RichContentFailed | None:
+    """Telegram's answer, or no answer at all.
+
+    `None` means the call may or may not have landed and the caller must keep
+    its reservation: `RichContentFailed` is a licence to discard one and try
+    again, which on a request card is a licence to ask the same question twice.
+
+    The order here is load-bearing, and not the order it looks like. In
+    python-telegram-bot `BadRequest` is a subclass of `NetworkError`, so a
+    `NetworkError` branch written first swallows every rejection Telegram
+    actually made and reports a definite refusal as an unknown outcome — the
+    reservation would then be held open for a card the API has already refused
+    to post, forever. The definite answers are therefore tested first.
+
+    `RetryAfter` is an answer, but not that one: it means wait, and it carries
+    the delay to wait for. `Forbidden` (the bot was removed or blocked) and
+    `ChatMigrated` (the chat id is no longer the chat) are definite: the call
+    did not happen and repeating it unchanged will not make it happen.
+    `TimedOut` and the rest of `NetworkError` are the uncertain ones — the
+    request may have reached Telegram and the response been lost.
+    """
+    if isinstance(error, RetryAfter):
+        return RichContentThrottled(retry_after=_throttle_delay(error), text=text)
+    if isinstance(error, BadRequest | Forbidden | ChatMigrated):
+        return RichContentFailed(f"{description}: {error}", text=text)
+    return None
+
+
+class _TelegramMarkup(Markup):
+    """The neutral renderer's three marks, spelled as Telegram's HTML subset.
+
+    Telegram's message bodies are sent with `parse_mode=HTML`, so `**bold**`
+    would reach a reader as those four characters around the word. What these
+    return is finished HTML, inserted into a string whose host text has already
+    been escaped by `_rich_escape` — so nothing here escapes again, and nothing
+    here is given anything that still needs escaping.
+    """
+
+    def bold(self, text: str) -> str:
+        return f"<b>{text}</b>"
+
+    def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
+        """The ordinary escape: `<code>` is still HTML inside.
+
+        Telegram's span reads its content, so an `&` or a `<` in a command
+        needs defusing exactly as it would in the body. The Markdown default
+        passes text through untouched, which here would break the message
+        rather than merely litter it.
+        """
+        return escape
+
+    def code(self, text: str) -> str:
+        return f"<code>{text}</code>"
+
+    def link(self, label: str, url: str) -> str:
+        """An anchor, or the address as tap-to-copy text where one would vanish.
+
+        Telegram renders `<a>` only for the schemes it knows, and the neutral
+        renderer's one link may be a `switchdash://` deeplink. An anchor
+        carrying that is not rendered as written — the API rejects the whole
+        message with "unsupported URL protocol", or the client keeps the label
+        and silently drops the address — so the degradation is made here and
+        made visible: the reader gets the address itself, in a span Telegram
+        makes tap-to-copy, instead of a label that goes nowhere.
+        """
+        if not url.lower().startswith(_LINKABLE_SCHEMES):
+            return f"<code>{html.escape(url, quote=False)}</code>"
+        return f'<a href="{html.escape(url, quote=True)}">{label}</a>'
+
+
+TELEGRAM_HTML = _TelegramMarkup()
+
+
 class _ChatVisibility(NamedTuple):
     """What the bridge can see in one chat, and how certain that is.
 
@@ -127,6 +403,27 @@ class _ChatVisibility(NamedTuple):
 
     status: str
     via_admin: bool
+
+
+def _as_int(value: str) -> int | None:
+    """The number this names, where it names one."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+class _ThreadRoot(NamedTuple):
+    """Where in one chat a thread root points.
+
+    The same number means one of two things. A forum topic is addressed with
+    ``message_thread_id`` and every message in it carries that id; anywhere
+    else Telegram has no thread and the root is a message to reply to. The two
+    are not interchangeable — see ``_resolve_root``.
+    """
+
+    is_topic: bool
+    id: int
 
 
 class TelegramConnectionConfig(BridgeConnectionConfig):
@@ -164,6 +461,44 @@ class TelegramAdapter(CollaborationAdapter):
     supports_directory_search: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
 
+    publishes_sdk_sessions: ClassVar[bool] = True
+
+    #: A problem somebody has to act on gets its own message.
+    #:
+    #: An edit does not notify on Telegram. Folded into the status, a failure
+    #: would land as a silent rewrite of a message the reader has already
+    #: scrolled past, which is the one case where being told matters most.
+    separate_attention_slot: ClassVar[bool] = True
+
+    #: Everyone in a Telegram chat is notified of a new message without being
+    #: named, so a mention is an emphasis rather than the only route to a
+    #: reader. Naming the asker still happens; it is not what delivery rests on.
+    notifies_only_by_mention: ClassVar[bool] = False
+
+    #: The status is the turn's one post, so the seconds ride along with the
+    #: next real change rather than rewriting it on a timer. Telegram's edit
+    #: limits make that more than a preference: a clock redrawn every few
+    #: seconds is a turn spending the chat's whole allowance on itself.
+    redraws_for_elapsed_time: ClassVar[bool] = False
+
+    supports_activity_reactions: ClassVar[bool] = True
+
+    #: One bot posts for every agent here, and a reaction belongs to the
+    #: account that added it, so there is one mark between them all.
+    activity_reactions_per_agent: ClassVar[bool] = False
+
+    # Telegram's is the one disclosure that has been agreed: T2, accepted for
+    # this platform on this platform's evidence. It does not travel to another
+    # adapter that happens to share the inability to search.
+    discloses_unconfirmed_posts: ClassVar[bool] = True
+
+    #: A bot deletes its own messages in a group as an ordinary member, and in
+    #: a broadcast channel with the Delete Messages right the install already
+    #: asks for. What it cannot do is delete one older than 48 hours, and
+    #: Telegram says so plainly enough to tell apart from being ignored — which
+    #: is the second half of what this claims. See `remove_publication`.
+    removes_answered_cards: ClassVar[bool] = True
+
     def __init__(self, *, config: TelegramConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -197,27 +532,31 @@ class TelegramAdapter(CollaborationAdapter):
         # prompt is abandoned rather than remembered forever.
         self._awaiting_args: OrderedDict[tuple[str, int], str] = OrderedDict()
         self._awaiting_args_max = 200
-        # The bot can delete its own messages, so runtime state renders as a
-        # persistent message (the base class's _working_msg) rather than the
-        # one-shot typing action.
-        # chat id -> the last message a person sent there. Outside forum topics
-        # Telegram has no thread object, so a turn is reported with no root and
-        # there is nothing else to say which message a reaction belongs on.
-        # Bounded like _seen_ids: one entry per chat the bot has ever seen.
-        self._last_inbound: OrderedDict[str, str] = OrderedDict()
-        self._last_inbound_max = 1000
-        # (chat id, thread root) -> the message that actually asked in it.
-        # A forum topic keeps the same root for every message in it, so the
-        # mark belongs on the latest question rather than on the topic.
-        # Bounded for the same reason as _seen_ids.
-        self._thread_trigger: OrderedDict[tuple[str, str], str] = OrderedDict()
-        self._thread_trigger_max = 1000
         # Messages currently carrying the 👀, as (chat id, message id), so a
         # turn reporting its activity repeatedly reacts once.
         self._reacted: set[tuple[str, str]] = set()
-        # (chat id, agent name) -> every message that agent has marked. An
-        # agent asked two things at once marks both, and the turn ends once.
-        self._agent_reactions: dict[tuple[str, str], set[str]] = {}
+        # chat id -> whether it is a forum. What a thread root means depends on
+        # the answer, and nothing in a message ref says which kind it is.
+        self._forum_chats: dict[str, bool] = {}
+        # Held for the bot rather than for the chat that earned it. Telegram
+        # limits both a single chat and the bot across all of them, and a 429
+        # does not say which one was hit, so the wait is applied to everything
+        # this bot draws. Said out loud at both edges, and as the whole bot:
+        # the reader watching cards stop in a chat that was never throttled
+        # has to be able to find out why from the log.
+        self._rich_update_cooldown = Cooldown(
+            "Telegram",
+            "message updates",
+            "bot",
+            "Every card it draws is frozen until then, in every chat.",
+        )
+        # chat id -> when a publication was last sent or edited in it. Telegram
+        # charges its limits to the chat, and several agents publish into one
+        # chat, so intermediate progress is paced against the chat's budget
+        # rather than each message's own. Bounded like the other caches: an
+        # entry is only ever a timestamp to compare against.
+        self._rich_drawn_at: OrderedDict[str, float] = OrderedDict()
+        self._rich_drawn_at_max = 1000
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -641,7 +980,7 @@ class TelegramAdapter(CollaborationAdapter):
         )
 
         bot = self._require_bot()
-        kwargs = self._reply_kwargs(thread_root_id)
+        kwargs = await self._anchor_kwargs(channel_id, thread_root_id)
         try:
             if self._is_photo(mimetype, len(data)):
                 sent = await bot.send_photo(
@@ -752,7 +1091,7 @@ class TelegramAdapter(CollaborationAdapter):
             sent = await bot.send_media_group(
                 chat_id=self._chat_id(channel_id),
                 media=media,
-                **self._reply_kwargs(thread_root_id),
+                **await self._anchor_kwargs(channel_id, thread_root_id),
             )
         except TelegramError as e:
             logger.error(
@@ -795,6 +1134,7 @@ class TelegramAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Admin/system notices post unattributed, so they read as the bridge
         # speaking rather than as one of the agents.
@@ -805,7 +1145,9 @@ class TelegramAdapter(CollaborationAdapter):
         # showing. Platforms with a Markdown-ish native format got away with
         # skipping this; Telegram does not.
         return await self._send_text(
-            channel_id, self.translate_outbound(content), thread_root_id
+            channel_id,
+            self._admin_body(self.translate_outbound(content), drawn),
+            thread_root_id,
         )
 
     async def update_message(
@@ -887,169 +1229,725 @@ class TelegramAdapter(CollaborationAdapter):
         except Exception:
             logger.exception("Failed to trigger typing in Telegram chat %s", channel_id)
 
-    # ── Working reaction ─────────────────────────────────────────────────────
+    # ── SDK session publication ──────────────────────────────────────────────
 
-    def _note_inbound(self, chat_id: str, root_id: str | None, message_id: str) -> None:
-        """Remember the message a reaction should go on if this chat asks next."""
-        if root_id:
-            key = (chat_id, root_id)
-            self._thread_trigger.pop(key, None)
-            self._thread_trigger[key] = message_id
-            while len(self._thread_trigger) > self._thread_trigger_max:
-                self._thread_trigger.popitem(last=False)
-        self._last_inbound.pop(chat_id, None)
-        self._last_inbound[chat_id] = message_id
-        while len(self._last_inbound) > self._last_inbound_max:
-            self._last_inbound.popitem(last=False)
+    def rich_fallback_limit(self) -> int:
+        """Telegram's own ceiling for a message body, which is also an edit's.
 
-    def _reaction_anchor(self, chat_id: str, thread_root_id: str | None) -> str | None:
-        """The message the 👀 goes on.
-
-        Inside a forum topic every message shares one root, so the mark belongs
-        on the latest question asked there rather than on the topic itself.
-        Everywhere else Telegram has no thread object and the turn is reported
-        with no root at all, so the last thing a person said in the chat stands
-        in: that is what the agent is replying to, and the message a reader is
-        looking at while they wait.
+        The renderers cut to this so the budget is measured on the HTML that
+        actually goes on the wire — `_rich_escape` has already run
+        `translate_outbound`, and that is what turns one `&` into five
+        characters.
         """
-        if thread_root_id:
-            return self._thread_trigger.get((chat_id, thread_root_id), thread_root_id)
-        return self._last_inbound.get(chat_id)
+        return MAX_MESSAGE
 
-    async def _begin_working_reaction(
-        self, chat_id: str, agent_name: str, thread_root_id: str | None
+    def rich_markup(self) -> Markup:
+        return TELEGRAM_HTML
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """The drawing `post_rich` sends, minus the agent's name and the buttons.
+
+        Only the text an error carries, so there is nothing here to attribute:
+        it is what a caller republishes, logs or shows in the Console when the
+        publication did not happen, not something anyone reads under a
+        keyboard.
+
+        Which is why it is drawn with `controls=False`. A card that is going to
+        carry buttons leaves the options they spell out of its body, and this
+        text is for the places that have no buttons — republished on its own, a
+        card drawn the other way invites a numbered answer without printing the
+        numbers.
+        """
+        return self._draw(
+            content,
+            mention=None,
+            responder=None,
+            prefix="",
+            controls=False,
+            stopping=False,
+        ).text
+
+    def _draw(
+        self,
+        content: RichContent,
+        *,
+        mention: str | None,
+        responder: str | None,
+        prefix: str,
+        controls: bool,
+        stopping: bool,
+    ) -> Drawn:
+        escape = self._rich_escape
+        limit = max(1, self.rich_fallback_limit() - len(prefix))
+        markup = self.rich_markup()
+        if isinstance(content, TurnActivity):
+            # Charged to the same budget as the status it follows: a message
+            # that just fits, plus a line saying it reached nobody, is a
+            # message Telegram refuses — and an edit has no chunking to fall
+            # back on. The note under a queued turn's stop control is charged
+            # the same way, and for the same reason.
+            lines = []
+            if stopping and content.turn.status == "queued":
+                lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.notify_unreachable:
+                lines.append(self.unnotified_notice())
+            tail = "".join(f"\n{line}" for line in lines)
+            body = turn_status(
+                content.items,
+                content.turn,
+                escape=escape,
+                limit=max(1, limit - len(tail)),
+                markup=markup,
+                elapsed_seconds=content.elapsed_seconds,
+                session_url=content.session_url,
+                mention=mention,
+                error_summary=content.error_summary,
+                tool_detail=False,
+            )
+            fold = self._activity_fold(content, limit - len(tail) - len(body))
+            return Drawn(text=f"{prefix}{body}{tail}{fold}", answerable=False)
+        # The mention goes on its own line rather than in front of the heading:
+        # a card is a block, and a handle wedged before "Permission needed"
+        # reads as part of the heading.
+        lead = f"{mention}\n" if mention else ""
+        tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+        drawn = render_request(
+            content.request,
+            content.reference,
+            escape=escape,
+            limit=max(1, limit - len(lead) - len(tail)),
+            markup=markup,
+            responder=responder,
+            unavailable_reason=content.unavailable_reason,
+            control_label_limit=_MAX_BUTTON_LABEL if controls else None,
+        )
+        return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
+
+    def _activity_fold(self, content: TurnActivity, budget: int) -> str:
+        """A finished turn's work and its own words, collapsed under its status.
+
+        Offered on an ended turn only, and that restriction is observed rather
+        than assumed: an edit closes a block a reader had opened, so a log
+        folded into a running turn would be shut in their face by the next tool
+        call. An ended turn is edited no further, so what a reader opens stays
+        open. Telegram draws the fold in the reader's client, which is what
+        makes it worth having at all — opening it is one reader's business and
+        costs the chat neither a message nor an edit.
+
+        Nothing is offered where there is nothing behind it. A turn that neither
+        called anything nor said anything would open onto "No activity." beneath
+        a status line already saying as much, and the separate message a
+        failure gets here is drawn with no items at all — so one check keeps the
+        same list from appearing in the chat twice as well.
+
+        Whatever the status left of the message is the whole of the budget. The
+        fold shares that message rather than taking one of its own, so
+        Telegram's limit is already the cap and a smaller number invented here
+        would drop calls there was room to print. What does not fit is reported
+        by the log itself, and the status above it links the Console, which has
+        all of them.
+        """
+        if content.turn.status not in TURN_ENDED:
+            return ""
+        if not any(in_activity_log(item) for item in content.items):
+            return ""
+        log = activity_log(
+            content.items,
+            content.turn,
+            escape=self._rich_escape,
+            limit=max(0, budget - len(_FOLD_OPEN) - len(_FOLD_CLOSE) - 1),
+            markup=self.rich_markup(),
+            elapsed_seconds=content.elapsed_seconds,
+            session_url=None,
+            heading=False,
+        )
+        if not log:
+            return ""
+        return f"\n{_FOLD_OPEN}{log}{_FOLD_CLOSE}"
+
+    def _interrupt_turn(self, content: RichContent) -> str | None:
+        """The turn a stop control on this drawing would end, or None for none.
+
+        Three things have to be true. There has to be something to stop, which
+        the publication decides and puts in the content — one value for the
+        whole session, so a queued turn's message offers to stop the running
+        turn in front of it. The turn this message is about has to be
+        unfinished, because a status kept as the record of a turn that ended is
+        not a place to offer stopping anything. And a press has to have
+        somewhere to land.
+
+        The last check is the length, and it is the reason this returns the id
+        rather than a flag: Telegram allows 64 bytes in a button's payload, a
+        provider chooses how long its turn ids are, and a button Telegram would
+        refuse to carry would cost the status message its post. A card in that
+        position raises, because a card without its buttons is still an
+        unanswered request somebody has to be shown; a status is the whole
+        account of a turn, and losing it to a control it could have gone
+        without would be the worse trade. So this logs and draws no button,
+        with `!interrupt` left saying what the reader can still do.
+        """
+        if not isinstance(content, TurnActivity) or self._on_interaction is None:
+            return None
+        turn_id = content.interrupt_turn_id
+        if turn_id is None or content.turn.status in TURN_ENDED:
+            return None
+        written = len(_interrupt_data(turn_id).encode())
+        if written > _MAX_CALLBACK_BYTES:
+            logger.warning(
+                "Not offering the stop control on Telegram for turn %s: its "
+                "press would carry %d bytes and Telegram allows %d. The typed "
+                "command still stops it.",
+                turn_id[:64],
+                written,
+                _MAX_CALLBACK_BYTES,
+            )
+            return None
+        return turn_id
+
+    def _controls(
+        self, content: RichContent, drawn: Drawn, stopping: str | None
+    ) -> InlineKeyboardMarkup | None:
+        """What a publication offers to press, or nothing where a press cannot land.
+
+        A status message has no options to offer and gets at most one button,
+        the one that stops the work — and only where there is work to stop,
+        which `stopping` has already decided. Telegram gives a bot no
+        destructive style, every inline button looking alike, so the label is
+        the whole of the warning and is used exactly as the other platforms
+        word it.
+
+        A card's options are the rest of this, one per row. An option's label
+        is a phrase more often than a word, and Telegram gives the buttons in a
+        row equal width and truncates what does not fit, so a second column
+        would cost the labels rather than save the space.
+
+        Nothing at all is the ordinary answer: a settled card has no options
+        left, and a card that cannot be answered where it is showing says so —
+        a live control under that sentence is an invitation to the refusal it
+        just explained. Since `update_rich` draws the keyboard on every redraw,
+        the controls come off a message at the moment it stops being pressable,
+        without anything having to remember that it once had them.
+
+        Which of those it is comes from `drawn`, not from reading the request a
+        second time. A long detail or a clipped option leaves a body the reader
+        cannot decide from, and only the renderer that cut it knows that. A
+        press would still resolve against the saved form and settle the
+        request — so the whole of the protection is not offering the button.
+
+        A truncated *label* is not that case. The body above it carries the
+        option in full, so the reader has what they are agreeing to and the
+        button is only the shortest way to say which one.
+        """
+        if isinstance(content, TurnActivity):
+            if stopping is None:
+                return None
+            return InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text=INTERRUPT_LABEL,
+                            callback_data=_interrupt_data(stopping),
+                            api_kwargs={"style": _DANGER_STYLE},
+                        )
+                    ]
+                ]
+            )
+        if not isinstance(content, RequestCard) or not drawn.answerable:
+            return None
+        rows: list[list[InlineKeyboardButton]] = []
+        for control in offered_controls(content.request):
+            data = _callback_data(content.reference.token, control.position)
+            if len(data.encode()) > _MAX_CALLBACK_BYTES:
+                raise RichContentFailed(
+                    f"Cannot put a button on request {content.request.request_id} in "
+                    f"Telegram: its press would carry {len(data.encode())} bytes and "
+                    f"Telegram allows {_MAX_CALLBACK_BYTES}.",
+                    text=self.rich_fallback_text(content),
+                )
+            rows.append(
+                [InlineKeyboardButton(text=_button_label(control), callback_data=data)]
+            )
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def _render_rich(
+        self, content: RichContent, agent_name: str
+    ) -> tuple[Drawn, str | None]:
+        """Draw `content` as the agent, and say what a stop on it would end.
+
+        The name is always in the body. Telegram gives a bot no per-message
+        identity — no name or avatar override, no webhook equivalent — so one
+        bot posts for every agent and the prefix `_attribute` writes is the
+        whole of what tells them apart. It is charged to the same message
+        budget as the drawing under it.
+
+        The turn comes back with the drawing rather than being looked up again
+        beside it, so the decision to offer a stop is made once: the note the
+        body prints under a queued turn and the button the keyboard carries are
+        then two halves of one answer and cannot contradict each other.
+        """
+        agent = await self.agent_rendering(agent_name)
+        prefix = (
+            f"{self._agent_marker(agent_name)} "
+            f"<b>{html.escape(agent.body_label, quote=False)}</b>\n"
+        )
+        responder = (
+            self._mention(content.responder_external_id)
+            if isinstance(content, RequestCard)
+            else None
+        )
+        stopping = self._interrupt_turn(content)
+        drawn = self._draw(
+            content,
+            mention=self._mention(content.notify_external_id),
+            responder=responder,
+            prefix=prefix,
+            controls=True,
+            stopping=stopping is not None,
+        )
+        return drawn, stopping
+
+    def _mention(self, external_user_id: str | None) -> str | None:
+        """A real Telegram mention for a user id, or nothing.
+
+        `tg://user?id=N` notifies whether or not the account has a public
+        handle, which a bare `@name` does not, so the id is the thing worth
+        linking. The anchor still needs text, and the only honest text is the
+        name this bridge has actually seen the account use: an account that
+        has never spoken here gets no mention rather than a made-up handle
+        that names the wrong person or nobody.
+
+        Losing it costs emphasis, not delivery. Telegram notifies everyone in
+        a chat of a new message without anyone being named, which is why
+        `notifies_only_by_mention` is False here.
+        """
+        if not external_user_id:
+            return None
+        try:
+            user_id = int(external_user_id)
+        except ValueError:
+            logger.warning(
+                "Cannot mention %r on Telegram: it is not a user id.",
+                external_user_id[:64],
+            )
+            return None
+        name = self._user_names.get(user_id)
+        if not name:
+            logger.debug(
+                "No name known for Telegram user %s, so the publication names "
+                "nobody. Everyone in the chat is notified of it regardless.",
+                user_id,
+            )
+            return None
+        label = html.escape(f"@{name}", quote=False)
+        return f'<a href="tg://user?id={user_id}">{label}</a>'
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's status or a request's card, attributed to the agent.
+
+        Raises on every failure, unlike `send_message`, which reports one by
+        returning `None`: a publication that silently did not happen is a
+        reservation nothing retries and a turn the channel never sees. What it
+        raises is the point — `RichContentFailed` is the caller's licence to
+        discard the reservation and try again, so it is reserved for a refusal
+        Telegram actually gave. A send whose outcome nobody knows raises the
+        transport's own error and keeps the reservation.
+
+        No plain-text retry, which `_send_chunk` has and this deliberately does
+        not. That retry exists for relayed host text, where losing the markup
+        beats losing the message; here the markup is Switch's own and a chat
+        that refuses it is a chat where the next redraw will be refused too.
+        Reporting the refusal is what lets the publisher fall back once, in one
+        place, instead of each platform inventing a degraded card of its own.
+
+        Not chunked either. A publication is edited for the life of a turn, and
+        an edit cannot be split, so a drawing that would not fit into one
+        message must not be posted across two — the renderers cut to
+        `rich_fallback_limit` for exactly that reason and `_clamp` is the
+        backstop if something still overruns.
+        """
+        drawn, stopping = await self._render_rich(content, agent_name)
+        text = drawn.text
+        self._refuse_while_throttled(text)
+        self._pace_publication(channel_id, content, text)
+        controls = self._controls(content, drawn, stopping)
+        anchor = await self._publication_anchor(channel_id, thread_root_id, text)
+        try:
+            sent = await self._require_bot().send_message(
+                chat_id=self._chat_id(channel_id),
+                text=self._clamp(text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=controls,
+                **anchor,
+            )
+        except Exception as error:
+            raise self._rich_failure(
+                error,
+                f"Telegram refused the post in chat {channel_id}",
+                self.rich_fallback_text(content),
+            ) from error
+        ref = self._ref(sent)
+        self._note_publication(channel_id)
+        return ref
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
-        """Mark what this agent is working on, once per turn."""
-        asked_on = self._reaction_anchor(chat_id, thread_root_id)
-        if not asked_on:
+        """Redraw a publication in place, including the last time.
+
+        A status is never taken down. It is edited to its final state
+        and stays in the chat as the record that the turn ran, how long it
+        took, and where to open it — which is what a reader scrolling back
+        wants and what a deletion left them without. It is compact for the same
+        reason it used to be deleted: a Telegram chat or topic is the
+        conversation itself, so while the turn runs the status is a line and
+        its link rather than a running commentary on tool calls. The calls,
+        and what the agent said while making them, arrive with the last edit,
+        folded away. An answered request card does
+        come down, through `remove_publication` and never through a redraw.
+
+        `agent_name` is what the redraw writes back into the body. The name is
+        the message here — one bot posts for every agent — so an edit that did
+        not know it would republish this turn as whoever the process last
+        happened to remember, or as nobody.
+
+        Not `update_message`, which logs and returns. That is right for a
+        status line nobody is waiting on and wrong here: a card that failed to
+        redraw is still showing a settled request as open, and the caller has a
+        reply to post about that — but only if it is told.
+        """
+        chat_id, message_id = self._parse_message_ref(message_ref)
+        if not message_id:
+            raise RichContentFailed(
+                f"Cannot redraw Telegram publication {message_ref!r}: it is not a "
+                "chat:message reference.",
+                text=self.rich_fallback_text(content),
+            )
+        # A post notifies; an edit does not. Repeating the mention on every
+        # redraw would be a handle in the chat that never reaches anybody it
+        # has not already reached.
+        drawn, stopping = await self._render_rich(
+            replace(content, notify_external_id=None), agent_name
+        )
+        self._refuse_while_throttled(drawn.text)
+        self._pace_publication(channel_id, content, drawn.text)
+        await self._edit_rich(
+            channel_id,
+            message_ref,
+            drawn.text,
+            self._controls(content, drawn, stopping),
+            content=content,
+        )
+
+    async def _edit_rich(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        controls: InlineKeyboardMarkup | None,
+        *,
+        content: RichContent,
+    ) -> None:
+        """Rewrite a publication, reporting a refusal rather than logging it.
+
+        `controls` is the whole of what the message offers afterwards, not an
+        addition to what it offered before: Telegram replaces the keyboard with
+        what an edit carries, so passing none is how a settled card's buttons
+        come off.
+
+        `content` is here for the refusal rather than the edit. What a
+        `RichContentFailed` carries is redrawn from it without a keyboard,
+        because the caller's answer to a refused edit is to republish the card
+        as plain text — and `text` is a drawing that left its options to the
+        buttons about to go with it.
+        """
+        chat_id, message_id = self._parse_message_ref(message_ref)
+        try:
+            await self._require_bot().edit_message_text(
+                chat_id=self._chat_id(chat_id or channel_id),
+                message_id=int(message_id),
+                text=self._clamp(text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=controls,
+            )
+        except BadRequest as error:
+            # The one refusal that means the work is already done: an edit to
+            # the text Telegram is already showing.
+            if "not modified" in str(error).lower():
+                self._note_publication(channel_id)
+                return
+            raise self._rich_failure(
+                error,
+                f"Telegram refused the edit to {message_ref} in chat {channel_id}",
+                self.rich_fallback_text(content),
+            ) from error
+        except Exception as error:
+            raise self._rich_failure(
+                error,
+                f"Telegram refused the edit to {message_ref} in chat {channel_id}",
+                self.rich_fallback_text(content),
+            ) from error
+        self._note_publication(channel_id)
+
+    def _rich_failure(self, error: Exception, description: str, text: str) -> Exception:
+        """The exception to raise for `error`: Telegram's refusal, or its own.
+
+        Raising the original back is what keeps an uncertain send's reservation
+        alive, so this returns rather than raises — the caller writes
+        `raise ... from error` and the chain stays intact either way.
+
+        A `RetryAfter` on the way through records when the chat will accept
+        anything again. Telegram charges the limit to the chat rather than to
+        the message, so one throttled redraw is the whole chat asking for
+        quiet, and the next publication in it waits rather than discovering
+        the same thing for itself.
+        """
+        failure = _as_rich_failure(error, description=description, text=text)
+        if isinstance(failure, RichContentThrottled):
+            self._rich_update_cooldown.start(failure.retry_after)
+        return failure or error
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take an answered card out of the chat, or say why it is still there.
+
+        Telegram's own limit is the interesting case: a bot may delete its own
+        message for 48 hours and not after, and it reports the refusal as a
+        `BadRequest` saying the message cannot be deleted. That is a real
+        failure and is raised as one — the card stays, settled and readable,
+        which is the intended fallback. Nothing here shortens the wait, so a
+        card left open long enough is one Telegram will not take back.
+
+        Told the message is not there, this returns: the address came from
+        Telegram when it accepted the card, so nothing remains at it, which is
+        what the caller asked for.
+
+        No thread or topic is named. Telegram's `deleteMessage` takes a chat
+        and a message id, and a forum topic is a property of the message
+        rather than an address to re-supply.
+        """
+        if self._bot is None:
+            raise RemovalFailed("Telegram bot not connected.")
+
+        chat_ref, message_id = self._parse_message_ref(message_ref)
+        if not chat_ref or not message_id.isdigit():
+            # The edit path falls back to the channel argument for a missing
+            # chat, and this does not. An edit that lands on the wrong message
+            # rewrites one of ours or is refused; a deletion is neither
+            # reversible nor confined to our own messages, so an address
+            # Telegram never issued is not one to complete from context.
+            raise RemovalFailed(
+                f"Not a Telegram chat:message reference: {message_ref}."
+            )
+
+        waiting = f"Waiting for Telegram to allow {message_ref} to be deleted."
+        # A 429 is charged to the bot, so a deletion sent into one is a second
+        # refusal and a longer wait. The caller is a publisher that can come
+        # back; it is told to.
+        self._refuse_while_throttled(waiting)
+
+        try:
+            await self._bot.delete_message(
+                chat_id=self._chat_id(chat_ref),
+                message_id=int(message_id),
+            )
+        except BadRequest as error:
+            if "message to delete not found" in str(error).lower():
+                # Worth a line: the innocent reading is a deletion whose
+                # acknowledgement we lost, or one done by hand, but this is
+                # also what Telegram says about an address it never issued.
+                logger.warning(
+                    "Telegram card %s was already gone when it was taken back.",
+                    message_ref,
+                )
+                return
+            raise self._removal_failure(error, message_ref, channel_id) from error
+        except Exception as error:
+            raise self._removal_failure(error, message_ref, channel_id) from error
+
+    def _removal_failure(
+        self, error: Exception, message_ref: str, channel_id: str
+    ) -> Exception:
+        """What a failed deletion should be reported as.
+
+        Only a wait survives as itself, and it goes through `_rich_failure` so
+        the chat's quiet period is recorded for every other publication in it.
+        Everything else — a refusal, the 48-hour limit, a request that never
+        came back — becomes `RemovalFailed`, because the caller does the same
+        thing with all three: keep the settled card, record nothing, and ask
+        again later. The uncertainty an uncertain *send* has to preserve does
+        not arise here, since asking again about a deletion that did land is
+        answered with "not found".
+        """
+        description = f"Telegram would not delete {message_ref} in chat {channel_id}"
+        classified = self._rich_failure(
+            error,
+            description,
+            f"Waiting for Telegram to allow {message_ref} to be deleted.",
+        )
+        if isinstance(classified, RichContentThrottled):
+            return classified
+        return RemovalFailed(f"{description}: {error}")
+
+    def _refuse_while_throttled(self, text: str) -> None:
+        """Wait out a 429 Telegram has already sent for this bot.
+
+        Raised rather than slept through: the caller is a durable publisher
+        that knows what it is holding and can come back, and sleeping here
+        would hold up every other chat this bridge serves.
+        """
+        remaining = self._rich_update_cooldown.remaining()
+        if remaining > 0:
+            raise RichContentThrottled(retry_after=remaining, text=text)
+
+    def _pace_publication(
+        self, channel_id: str, content: RichContent, text: str
+    ) -> None:
+        """Hold back progress arriving faster than the chat can take it.
+
+        Charged to the chat and not to the message, for both sends and edits.
+        Telegram's limits are the chat's, several agents can be working in one
+        group at once, and nothing published says what an edit costs — so two
+        agents' statuses share one budget the way they share the 429 that
+        follows from overspending it.
+
+        Only progress. A turn's final state, the attention slot and every
+        request card go through however recently the chat was last written to,
+        because a reader waiting on one of those is waiting on precisely the
+        thing this would delay — and the publisher retries a throttle, so what
+        is held back here is postponed rather than lost.
+        """
+        if not isinstance(content, TurnActivity):
             return
-        self._agent_reactions.setdefault((chat_id, agent_name), set()).add(asked_on)
-        await self._mark_working(chat_id, asked_on, working=True)
+        if content.turn.status in TURN_ENDED or content.error_summary:
+            return
+        drawn_at = self._rich_drawn_at.get(channel_id)
+        if drawn_at is None:
+            return
+        remaining = drawn_at + _REDRAW_INTERVAL - time.monotonic()
+        if remaining > 0:
+            raise RichContentThrottled(retry_after=remaining, text=text)
 
-    async def _end_working_reactions(self, chat_id: str, agent_name: str) -> None:
-        """Unmark everything this agent marked — the turn ends only once.
+    def _note_publication(self, channel_id: str) -> None:
+        self._rich_drawn_at.pop(channel_id, None)
+        self._rich_drawn_at[channel_id] = time.monotonic()
+        while len(self._rich_drawn_at) > self._rich_drawn_at_max:
+            self._rich_drawn_at.popitem(last=False)
 
-        An agent asked two things at once works on both and marks both, but the
-        report that ends the turn names one chat. Clearing only that would
-        leave the other message marked as in progress for good.
-        """
-        for ref in sorted(self._agent_reactions.pop((chat_id, agent_name), set())):
-            await self._mark_working(chat_id, ref, working=False)
-
-    async def _mark_working(
-        self, chat_id: str, message_id: str, *, working: bool
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
     ) -> None:
-        """Put 👀 on the message being worked on, and take it off after.
+        """Put 👀 on the message being worked on, or take it off.
 
-        This is Telegram's one real progress affordance in a group. A bot may
-        react to anyone's message without being an administrator, it needs no
-        thread, and it says *which* message is being handled — which the status
-        message, sitting at the bottom of the chat, cannot.
+        One mark between every agent, because every agent reacts through the
+        one bot account and Telegram has a single reaction per account per
+        message. The publisher counts the turns holding it, so the first to
+        want it adds it and the last to finish removes it.
 
-        A chat can have reactions switched off. That costs the mark, not the
-        turn, so a refusal is logged and the tracked state left as it was for a
-        later attempt to correct.
+        That single reaction is also why `supports_queue_reaction` is false
+        here and `mark` is only ever the working one: a second mark could only
+        be put on by taking this one off, and a queued prompt saying nothing is
+        better than a running one that has stopped saying it is being read.
+        Telegram carries the queued state in its status text instead.
+
+        `force` is the durable publisher reconciling after a restart, when this
+        process's record of what is already on the message is empty and wrong
+        rather than empty and right.
+
+        Raises where another attempt might work, so the publisher retries and
+        records the turn as drawn only once the chat shows what it says it
+        shows. A chat that will not take the mark at all is not that — reactions
+        are switched off there, or the bot may not use them, and it would be
+        refused the same way for the life of the turn — so that is raised as
+        `ActivityMarkRefused` and the publisher decides what it means.
+
+        It decides, and not this method, because the question a refused
+        *removal* asks is whether a mark is still sitting on the message, and
+        the answer does not live here. `self._reacted` is this process's memory
+        and a restart empties it; empty then means "no idea", not "nothing was
+        added". Treating those as the same is how a turn came to be recorded as
+        cleaned up with the 👀 still on the message. The durable record knows
+        whether an addition was ever refused, so the durable record is asked.
         """
-        key = (chat_id, message_id)
-        if working == (key in self._reacted):
+        _, message_id = self._parse_message_ref(message_ref)
+        if not message_id:
+            logger.warning(
+                "Cannot mark %s as being worked on: not a Telegram message reference.",
+                message_ref,
+            )
+            return
+        key = (channel_id, message_id)
+        if not force and on == (key in self._reacted):
             return
         try:
-            bot = self._require_bot()
-            await bot.set_message_reaction(
-                chat_id=self._chat_id(chat_id),
+            await self._require_bot().set_message_reaction(
+                chat_id=self._chat_id(channel_id),
                 message_id=int(message_id),
-                reaction=[ReactionTypeEmoji(_WORKING_REACTION)] if working else [],
+                reaction=[ReactionTypeEmoji(_WORKING_REACTION)] if on else [],
             )
-        except TelegramError as e:
-            logger.warning(
-                "Could not %s the working reaction on %s in %s: %s",
-                "add" if working else "remove",
-                message_id,
-                chat_id,
-                e,
-            )
-            return
-        if working:
+        except (BadRequest, Forbidden) as error:
+            raise ActivityMarkRefused(
+                f"Telegram will not {'add' if on else 'remove'} the working "
+                f"reaction on {message_id} in chat {channel_id} ({error})."
+            ) from error
+        if on:
             self._reacted.add(key)
         else:
             self._reacted.discard(key)
 
-    # ── Runtime state ────────────────────────────────────────────────────────
-
-    async def _apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
     ) -> None:
-        """Render runtime state as persistent, deletable status messages.
+        """The one-shot typing nudge, where the agent was asked.
 
-        A Telegram bot deletes its own messages cleanly (no tombstone), so — like
-        Slack and Discord — the "working on it…" indicator and any "needs your
-        input" pings are posted while relevant and removed when the turn ends.
-        The working indicator stays up through `awaiting-input` (the agent is
-        mid-turn, just paused) and the pings go with it when the turn ends or
-        resumes.
+        Telegram expires it after about five seconds, so it costs the chat
+        nothing and it is the only signal that arrives before the first post.
+        Best effort by nature: the status carries the state from here on.
 
-        In a 1:1 chat Telegram will draw the progress itself, and better: an
-        animated "Thinking…" attributed to the bot rather than a message in the
-        history. Where that is available the posted message is not used, and
-        any earlier one is taken down. It is a private-chat method, so a
-        bridged group always gets the posted message.
+        In a forum it goes into the topic the command came from — people
+        reading one topic do not see another's — which is the only sense a
+        thread root has here. Outside a forum the root is a message to reply
+        to and there is nothing to send an action to but the chat, so it is
+        not passed on: `message_thread_id` set to a reply target would aim the
+        nudge at a topic that is not one. A forum whose topic cannot be
+        located gets no nudge at all rather than one in General, and neither
+        does one whose chat cannot be read: working out where this belongs is
+        part of the best effort, not a precondition of the status that follows.
         """
-        key = (channel_id, agent_name)
-        if state in ("working", "awaiting-input"):
-            await self._begin_working_reaction(channel_id, agent_name, thread_root_id)
-        else:
-            await self._end_working_reactions(channel_id, agent_name)
-
-        if state == "working":
-            await self._clear_input_pings(channel_id, agent_name)
-            body = self._working_body(detail, deeplink_url)
-            existing = self._working_msg.get(key)
-            if existing is not None:
-                agent = await self.agent_rendering(agent_name)
-                await self.update_message(
-                    channel_id,
-                    existing.message_ref,
-                    self._attribute(agent_name, agent.body_label, body),
-                )
-                self._working_msg[key] = replace(existing, body=body)
+        try:
+            topic = await self._topic_kwargs(channel_id, thread_root_id)
+            if topic is None:
                 return
-            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
-            if ref is not None:
-                self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref,
-                    body=body,
-                    thread_root_id=thread_root_id,
-                    started_at=time.monotonic(),
-                )
-        elif state == "awaiting-input":
-            ref = await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+            await self._require_bot().send_chat_action(
+                chat_id=self._chat_id(channel_id),
+                action=ChatAction.TYPING,
+                **topic,
             )
-            if ref is not None:
-                self._input_pings.setdefault(key, []).append(ref)
-        else:
-            await self._clear_working(channel_id, agent_name)
-            await self._clear_input_pings(channel_id, agent_name)
-
-    async def _clear_working(self, channel_id: str, agent_name: str) -> None:
-        live = self._working_msg.pop((channel_id, agent_name), None)
-        if live is not None:
-            await self.delete_message(channel_id, live.message_ref)
-
-    async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
-        refs = self._input_pings.pop((channel_id, agent_name), [])
-        for ref in refs:
-            await self.delete_message(channel_id, ref)
+        except Exception as error:
+            logger.warning(
+                "Could not signal in Telegram chat %s that %s has started: %s.",
+                channel_id,
+                agent_name,
+                error,
+            )
 
     # ── Channels ─────────────────────────────────────────────────────────────
 
@@ -1320,11 +2218,153 @@ class TelegramAdapter(CollaborationAdapter):
             await self._handle_my_chat_member(chat_member)
             return
 
+        callback = getattr(update, "callback_query", None)
+        if callback is not None:
+            await self._handle_callback_query(callback)
+            return
+
         message = getattr(update, "message", None) or getattr(
             update, "channel_post", None
         )
         if message is not None:
             await self._handle_message(message)
+
+    async def _handle_callback_query(self, query: Any) -> None:
+        """Someone pressed a button on a card or a status this bridge posted.
+
+        Who pressed comes from `from_user`, which Telegram fills in and the
+        payload cannot: the data in the button says which request and which
+        option, or which turn to stop, never who. So a press replayed from
+        someone else's client is still attributed to whoever actually sent it,
+        and the identity check downstream is against a real account rather than
+        a claim.
+
+        The press is answered on every path out of here. Until it is, the
+        presser's client keeps the button in a loading state and will
+        eventually decide for itself that something broke — including on the
+        paths where nothing happened, which is what a press on a keyboard this
+        bridge did not write is.
+
+        A refusal reaches the presser through `tell_actor`, which leaves it in
+        `_PRESS_NOTICE` for the answer below rather than posting it in the
+        chat. It is collected in a `finally` so that a handler which raises
+        still closes the press: the exception belongs in the log, not on the
+        button.
+
+        Nothing here dedupes. Telegram redelivers an update it was not
+        acknowledged for, and the same press twice is the same option — or the
+        same turn to stop — by the same person, against the same revision,
+        which the shared layer derives one command id from, so the second is
+        the first rather than a second answer.
+        """
+        query_id = str(getattr(query, "id", "") or "")
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user = getattr(query, "from_user", None)
+        dispatch = _press_action(str(getattr(query, "data", "") or ""))
+        if dispatch is None or chat is None or user is None:
+            await self._answer_callback(query_id, None)
+            return
+        if self._on_interaction is None:
+            logger.warning(
+                "A press on a Switch message in chat %s has nowhere to go: this "
+                "bridge handles no interactions, so the message should not have "
+                "been drawn with buttons.",
+                getattr(chat, "id", "?"),
+            )
+            await self._answer_callback(query_id, None)
+            return
+
+        action_id, value = dispatch
+        name = self._display_name(user)
+        # A press is a sighting of that account in this chat, and the same
+        # thing a message teaches: the name a mention needs, and the id a
+        # handle resolves to.
+        self._user_names[user.id] = name
+        self._username_to_id[name] = user.id
+
+        notices: list[str] = []
+        held = _PRESS_NOTICE.set(notices)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=str(chat.id),
+                    sender_id=str(user.id),
+                    sender_name=name,
+                    action_id=action_id,
+                    value=value,
+                    message_ref=self._ref(message),
+                )
+            )
+        finally:
+            _PRESS_NOTICE.reset(held)
+            await self._answer_callback(query_id, notices[0] if notices else None)
+
+    async def _answer_callback(self, query_id: str, notice: str | None) -> None:
+        """Close a press on the presser's own client, and say why if it failed.
+
+        `show_alert` for a notice, because a toast is gone in a moment and what
+        is being said is why an answer did not land. Without one this is the
+        acknowledgement Telegram requires and nothing more: the card's own
+        redraw is what says an answer was taken, and claiming it here would be
+        claiming it before the redraw that proves it.
+
+        Plain text, unescaped, because an alert is not markup — the reason
+        quotes back what the host called an option, and HTML escaping it would
+        put the escapes on the screen.
+
+        A refusal from Telegram is logged and left. The query expires by
+        itself, nothing downstream waits on it, and the answer it would have
+        acknowledged has already been decided either way.
+        """
+        if not query_id:
+            return
+        text = None
+        if notice is not None:
+            text = (
+                notice
+                if len(notice) <= _MAX_ALERT
+                else notice[: _MAX_ALERT - 1].rstrip() + "…"
+            )
+        try:
+            await self._require_bot().answer_callback_query(
+                callback_query_id=query_id, text=text, show_alert=text is not None
+            )
+        except Exception as error:
+            logger.warning(
+                "Telegram would not acknowledge a press (%s). The notice, if "
+                "there was one, went unsaid: %s",
+                error,
+                text,
+            )
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person their answer did not land, where they can see it.
+
+        A press is told in the reply to the press itself: an alert on their
+        client alone, which costs the chat nothing and reaches them whether or
+        not they have ever opened a chat with the bot — a bot cannot message
+        someone who has not. It is left here for the press to carry rather than
+        sent from here, because the id that addresses it belongs to the press.
+
+        A typed answer has no press to reply to, so it falls back to the base:
+        said in the card's own thread, where everyone reading it sees a notice
+        addressed to someone else. That is the platform's limit rather than a
+        choice — Telegram gives a bot no private reply in a group it can use
+        unprompted.
+        """
+        notices = _PRESS_NOTICE.get()
+        if notices is not None:
+            notices.append(text)
+            return
+        await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
     async def _handle_my_chat_member(self, event: Any) -> None:
         """The bot's own membership changed. Being added is Telegram's
@@ -1394,7 +2434,6 @@ class TelegramAdapter(CollaborationAdapter):
         )
         root_id = self._root_id_of(message)
         message_ref = f"{chat_id}:{message.message_id}"
-        self._note_inbound(chat_id, root_id, str(message.message_id))
 
         if await self._handle_start(content.strip(), chat_id, channel_type):
             return
@@ -1484,11 +2523,14 @@ class TelegramAdapter(CollaborationAdapter):
         Enough to tell whether Telegram is delivering, without putting message
         bodies or sender names into the log — this runs server-side, where the
         desktop app's redaction does not reach."""
-        for field in ("message", "channel_post", "my_chat_member"):
+        for field in ("message", "channel_post", "my_chat_member", "callback_query"):
             payload = getattr(update, field, None)
             if payload is None:
                 continue
-            chat = getattr(payload, "chat", None)
+            # A press has no chat of its own; the message its button is on has.
+            chat = getattr(payload, "chat", None) or getattr(
+                getattr(payload, "message", None), "chat", None
+            )
             return f"{field} in chat {getattr(chat, 'id', '?')}"
         return "no recognised payload"
 
@@ -1919,7 +2961,7 @@ class TelegramAdapter(CollaborationAdapter):
 
         Deliberately not a provider logo. The server only distinguishes
         `claude-code` from `codex`, and Switch Console registers every other
-        provider — Gemini, Cursor, the rest — as `claude-code`; a logo drawn
+        provider — Antigravity, Cursor, the rest — as `claude-code`; a logo drawn
         from that would confidently label most agents wrongly.
         """
         digest = hashlib.blake2b(sender_name.encode("utf-8"), digest_size=8).digest()
@@ -1948,11 +2990,7 @@ class TelegramAdapter(CollaborationAdapter):
         zero-width space is not an entity, so the two never compound. This
         prefix is finished HTML — assembled after `translate_outbound` has
         already run over `content`, and never fed back through it — so
-        `html.escape` is the whole of the tag escaping it needs. The ping line
-        the base `_ping_operator` builds is the other pipeline: it inlines the
-        same escaped label into Markdown source and lets `translate_outbound`
-        escape the whole line. Neither pipeline knows about the other and each
-        escapes exactly once."""
+        `html.escape` is the whole of the tag escaping it needs."""
         name = (
             f"{cls._agent_marker(sender_name)} <b>{html.escape(label, quote=False)}</b>"
         )
@@ -1960,25 +2998,169 @@ class TelegramAdapter(CollaborationAdapter):
             return name
         return f"{name}\n{content}" if "\n" in content else f"{name}: {content}"
 
-    @staticmethod
-    def _reply_kwargs(thread_root_id: str | None) -> dict[str, Any]:
-        """Anchor a post to its thread root.
+    async def _is_forum(self, channel_id: str) -> bool:
+        """Whether this chat splits into topics.
 
-        `allow_sending_without_reply` matters: a root that has since been
-        deleted would otherwise fail the whole send, and a reply landing at the
-        chat root is much better than no message at all."""
+        The answer decides what a thread root *means* here, so it is read from
+        the chat rather than guessed from the ref: an inbound message carries
+        `message_thread_id` in a forum and a reply target everywhere else, and
+        both arrive as a bare number that says nothing about which it is.
+
+        Cached per chat. A group is converted to a forum rarely and never back
+        and forth mid-turn, and the alternative is a getChat on every post.
+        A lookup that fails is not cached and not guessed at: it raises, and
+        the caller decides whether the post can proceed without an answer.
+        """
+        known = self._forum_chats.get(channel_id)
+        if known is not None:
+            return known
+        chat = await self._require_bot().get_chat(self._chat_id(channel_id))
+        is_forum = bool(getattr(chat, "is_forum", False))
+        self._forum_chats[channel_id] = is_forum
+        return is_forum
+
+    async def _resolve_root(
+        self, channel_id: str, thread_root_id: str
+    ) -> _ThreadRoot | None:
+        """What a thread root names in this chat, or None if it names nothing.
+
+        A root arrives in either of two spellings, and they do not mean the
+        same thing. Inbound records a bare number — the topic in a forum, the
+        message replied to everywhere else. The publication seam records this
+        platform's own reference to a message, `chat:message`, because that is
+        the form the message map stores, and it always names one message. So a
+        composite reference is a reply target even in a forum: reading `75` out
+        of `-100123:75` and passing it as a topic would aim the post at
+        whichever topic happens to hold that number.
+
+        Nothing is returned for a reference this chat cannot address — a number
+        that is not one, or a message belonging to another chat, which is a
+        confusion of destinations rather than a missing quote. Callers disagree
+        about what that should cost, so none of it is settled here.
+        """
+        chat, separator, message = thread_root_id.partition(":")
+        if separator:
+            if chat != channel_id:
+                return None
+            numbered = _as_int(message)
+            return None if numbered is None else _ThreadRoot(False, numbered)
+        root = _as_int(chat)
+        if root is None:
+            return None
+        return _ThreadRoot(await self._is_forum(channel_id), root)
+
+    async def _anchor_kwargs(
+        self, channel_id: str, thread_root_id: str | None
+    ) -> dict[str, Any]:
+        """Anchor a post where the conversation it belongs to is.
+
+        Sending a topic as a reply target, or the other way about, is not a
+        formatting difference: a topic id used as a reply target quotes
+        whichever message happens to hold that number, and it lands in the
+        General topic the moment the topic's opening message is gone — so a
+        card asked for in one topic would be put to the whole group instead.
+        Which of the two a root names is `_resolve_root`'s question.
+
+        Outside a forum, a reply target that has since been deleted does not
+        stop the send. Detaching there costs the quote, not the audience: it is
+        the same chat either way, and a reply nobody can trace back beats no
+        message at all.
+
+        Inside one it is the opposite, because a reply target is also the only
+        thing naming the topic. Permitting the send without it is permitting it
+        into General — in front of the whole group rather than the people in
+        the conversation — so the anchor is required and the send fails
+        instead. Repeating an optional anchor on each chunk would not have
+        prevented that: the permission travels with every copy of it.
+        """
         if not thread_root_id:
             return {}
-        try:
-            root = int(thread_root_id)
-        except ValueError:
-            logger.error("Ignoring unparseable Telegram thread root %s", thread_root_id)
+        root = await self._resolve_root(channel_id, thread_root_id)
+        if root is None:
+            logger.error(
+                "Ignoring Telegram thread root %s, which chat %s cannot address.",
+                thread_root_id,
+                channel_id,
+            )
             return {}
+        if root.is_topic:
+            return {"message_thread_id": root.id}
         return {
             "reply_parameters": ReplyParameters(
-                message_id=root, allow_sending_without_reply=True
+                message_id=root.id,
+                allow_sending_without_reply=not await self._is_forum(channel_id),
             )
         }
+
+    async def _publication_anchor(
+        self, channel_id: str, thread_root_id: str | None, text: str
+    ) -> dict[str, Any]:
+        """Where a publication goes, with no route that quietly widens it.
+
+        The same two spellings as `_anchor_kwargs`, and the opposite answer to
+        an anchor that is not there. A relayed message detaching from a deleted
+        reply target costs the quote and keeps the audience, which is the right
+        trade for a line of conversation. A publication is not one: a card that
+        detaches is the agent's question put to the whole chat rather than to
+        the exchange that raised it, and an answer typed at it there binds a
+        request those readers never saw. So the send is refused, definitely,
+        and the publisher takes the route it keeps for a destination it cannot
+        reach — which ends at the Console rather than in the wrong place.
+
+        A root this chat cannot address is the same thing arriving differently:
+        the caller asked for somewhere this cannot reach, and posting to the
+        chat instead would be answering a question nobody asked.
+        """
+        if not thread_root_id:
+            return {}
+        root = await self._resolve_root(channel_id, thread_root_id)
+        if root is None:
+            raise RichContentFailed(
+                f"Cannot publish to Telegram chat {channel_id}: {thread_root_id!r} "
+                "is not a topic or a message in it, so there is no conversation "
+                "this belongs to.",
+                text=text,
+            )
+        if root.is_topic:
+            return {"message_thread_id": root.id}
+        return {
+            "reply_parameters": ReplyParameters(
+                message_id=root.id, allow_sending_without_reply=False
+            )
+        }
+
+    async def _topic_kwargs(
+        self, channel_id: str, thread_root_id: str | None
+    ) -> dict[str, Any] | None:
+        """The forum topic to signal in, or None to signal nowhere.
+
+        A chat action has no target finer than a topic. Outside a forum there
+        are no topics, so the chat is the right and only destination and an
+        empty mapping says so.
+
+        Inside one, a root that names a message rather than a topic leaves this
+        unable to locate the conversation — and a typing indicator raised in
+        General is shown to a whole group who did not ask for it, while the
+        people who did see nothing. There is no topic id to be had: the number
+        in a message reference is a message, and guessing from it would aim at
+        whichever topic happens to hold it. So the nudge is dropped. It is the
+        one signal here that is pure best effort, expiring in about five
+        seconds, and the status that follows carries the real state.
+        """
+        if not thread_root_id:
+            return {}
+        root = await self._resolve_root(channel_id, thread_root_id)
+        if root is not None and root.is_topic:
+            return {"message_thread_id": root.id}
+        if not await self._is_forum(channel_id):
+            return {}
+        logger.warning(
+            "Not signalling in Telegram chat %s: thread root %s does not name a "
+            "topic there, and the whole forum is the wrong audience.",
+            channel_id,
+            thread_root_id,
+        )
+        return None
 
     @staticmethod
     def _is_photo(mimetype: str, size: int) -> bool:
@@ -2031,9 +3213,21 @@ class TelegramAdapter(CollaborationAdapter):
         Returns the ref of the first message so an edit or delete targets the
         head of the run."""
         bot = self._require_bot()
+        anchor = await self._anchor_kwargs(channel_id, thread_root_id)
+        # In a forum the anchor is what keeps the run together: a chunk without
+        # one lands in General, so the tail of a long answer would be read by
+        # people who never saw its head. Everywhere else the anchor is a pointer
+        # at one message and repeating it quotes that message once per chunk,
+        # which is noise rather than a misdelivery — so it goes on the first
+        # only. The cost of the forum rule is that same repeated quote when the
+        # anchor is a reply rather than a topic, which is the better trade.
+        # Repetition alone is not what holds the destination: a reply anchor in
+        # a forum is also mandatory, so a target deleted mid-run fails the rest
+        # of the send instead of scattering it into General.
+        every_chunk = bool(anchor) and await self._is_forum(channel_id)
         first_ref: str | None = None
         for index, chunk in enumerate(chunk_message(body)):
-            kwargs = self._reply_kwargs(thread_root_id) if index == 0 else {}
+            kwargs = anchor if every_chunk or index == 0 else {}
             sent = await self._send_chunk(bot, channel_id, chunk, kwargs)
             if sent is None:
                 return first_ref

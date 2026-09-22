@@ -1,9 +1,11 @@
 import { observer } from 'mobx-react-lite';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { useAgentSettings } from '@renderer/lib/stores/use-agent-settings';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { Field } from '@renderer/lib/ui/field';
 import { Label } from '@renderer/lib/ui/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
+import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';
 import { InstalledAgentContent } from './InstalledAgentContent';
 import { InstallSection } from './InstallSection';
@@ -34,6 +36,11 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
         {agentPayload && (
           <div className="space-y-6">
             <AgentSheetHeaderSection agent={agentPayload} />
+            <ProviderConnectionStatus
+              providerId={asAgentProviderId(agentId)}
+              sshHost={null}
+              dir=""
+            />
             <Field>
               <Label>Installation</Label>
               <InstallSection

@@ -26,7 +26,7 @@ from switch_core.db.models import User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_protocol,
@@ -74,12 +74,16 @@ async def delete_agent_by_name(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
     agent = await agent_store.get_by_name(session, agent_name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_name}")
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -101,12 +105,16 @@ async def delete_agent(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -160,6 +168,7 @@ async def register_known_agent(
 
     try:
         result = await protocol.register_agent(
+            registration_path="gateway",
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
@@ -192,6 +201,7 @@ async def register_known_subagents(
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RegisterKnownSubagentsResponse:
     """Register many Claude Code subagents under one parent agent (session-authed).
 
@@ -216,7 +226,10 @@ async def register_known_subagents(
             status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
         )
     try:
-        require_manage(Principal(user.id, user.role == "admin"), parent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            parent.owner_id,
+        )
     except PermissionError as exc:
         raise HTTPException(
             status_code=403,
@@ -299,6 +312,7 @@ async def update_agent_options(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentSummary:
     """Replace a known-agent's options.
 
@@ -317,7 +331,10 @@ async def update_agent_options(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -351,6 +368,7 @@ async def update_agent_icon(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's icon (CHOO-2171).
 
@@ -370,7 +388,10 @@ async def update_agent_icon(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -404,6 +425,7 @@ async def update_agent_display_name(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's human display name.
 
@@ -420,7 +442,10 @@ async def update_agent_display_name(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -466,6 +491,7 @@ async def register_other_agent(
 
     try:
         result = await protocol.register_agent(
+            registration_path="gateway",
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
@@ -498,6 +524,7 @@ async def update_addressing_policy(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentDetail:
     """Set or clear an agent's scoped addressing policy (CHOO-1585).
 
@@ -509,7 +536,10 @@ async def update_addressing_policy(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, is_admin),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,

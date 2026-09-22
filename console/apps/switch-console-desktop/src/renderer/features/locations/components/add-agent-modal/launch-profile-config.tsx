@@ -98,18 +98,20 @@ export function LaunchProfileConfig({
     setState((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  if (!providerId || fields.length === 0) return null;
+  if (!providerId) return null;
 
   const providerLabel = getProvider(providerId)?.name ?? providerId;
 
   return (
     <div>
-      <DisclosureRow
-        open={open}
-        title="Advanced configuration"
-        meta={`${providerLabel} · ${fields.length} ${fields.length === 1 ? 'field' : 'fields'}`}
-        onToggle={() => setOpen((v) => !v)}
-      />
+      {fields.length > 0 && (
+        <DisclosureRow
+          open={open}
+          title="Advanced configuration"
+          meta={`${providerLabel} · ${fields.length} ${fields.length === 1 ? 'field' : 'fields'}`}
+          onToggle={() => setOpen((v) => !v)}
+        />
+      )}
       {open && (
         <div className="flex flex-col gap-4 pt-3">
           {fields.map((field) => {

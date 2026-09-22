@@ -15,7 +15,7 @@ Paths are relative to `apps/switch-console-desktop/`.
 - app shell and the modal/view registries under `src/renderer/app/`
 - feature UI under `src/renderer/features/<feature>/`
 - shared infrastructure under `src/renderer/lib/` (IPC client, modal and layout
-  systems, commands, PTY frontend, providers, hooks, stores, UI primitives)
+  systems, commands, SDK transcripts, providers, hooks, stores, UI primitives)
 
 ## Naming
 

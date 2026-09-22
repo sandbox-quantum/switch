@@ -130,7 +130,7 @@ export type TelemetryCliFailure =
   | 'no_uninstall_command'
   | 'permission_denied'
   | 'command_failed'
-  | 'pty_open_failed'
+  | 'process_open_failed'
   | 'not_detected_after_install'
   | 'not_detected_after_update'
   | 'still_present'

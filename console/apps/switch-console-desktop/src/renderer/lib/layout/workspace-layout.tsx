@@ -30,8 +30,7 @@ export function WorkspaceLayout({
   mainContent,
   persistentLayer = null,
 }: WorkspaceLayoutProps) {
-  const { leftPanelRef, handleDragging, syncLeftOpenFromPanel, isLeftOpen } =
-    useWorkspaceLayoutContext();
+  const { leftPanelRef, syncLeftOpenFromPanel, isLeftOpen } = useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: 'workspace-outer',
     storage: localStorage,
@@ -58,12 +57,6 @@ export function WorkspaceLayout({
         {leftSidebar}
       </ResizablePanel>
       <ResizableHandle
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          handleDragging('left', true);
-        }}
-        onPointerUp={() => handleDragging('left', false)}
-        onPointerCancel={() => handleDragging('left', false)}
         // The gutter and the panel's radius already separate sidebar from
         // content, so the handle carries no line of its own — it only shows
         // one while the pointer is on it, to say the edge can be dragged.

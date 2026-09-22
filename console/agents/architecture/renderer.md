@@ -39,7 +39,6 @@ All paths are relative to `apps/switch-console-desktop/`.
 - `layout/` — layout, navigation, and panel drag providers
 - `commands/` — command registry (`registry.ts`) and view-level `commandProvider` hooks
 - `hotkeys/` — global hotkey handling
-- `pty/` — frontend PTY sessions, pool provider, panes, prompt injection
 - `updates/` — in-app update surfaces
 - `stores/` — cross-feature stores (navigation, dependencies, resource monitor, ...)
 - `providers/`, `hooks/`, `components/`, `ui/`, `theme/` — shared providers, hooks, and UI primitives
@@ -54,7 +53,7 @@ left in the renderer is `lib/components/monaco-keyboard-bridge.tsx`.
 
 ## When Editing Here
 
-- Check `agents/conventions/renderer-patterns.md` for modal, view, PTY frontend, and store patterns.
+- Check `agents/conventions/renderer-patterns.md` for modal, view, SDK transcripts, and store patterns.
 - Call RPC methods via the typed `rpc` client from `src/renderer/lib/ipc.ts`
   (alias `@renderer/lib/ipc`), e.g. `rpc.sessions.create(...)`.
 - New modals must be registered in `src/renderer/app/modal-registry.ts`.

@@ -28,7 +28,7 @@ describe('InstallProgressReader', () => {
     expect(reader.take()).toBe('Get:3 http://archive.ubuntu.com noble/main amd64 git amd64 2.43.0');
   });
 
-  it('strips the escape sequences a PTY carries', () => {
+  it('strips the escape sequences command output carries', () => {
     const reader = new InstallProgressReader();
     reader.push(`${ESC}[1;32mSetting up git${ESC}[0m${ESC}]0;installing${ESC}\\`);
 

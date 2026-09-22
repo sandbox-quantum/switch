@@ -49,14 +49,15 @@ Build an OAuth2 invite URL (Developer Portal → **OAuth2 → URL Generator**):
 - **Bot permissions** (matching what the adapter does):
   - **View Channels** — see the guild's channels.
   - **Send Messages** + **Send Messages in Threads** — post agent replies.
-  - **Manage Webhooks** — mint the per-channel webhook agents post through.
+  - **Manage Webhooks** — mint the two per-channel webhooks the bridge posts
+    through (see [Two webhooks per channel](#two-webhooks-per-channel)).
   - **Manage Channels** / **Manage Roles** — set per-member channel permission
     overwrites (`channel.set_permissions`) when provisioning access, and mint
     the per-agent role that makes an agent's name autocomplete (see [Agent name
     autocomplete](#agent-name-autocomplete-agent_roles)).
   - **Read Message History** — thread-aware replies.
   - **Attach Files** — relay agent image attachments.
-  - **Add Reactions** — put 👀 on the message an agent is working on (see
+  - **Add Reactions** — mark the message an agent is working on (see
     [Knowing an agent is working](#knowing-an-agent-is-working)).
 
 Open the generated URL and add the bot to your server.
@@ -120,14 +121,41 @@ where role management is restricted.
 
 When a Switch Console-managed agent starts on a message, two things appear:
 
-- **👀 on the message it is answering**, removed when its turn ends. This is the
+- **A reaction on the message it is answering** — 👀 while the agent is working
+  on it, ⏳ while a prompt is waiting behind one already running. This is the
   only signal that says *which* message is being handled — an agent answering
-  two people at once marks both, and clears both together. It needs the **Add
-  Reactions** permission; without it the bridge logs a warning and posts no
-  reaction rather than a mark that is not there.
-- **A "⚙️ Working on it…" message** posted under the agent's own name and
-  avatar, edited in place as the activity changes and deleted when the turn
-  ends.
+  two people at once marks both. A mark comes off a message once the last turn
+  holding it has ended, which is not always the same moment the turn that put
+  it there ends: two prompts queued behind one message share its ⏳, and it
+  stays until neither of them is queued behind anything any more. A queued turn
+  that starts running releases the ⏳ before it finishes, so the hourglass
+  going while an agent is still busy is the mark working, not failing. It needs
+  the **Add Reactions** permission; without
+  it the bridge
+  logs a warning and posts no reaction rather than a mark that is not there.
+- **A status message** posted under the agent's own name and avatar, edited in
+  place as the activity changes: "Working… 41s" while the turn runs, "Worked for
+  2m 14s." when it finishes. It stays in the channel after the turn rather than
+  being deleted, so someone scrolling back can still see that the turn ran.
+
+**Stopping an agent.** The status message carries a red **Stop current work**
+button while there is something to stop, beside the **View activity** button
+that opens the turn's tool log. Pressing it asks the agent to end its current
+turn; the agent decides how quickly it can, and the same message says when it
+has. The control names the turn it was drawn for, so a press on a message that
+has not been redrawn since a new turn started is refused rather than stopping
+the newer one. It disappears when the turn ends. On a queued message the button
+stops the work in front of it, not the queued message, and the message says so.
+Whoever presses it must be allowed to stop that agent — the same check a typed
+`!interrupt` goes through — and the result, accepted or refused, is shown to
+them alone.
+
+The button needs a publication webhook this application owns (see below); a
+status published through somebody else's carries no components, and `!interrupt`
+is then the whole of what is on offer. Discord also caps a button's hidden id at
+100 characters, so a provider whose turn ids are longer than about 90 gets no
+button and a warning in the log rather than a control whose press Discord would
+refuse.
 
 **What Discord cannot do here.** There is no native progress surface — nothing
 like Slack's agent card — so the working message is one Switch renders itself.
@@ -136,6 +164,38 @@ about 10 seconds, has no "stop" call, and shows the *bot* rather than the agent,
 so with two agents working it would read as one anonymous "Switch Bridge is
 typing". Discord's "thinking…" placeholder is interaction-only (slash commands),
 which does not cover an ordinary `@agent` message.
+
+## Two webhooks per channel
+
+An admin looking at a channel's integration settings will see **two** Switch
+webhooks, not one, and both are expected:
+
+- **Switch Bridge** — every ordinary agent message, with the agent's name and
+  avatar carried as a per-message override.
+- **Switch Sessions** — session status messages and request cards, and nothing
+  else.
+
+They are split so that a **request card** can be found again when its fate is
+unknown — the post timed out, or the process died between sending it and
+recording its id. Two things have to hold before Switch will bind a
+reservation to a message it finds, and the webhook is only the first: the
+message must have come through the publication webhook, and it must carry that
+card's heading line for that handle. The webhook alone rules out an agent's own
+reply that happens to quote a handle — "I can explain the request `R7` syntax"
+arrives on the webhook agents speak through, so it is never a candidate — and
+the heading picks the right card out of the other publications beside it.
+
+**This does not recover a status message.** A turn's status prints no handle,
+so there is nothing to match on and the lookup declines rather than guessing;
+the status stays unconfirmed and is not posted a second time. The current
+bridge emits no discriminator by which it can recover a status: a webhook
+message carries no metadata this bridge sets, so the handle a card prints is
+what the lookup has to match on. Alternative recovery approaches remain
+deferred. On a platform that can carry a marker — Slack does — a status is as
+findable as a card.
+
+Both are minted on demand the first time the bridge needs them in a channel, and
+both need **Manage Webhooks**. Discord's limit is 15 webhooks per channel.
 
 ## Slash commands
 

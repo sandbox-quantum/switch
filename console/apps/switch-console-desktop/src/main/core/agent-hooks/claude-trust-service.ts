@@ -11,11 +11,9 @@ import {
 } from './trust-config-io';
 
 const CLAUDE_PROVIDER_ID: AgentProviderId = 'claude';
-const COPILOT_PROVIDER_ID: AgentProviderId = 'copilot';
 const CLAUDE_CONFIG_NAME = '.claude.json';
 const CLAUDE_LOCAL_SETTINGS_NAME = '.claude/settings.local.json';
 const CLAUDE_SKIP_BYPASS_PROMPT_KEY = 'skipDangerousModePermissionPrompt';
-const COPILOT_CONFIG_NAME = '.copilot/config.json';
 
 export class ClaudeTrustService {
   constructor(private readonly deps: TrustServiceDeps) {}
@@ -32,7 +30,7 @@ export class ClaudeTrustService {
     force?: boolean;
   }): Promise<void> {
     if (!cwd) return;
-    if (providerId !== CLAUDE_PROVIDER_ID && providerId !== COPILOT_PROVIDER_ID) return;
+    if (providerId !== CLAUDE_PROVIDER_ID) return;
     const normalizedPath = await canonicalTrustPath(cwd);
     if (providerId === CLAUDE_PROVIDER_ID && force) {
       await this.acceptBypassPermissionsMode(normalizedPath);
@@ -95,18 +93,10 @@ export class ClaudeTrustService {
     providerId: AgentProviderId,
     force: boolean
   ): Promise<TrustConfig | null> {
-    if (providerId !== CLAUDE_PROVIDER_ID && providerId !== COPILOT_PROVIDER_ID) return null;
+    if (providerId !== CLAUDE_PROVIDER_ID) return null;
     if (!force) {
       const { autoTrustWorktrees } = await this.deps.getSessionSettings();
       if (!autoTrustWorktrees) return null;
-    }
-
-    if (providerId === COPILOT_PROVIDER_ID) {
-      return {
-        configName: COPILOT_CONFIG_NAME,
-        parseWarningName: 'Copilot',
-        withTrustedPath: withCopilotTrustedFolder,
-      };
     }
 
     return {
@@ -208,18 +198,5 @@ function withClaudeTrustedProject(
         hasCompletedProjectOnboarding: true,
       },
     },
-  };
-}
-
-function withCopilotTrustedFolder(
-  config: Record<string, unknown>,
-  worktreePath: string
-): Record<string, unknown> | null {
-  const trustedFolders = Array.isArray(config.trustedFolders) ? config.trustedFolders : [];
-  if (trustedFolders.includes(worktreePath)) return null;
-
-  return {
-    ...config,
-    trustedFolders: [...trustedFolders, worktreePath],
   };
 }

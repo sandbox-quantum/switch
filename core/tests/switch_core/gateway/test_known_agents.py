@@ -4,10 +4,14 @@ from types import SimpleNamespace
 
 from switch_core.gateway.known_agents import (
     KNOWN_AGENTS,
+    AntigravityKnownAgent,
+    AntigravityOptions,
     ClaudeCodeKnownAgent,
     ClaudeCodeOptions,
     CodexKnownAgent,
     CodexOptions,
+    CursorKnownAgent,
+    CursorOptions,
     OpenCodeKnownAgent,
     OpenCodeOptions,
     known_agent_for,
@@ -638,3 +642,60 @@ class TestKnownAgentFor:
         assert isinstance(options, ClaudeCodeOptions)
         assert options.channels_enabled is True
         assert options.repo_dir is None
+
+
+class TestAntigravityKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert KNOWN_AGENTS["antigravity"] is AntigravityKnownAgent
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = AntigravityKnownAgent.build_profile(
+                AntigravityOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+    def test_onboarding_requires_console_runtime(self) -> None:
+        options = AntigravityKnownAgent.parse_options({"repo_dir": " "})
+        assert options.repo_dir is None
+        agent = _agent_named("antigravity.test")
+        assert (
+            AntigravityKnownAgent.connect_command(options, agent, "hub", None) is None
+        )
+        text = AntigravityKnownAgent.start_session_instructions(
+            options, agent, "hub", None
+        )
+        assert "Antigravity CLI" in text
+        assert "`agy`" in text
+        assert "local session" in text
+        assert "antigravity.test" in text
+
+
+class TestCursorKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert KNOWN_AGENTS["cursor"] is CursorKnownAgent
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = CursorKnownAgent.build_profile(
+                CursorOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+    def test_onboarding_requires_console_acp(self) -> None:
+        options = CursorKnownAgent.parse_options({"repo_dir": " "})
+        assert options.repo_dir is None
+        agent = _agent_named("cursor.test")
+        assert CursorKnownAgent.connect_command(options, agent, "hub", None) is None
+        text = CursorKnownAgent.start_session_instructions(options, agent, "hub", None)
+        assert "Cursor CLI ACP" in text
+        assert "local session" in text
+        assert "cursor.test" in text

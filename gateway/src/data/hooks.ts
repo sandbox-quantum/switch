@@ -10,6 +10,7 @@ import {
   type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
+  type InstalledApp,
   type KnownAgentType,
   type LinkedRoomDetail,
   type RoomGraphData,
@@ -22,6 +23,7 @@ import {
   type RoomDetail,
   type RoomGroupDetail,
   type RoomSummary,
+  type TemplateSummary,
   type UserInfo,
   fetchAgent,
   fetchAgents,
@@ -34,6 +36,8 @@ import {
   fetchDocumentRooms,
   fetchDocuments,
   fetchInboundLinkedRooms,
+  fetchInstallablePlatforms,
+  fetchInstalledApps,
   fetchKnownAgentTypes,
   fetchLinkedRooms,
   fetchRoomGraph,
@@ -54,6 +58,7 @@ import {
   fetchRoomPackages,
   fetchRoomReferences,
   fetchRooms,
+  fetchTemplates,
   fetchUsers,
 } from "./api";
 
@@ -151,6 +156,17 @@ export function useBridgeUsers(
 
 export function useAllExternalUsers(): UseQueryResult<ExternalUserSummary[]> {
   return useQuery(fetchAllExternalUsers);
+}
+
+// Empty on every deployment that registered no app of its own, which is most
+// of them — the page reads that as "there is nothing to install here", not as
+// a failure.
+export function useInstallablePlatforms(): UseQueryResult<string[]> {
+  return useQuery(fetchInstallablePlatforms);
+}
+
+export function useInstalledApps(): UseQueryResult<InstalledApp[]> {
+  return useQuery(fetchInstalledApps);
 }
 
 export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
@@ -319,4 +335,8 @@ export function usePackageDocuments(
     [packageId],
   );
   return useQuery(fetcher);
+}
+
+export function useTemplates(): UseQueryResult<TemplateSummary[]> {
+  return useQuery(fetchTemplates);
 }

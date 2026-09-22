@@ -10,8 +10,7 @@ This directory is the system of record for agent-facing repo guidance. Keep topi
 
 If the change touches remote hosts or Switch rooms, read
 `architecture/remote-execution.md` and `architecture/switch-rooms.md` too — Switch Console
-runs agents on SSH hosts as well as locally, and the remote path is a separate
-implementation.
+runs agents on SSH hosts as well as locally, and both transports share the persistent SDK host.
 
 ## Directory Layout
 

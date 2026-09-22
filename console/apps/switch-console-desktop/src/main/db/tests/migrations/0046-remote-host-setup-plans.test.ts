@@ -60,7 +60,7 @@ describe('migration 0046: remote host setup plans', () => {
         error: 'apt-get failed',
         output: 'E: Unable to locate package',
       },
-      { id: 'tmux', kind: 'core-dependency', state: 'blocked', outcome: null },
+      { id: 'example-tool', kind: 'core-dependency', state: 'blocked', outcome: null },
     ]);
 
     await fixture.db.insert(remoteHostSetupPlans).values({

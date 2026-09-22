@@ -63,9 +63,6 @@ class _FakeAdapter:
         self.batches: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
 
-    def agents_with_live_runtime_state(self, channel_id: str) -> list[str]:
-        return []
-
     async def send_attachment(
         self,
         channel_id,
@@ -138,6 +135,7 @@ def _fake_bridge(
         return "tenant-1"
 
     ns = SimpleNamespace(
+        _bridge_type="slack",
         _adapter=adapter,
         _puppet_matrix_ids={"@puppet:s"},
         _bridge_client_matrix_user_id="@bridge:s",
@@ -147,7 +145,6 @@ def _fake_bridge(
         recorded=recorded,
         _outbound_groups={},
         _outbound_group_timers={},
-        _indicator_move_timers={},
         _channel_to_room={"chan-1": ("room-uuid", "!room:s")},
         _room_tenant=_room_tenant,
     )
@@ -164,8 +161,7 @@ def _fake_bridge(
     )
     ns._relay_outbound_group = BridgeCore._relay_outbound_group.__get__(ns)
     ns._relay_outbound_media = BridgeCore._relay_outbound_media.__get__(ns)
-    ns._move_indicator_for_sender = BridgeCore._move_indicator_for_sender.__get__(ns)
-    ns._schedule_indicator_move = BridgeCore._schedule_indicator_move.__get__(ns)
+    ns._counted_outbound = BridgeCore._counted_outbound.__get__(ns)
     ns._flush_incomplete_outbound_group = (
         BridgeCore._flush_incomplete_outbound_group.__get__(ns)
     )

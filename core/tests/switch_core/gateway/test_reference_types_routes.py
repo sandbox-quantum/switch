@@ -20,7 +20,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_config,
     get_resource_service,
@@ -47,6 +47,11 @@ from switch_core.gateway.schemas import (
 
 _USER_STORE = UserStore()
 _REFERENCE_STORE = ReferenceStore()
+
+
+async def _is_admin(session: AsyncSession, user: User) -> bool:
+    """The bit `get_tenant_is_admin` hands the route, resolved the same way."""
+    return await _USER_STORE.administers(session, user)
 
 
 def _resource_service(
@@ -142,7 +147,13 @@ def _app() -> FastAPI:
     # stubbed. It is never called: a request with no cookie is refused
     # before it is touched.
     app.dependency_overrides[get_session_factory] = lambda: None
-    app.dependency_overrides[get_user_store] = lambda: None
+    app.dependency_overrides[get_user_store] = lambda: UserStore()
+    # Authorizing reads the tenant-admin bit before the route reaches the
+    # resource service, and this app never runs `get_current_user`'s
+    # `tenant_scope`, so the real dependency would refuse rather than answer
+    # (`UserStore.administers`). These tests are about routing and body
+    # validation, so the bit is supplied directly.
+    app.dependency_overrides[get_tenant_is_admin] = lambda: False
     app.dependency_overrides[get_config] = lambda: None
     app.dependency_overrides[get_resource_service] = lambda: None
     return app
@@ -214,7 +225,9 @@ class TestReferenceTypeCrudRoutes:
             assert created.shadowed_by_builtin is False
             assert created.value_schema["properties"]["urls"]
 
-            listed = await list_reference_types(session, svc, _USER_STORE, alice)
+            listed = await list_reference_types(
+                session, svc, _USER_STORE, alice, await _is_admin(session, alice)
+            )
             by_slug = {t.type: t for t in listed}
             assert "notion" in by_slug
             assert by_slug["notion"].owner_name == "alice"
@@ -223,7 +236,9 @@ class TestReferenceTypeCrudRoutes:
             assert by_slug["github"].owner_name is None
             assert by_slug["github"].value_hint
 
-            owned = await list_owned_reference_types(session, svc, _USER_STORE, alice)
+            owned = await list_owned_reference_types(
+                session, svc, _USER_STORE, alice, await _is_admin(session, alice)
+            )
             assert [t.type for t in owned] == ["notion"]
 
     async def test_a_private_type_is_invisible_to_another_user(
@@ -237,11 +252,16 @@ class TestReferenceTypeCrudRoutes:
                 _create_request("notion"), session, svc, _USER_STORE, alice
             )
 
-            listed = await list_reference_types(session, svc, _USER_STORE, bob)
+            listed = await list_reference_types(
+                session, svc, _USER_STORE, bob, await _is_admin(session, bob)
+            )
 
             assert "notion" not in {t.type for t in listed}
             assert (
-                await list_owned_reference_types(session, svc, _USER_STORE, bob) == []
+                await list_owned_reference_types(
+                    session, svc, _USER_STORE, bob, await _is_admin(session, bob)
+                )
+                == []
             )
 
     async def test_invalid_slug_is_400(
@@ -309,6 +329,7 @@ class TestReferenceTypeCrudRoutes:
                 svc,
                 _USER_STORE,
                 alice,
+                await _is_admin(session, alice),
             )
             assert updated.display_name == "Notion Workspace"
 
@@ -320,6 +341,7 @@ class TestReferenceTypeCrudRoutes:
                     svc,
                     _USER_STORE,
                     bob,
+                    await _is_admin(session, bob),
                 )
             assert exc.value.status_code == 403
 
@@ -338,6 +360,7 @@ class TestReferenceTypeCrudRoutes:
                     svc,
                     _USER_STORE,
                     alice,
+                    await _is_admin(session, alice),
                 )
 
             assert exc.value.status_code == 404
@@ -352,11 +375,16 @@ class TestReferenceTypeCrudRoutes:
                 _create_request("notion"), session, svc, _USER_STORE, alice
             )
 
-            response = await delete_reference_type("notion", session, svc, alice)
+            response = await delete_reference_type(
+                "notion", session, svc, alice, await _is_admin(session, alice)
+            )
 
             assert response.deleted_type == "notion"
             assert (
-                await list_owned_reference_types(session, svc, _USER_STORE, alice) == []
+                await list_owned_reference_types(
+                    session, svc, _USER_STORE, alice, await _is_admin(session, alice)
+                )
+                == []
             )
 
     async def test_delete_of_a_type_in_use_is_409(
@@ -383,10 +411,13 @@ class TestReferenceTypeCrudRoutes:
                 svc,
                 _USER_STORE,
                 alice,
+                await _is_admin(session, alice),
             )
 
             with pytest.raises(HTTPException) as exc:
-                await delete_reference_type("notion", session, svc, alice)
+                await delete_reference_type(
+                    "notion", session, svc, alice, await _is_admin(session, alice)
+                )
 
             assert exc.value.status_code == 409
             assert "cannot be deleted" in exc.value.detail
@@ -421,11 +452,19 @@ class TestTypeDisplayName:
                 svc,
                 _USER_STORE,
                 alice,
+                await _is_admin(session, alice),
             )
 
             assert created.type_display_name == "Notion"
 
-            fetched = await get_reference(created.id, session, svc, _USER_STORE, alice)
+            fetched = await get_reference(
+                created.id,
+                session,
+                svc,
+                _USER_STORE,
+                alice,
+                await _is_admin(session, alice),
+            )
             assert fetched.type_display_name == "Notion"
 
     async def test_an_unresolvable_slug_maps_to_none(

@@ -16,7 +16,8 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,6 +37,13 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
+from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.snapshot import (
+    normalise_actor_kind,
+    normalise_channel_type,
+    normalise_platform,
+    room_had_human_activity,
+)
 from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
@@ -47,6 +55,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
+
+
+def _age_days(created_at: object) -> float:
+    """How many days old a room is, for reporting. Zero if unknown.
+
+    Takes `object` because the timestamp columns on the models are annotated
+    `Mapped[str]` while carrying real `datetime`s — so the honest signature is
+    "whatever the column hands back", checked here rather than trusted.
+    """
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
 
 
 class LinkedRoomSpec(BaseModel):
@@ -111,6 +132,11 @@ class RoomCreateConfig(BaseModel):
     aliases: dict[str, str] | None = None
     acting_user_id: str | None = None
     acting_is_admin: bool = False
+    # Not derivable from `created_by`, which holds the *agent's owner* on the
+    # agent path. Stamped into the room's metadata so it survives.
+    created_by_kind: Literal["user", "agent", "system"] = "user"
+    # Provisioned from a room template rather than created directly.
+    from_template: bool = False
 
 
 class RoomCreateResult(BaseModel):
@@ -127,6 +153,12 @@ class RoomCreateResult(BaseModel):
 
 
 class RoomService:
+    # Class-level default so a caller that builds this without `__init__` —
+    # several tests assemble a minimal instance directly — still has the
+    # attribute. Telemetry is genuinely optional here; `emit_safely` treats
+    # None as "report nothing".
+    _telemetry: TelemetryService | None = None
+
     def __init__(
         self,
         *,
@@ -138,6 +170,7 @@ class RoomService:
         collab_bridge_store: CollaborationBridgeStore,
         resource_service: ResourceService,
         session_factory: async_sessionmaker[AsyncSession],
+        telemetry: TelemetryService | None = None,
     ) -> None:
         self._matrix_admin = matrix_admin
         self._room_store = room_store
@@ -147,6 +180,9 @@ class RoomService:
         self._collab_bridge_store = collab_bridge_store
         self._resource_service = resource_service
         self._session_factory = session_factory
+        # Optional because several tests and tooling build a RoomService
+        # without one; `emit_safely` treats None as "report nothing".
+        self._telemetry = telemetry
 
     async def _resolve_agent_ids(self, config: RoomCreateConfig) -> list[str]:
         if config.agent_ids is not None:
@@ -513,6 +549,8 @@ class RoomService:
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
+                # Nothing else on the row can answer this afterwards.
+                metadata_={"created_by_kind": config.created_by_kind},
             )
 
             async with self._session_factory() as session:
@@ -603,6 +641,32 @@ class RoomService:
             len(system_clients),
         )
 
+        # Never inside the argument list: an `await` there is evaluated before
+        # `emit_safely` is entered, outside the guard meant to contain it.
+        platform = await self._bridge_platform(bridge_id)
+
+        emit_safely(
+            self._telemetry,
+            "room_created",
+            {
+                "channel_type": normalise_channel_type(channel_type),
+                "bridge_platform": platform,
+                "agent_count": len(agent_ids),
+                "human_count": len(config.user_names or []),
+                "has_instructions": config.instructions is not None,
+                "created_by_kind": config.created_by_kind,
+                "from_template": config.from_template,
+            },
+        )
+
+        # Only a room a person made counts as activation.
+        if self._telemetry is not None and config.created_by_kind == "user":
+            await self._telemetry.emit_milestone(
+                "first_room_created",
+                channel_type=normalise_channel_type(channel_type),
+                bridge_platform=platform,
+            )
+
         failed_attachments = unreachable_users + await self._attach_after_creation(
             room.id, config
         )
@@ -651,6 +715,14 @@ class RoomService:
             bridge_id = room.bridge_id
 
             client_ids = await self._room_store.get_client_ids(session, room_id)
+            agent_count = (
+                len(await self._room_store.get_agent_ids(session, room_id))
+                if self._telemetry is not None
+                else 0
+            )
+
+        # Before the delete: the cascade takes the messages with the room.
+        was_ever_active = await self._was_ever_active(room.tenant_id, room_id)
 
         # `kick_user` and the delete below both write rows scoped to this
         # room's tenant (a membership removal, then the room itself), so both
@@ -677,14 +749,32 @@ class RoomService:
 
         logger.info("Deleted room %s", room_id)
 
+        if self._telemetry is None:
+            return
+        emit_safely(
+            self._telemetry,
+            "room_deleted",
+            {
+                "bridge_platform": await self._bridge_platform(bridge_id),
+                "channel_type": normalise_channel_type(room.channel_type),
+                "created_by_kind": normalise_actor_kind(
+                    (room.metadata_ or {}).get("created_by_kind")
+                ),
+                "age_days": _age_days(room.created_at),
+                "was_ever_active": was_ever_active,
+                "agent_count": agent_count,
+            },
+        )
+
     async def _resolve_names_to_ids(self, agent_names: list[str]) -> list[str]:
+        unique_names = list(dict.fromkeys(agent_names))
         async with self._session_factory() as session:
-            agents = await self._agent_store.get_by_names(session, agent_names)
+            agents = await self._agent_store.get_by_names(session, unique_names)
         name_to_id = {a.name: a.id for a in agents}
-        missing = [n for n in agent_names if n not in name_to_id]
+        missing = [n for n in unique_names if n not in name_to_id]
         if missing:
             raise ValueError(f"Unknown agents: {', '.join(missing)}")
-        return [name_to_id[n] for n in agent_names]
+        return [name_to_id[n] for n in unique_names]
 
     async def add_agents_to_room(
         self,
@@ -693,6 +783,7 @@ class RoomService:
         agent_names: list[str] | None = None,
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
+        added_by_kind: Literal["user", "agent", "system"] = "user",
     ) -> None:
         by_name = agent_ids is None and agent_names is not None
         if by_name:
@@ -762,7 +853,22 @@ class RoomService:
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
 
-    async def remove_agents_from_room(self, room_id: str, agent_ids: list[str]) -> None:
+        emit_safely(
+            self._telemetry,
+            "room_agents_added",
+            {
+                # Added, not requested.
+                "agent_count": len(new_agent_ids),
+                "added_by_kind": added_by_kind,
+            },
+        )
+
+    async def remove_agents_from_room(
+        self,
+        room_id: str,
+        agent_ids: list[str],
+        removed_by_kind: Literal["user", "agent", "system"] = "user",
+    ) -> None:
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -781,6 +887,12 @@ class RoomService:
                 await session.commit()
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
+
+        emit_safely(
+            self._telemetry,
+            "room_agents_removed",
+            {"agent_count": len(agent_ids), "removed_by_kind": removed_by_kind},
+        )
 
     async def _load_room(self, room_id: str) -> Room:
         """A room row, read on the caller's session.
@@ -880,10 +992,62 @@ class RoomService:
 
         Raises ValueError if the room does not exist.
         """
-        tenant_id = await self._room_tenant(room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
+        # The whole row: archiving reports its age and platform.
+        room = await self._load_room(room_id)
+        async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
             await session.commit()
+
+        if not archived or self._telemetry is None:
+            return
+        emit_safely(
+            self._telemetry,
+            "room_archived",
+            {
+                "bridge_platform": await self._bridge_platform(room.bridge_id),
+                "age_days": _age_days(room.created_at),
+                "was_ever_active": await self._was_ever_active(room.tenant_id, room_id),
+            },
+        )
+
+    async def _bridge_platform(self, bridge_id: str | None) -> str:
+        """The platform a bridge id names, as the telemetry catalogue spells it.
+
+        `none` for an internal-only room and for a lookup that failed. Never
+        raises: the operations this labels must not fail because it did.
+        """
+        if bridge_id is None or self._telemetry is None:
+            return "none"
+        try:
+            async with self._session_factory() as session:
+                bridge = await self._collab_bridge_store.get(session, bridge_id)
+        except Exception:
+            logger.warning(
+                "Could not resolve the platform of bridge %s for telemetry; "
+                "reporting it as unknown.",
+                bridge_id,
+                exc_info=True,
+            )
+            return "none"
+        return normalise_platform(bridge.type if bridge else None)
+
+    async def _was_ever_active(self, tenant_id: str, room_id: str) -> bool:
+        """Whether a human ever posted in this room.
+
+        Asked only on archive, so the cost lands on a rare operation. False on
+        failure — an archive must not fail because a count did.
+        """
+        try:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                return await room_had_human_activity(session, tenant_id, room_id)
+        except Exception:
+            logger.warning(
+                "Could not determine whether room %s was ever active; "
+                "reporting it as inactive.",
+                room_id,
+                exc_info=True,
+            )
+            return False
 
     async def add_users_to_room(self, room_id: str, user_names: list[str]) -> list[str]:
         """Add users to a bridged room; returns the names that did not make it
@@ -922,6 +1086,12 @@ class RoomService:
                 room_id,
                 unresolved,
             )
+        emit_safely(
+            self._telemetry,
+            # Resolved, not requested: an unknown name adds nobody.
+            "room_users_added",
+            {"user_count": max(len(user_names) - len(unresolved), 0)},
+        )
         return unresolved
 
     async def link_bridge_to_room(
@@ -1235,6 +1405,22 @@ class RoomService:
                     await self._room_store.add_client(session, client_id, room.id)
                 await session.commit()
             logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
+
+    async def resolve_bridge_users(
+        self, bridge_id: str, names: list[str]
+    ) -> dict[str, str]:
+        """Which of ``names`` are people on the bridge, as name to external id.
+
+        The same resolution room creation applies to a template's ``users:``
+        (known users first, then an exact directory match), exposed so a
+        ``user``-typed template param can be checked before the room exists.
+        Raises when the bridge is not running, since nothing can be looked up
+        on it then.
+        """
+        bridge_core = self._collab_lifecycle.get(bridge_id)
+        if bridge_core is None:
+            raise ValueError("the room's messaging app is not running")
+        return await bridge_core.resolve_external_user_id_map(names)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record

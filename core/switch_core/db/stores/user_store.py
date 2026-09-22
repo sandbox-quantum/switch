@@ -6,12 +6,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import administers_tenant, owns_tenant
 from switch_core.db.models import (
     OidcIdentity,
     TenantMember,
     User,
     require_tenant_id,
 )
+from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -297,3 +299,108 @@ class UserStore:
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))
         return list(result.scalars().all())
+
+    async def add_membership(
+        self, session: AsyncSession, *, tenant_id: str, user_id: str, role: str
+    ) -> TenantMember:
+        """Insert a `role` membership for `user_id` in `tenant_id`.
+
+        Distinct from `ensure_membership`, which derives the role from the
+        caller's global bit and is a no-op when a membership already exists:
+        this is the explicit write for the two places that grant a *specific*
+        role by a caller's own action — creating a workspace (the creator
+        becomes its `owner`) and accepting an invitation (the invited role).
+        It does not check for an existing row first; a caller that needs that
+        checks before calling. Kept as the one place `TenantMember` is
+        constructed (`tests/switch_core/test_seed_admin_membership.py` pins
+        that), so a route never writes one directly.
+        """
+        membership = TenantMember(tenant_id=tenant_id, user_id=user_id, role=role)
+        session.add(membership)
+        await session.flush()
+        return membership
+
+    async def tenant_role(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> str | None:
+        """`user_id`'s membership role in `tenant_id`, or None if not a member.
+
+        `TenantMember` is addressed by its whole primary key, so this is a
+        plain `session.get` rather than a query — same shape as
+        `ensure_membership`'s write.
+        """
+        membership = await session.get(TenantMember, (tenant_id, user_id))
+        return membership.role if membership is not None else None
+
+    async def list_tenant_members(
+        self, session: AsyncSession
+    ) -> list[tuple[User, TenantMember]]:
+        """Every member of the session's bound tenant, joined with their user row.
+
+        No `WHERE tenant_id = …` of its own: the policy on `tenant_members` is
+        what narrows this, the same as `InvitationStore.list_for_tenant`.
+        """
+        result = await session.execute(
+            select(User, TenantMember).join(
+                TenantMember, TenantMember.user_id == User.id
+            )
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def count_owners(self, session: AsyncSession) -> int:
+        """How many `owner` memberships exist in the session's bound tenant.
+
+        Backs "a workspace must always have an owner": removing or demoting a
+        member is refused when they are the one row this counts.
+        """
+        result = await session.execute(
+            select(func.count())
+            .select_from(TenantMember)
+            .where(TenantMember.role == "owner")
+        )
+        return result.scalar_one()
+
+    async def administers(self, session: AsyncSession, user: User) -> bool:
+        """Whether `user` may administer the tenant bound to `session`'s
+        context — the operator bypass, or an owner/admin membership in it.
+
+        See `authz.administers_tenant`, which this composes with a read of the
+        one membership row that can answer "in *this* tenant".
+
+        Raises:
+            RuntimeError: no tenant is bound. The question has no
+                tenant-independent answer: half of it is a membership row that
+                cannot be read without one. Answering on the operator bit
+                alone would quietly demote a workspace owner to a plain
+                member, and the symptom — a 403 on their own workspace — says
+                nothing about why.
+        """
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "administers requires a bound tenant; whether someone may "
+                "administer a workspace is only answerable about a particular "
+                "one"
+            )
+        role = await self.tenant_role(session, tenant_id, user.id)
+        return administers_tenant(is_operator=user.role == "admin", tenant_role=role)
+
+    async def owns(self, session: AsyncSession, user: User) -> bool:
+        """Whether `user` may decide who owns the tenant bound to `session`'s
+        context — the operator bypass, or an `owner` membership in it.
+
+        The same composition as `administers`, over `authz.owns_tenant`; see
+        there for why the two are separate bits rather than one.
+
+        Raises:
+            RuntimeError: no tenant is bound, for the same reason
+                `administers` raises.
+        """
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "owns requires a bound tenant; whether someone owns a "
+                "workspace is only answerable about a particular one"
+            )
+        role = await self.tenant_role(session, tenant_id, user.id)
+        return owns_tenant(is_operator=user.role == "admin", tenant_role=role)

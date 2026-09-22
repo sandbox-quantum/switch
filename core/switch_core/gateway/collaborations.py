@@ -19,13 +19,19 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.db.models import CollaborationBridge, ExternalUser, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user, require_admin
+from switch_core.gateway.auth import (
+    get_current_user,
+    get_tenant_is_admin,
+    require_tenant_admin,
+)
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
     get_external_user_store,
+    get_install_store,
     get_room_service,
     get_room_store,
     get_session,
@@ -164,7 +170,7 @@ async def create_bridge(
     # Admin-only: a bridge is an unowned, workspace-wide integration holding
     # platform secrets, so there is no owner to scope to (unlike connectors,
     # whose authz is owner-or-admin) — registering one is an admin action.
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     try:
         bridge = await collab_lifecycle.register(
@@ -202,7 +208,7 @@ async def set_default_bridge(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     """Nominate a bridge as the instance default, demoting the previous one."""
     try:
@@ -253,7 +259,7 @@ async def update_bridge(
     ],
     # Admin-only for the same reason as registering one: a bridge is an unowned,
     # workspace-wide integration, so there is no owner to scope mutation to.
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -529,6 +535,7 @@ async def claim_bridge_identity(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ExternalUserSummary:
     """Claim a platform identity for a Switch user (CHOO-2137).
 
@@ -548,7 +555,7 @@ async def claim_bridge_identity(
         raise HTTPException(status_code=404, detail="Bridge not found")
 
     target_user_id = payload.user_id or user.id
-    if target_user_id != user.id and user.role != "admin":
+    if target_user_id != user.id and not is_admin:
         raise HTTPException(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
@@ -635,6 +642,7 @@ async def release_bridge_identity(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     user_id: str | None = None,
 ) -> ExternalUserSummary:
     """Drop a claim on a platform account — your own, or someone else's if you
@@ -644,7 +652,7 @@ async def release_bridge_identity(
         raise HTTPException(status_code=404, detail="Identity not found")
 
     target_user_id = user_id or user.id
-    if target_user_id != user.id and user.role != "admin":
+    if target_user_id != user.id and not is_admin:
         raise HTTPException(
             status_code=403,
             detail="Only an admin may release another user's messaging identity",
@@ -671,16 +679,36 @@ async def delete_bridge(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
+    install_store: Annotated[MessagingInstallStore, Depends(get_install_store)],
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     # Admin-only: deleting a bridge cascades into deleting every room on it, so
     # this is the most destructive operation on the router.
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> dict[str, bool]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
+
+    # Before a single room is deleted, because the rooms do not come back. A
+    # bridge built by an install holds a token this deployment did not issue
+    # and the platform still honours, and the install row's pointer at it is a
+    # real foreign key — so this delete would destroy every room on the bridge
+    # and *then* be refused by Postgres, leaving the bridge running, the rooms
+    # gone and a live credential nobody has revoked.
+    install = await install_store.get_for_bridge(session, bridge_id=bridge_id)
+    if install is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This connection was created by installing the Switch app into "
+                f"{install.platform} workspace {install.external_workspace_id}, so "
+                "it cannot be deleted here — the app would stay installed and its "
+                "token would stay valid. Disconnect the app instead, which revokes "
+                "the token at the platform and then removes this connection."
+            ),
+        )
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
     for room in rooms:

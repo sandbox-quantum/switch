@@ -3,6 +3,7 @@
 {{- end }}
 {{- include "switch.validateDbTls" . }}
 {{- include "switch.validateLogging" . }}
+{{- include "switch.validateObservability" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -44,14 +45,28 @@ spec:
               name: teams
               protocol: TCP
             {{- end }}
+            {{- if .Values.switchCore.collaborationCallback.enabled }}
+            - containerPort: {{ .Values.switchCore.collaborationCallback.port }}
+              name: callbacks
+              protocol: TCP
+            {{- end }}
           env:
             {{- include "switch.coreEnv" . | nindent 12 }}
+          # Readiness checks the database; liveness deliberately does not.
+          # There is one replica, so a failing readiness probe empties the
+          # Service rather than shifting traffic — which is right while the
+          # database is unreachable, and would be catastrophic as a restart
+          # trigger. `/health` stays the cheap always-ok reply that liveness
+          # and the other workloads' boot waits use.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 10
+            # Six failures at ten seconds: long enough to ride out a database
+            # failover, short enough that a real outage stops being served.
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /health

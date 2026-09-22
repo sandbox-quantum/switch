@@ -1,3 +1,4 @@
+import type { LucideIcon } from 'lucide-react';
 import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
 import { cn } from '@renderer/utils/utils';
 
@@ -21,7 +22,7 @@ export function SegmentedControl<T extends string>({
 }: {
   value: T;
   onChange: (value: T) => void;
-  options: readonly { value: T; label: string }[];
+  options: readonly { value: T; label: string; icon?: LucideIcon }[];
   ariaLabel: string;
   className?: string;
 }) {
@@ -51,6 +52,7 @@ export function SegmentedControl<T extends string>({
           // surface itself in dark mode, so it draws nothing.
           className="h-auto cursor-pointer rounded-[7px] px-[9px] py-[2px] text-[11.5px] font-medium text-foreground-muted transition-colors hover:bg-transparent hover:text-foreground aria-pressed:bg-[var(--btn-1)] aria-pressed:text-foreground aria-pressed:shadow-[0_1px_2px_rgb(0_0_0_/_0.12)] aria-[pressed=false]:hover:bg-[var(--sel-soft)] data-pressed:bg-[var(--btn-1)] data-[state=on]:bg-[var(--btn-1)] data-[state=on]:text-foreground data-[state=on]:shadow-[0_1px_2px_rgb(0_0_0_/_0.12)]"
         >
+          {option.icon && <option.icon className="size-3.5" />}
           {option.label}
         </ToggleGroupItem>
       ))}

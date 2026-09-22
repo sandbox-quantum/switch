@@ -10,7 +10,6 @@ export type ResolvedShellProfile = {
   executable: string;
   available: true;
   family: TerminalShellFamily;
-  interactiveArgs: string[];
   commandArgs: string[];
   envCaptureArgs?: string[];
   capturedEnv?: Record<string, string>;

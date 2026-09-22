@@ -53,7 +53,7 @@ async function bootstrap() {
     appState.sidebar.expandAllLocations();
   }
 
-  // Avoid double-mount in dev which can duplicate PTY sessions
+  // Avoid double-mount in dev which can duplicate session subscriptions
   ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <ErrorBoundary>
       <App />

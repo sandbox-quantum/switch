@@ -143,27 +143,6 @@ def test_a_chat_channel_puts_the_room_linked_notice_at_the_root() -> None:
     assert connector.replies == []
 
 
-def test_a_chat_channel_keeps_the_runtime_status_where_the_message_was() -> None:
-    adapter, connector = _adapter(_Graph("chat"))
-
-    # Triggered by a message at the root → the status belongs at the root.
-    _run(
-        adapter.apply_runtime_state(
-            _CHANNEL, "james", "working", mention_handle=None, thread_root_id=None
-        )
-    )
-    assert connector.new_posts == [_CHANNEL]
-    assert connector.replies == []
-
-    # Triggered from inside a thread → the status belongs in that thread.
-    _run(
-        adapter.apply_runtime_state(
-            _CHANNEL, "rita", "working", mention_handle=None, thread_root_id="msg-4"
-        )
-    )
-    assert connector.replies == [f"{_CHANNEL};messageid=msg-4"]
-
-
 def test_a_chat_channel_does_not_glue_an_agents_messages_together() -> None:
     # The bug Louis saw: everything an agent said after its first message was
     # rewritten into the thread that first message opened.

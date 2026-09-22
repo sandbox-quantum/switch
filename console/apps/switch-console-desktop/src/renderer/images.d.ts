@@ -32,3 +32,13 @@ declare module '*.webp' {
   const value: string;
   export default value;
 }
+
+declare module '*.md?raw' {
+  const value: string;
+  export default value;
+}
+
+declare module '*.yaml?raw' {
+  const value: string;
+  export default value;
+}

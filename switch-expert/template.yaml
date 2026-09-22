@@ -1,0 +1,128 @@
+# Switch expert, as a template.
+#
+# A template is one YAML document that describes what to create: an agent,
+# a room, or several of each. Switch Console reads it on its Templates page,
+# shows one form built from the `params:` block, and creates everything in
+# one pass. The language is documented in docs/TEMPLATES.md at the
+# repository root; this header is the short version.
+#
+#   params:       What the form asks for, referred to as `{name}` anywhere
+#                 below. Each param says what it is (`type`), what it starts
+#                 as (`default`, one value or a list of candidates tried in
+#                 order, `$first` meaning the first one the server has),
+#                 whether it may be left empty (`required`), and how the
+#                 form shows it (`input`: `ask` for a visible input,
+#                 `advanced` for one folded away with its default filled in,
+#                 `fixed` for a value the deployer cannot change). Nothing
+#                 the form fills in comes from anywhere else: every default
+#                 is written here.
+#
+#   agent:        Who the agent is. `display_name` is how the agent is
+#                 shown to people; the identifier it is addressed by
+#                 (`name`) is derived from it unless written. `provider`,
+#                 `location` and `directory` say what runs it, where, and
+#                 in which folder, each read from a param so the template
+#                 decides what the deployer may change. `repo` is the
+#                 repository it works from: Switch Console clones it
+#                 (shallow) into the agent's directory before the agent
+#                 first runs, and the agent clones it itself when that did
+#                 not happen. `sources` are the pages it should read.
+#                 `addressing` is who may talk to it: `owner` (the default),
+#                 `owner-agents`, or `anyone`. `join` lists rooms it is put
+#                 in once it exists, by name or through a `room` param; a
+#                 `room` param whose default lists `$new` offers the room
+#                 below as one of the choices. `instructions` is its brief,
+#                 read from AGENT.md next to this file for the bundled copy.
+#
+#   room:         The room to put the agent in as soon as it exists, in the
+#                 shape of a room template. `{agent}` is the agent's
+#                 identifier; `{$creator}` is the deployer. Without a
+#                 `room:` the template creates the agent and stops.
+#
+#   kickoff:      Posted into the room on behalf of the deployer once the
+#                 room exists. An agent starts working when a message
+#                 addresses it, so mention the agent here or it will sit in
+#                 the room without answering.
+#
+#   form:         How the form folds things away: `advanced.label` names the
+#                 fold that holds the `input: advanced` and `input: fixed`
+#                 params, `advanced.open` says whether it starts open.
+#
+# The form for this template shows the agent's name, filled in, an Advanced
+# fold with the provider, where it runs and its directory, and one switch,
+# "Start it in a room", off by default. One click creates the agent alone;
+# switched on, the room below is the choice, with Slack as the messaging
+# app when it is set up, and the agent starts there.
+version: 1
+params:
+  name:
+    type: string
+    label: Agent name
+    description: How the agent is shown to people. It is addressed by a short form of this.
+    default: Switch expert
+    required: true
+  where:
+    type: room
+    label: Start it in a room
+    description: >-
+      Off, the agent is created on its own and you add it to rooms later. On,
+      it starts in a new room made for it, or in one you pick.
+    required: false
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Where the new room is created. Slack when it is set up, else the server's default app.
+    default: [Slack, $first]
+    required: false
+  provider:
+    type: provider
+    description: The coding agent that runs it. The first one installed where it runs is chosen.
+    default: [claude, codex, opencode]
+    input: advanced
+  location:
+    type: location
+    description: The machine it runs on.
+    default: local
+    input: advanced
+  directory:
+    type: directory
+    description: Its working directory. The repository is cloned inside it.
+    default: "{$agents_dir}/{agent}"
+    input: advanced
+form:
+  advanced:
+    label: Advanced
+    open: false
+agent:
+  display_name: "{name}"
+  description: >-
+    Answers questions about Switch and helps you design and build things with
+    it. Grounded in a local clone of the Switch repository, which it re-reads
+    rather than answering from memory.
+  provider: "{provider}"
+  location: "{location}"
+  directory: "{directory}"
+  join: ["{where}"]
+  repo: https://github.com/sandbox-quantum/switch
+  addressing: anyone
+  sources:
+    - label: Stand up a Switch expert
+      url: https://docs.flintai.dev/flintai/switch/getting-started/switch-expert
+    - label: Switch documentation
+      url: https://docs.flintai.dev/flintai/switch/getting-started
+room:
+  name: "Ask {agent}"
+  description: >-
+    Where {$creator} asks {agent} about Switch: how it works, how to set
+    something up, why something is not behaving.
+  channel_type: channel_private
+  bridge: "{bridge}"
+  agents: ["{agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    This room is for asking {agent} about Switch. Answer here, briefly and
+    concretely, in the plainest words that are still true. When you do not
+    know, say so and say where the answer would live.
+kickoff: |
+  @{agent} hi. Introduce yourself in two lines, then tell me the first thing
+  you would check if an agent in a room stopped answering.

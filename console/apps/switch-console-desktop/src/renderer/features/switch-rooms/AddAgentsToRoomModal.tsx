@@ -1,23 +1,21 @@
-import { Search, X } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
+import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
+import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
-import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from '@renderer/lib/ui/combobox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
   DialogContentArea,
@@ -43,8 +41,64 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   onClose,
 }: Props) {
   const { setCloseGuard } = useModalContext();
+  const { navigate } = useNavigate();
   const serverId = switchRoomsStore.roomServerId(roomId);
   const roomName = switchRoomsStore.roomNameById(roomId);
+
+  // Templates can create an agent straight into this room. The bundled
+  // templates are listed at once; the workspace's are added when the request
+  // returns.
+  const [serverTemplates, setServerTemplates] = useState<StoredTemplateSummary[]>([]);
+  useEffect(() => {
+    if (!serverId) return;
+    let cancelled = false;
+    rpc.switchServers
+      .listTemplates({ serverId, kind: 'agent' })
+      .then((list) => {
+        if (!cancelled) setServerTemplates(list);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setServerTemplates([]);
+        toast({
+          title: failureText(e, "Could not load the workspace's templates."),
+          description: 'The built-in ones are still offered.',
+          variant: 'destructive',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverId]);
+  // A built-in template the signed-in user saved to the workspace is listed
+  // once, as their copy. Names are unique only per owner, so someone else's
+  // template of the same name is not a copy.
+  const meId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
+  const onWorkspace = serverTemplates.filter((t) => t.kind === 'agent');
+  const templates: StoredTemplateSummary[] = [
+    ...bundledTemplates
+      .filter(
+        (b) =>
+          b.kind === 'agent' &&
+          !onWorkspace.some((t) => t.name === b.name && meId !== null && t.ownerId === meId)
+      )
+      .map(({ id, name, description, kind, creator }) => ({
+        id,
+        name,
+        description,
+        kind,
+        creator,
+        ownerId: null,
+      })),
+    ...onWorkspace,
+  ];
+  // The Use page creates the agent. With `intoRoomId` it adds the agent to
+  // this room instead of creating the template's own room.
+  const createFromTemplate = (template: StoredTemplateSummary) => {
+    if (!serverId) return;
+    onClose();
+    navigate('templateUse', { serverId, templateId: template.id, intoRoomId: roomId });
+  };
 
   const [selected, setSelected] = useState<Candidate[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -110,6 +164,30 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
             </p>
           )}
 
+          {serverId && templates.length > 0 && (
+            <Field>
+              <FieldLabel>New agent from a template</FieldLabel>
+              <div className="flex flex-wrap gap-2">
+                {templates.map((t) => (
+                  <Button
+                    key={t.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isSubmitting}
+                    onClick={() => void createFromTemplate(t)}
+                  >
+                    <FileText className="size-3.5" />
+                    {t.name}
+                  </Button>
+                ))}
+              </div>
+              <span className="text-xs text-foreground-muted">
+                Creates the agent and puts it in this room. Mention it here afterwards to start it.
+              </span>
+            </Field>
+          )}
+
           <Field>
             <div className="flex items-center justify-between gap-3">
               <FieldLabel>Agents</FieldLabel>
@@ -124,6 +202,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
+                    subtitle={agentProviderLabel(agent.providerId)}
                     onRemove={() =>
                       setSelected((current) => current.filter((a) => a.id !== agent.id))
                     }
@@ -132,43 +211,20 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
               </div>
             )}
 
-            <Combobox
+            <PickerCombobox
               items={candidates}
-              value={null}
-              onValueChange={(next: Candidate | null) => {
-                if (next) setSelected((current) => [...current, next]);
+              onPick={(next) => {
+                setSelected((current) => [...current, next]);
                 setError(null);
               }}
-              isItemEqualToValue={(a: Candidate, b: Candidate) => a.id === b.id}
-              filter={(item: Candidate, query) =>
-                item.name.toLowerCase().includes(query.toLowerCase())
-              }
-              autoHighlight
-            >
-              {/* The search box is the control rather than something a button
-                  has to open: putting several agents in a room at once is the
-                  reason this dialog exists. */}
-              <ComboboxInput
-                showTrigger={false}
-                disabled={nothingToAdd}
-                placeholder="Search agents to add..."
-                leftAddon={<Search className="size-3.5 text-foreground-muted" />}
-              />
-              <ComboboxContent className="min-w-(--anchor-width)">
-                <ComboboxList>
-                  {(item: Candidate) => (
-                    <ComboboxItem key={item.id} value={item} showCheck={false}>
-                      <AgentAvatar name={item.name} iconUrl={item.iconUrl} size={22} />
-                      <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                      <span className="shrink-0 text-xs text-foreground-muted">
-                        {agentProviderLabel(item.providerId)}
-                      </span>
-                    </ComboboxItem>
-                  )}
-                </ComboboxList>
-                <ComboboxEmpty>No agents found</ComboboxEmpty>
-              </ComboboxContent>
-            </Combobox>
+              searchText={(item) => item.name}
+              renderItem={(item) => (
+                <AgentPickerRow agent={item} subtitle={agentProviderLabel(item.providerId)} />
+              )}
+              disabled={nothingToAdd}
+              placeholder="Search agents to add..."
+              emptyText="No agents found"
+            />
             {nothingToAdd && (
               <p className="mt-1 text-xs text-foreground-muted">
                 Every agent on this copy of Switch Console is already in the room. Agents registered
@@ -194,29 +250,3 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
     </>
   );
 });
-
-/** An agent already chosen, with the way to take it back out. */
-function ChosenAgentTile({ agent, onRemove }: { agent: Candidate; onRemove: () => void }) {
-  return (
-    // `--fill` rather than `--surface-2`: in dark mode that surface is the
-    // dialog's own background, so a tile drawn in it was a tile nobody could
-    // see.
-    <div className="group relative flex flex-col gap-2 rounded-[10px] bg-[var(--fill)] p-3">
-      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={26} />
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">{agent.name}</span>
-        <span className="truncate text-xs text-foreground-muted">
-          {agentProviderLabel(agent.providerId)}
-        </span>
-      </div>
-      <button
-        type="button"
-        aria-label={`Remove ${agent.name}`}
-        onClick={onRemove}
-        className="absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100"
-      >
-        <X className="size-3.5" />
-      </button>
-    </div>
-  );
-}

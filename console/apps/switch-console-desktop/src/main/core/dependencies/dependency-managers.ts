@@ -1,7 +1,6 @@
 import { HostDependencyManager, type DependencyId } from '@switch-console/core/deps/runtime';
 import { clearResolvedPathCache } from '@main/core/agent-runtime/impl/resolve-agent-executable';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { appSettingsService } from '@main/core/settings/settings-service';
 import { resolveLocalAutomationShellWithSystemFallback } from '@main/core/terminal-shell/resolver';
 import { log } from '@main/lib/logger';
 import { agentUpdateService } from './agent-update-service';
@@ -10,9 +9,8 @@ import { createLocalInstallCommandRunner } from './install-runner';
 import { DEPENDENCIES, getDependencyDescriptor } from './registry';
 
 async function resolveLocalInstallShellProfile() {
-  const { defaultShell } = await appSettingsService.get('terminal');
   return await resolveLocalAutomationShellWithSystemFallback({
-    intent: defaultShell,
+    intent: 'system',
     onFallback: (error) => {
       log.warn('[DependencyManager] Preferred install shell unavailable, using fallback', {
         shell: error.shell,

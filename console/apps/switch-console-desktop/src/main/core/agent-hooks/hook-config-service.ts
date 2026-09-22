@@ -40,7 +40,7 @@ async function ensureGitIgnoreEntries(sessionPath: string, entries: string[]): P
  * before every spawn removes the "config got cleaned mid-session" failure mode.
  *
  * Returns true if hooks are available for this provider (i.e. hook env vars
- * should be injected into the PTY spawn).
+ * should be injected into the SDK host launch).
  */
 export async function ensureHooksInstalled({
   providerId,

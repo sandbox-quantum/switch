@@ -238,6 +238,20 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 - `docs/old/LOCAL_DEVELOPMENT.md` — running Switch locally for development:
   `just` recipes, which port serves what, connecting Switch Console to a
   local server
+- `docs/old/observability.md` — what switch-core reports about itself and how
+  to turn it on: the metric catalogue and why attributes are declared, the
+  split between the liveness and readiness routes and why only the database
+  gates readiness, what the process reports in place of an infrastructure
+  agent, and what tracing still needs. Dashboards and alerts live in
+  `deploy/observability/`.
+- `docs/old/multi-tenancy.md` — why Switch is multi-tenant the way it is: the
+  tenant model, sign-in and onboarding, one official messaging app per
+  platform, and the phased plan the work follows. Phases 0 and 1 are built;
+  read the code, not this, for what exists today.
+- `docs/old/multi-tenancy-phase1-db.md` — the Phase 1 database schema as built:
+  tables, per-tenant uniqueness, and how a request's tenant is bound
+- `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the
+  proposal and the cutover runbook
 
 There is no separate schema, room-design, HTTP-API or MCP-surface document. Read
 those from the code: `core/switch_core/db/models.py` for the schema,
