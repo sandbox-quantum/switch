@@ -1200,7 +1200,7 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     kind: t.kind,
     creator: t.owner_name ?? t.owner_id,
     ownerId: t.owner_id,
-    // A server that does not report versions has never bumped one.
+    // A server that does not report versions is read as being on the first.
     version: t.version ?? 1,
     // A server without visibility fields shares every template and lets its
     // owner or an admin change it, which is what these defaults say.

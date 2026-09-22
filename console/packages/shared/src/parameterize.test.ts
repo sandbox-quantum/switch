@@ -156,3 +156,40 @@ describe('parameterize: block scalars', () => {
     expect(out).toContain("  topic: '{a}'");
   });
 });
+
+describe('parameterize: structure and keys', () => {
+  it('never touches a structural key, even when a value spells it', () => {
+    const yaml = ['room:', '  name: room', '  description: the room'].join('\n');
+    const out = parameterize(yaml, [{ key: 'n', value: 'room' }]);
+    expect(out).toContain('\nroom:\n');
+    expect(out).toContain("  name: '{n}'");
+    expect(out).toContain("  description: 'the {n}'");
+  });
+
+  it('quotes an alias key that becomes a placeholder', () => {
+    const yaml = ['room:', '  name: r', '  agents:', '  - helper', '  aliases:', '    helper: buddy'].join(
+      '\n'
+    );
+    const out = parameterize(yaml, [{ key: 'a', value: 'helper' }]);
+    expect(out).toContain("  - '{a}'");
+    expect(out).toContain("    '{a}': buddy");
+  });
+
+  it('substitutes inside an already quoted value and keeps its quotes', () => {
+    const yaml = ['room:', "  name: 'Ask helper: now'"].join('\n');
+    const out = parameterize(yaml, [{ key: 'a', value: 'helper' }]);
+    expect(out).toContain("  name: 'Ask {a}: now'");
+  });
+
+  it('quotes a default the loader would read as a number, boolean or null', () => {
+    const yaml = ['room:', '  name: r', '  description: 001'].join('\n');
+    const out = parameterize(yaml, [
+      { key: 'code', value: '001' },
+      { key: 'flag', value: 'true' },
+      { key: 'nothing', value: 'null' },
+    ]);
+    expect(out).toContain("    default: '001'");
+    expect(out).toContain("    default: 'true'");
+    expect(out).toContain("    default: 'null'");
+  });
+});

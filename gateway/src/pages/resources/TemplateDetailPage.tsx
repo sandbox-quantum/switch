@@ -92,7 +92,7 @@ export default function TemplateDetailPage() {
   // The server says what this user may do. The user's global role would not:
   // a workspace admin whose global role is plain "user" may still manage
   // every template here, and an open template is edited by anyone.
-  const canMutate = template.can_edit;
+  const canEdit = template.can_edit;
   const canManage = template.can_manage;
 
   return (
@@ -112,7 +112,7 @@ export default function TemplateDetailPage() {
         <Divider />
         <DocumentSection
           template={template}
-          canMutate={canMutate}
+          canEdit={canEdit}
           canManage={canManage}
           onSaved={setTemplate}
         />
@@ -187,12 +187,12 @@ function InfoLine({
 
 function DocumentSection({
   template,
-  canMutate,
+  canEdit,
   canManage,
   onSaved,
 }: {
   template: TemplateDetail;
-  canMutate: boolean;
+  canEdit: boolean;
   /** Only the owner or an admin changes who may see or edit it. */
   canManage: boolean;
   onSaved: (updated: TemplateDetail) => void;
@@ -208,7 +208,7 @@ function DocumentSection({
   const [copied, setCopied] = useState(false);
   // Only while the document is editable — a reader cannot act on the findings.
   const { result: validation, checking } = useTemplateValidation(content, {
-    enabled: canMutate,
+    enabled: canEdit,
   });
 
   const dirty = useMemo(
@@ -306,7 +306,7 @@ function DocumentSection({
       </Stack>
       {exportError && <Alert severity="error">{exportError}</Alert>}
       {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
-      {!canMutate && (
+      {!canEdit && (
                 // Reading someone else's shared template is the ordinary case here,
         // and a disabled field alone reads as a page that failed to load.
         <Alert severity="info">
@@ -318,13 +318,13 @@ function DocumentSection({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
       />
       <TextField
         label="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={2}
         helperText="Shown in the catalogue, and searched alongside the name."
@@ -333,7 +333,7 @@ function DocumentSection({
         label="Kind"
         value={kind}
         onChange={(e) => setKind(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         sx={{ maxWidth: 320 }}
       />
       <AccessSelect
@@ -347,7 +347,7 @@ function DocumentSection({
         label="Document"
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={16}
         slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
@@ -359,7 +359,7 @@ function DocumentSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving || checking || !!validation?.blocked}
+          disabled={!canEdit || !dirty || saving || checking || !!validation?.blocked}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save

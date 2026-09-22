@@ -385,7 +385,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
                   serverId,
                   templateId: editingTemplate.id,
                 }),
-              onSave: handleSaveChanges,
+              onSave: () => void handleSaveChanges(),
               canSave: !nothingChanged && name.trim().length > 0 && yamlText.trim().length > 0,
             }}
           />

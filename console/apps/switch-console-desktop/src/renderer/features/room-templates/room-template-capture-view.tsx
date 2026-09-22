@@ -35,17 +35,28 @@ type Candidate = {
 function extractCandidates(yamlText: string): Candidate[] {
   const candidates: Omit<Candidate, 'id'>[] = [];
 
-  const nameMatch = yamlText.match(/^\s*name:\s+(.+)$/m);
-  if (nameMatch) {
-    const val = nameMatch[1].replace(/^['"]|['"]$/g, '');
-    if (val) candidates.push({ key: 'name', label: 'Room name', value: val, checked: false });
-  }
+  // A one-line scalar. A block header (`|`, `|-`, `>`) is not a value: the
+  // exporter writes multi-line text that way, and its body cannot be one
+  // literal to replace.
+  const scalarOf = (m: RegExpMatchArray | null): string | null => {
+    if (!m) return null;
+    const raw = m[1].trim();
+    if (/^[|>](?:[-+]?\d*|\d*[-+]?)$/.test(raw)) return null;
+    const val = raw.replace(/^['"]|['"]$/g, '');
+    return val || null;
+  };
 
-  const descMatch = yamlText.match(/^\s*description:\s+(.+)$/m);
-  if (descMatch) {
-    const val = descMatch[1].replace(/^['"]|['"]$/g, '');
-    if (val)
-      candidates.push({ key: 'description', label: 'Description', value: val, checked: false });
+  const name = scalarOf(yamlText.match(/^\s*name:\s+(.+)$/m));
+  if (name) candidates.push({ key: 'name', label: 'Room name', value: name, checked: false });
+
+  const description = scalarOf(yamlText.match(/^\s*description:\s+(.+)$/m));
+  if (description) {
+    candidates.push({
+      key: 'description',
+      label: 'Description',
+      value: description,
+      checked: false,
+    });
   }
 
   const agentSection = yamlText.match(/^\s*agents:\s*\n((?:\s*-\s+.+\n?)*)/m);
@@ -62,11 +73,21 @@ function extractCandidates(yamlText: string): Candidate[] {
     }
   }
 
-  // Scan instruction text for values that match other candidates' values.
-  const instrMatch = yamlText.match(/^\s*instructions:\s*[|>]?\s*\n?([\s\S]*?)(?=\n\s*\w+:|$)/m);
-  if (instrMatch) {
-    const instrText = instrMatch[1];
-    // Look for repository-like URLs or paths in instructions.
+  // The instructions: a one-line value, or the body of a block scalar,
+  // which is every following line indented deeper than the `instructions:`
+  // line. A repository URL in there is worth a param.
+  const lines = yamlText.split('\n');
+  const at = lines.findIndex((l) => /^\s*instructions:/.test(l));
+  if (at >= 0) {
+    const header = lines[at];
+    const indent = header.match(/^ */)?.[0].length ?? 0;
+    const inline = header.replace(/^\s*instructions:\s*/, '');
+    const body: string[] = [];
+    for (const l of lines.slice(at + 1)) {
+      if (l.trim() !== '' && (l.match(/^ */)?.[0].length ?? 0) <= indent) break;
+      body.push(l);
+    }
+    const instrText = /^[|>]/.test(inline) ? body.join('\n') : inline;
     const repoMatch = instrText.match(/https?:\/\/github\.com\/[\w./-]+/);
     if (repoMatch) {
       candidates.push({
@@ -129,10 +150,13 @@ function RoundTripCheck({
   parsed,
   candidates,
   parameterizeOk,
+  parameterizeError,
 }: {
   parsed: ParsedTemplate | null;
   candidates: Candidate[];
   parameterizeOk: boolean;
+  /** Why the substitution was refused, when it was. */
+  parameterizeError: string | null;
 }) {
   const checkedCount = candidates.filter((c) => c.checked).length;
   const allHaveDefaults = candidates.filter((c) => c.checked).every((c) => c.value !== '');
@@ -144,6 +168,7 @@ function RoundTripCheck({
         <h3 className="mb-3 text-sm font-semibold text-foreground">Round-trip check</h3>
         <div className="space-y-2">
           <CheckItem ok={parsesOk}>Parses as a valid template</CheckItem>
+          {parameterizeError && <p className="text-xs text-destructive">{parameterizeError}</p>}
           <CheckItem ok={checkedCount > 0 ? allHaveDefaults : true}>
             {checkedCount > 0
               ? `${checkedCount} param${checkedCount > 1 ? 's' : ''}, ${allHaveDefaults ? 'all' : 'not all'} with defaults`
@@ -245,14 +270,23 @@ const CapturePanel = observer(function CapturePanel() {
   // The check reports on the document that is saved or copied, not on the
   // raw export: a substitution can break a document the export parsed.
   const [outputParsed, setOutputParsed] = useState<ParsedTemplate | null>(null);
-  const { parameterizedYaml, parameterizeOk } = useMemo(() => {
+  const { parameterizedYaml, parameterizeOk, parameterizeError } = useMemo(() => {
     const checked = candidates.filter((c) => c.checked);
-    if (checked.length === 0) return { parameterizedYaml: originalYaml, parameterizeOk: true };
+    if (checked.length === 0)
+      return { parameterizedYaml: originalYaml, parameterizeOk: true, parameterizeError: null };
     const subs: ParamSubstitution[] = checked.map((c) => ({ key: c.key, value: c.value }));
     try {
-      return { parameterizedYaml: parameterize(originalYaml, subs), parameterizeOk: true };
-    } catch {
-      return { parameterizedYaml: originalYaml, parameterizeOk: false };
+      return {
+        parameterizedYaml: parameterize(originalYaml, subs),
+        parameterizeOk: true,
+        parameterizeError: null,
+      };
+    } catch (e) {
+      return {
+        parameterizedYaml: originalYaml,
+        parameterizeOk: false,
+        parameterizeError: failureText(e, 'The params could not be applied.'),
+      };
     }
   }, [originalYaml, candidates]);
   useEffect(() => {
@@ -362,10 +396,22 @@ const CapturePanel = observer(function CapturePanel() {
 
           {/* Buttons — stacked full width */}
           <div className="flex flex-col gap-2">
-            <Button variant="outline" className="w-full" onClick={handleCopy}>
+            {/* Every way out carries the same document, so a document the
+                substitution refused is offered by none of them. */}
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={!parameterizeOk}
+              onClick={handleCopy}
+            >
               {copied ? 'Copied!' : 'Copy YAML'}
             </Button>
-            <Button variant="outline" className="w-full" onClick={handleSave}>
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={!parameterizeOk}
+              onClick={handleSave}
+            >
               {saved ? 'Saved!' : 'Save file…'}
             </Button>
             <Button
@@ -385,6 +431,7 @@ const CapturePanel = observer(function CapturePanel() {
           parsed={outputParsed}
           candidates={candidates}
           parameterizeOk={parameterizeOk}
+          parameterizeError={parameterizeError}
         />
       </aside>
     </div>
