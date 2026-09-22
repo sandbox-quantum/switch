@@ -261,6 +261,87 @@ async def test_a_count_that_lost_history_is_given_as_a_floor(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_a_restart_is_said_in_the_next_prompt_of_every_room(session_factory):
+    """Said here because a session has no stream of its own to hear it on.
+
+    Room events reach a session over its agent's one inbound connection, which
+    names no rooms, so the gap frame that connection receives could not name
+    the affected rooms either. What tells the agent is the prompt it is
+    admitted with, in whichever room it is next addressed in — including a room
+    nothing had been counting, and a room first counted after the restart.
+    """
+    service, epoch = await setup(session_factory)
+    async with session_factory() as db, db.begin():
+        db.add(
+            Room(
+                id="room-quiet",
+                matrix_room_id="!quiet:example.test",
+                name="Quiet room",
+                description="test",
+                bridge_id="bridge",
+                external_channel_id="channel-quiet",
+            )
+        )
+        await db.flush()
+        db.add(ClientRoom(client_id="agent-client", room_id="room-quiet"))
+    buffer = EventBuffer()
+    connections = ConnectionRegistry()
+    connection = _reader(connections)
+    await service.bind_connection(
+        "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
+    )
+
+    async def deliver(room_id, message_id):
+        message = event(message_id)
+        message.room_id = room_id
+        sequence = buffer.enqueue("agent-demo", room_id, message)
+        await service.submit_room_message(
+            "agent-demo",
+            "session-demo",
+            "host-demo",
+            epoch,
+            room_id,
+            message_id,
+            sequence,
+            False,
+            buffer,
+        )
+        pending = await service.pending(
+            "agent-demo", "session-demo", "host-demo", epoch
+        )
+        return pending[-1].body.text
+
+    buffer.ensure_counting(
+        "agent-demo", connection.id, "room-demo", buffer.head("agent-demo")
+    )
+    assert (await deliver("room-demo", "before")).endswith("Run the check")
+
+    buffer.mark_restarted("agent-demo")
+    assert (await deliver("room-demo", "after")).endswith(
+        "\n⚠️ How far behind you are on unaddressed chatter in this room is not "
+        "known (the server restarted, so what you had already seen in this room "
+        "is no longer known) — call read_context before responding."
+    )
+    # A room the agent's connection never claimed was not being counted at all,
+    # and a restart does not make that any more sayable.
+    assert (await deliver("room-quiet", "unclaimed")).endswith(
+        "\n⚠️ How far behind you are on unaddressed chatter in this room is not "
+        "known (nothing recorded what you had already seen in this room) — call "
+        "read_context before responding."
+    )
+    # Counted for the first time after the restart, so it starts unknown rather
+    # than at a fresh zero it could not honestly claim.
+    buffer.ensure_counting(
+        "agent-demo", connection.id, "room-quiet", buffer.head("agent-demo")
+    )
+    assert (await deliver("room-quiet", "claimed-late")).endswith(
+        "\n⚠️ How far behind you are on unaddressed chatter in this room is not "
+        "known (the server restarted, so what you had already seen in this room "
+        "is no longer known) — call read_context before responding."
+    )
+
+
+@pytest.mark.asyncio
 async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factory):
     service, epoch = await setup(session_factory)
     current = await service.snapshot("session-demo", "owner")

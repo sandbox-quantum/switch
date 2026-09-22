@@ -771,6 +771,66 @@ it('records the rooms Switch answers its binding with', async () => {
   }
 });
 
+it('starts, and says so, when its controller is not there yet to bind to', async () => {
+  // Restoring Console brings workers up before the controller they bind to, so
+  // the first binding of a perfectly healthy session is routinely refused.
+  // Exiting there would leave the session quiesced with no transcript and
+  // nothing to restart it; it runs, says it cannot be reached, and heals.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-early-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const notices: string[] = [];
+  let refuse = true;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim'))
+        return Response.json({
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...startingSession, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        });
+      if (path.endsWith('/room-connection'))
+        return refuse
+          ? Response.json(
+              { code: 'NOT_AUTHORIZED', detail: 'The SDK room connection is not live.' },
+              { status: 403 }
+            )
+          : Response.json({ rooms: ['room'] });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        if (event.body.type === 'notice') notices.push(event.body.code);
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(notices).toEqual(['ROOM_DELIVERY_FAILED']), { timeout: 12000 });
+    expect(adapter.startSession).toHaveBeenCalled();
+    refuse = false;
+    await vi.waitFor(
+      async () => {
+        expect(notices).toEqual(['ROOM_DELIVERY_FAILED', 'ROOM_DELIVERY_RESUMED']);
+        expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room']);
+      },
+      { timeout: 12000 }
+    );
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 30000);
+
 it('says in the transcript when its room connection is refused, and when it is back', async () => {
   // The connection belongs to the agent's controller, which can stop and be
   // started again under the same session. Nothing else would tell the agent

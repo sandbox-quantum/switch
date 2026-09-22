@@ -264,6 +264,7 @@ export async function runSharedHost(
     let roomBinding: string | null = null;
     let boundAt = 0;
     let unreachable = false;
+    let disclosed = false;
     const publishSelector = () =>
       writeSessionSelector(options.root, {
         session_id: options.session.sessionId,
@@ -321,6 +322,42 @@ export async function runSharedHost(
       roomBinding = current;
       await publishSelector();
     };
+    /**
+     * Binds, and survives a refusal rather than taking the session down with
+     * it.
+     *
+     * The events are held by the server until something reaches them, and the
+     * identity this binding names is derived from the agent rather than minted
+     * per run, so a controller that comes back is the same one and delivery
+     * resumes on its own. What is not allowed is going quietly deaf, so the
+     * refusal is said in the transcript — and said there even when it happened
+     * before there was a transcript to say it in, which is the ordinary case
+     * when a restore brings a session up before its controller.
+     */
+    const assertRoomBinding = async (): Promise<void> => {
+      try {
+        await bindRoomConnection();
+      } catch (error) {
+        if (!(error instanceof RequestError) || error.code !== 'NOT_AUTHORIZED') throw error;
+        if (!unreachable) {
+          unreachable = true;
+          console.warn(error.message);
+        }
+        await discloseRefusal();
+        return;
+      }
+      if (!unreachable) return;
+      unreachable = false;
+      disclosed = false;
+      await host?.roomDeliveryResumed();
+    };
+    const discloseRefusal = async (): Promise<void> => {
+      if (disclosed || !host) return;
+      disclosed = true;
+      await host.notice(
+        "This session is not bound to its agent's room connection, so messages addressed to it in Switch are not reaching it. Delivery resumes by itself once that connection is back; if it does not, restart the agent's room watcher."
+      );
+    };
     if (roomConnection) {
       rooms = await SharedRoomInbox.open(options.root);
       // Before the first read of it, so an event this agent's controller routes
@@ -329,7 +366,7 @@ export async function runSharedHost(
       await declareHandoffCapability(options.root);
       handoffs = new HandoffInbox(options.root);
       handoffs.listen(executionSignal);
-      await bindRoomConnection();
+      await assertRoomBinding();
     }
     starting = true;
     host = await HostedSession.start(
@@ -423,30 +460,12 @@ export async function runSharedHost(
       await upload(false);
     };
     let heldForDecision = false;
+    // A refusal from before the provider existed had no transcript to be said
+    // in; this is the first moment there is one.
+    if (unreachable) await discloseRefusal();
     while (!executionSignal.aborted) {
       await flush();
-      if (roomConnection && performance.now() - boundAt >= 5000) {
-        try {
-          await bindRoomConnection();
-          if (unreachable) {
-            unreachable = false;
-            await host.roomDeliveryResumed();
-          }
-        } catch (error) {
-          if (!(error instanceof RequestError) || error.code !== 'NOT_AUTHORIZED') throw error;
-          // Not fatal, and not silent. The events are held by the server until
-          // something reaches them, and the identity this binding names is
-          // derived from the agent rather than minted per run, so a controller
-          // that comes back is the same one and delivery resumes on its own.
-          if (!unreachable) {
-            unreachable = true;
-            console.warn(error.message);
-            await host.notice(
-              "This session is not bound to its agent's room connection, so messages addressed to it in Switch are not reaching it. Delivery resumes by itself once that connection is back; if it does not, restart the agent's room watcher."
-            );
-          }
-        }
-      }
+      if (roomConnection && performance.now() - boundAt >= 5000) await assertRoomBinding();
       if (host.snapshot().session.status === 'stopped') break;
       if (host.snapshot().session.status === 'error' && !host.resetDecisionPending)
         throw new Error(

@@ -1,3 +1,4 @@
+import type * as NodeFs from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import { awaitWatchChange, readWatchFlags, type WatchFlags } from './watch-flags
 
 const platform = vi.hoisted(() => ({ canWatch: true, watchers: [] as FSWatcher[] }));
 vi.mock('node:fs', async (importOriginal) => {
-  const real = await importOriginal<typeof import('node:fs')>();
+  const real = await importOriginal<typeof NodeFs>();
   return {
     ...real,
     watch: (...args: Parameters<typeof real.watch>) => {

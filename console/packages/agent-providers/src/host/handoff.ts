@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 export const HANDOFF_FILE = 'handoff.jsonl';
-const CAPABILITY_FILE = 'worker.json';
+export const CAPABILITY_FILE = 'worker.json';
 const NEWLINE = 0x0a;
 
 /**

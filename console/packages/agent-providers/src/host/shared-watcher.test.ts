@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
-import { declareHandoffCapability, HANDOFF_FILE } from './handoff';
+import { CAPABILITY_FILE, declareHandoffCapability, HANDOFF_FILE } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
 import {
@@ -112,7 +112,7 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     const another = await restarted.assign(template, { ...event, sequence: 9, roomId: 'another' });
     expect(another.session.sessionId).not.toBe(first.session.sessionId);
     const firstRoot = join(root, first.session.sessionId);
-    await mkdir(firstRoot);
+    await mkdir(firstRoot, { recursive: true });
     await writeFile(
       join(firstRoot, 'room-inbox.jsonl'),
       JSON.stringify({ type: 'rooms', rooms: ['another'] }) + '\n'
@@ -125,7 +125,7 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     expect(returned.session.sessionId).not.toBe(first.session.sessionId);
     expect(await restarted.assign(template, event)).toEqual(first);
     const returnedRoot = join(root, returned.session.sessionId);
-    await mkdir(returnedRoot);
+    await mkdir(returnedRoot, { recursive: true });
     await writeFile(join(returnedRoot, 'room-inbox.jsonl'), '{');
     await expect(
       restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
@@ -135,6 +135,79 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     expect(restarted.cursor).toBe(9);
   }
 );
+
+it('keeps a room with the session it started for it until the server moves that session', async () => {
+  // A session's rooms are registered when the agent inside it connects to the
+  // room, which it cannot have done before the message that started it
+  // arrives. Reading the empty answer as "serves nothing" would start a second
+  // session for the room on its second message.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-unregistered-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const first = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  const inbox = join(root, first.session.sessionId, 'room-inbox.jsonl');
+  await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: [] }) + '\n');
+  expect(
+    (await assignments.assign(config, { sequence: 2, roomId: 'room', messageId: 'second' })).session
+      .sessionId
+  ).toBe(first.session.sessionId);
+
+  // Once the server has it serving somewhere else, it is not this room's: the
+  // event would sit in an inbox that never admits it.
+  await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: ['elsewhere'] }) + '\n');
+  expect(
+    (await assignments.assign(config, { sequence: 3, roomId: 'room', messageId: 'third' })).session
+      .sessionId
+  ).not.toBe(first.session.sessionId);
+});
+
+it('reaches an upgraded session over the controller, not the connection it used to open', async () => {
+  // A config saved before the agent had one inbound connection names the
+  // session's own. That session stops opening it as soon as it runs this
+  // build, so binding to it would name a connection that never returns.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-upgraded-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const saved = structuredClone(config);
+  saved.session = { ...saved.session, sessionId: randomUUID() };
+  saved.roomConnection = { connectionId: 'its-own-connection' };
+  await writeFile(
+    join(root, 'assignments.jsonl'),
+    JSON.stringify({ sequence: 1, roomId: 'room', messageId: 'first', config: saved }) +
+      '\n' +
+      JSON.stringify({ handled: 1 }) +
+      '\n'
+  );
+  const sessionRoot = join(root, saved.session.sessionId);
+  await mkdir(sessionRoot, { recursive: true });
+  await writeFile(
+    join(sessionRoot, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'rooms', rooms: ['room'] }) + '\n'
+  );
+
+  const assignments = await SharedWatchAssignments.open(root);
+  const next = await assignments.assign(config, {
+    sequence: 2,
+    roomId: 'room',
+    messageId: 'second',
+  });
+  expect(next.session.sessionId).toBe(saved.session.sessionId);
+  expect(next.roomConnection).toEqual(config.roomConnection);
+  // Corrected in the journal too, so a restore launches it over the controller
+  // rather than handing the old identity back.
+  expect(
+    (await SharedWatchAssignments.open(root))
+      .sessions()
+      .map((entry) => entry.roomConnection?.connectionId)
+  ).toEqual([config.roomConnection?.connectionId]);
+});
 
 function template(root: string) {
   return sharedConfigSchema.parse({
@@ -452,9 +525,9 @@ it('routes to the worker that reads handoffs and leaves the older one to its own
     messageId: 'first',
   });
   const sessionRoot = (assigned: typeof capable) => join(root, assigned.session.sessionId);
-  await mkdir(sessionRoot(capable), { recursive: true });
-  await mkdir(sessionRoot(legacy), { recursive: true });
-  await declareHandoffCapability(sessionRoot(capable));
+  // The older bundle's session says nothing about handoffs, as one assigned by
+  // an app that gave every session a connection of its own never did.
+  await rm(join(sessionRoot(legacy), CAPABILITY_FILE));
 
   // What each session was handed at the moment it was started, so the order of
   // the two is asserted rather than only the outcome: a controller that starts
@@ -582,6 +655,10 @@ it('restarts only the live sessions of this agent left on a superseded build', a
     const config = template(root);
     config.session = { ...config.session, sessionId, agentId: owner };
     config.start.input.sessionId = sessionId;
+    // What a config saved before the agent had one inbound connection looks
+    // like: the session's own, which it stops opening once it is restarted
+    // from this build.
+    config.roomConnection = { connectionId: `own-${sessionId}` };
     await mkdir(join(root, name), { recursive: true });
     await writeFile(join(root, name, 'config.json'), JSON.stringify(config));
     return join(root, name);
@@ -594,7 +671,7 @@ it('restarts only the live sessions of this agent left on a superseded build', a
   supervisors.set(current, { build: '/host/shared-host-new.mjs' });
   supervisors.set(other, { build: '/host/shared-host-old.mjs' });
 
-  await replaceSupersededSessions(agentId, {
+  await replaceSupersededSessions(agentId, 'agent-controller', {
     build: '/host/shared-host-new.mjs',
     start: vi.fn(),
     stop: vi.fn(),
@@ -604,6 +681,11 @@ it('restarts only the live sessions of this agent left on a superseded build', a
     superseded,
   ]);
   expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].restart).toBe(false);
+  // Restarted from this build, so it no longer opens the connection its saved
+  // config names: binding to that would name something that never returns.
+  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].config.roomConnection).toEqual({
+    connectionId: 'agent-controller',
+  });
 });
 
 // The sweep reads every session on the machine and only then asks whether each
@@ -699,4 +781,87 @@ it('hands a room its own live session even with spawning turned off', async () =
   // rather than holding the event for a session that will not be started.
   expect((await SharedWatchAssignments.open(root)).sessions()).toHaveLength(1);
   expect((await SharedWatchAssignments.open(root)).cursor).toBe(3);
+});
+
+it('hands a room to a session started outside its journal rather than starting a second one', async () => {
+  // A session somebody opened from Console is in no assignment journal and has
+  // no connection of its own, so the controller is the only thing that can
+  // reach it — and a room it is already answering must not get a second session
+  // talking over it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-outside-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const opened = structuredClone(config);
+  opened.session = { ...opened.session, sessionId: randomUUID() };
+  const sessionRoot = join(root, opened.session.sessionId);
+  await mkdir(sessionRoot, { recursive: true });
+  await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(opened));
+  await declareHandoffCapability(sessionRoot);
+  // The rooms the server answered its binding with, which is the only claim on
+  // a room the watcher trusts.
+  await writeFile(
+    join(sessionRoot, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'rooms', rooms: ['room'] }) + '\n'
+  );
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: false });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(await readFile(join(sessionRoot, HANDOFF_FILE), 'utf8')).toBe(
+    JSON.stringify({ sequence: 1, roomId: 'room', messageId: 'message-1' }) + '\n'
+  );
+  expect(
+    (await SharedWatchAssignments.open(root)).sessions().map((entry) => entry.session.sessionId)
+  ).toEqual([opened.session.sessionId]);
+  // Ensured, not created: the session is already running, and the launch is the
+  // same idempotent call every assignment makes.
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
+    sessionRoot,
+  ]);
+});
+
+it('hands a session it has just created the event that created it', async () => {
+  // Nothing else carries that message: the session has no connection of its
+  // own, and it is being started precisely because somebody addressed the room.
+  // The worker cannot have said it reads handoffs yet — it does not exist.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-first-event-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const started: { sessionId: string; handedOver: string }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ config: launched }) => {
+    started.push({
+      sessionId: launched.session.sessionId,
+      handedOver: await readFile(
+        join(root, launched.session.sessionId, HANDOFF_FILE),
+        'utf8'
+      ).catch(() => ''),
+    });
+    return { created: true };
+  });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const [assigned] = (await SharedWatchAssignments.open(root)).sessions();
+  expect(started.map((entry) => entry.sessionId)).toEqual([assigned!.session.sessionId]);
+  expect(started[0]!.handedOver).toBe(
+    JSON.stringify({ sequence: 1, roomId: 'room', messageId: 'message-1' }) + '\n'
+  );
 });

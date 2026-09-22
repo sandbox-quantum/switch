@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   EVICTION_HEARTBEAT_LAPSED,
@@ -7,7 +7,7 @@ import {
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
-import { handOff, readsHandoffs, type Handoff } from './handoff';
+import { declareHandoffCapability, handOff, readsHandoffs, type Handoff } from './handoff';
 import { Journal } from './journal';
 import {
   ensureSharedProcess,
@@ -79,6 +79,59 @@ async function stopped(sessionId: string): Promise<boolean> {
 }
 
 /**
+ * A session of this agent the server has serving the room, found among the
+ * sessions on disk rather than among the ones this watcher assigned.
+ *
+ * A session somebody started from Console is not in the assignment journal and
+ * has no connection of its own to hear on, so without looking for it the
+ * watcher would both leave it unreachable and start a second session for a room
+ * it is already answering. Only a session the server has confirmed serving the
+ * room counts: the rooms are the ones it was told when it bound, not an
+ * intention anybody wrote down locally.
+ */
+async function started(agentId: string, roomId: string): Promise<SharedHostConfig | null> {
+  const base = sharedSessionsBase();
+  let names: string[];
+  try {
+    names = await readdir(base);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  for (const name of names) {
+    const root = join(base, name);
+    let config: SharedHostConfig;
+    try {
+      config = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+      throw error;
+    }
+    if (config.session.agentId !== agentId) continue;
+    if (!(await SharedRoomInbox.savedRooms(root))?.includes(roomId)) continue;
+    if (await stopped(config.session.sessionId)) continue;
+    return config;
+  }
+  return null;
+}
+
+/**
+ * The same session, reachable over the connection this controller holds.
+ *
+ * A config saved before an agent had one inbound connection names the
+ * session's own, which that session stops opening the moment it is started
+ * from this build: left as it was, the worker would bind to a connection that
+ * never returns. The identity is the agent's rather than the run's, so
+ * replacing it is a correction rather than a change of routing.
+ */
+function reachableBy(config: SharedHostConfig, connectionId: string): SharedHostConfig {
+  if (config.roomConnection?.connectionId === connectionId) return config;
+  return { ...structuredClone(config), roomConnection: { connectionId } };
+}
+
+/**
  * Replaces this agent's sessions that are still running the build the watcher
  * has just superseded. A session is supervised independently of the watcher,
  * so nothing else would: it would go on answering its room with code the
@@ -89,6 +142,7 @@ async function stopped(sessionId: string): Promise<boolean> {
  */
 export async function replaceSupersededSessions(
   agentId: string,
+  connectionId: string,
   supervision: Supervision
 ): Promise<void> {
   const base = sharedSessionsBase();
@@ -129,7 +183,7 @@ export async function replaceSupersededSessions(
     );
     await ensureSharedProcess({
       root,
-      config,
+      config: reachableBy(config, connectionId),
       resuming: false,
       watcher: false,
       restart: false,
@@ -207,16 +261,24 @@ export class SharedWatchAssignments {
    * it. Answered from disk, because the session it names may be stopped and
    * unable to answer for itself.
    *
-   * A session whose inbox records other rooms is not one: it would hold the
-   * event without ever admitting it.
+   * What the server says outranks what this watcher remembers: a session is
+   * serving the room if the rooms it was told when it bound say so, whoever
+   * started it. Failing that, the last session this watcher started for the
+   * room still counts while the server has given it no room of its own — the
+   * room becomes the session's when the agent in it connects to the room, and
+   * it cannot have done that before the message that started it arrives. A
+   * session the server has since moved to a different room is not serving this
+   * one, and routing to it would hold the event where nothing admits it.
    */
-  async serving(roomId: string): Promise<SharedHostConfig | null> {
+  async serving(agentId: string, roomId: string): Promise<SharedHostConfig | null> {
     const previous = [...this.every].reverse().find((record) => record.roomId === roomId);
-    if (!previous || (await stopped(previous.config.session.sessionId))) return null;
-    const saved = await SharedRoomInbox.savedRooms(
-      sharedSessionRoot(previous.config.session.sessionId)
-    );
-    return saved === null || saved.includes(roomId) ? previous.config : null;
+    const mine =
+      previous && !(await stopped(previous.config.session.sessionId)) ? previous.config : null;
+    const saved = mine
+      ? await SharedRoomInbox.savedRooms(sharedSessionRoot(mine.session.sessionId))
+      : null;
+    if (mine && (saved === null || saved.includes(roomId))) return mine;
+    return (await started(agentId, roomId)) ?? (saved?.length === 0 ? mine : null);
   }
 
   async assign(
@@ -231,9 +293,14 @@ export class SharedWatchAssignments {
         throw new Error('Watcher sequence changed message identity.');
       return duplicate.config;
     }
-    // A new session inherits the template's connection, which is this agent's
-    // one inbound connection: what reaches the session reaches it through here.
-    let config = await this.serving(event.roomId);
+    const connectionId = template.roomConnection?.connectionId;
+    if (!connectionId)
+      throw new Error('A watcher assignment needs the connection its agent is reached over.');
+    // Every session here is reached over the template's connection, which is
+    // this agent's one inbound connection: what reaches a session reaches it
+    // through here, whether the session is new or was saved naming its own.
+    const serving = await this.serving(template.session.agentId, event.roomId);
+    let config = serving && reachableBy(serving, connectionId);
     if (!config) {
       config = structuredClone(template);
       const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
@@ -242,6 +309,14 @@ export class SharedWatchAssignments {
       if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
         config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
       delete config.start.input.resume;
+      // Said here rather than left to the worker to say when it starts. The
+      // event that caused this session is routed to it before it is started,
+      // and the worker it will be started from is this bundle's, which reads
+      // what it is handed; waiting for it to say so itself would drop that
+      // event, and with it the message the session exists to answer.
+      const sessionRoot = sharedSessionRoot(sessionId);
+      await mkdir(sessionRoot, { recursive: true });
+      await declareHandoffCapability(sessionRoot);
     }
     await this.journal.append({ ...event, config });
     return config;
@@ -319,7 +394,7 @@ export async function runSharedWatcher(
       if (!now.enabled || !now.spawn || (await stopped(config.session.sessionId))) return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
-        config,
+        config: reachableBy(config, connectionId),
         resuming: false,
         watcher: false,
         restart: false,
@@ -341,7 +416,7 @@ export async function runSharedWatcher(
       const sessionRoot = sharedSessionRoot(config.session.sessionId);
       if (await readsHandoffs(sessionRoot)) await handOff(sessionRoot, event);
     };
-    await replaceSupersededSessions(template.session.agentId, supervision);
+    await replaceSupersededSessions(template.session.agentId, connectionId, supervision);
     const launchAssigned = async () => {
       for (const config of assignments.sessions()) await launch(config);
     };
@@ -387,7 +462,7 @@ export async function runSharedWatcher(
                 ),
                 assignment
               )
-            : await assignments.serving(assignment.roomId);
+            : await assignments.serving(template.session.agentId, assignment.roomId);
           if (config) await route(config, assignment);
           // Recorded before the session is started, because starting it is
           // recoverable — every assigned session is launched again when the
