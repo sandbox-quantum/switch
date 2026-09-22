@@ -40,6 +40,13 @@ from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionAuthority, SessionError
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.sessions.test_authority import setup
+from tests.switch_core.sessions.test_shared_connection import (
+    OTHER_ROOM,
+    SECOND,
+    _connection,
+    _second_room,
+    _second_session,
+)
 
 AGENT = "agent-demo"
 SESSION = "session-demo"
@@ -166,6 +173,50 @@ async def test_the_session_selector_also_answers_with_its_room(session_factory) 
         epoch=None,
     )
     assert none_named is None
+
+
+@pytest.mark.asyncio
+async def test_two_callers_on_one_connection_resolve_their_own_rooms(
+    session_factory,
+) -> None:
+    """The case the selector was added for, with both callers real.
+
+    One connection, two live sessions of the agent, a room each. The connection
+    holds the union, so it matches either caller for either room and can only
+    guess. Each selector comes back with the room that caller's own bind wrote,
+    and neither is told it is in the other's.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    await _second_room(session_factory)
+    connections = ConnectionRegistry()
+    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    protocol = _Protocol(connections)
+    for names, epoch, room in (
+        ((SESSION, HOST), first, ROOM),
+        (SECOND, second, OTHER_ROOM),
+    ):
+        await service.bind_connection(AGENT, *names, epoch, connection.id, connections)
+        await service.bind_room(AGENT, *names, epoch, room)
+
+    resolved = []
+    for names, epoch in (((SESSION, HOST), first), (SECOND, second)):
+        key, caller = await resolve_caller(
+            agent_id=AGENT,
+            protocol=protocol,  # type: ignore[arg-type]
+            factory=session_factory,
+            connection_id=None,
+            session_id=names[0],
+            host_id=names[1],
+            epoch=epoch,
+        )
+        assert caller is not None
+        resolved.append((key, caller.id, caller.room_id))
+
+    assert resolved == [
+        (connection.id, SESSION, ROOM),
+        (connection.id, SECOND[0], OTHER_ROOM),
+    ]
 
 
 @pytest.mark.asyncio

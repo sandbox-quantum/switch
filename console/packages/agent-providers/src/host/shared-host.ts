@@ -14,6 +14,7 @@ import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { Journal } from './journal';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import { HostedSession } from './session-host';
+import { clearSessionSelector, writeSessionSelector } from './shared-config';
 import { SharedDelivery } from './shared-delivery';
 import { SharedState } from './shared-state';
 
@@ -201,6 +202,7 @@ export async function runSharedHost(
     // Retain its owner record so a replacement supervisor can fence it too.
   };
   try {
+    await clearSessionSelector(options.root);
     // Complete a recovery whose response may have been lost before doing anything else.
     const recovery = state.latest('recover');
     if (recovery && (!lease || recovery.epoch === lease.snapshot.session.epoch)) {
@@ -254,6 +256,16 @@ export async function runSharedHost(
     lease = state.latest('lease')!;
     const session = structuredClone(lease.snapshot.session);
     const hostLease = { host_id: session.hostId, epoch: session.epoch };
+    // The room set the session is bound to, as the server was last told it,
+    // and null until it has been told at all. The selector the runtime sends
+    // resolves through that binding, so nothing is published before it exists.
+    let roomBinding: string | null = null;
+    const publishSelector = () =>
+      writeSessionSelector(options.root, {
+        session_id: options.session.sessionId,
+        host_id: hostLease.host_id,
+        epoch: hostLease.epoch,
+      });
     // Renew before opening a provider, including after a lost acquisition response.
     const renewingAt = performance.now();
     await request(`${sessionPath}/renew`, hostLease);
@@ -368,6 +380,7 @@ export async function runSharedHost(
             });
             lease = state.latest('lease')!;
             hostLease.epoch = snapshot.session.epoch;
+            if (roomBinding !== null) await publishSelector();
             delivery = await SharedDelivery.load(
               options.root,
               snapshot.session,
@@ -386,7 +399,6 @@ export async function runSharedHost(
       for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
       await upload(false);
     };
-    let roomBinding: string | null = null;
     let heldForDecision = false;
     while (!executionSignal.aborted) {
       await flush();
@@ -398,6 +410,7 @@ export async function runSharedHost(
             connection_id: options.roomConnection.connectionId,
           });
           roomBinding = current;
+          await publishSelector();
         }
       }
       if (host.snapshot().session.status === 'stopped') break;

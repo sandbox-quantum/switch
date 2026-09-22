@@ -614,6 +614,17 @@ While a session owns at most one connection the two resolve to the same thing,
 so a caller may move from one selector to the other without anything else
 changing.
 
+The session selector can only be sent by a caller that is told what it is. A
+session's id and host id are fixed for its life, but its epoch is re-minted
+server-side whenever it recovers, so the three cannot be read once at startup
+and held — a supervisor that shares a connection between several sessions has
+to keep telling each of them which generation it is in, and the client has to
+re-read that on every call. A caller nobody supervises knows none of the three
+and sends its connection id alone, which is what the connection selector is
+for. Sending nothing is never the right answer to not knowing: an incomplete
+selector is refused, and a supervised caller that fell back to its connection
+would resolve to whichever of the connection's sessions bound last.
+
 Both are derived by the server — from the credential and the headers — and
 neither may be approximately right. A selector naming another agent's or
 another tenant's session or connection, an incomplete session selector, a

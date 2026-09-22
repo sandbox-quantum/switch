@@ -55,6 +55,7 @@ import {
 import { BEAT_SETTLE_LIMIT_MS, EVICTION_TAKEN_OVER, refusalCode, until } from './event-stream';
 import { reapOrphanedRuntimes } from './reap';
 import { ReattachFence } from './reattach-fence';
+import { sessionSelector } from './session-selector';
 import { readSse, type SseFrame } from './sse';
 
 const ENV_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
@@ -511,6 +512,11 @@ const BORROWED_CONNECTION_ID = borrowedConnectionId();
 const CONNECTION_ID = BORROWED_CONNECTION_ID ?? randomUUID();
 const OWNS_CONNECTION = BORROWED_CONNECTION_ID === null;
 
+// Where the supervisor says which of its sessions this process is. Unset for
+// every session nobody supervised, and read at call time rather than now —
+// see `session-selector.ts` for why the values cannot be environment.
+const SESSION_FILE = process.env.SWITCH_SESSION_FILE?.trim() || null;
+
 let pollingRoomId: string | null = null;
 let streamAbort: AbortController | null = null;
 let leaseAbort: AbortController | null = null;
@@ -938,6 +944,10 @@ async function callOperation(
         'Content-Type': 'application/json',
         // Correlation, supplied by the process that owns the connection.
         'X-Switch-Connection-Id': CONNECTION_ID,
+        // And which session on it, where a supervisor shares one between
+        // several. The two agree by construction: the supervisor publishes the
+        // selector only after binding this same connection to that session.
+        ...sessionSelector(SESSION_FILE),
       },
       body: JSON.stringify(args),
     });
