@@ -200,20 +200,16 @@ def _failure_reason(exc: BaseException) -> str:
     """An enumerated reason for a bridge failure.
 
     Not the exception's message, which routinely carries a workspace name or a
-    token fragment. Classified by type — and, where a library folds several
-    outcomes into one exception class, by what the exception itself carries —
-    rather than by matching words in the class name: the substring match this
-    replaced read "SlackApiError" as containing "api" and reported a revoked
-    Slack token as `platform_error`, and treated a stray `KeyError` as
-    `config_invalid` on the same line that made `ValueError` mean that.
+    token fragment. Classified by type, and — where a library folds several
+    outcomes into one exception class — by what the exception itself carries.
+    Never by matching words in the class name: "SlackApiError" contains "api",
+    which reads a revoked token as a platform fault.
 
     `KeyError` and `sqlalchemy.exc.DBAPIError` are deliberately left
     unclassified and fall through to `unknown`. A `KeyError` here is adapter
-    code reading a platform payload that no longer has the shape it expects —
-    a bug in Switch, not a value the operator typed into their connection
-    config. A `DBAPIError` is Switch's own database, not the messaging
-    platform, so `platform_error` would misname it exactly as badly as the
-    substring match used to.
+    code reading a platform payload whose shape changed — a bug in Switch, not
+    a value the operator typed into their connection config. A `DBAPIError` is
+    Switch's own database, not the messaging platform.
     """
     if isinstance(exc, BridgeCredentialError):
         return "auth_failed"
@@ -714,20 +710,16 @@ class CollaborationBridgeLifecycleService:
     async def start(self, bridge_id: str) -> None:
         """Start a bridge, reporting a failure even before one is ever run.
 
-        Everything here runs before `_run_bridge` is scheduled, so a raise
-        anywhere in this method previously produced no `bridge_connected`
-        event of either outcome — not a failure, because nothing downstream
-        reports one, and not a success, because none happened. An attempt that
-        failed harder than any other was then counted in neither the
-        numerator nor the denominator of the connect success rate. The `try`
-        below reports the failure and re-raises unchanged, so the caller
-        (an HTTP handler, `start_all`, `restart`) sees exactly what it did
-        before.
+        Everything here runs before `_run_bridge` is scheduled, so nothing
+        downstream reports a raise from this method. Unreported it would be an
+        attempt counted in neither the numerator nor the denominator of the
+        connect success rate — and the attempts that fail here are the ones
+        that failed hardest. The `try` below reports and re-raises unchanged,
+        so the caller (an HTTP handler, `start_all`, `restart`) is unaffected.
 
-        Once `_run_bridge` is scheduled this method returns without waiting
-        on it, so there is no window where both this method and that task's
-        own exception handler could report the same attempt — they run one
-        after the other, never together.
+        Once `_run_bridge` is scheduled this method returns without waiting on
+        it, so there is no window where both this method and that task's own
+        handler could report the same attempt.
         """
         # `bridge_platform` is required on every `bridge_connected` event, but
         # a bridge whose row cannot even be read has no platform to name.

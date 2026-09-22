@@ -285,10 +285,7 @@ class PostgresTransport:
                 for room_id in rooms:
                     # Bound around the drain rather than named in the message
                     # below, so every line this room's delivery produces —
-                    # including the ones from the handlers underneath it —
-                    # carries it. Following one stalled room used to mean
-                    # grepping for an id that appeared in some lines and not
-                    # others.
+                    # including the handlers' own — can be filtered to it.
                     with log_context(room_id=room_id):
                         try:
                             await self._drain_room(room_id)

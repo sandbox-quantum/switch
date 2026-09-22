@@ -181,15 +181,14 @@ export class FilesConnectorUnimplementedError extends Error {
  * A driver resolves the host binary before it reaches anything that returns a
  * `ConnectorRun`, and resolving rejects on a transport failure rather than
  * reporting absence — a dead SSH channel is not evidence the binary is missing.
- * Without this the rejection escapes the entry point: no event is emitted for an
- * attempt the user definitely made, and the renderer gets a stack instead of a
- * message. `error` is the residue that has no better name — everything with one
- * is classified before it gets here.
+ * Unguarded, that rejection escapes the entry point: no event for an attempt
+ * the user definitely made, and a stack in the renderer instead of a message.
+ * `error` is the residue with no better name; everything with one is classified
+ * before it gets here.
  *
- * Not everything that can fail over the wire lands here. A file-based connector
- * builds its filesystem *inside* `runFiles`, so a channel that dies there is the
- * write failing and is reported as such; only what happens before a driver can
- * name an outcome reaches this.
+ * Only what happens before a driver can name an outcome. A file-based connector
+ * builds its filesystem inside `runFiles`, so a channel dying there is the write
+ * failing and is reported as that.
  */
 export async function runReportedOperation(
   logPrefix: string,

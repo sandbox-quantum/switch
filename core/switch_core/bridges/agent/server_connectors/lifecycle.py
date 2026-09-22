@@ -146,13 +146,11 @@ class ServerSideConnectorLifecycleService:
             await self._connector_store.create(session, record)
             await session.commit()
 
-        # Emitted here, before `start`, rather than after: the rows above are
-        # durably committed and are the fact this event describes, while
-        # `start` below is a post-commit side effect (decrypting the token,
-        # validating the connector's own config, dialling out) that can raise
-        # without undoing the registration. A failure there still propagates
-        # to this call's caller unchanged — only the reporting no longer
-        # depends on it succeeding.
+        # Before `start`, not after: the rows above are durably committed and
+        # are the fact this event describes, while `start` is a post-commit
+        # side effect (decrypting the token, validating the connector's config,
+        # dialling out) that can raise without undoing the registration. A
+        # failure there still propagates to the caller unchanged.
         emit_safely(
             self._telemetry,
             "server_connector_registered",

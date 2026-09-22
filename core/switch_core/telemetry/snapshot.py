@@ -203,14 +203,12 @@ def _room_has_an_agent(tenant_id: str) -> Select[tuple[str]]:
 
 
 def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
-    """The one definition of "a human used this room", shared by every path
-    that has ever asked it: the two room-activity gauges, the once-per-room
-    activation event, and the "was this room ever active" check on deletion
-    and archival. All four used to answer it differently — two required an
-    agent in the room and two did not, and only two excluded reconstructed
-    history — so the same room could be simultaneously active in one figure
-    and never-active in another. This assumes the caller has already joined
-    `Client` on `Message.sender_client_id`.
+    """The one definition of "a human used this room", shared by all four paths
+    that ask it: the two room-activity gauges, the once-per-room activation
+    event, and the "was this room ever active" check on deletion and archival.
+    They must agree, or the same room reads as active in one figure and
+    never-active in another. Assumes the caller has already joined `Client` on
+    `Message.sender_client_id`.
 
     Both conditions are kept:
 

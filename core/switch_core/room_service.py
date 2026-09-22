@@ -599,12 +599,10 @@ class RoomService:
             },
         )
 
-        # Only a room a person made counts as activation.
-        #
-        # Guarded like the emit above it. This used to run at the tail of the
-        # function, where anything it raised cost only the attachments; it now
-        # runs ahead of the Matrix invite, the agent adds and the client joins,
-        # so an unguarded raise would leave a committed room that nobody is in.
+        # Only a room a person made counts as activation. Guarded like the
+        # emit above it: this runs ahead of the invite, the agent adds and the
+        # client joins, so an unguarded raise would leave a committed room
+        # nobody is in.
         if self._telemetry is not None and config.created_by_kind == "user":
             try:
                 await self._telemetry.emit_milestone(

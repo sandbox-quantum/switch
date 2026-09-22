@@ -142,12 +142,11 @@ TRISTATE = one_of("true", "false", "unknown")
 # ── The catalogue ────────────────────────────────────────────────────────────
 
 _SNAPSHOT_COUNTS = (
-    # How many tenants are actually behind every other number here — not how
-    # many the deployment has. One tenant's queries failing no longer takes the
-    # whole pass down, so the two can differ, and `tenant_failed_count` is what
-    # says by how much. Without the pair a partial pass is a drop in every
-    # count at once with nothing to attribute it to, which is exactly what a
-    # deployment losing its users looks like.
+    # How many tenants are actually behind every other number here, which is
+    # not how many the deployment has: a tenant whose queries fail is stepped
+    # over, and `tenant_failed_count` says how many. Without the pair a partial
+    # pass is a drop in every count at once with nothing to attribute it to —
+    # indistinguishable from a deployment losing its users.
     "tenant_count",
     "tenant_failed_count",
     "user_count",

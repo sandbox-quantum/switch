@@ -1,14 +1,11 @@
 """The context fields are actually bound, not merely bindable.
 
-A review found that deleting every one of these bindings left 2566 tests green:
-the only coverage was that `room_id` *could* be bound, which proves the field
-exists and nothing about whether anything sets it. A log field nobody binds is
-worse than no field — it is a column of nulls that reads as "this never has a
-room" rather than "nobody wrote one".
-
-Each test here asserts the value reaches a `LogRecord`, which is the thing that
-matters: the filter is on the handler, so a value in the context becomes a
-field on every record underneath it, including records from libraries.
+Asserting a field *can* be bound proves it exists and nothing about whether
+anything sets it, and a log field nobody binds is worse than no field: a column
+of nulls that reads as "this never has a room" rather than "nobody wrote one".
+So each test here drives a real code path and asserts the value reaches a
+`LogRecord` — the filter is on the handler, so a bound value lands on every
+record underneath it, including records from libraries.
 """
 
 from __future__ import annotations

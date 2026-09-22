@@ -344,9 +344,9 @@ class SwitchConfig(BaseSettings):
     # `remove_agents_from_room` and `delete_room` hold a transaction across
     # invite/kick calls, so enabling this today would trade a latency problem
     # for a consistency one — membership changed, the rows that record it
-    # rolled back. Provisioning is no longer a homeserver round trip (it is
-    # `PostgresProvisioning`, writing rows on its own session), which shortens
-    # the window without closing it: the two still commit separately.
+    # rolled back. `PostgresProvisioning` writes rows on its own session rather
+    # than dialling a homeserver, which shortens that window without closing
+    # it: the two still commit separately.
     # Applies to the application engine only; Alembic builds its own engine
     # from `db_connect_args`, so a migration is never killed mid-transaction.
     db_idle_in_transaction_session_timeout: str | None = None

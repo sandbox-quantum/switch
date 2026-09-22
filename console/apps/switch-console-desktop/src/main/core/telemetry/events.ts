@@ -142,21 +142,18 @@ export type TelemetryCliFailure =
  *
  * Named at the point of failure rather than mapped from an error type: these
  * paths report a message, and a message cannot be sent. The codes separate the
- * walls that need different fixes — a marketplace that will not register, a host
- * CLI that refuses the plugin, and the app's own file writing — because
- * "connector install failed" on its own tells nobody which of the three to look
- * at.
+ * walls that need different fixes, because "connector install failed" tells
+ * nobody which to look at.
  *
  * `uninstall_command_failed` and `install_command_failed` both occur on an
- * update: a host with no update verb removes the connector and puts it back, and
- * which half failed is the difference between "nothing changed" and "the agent
- * now has no connector at all". `files_write_failed` and `files_remove_failed`
- * draw the same line for the connector the app writes itself.
+ * update — a host with no update verb removes the connector and puts it back,
+ * and which half failed is the difference between "nothing changed" and "the
+ * agent now has no connector at all". `files_write_failed` and
+ * `files_remove_failed` draw that line for the connector the app writes itself.
  *
- * `error` is the one code not named at a branch: it is an operation that threw
- * rather than returning a result — a dead SSH channel mid-install is the common
- * way. It is deliberately a small residue. A code that starts filling up is the
- * signal that a wall people are hitting has no name yet, not a bucket to widen.
+ * `error` is the only code not named at a branch, and deliberately a small
+ * residue. One that starts filling up means a wall people are hitting has no
+ * name yet — not a bucket to widen.
  */
 export type TelemetryConnectorFailure =
   | 'none'
@@ -191,10 +188,9 @@ export type TelemetryConnectorFailure =
  *
  * `catch_up` is the once-per-install sweep that brings every installed
  * connector to the version this build ships. It goes through the same service
- * method as the Update button, so without this the two are one number — and
- * `duration_ms` makes that worse rather than better: the sweep runs unattended
- * at launch, several connectors at a time, and its latencies and its failures
- * would be read as the ones people are waiting through.
+ * method as the Update button, so without this the two are one number — and it
+ * runs unattended at launch, several connectors at a time, so its latencies and
+ * failures would be read as ones people sat through.
  *
  * The same reasoning as `TelemetryAgentRemoveTrigger`, which exists because a
  * server teardown deleting a dozen agents looked identical to a dozen people
@@ -203,40 +199,27 @@ export type TelemetryConnectorFailure =
 export type TelemetryConnectorUpdateTrigger = 'user' | 'catch_up';
 
 /**
- * How long an operation took, in whole milliseconds.
+ * How long an operation took, in whole milliseconds, on a monotonic clock.
  *
- * The one dimension here that is not a fixed set of values, which is why it is
- * worth being explicit about what it is and is not. It is measured on a
- * monotonic clock around the operation itself, so a clock step or a machine
- * waking mid-install cannot produce a negative number or an hour that never
- * passed.
+ * The one dimension here not drawn from a fixed set, so how to read it matters.
+ * Nothing is bucketed and nothing is clamped: take percentiles, not means —
+ * some of these legitimately include a password prompt left on screen.
  *
- * **Nothing is rounded into buckets and nothing is clamped**, so read these as
- * percentiles rather than as a mean: some legitimately include a password prompt
- * somebody left on screen, and an arithmetic mean over that is meaningless.
+ * Two things shape the distribution:
  *
- * Two things do bound it, and both shape the distribution:
+ * - Every connector command carries `EXEC_TIMEOUT_MS` (120 s) and an operation
+ *   runs several in sequence, so the wall is a multiple: ~480000 for an
+ *   install, ~600000 for a reinstall. Pile-ups there are the timeout, not
+ *   latency.
+ * - The connector events time the whole operation, including registering the
+ *   marketplace — which clones a repository on a machine that has never had it
+ *   and is a no-op afterwards. The first install is legitimately much slower,
+ *   so a moving p50 can be a change in that mix rather than a regression.
  *
- * - Every command the connector drivers run carries `EXEC_TIMEOUT_MS` (120 s),
- *   and an operation runs several in sequence, so the wall is a multiple of it
- *   rather than 120 s. Repairing the marketplace is up to three commands (list,
- *   remove, add); an install adds one more, and a reinstall-style update adds
- *   two — so ~480000 for an install and ~600000 for a reinstall. Expect pile-ups
- *   at those multiples. They are the timeout wall, not a latency distribution.
- * - The connector events time the **whole operation the user waited on**, which
- *   includes registering the plugin marketplace. On a machine that has never had
- *   it, that step clones a repository; on every later install it is a no-op. So
- *   the first install on a machine is legitimately much slower than the rest,
- *   and a p50 that moves can be a change in that mix rather than a regression.
- *
- * It carries nothing about the machine: an elapsed time is not a fingerprint at
- * this resolution, and it names no path, host or command.
- *
- * It is branded so the properties above are held by the type rather than by this
- * comment. `startTimer()` is the only thing that can mint one, which is what
- * stops a call site reaching for `Date.now() - startedAt` — not monotonic, and
- * across a clock step it yields a negative number that nothing at the far end
- * can tell from data.
+ * Branded so `startTimer()` is the only thing that can mint one. That is what
+ * stops a call site reaching for `Date.now() - startedAt`, which is not
+ * monotonic and across a clock step yields a negative number nothing at the far
+ * end can tell from data.
  */
 declare const durationMsBrand: unique symbol;
 export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };

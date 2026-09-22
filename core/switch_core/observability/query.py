@@ -1,15 +1,12 @@
 """How long the database takes, from this server's side of it.
 
-The pool gauges next door answer "are we holding too many connections". They
-cannot answer "is anything slow", which is the question a request that takes
-two seconds actually raises — and on this server almost every request is a
-handful of queries and very little else, so a slow endpoint is nearly always a
-slow query.
+The pool gauges answer "are we holding too many connections", not "is anything
+slow". On this server a request is a handful of queries and little else, so a
+slow endpoint is nearly always a slow query.
 
 Timed with SQLAlchemy's cursor events rather than by wrapping call sites: they
-fire around the driver call itself, so what is measured is the database's round
-trip and not the Python either side of it, and there is no call site to
-remember to wrap.
+fire around the driver call, so what is measured is the round trip rather than
+the Python either side of it, and there is no call site to remember to wrap.
 
 What that leaves out, so nobody reads the panel as "every statement": the
 message listener, which takes the raw asyncpg connection and never executes
@@ -17,11 +14,10 @@ through SQLAlchemy; Alembic, which builds its own engine; `BEGIN`/`COMMIT`,
 which the dialect issues directly; and pool pre-ping. An `executemany` is one
 measurement for the whole batch, because it is one round trip.
 
-**The statement text never leaves this module.** It is the most obviously
-useful attribute and the one thing that must not be a metric: it carries
-literals in some code paths, and it is unbounded, which is how a metrics bill
-becomes a surprise. What goes on the wire is the leading keyword, mapped
-through a fixed table, so the series count is the size of that table.
+**The statement text never leaves this module.** It is the obvious attribute
+and the one that must not be a metric: unbounded, and it carries literals on
+some paths. What goes on the wire is the leading keyword through a fixed table,
+so the series count is the size of that table.
 """
 
 from __future__ import annotations

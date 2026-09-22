@@ -740,14 +740,12 @@ describe('RemoteSwitchSetupService.checkForUpdates', () => {
 /**
  * A broken pipe is not an answer about the connector.
  *
- * Verified against a real dead SSH socket before it was written: every other
- * failure in this driver folds into a `ConnectorRunResult`, and a status read
- * then parses the empty stdout as "no plugin installed" — so a channel that
- * died mid-fan-out rendered in the picker as "Its Switch connector is not
- * installed on <host>", with an Install button, for a read that never
- * happened. That is the review finding this closes, and the half that survived
- * the first fix: reporting `refreshError` only helps if the driver raises
- * rather than inventing an empty plugin list.
+ * Every other failure in this driver folds into a `ConnectorRunResult`, and a
+ * status read parses the empty stdout as "no plugin installed" — so a channel
+ * dying mid-fan-out would render in the picker as "Its Switch connector is not
+ * installed on <host>", with an Install button, for a read that never happened.
+ * Reporting `refreshError` only helps if the driver raises rather than
+ * inventing an empty plugin list.
  */
 describe('RemoteSwitchSetupService when the transport dies', () => {
   function transportFailure() {
