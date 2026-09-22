@@ -483,9 +483,7 @@ class SessionAuthority:
             db.begin(),
         ):
             # The agent row also serializes the first lease, before a session row exists.
-            agent = await db.scalar(
-                select(Agent).where(Agent.id == agent_id).with_for_update()
-            )
+            agent = await self._lock_agent(db, agent_id)
             if agent is None or agent.owner_id is None:
                 raise SessionError(
                     "NOT_AUTHORIZED", "A shared session requires an owned agent."
@@ -1119,9 +1117,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            await db.execute(
-                select(Agent.id).where(Agent.id == agent_id).with_for_update()
-            )
+            await self._lock_agent(db, agent_id)
             now = await _now(db)
             # A delivery a session has taken is kept only until the promise on
             # it would have run out anyway: past that the same message arriving
@@ -1279,9 +1275,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            await db.execute(
-                select(Agent.id).where(Agent.id == agent_id).with_for_update()
-            )
+            await self._lock_agent(db, agent_id)
             row = await db.get(
                 SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
             )
@@ -1318,9 +1312,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            await db.execute(
-                select(Agent.id).where(Agent.id == agent_id).with_for_update()
-            )
+            await self._lock_agent(db, agent_id)
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             room = await self._room_member(db, agent_id, room_id)
             previous = await db.scalar(
@@ -1820,6 +1812,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
+            await self._lock_agent(db, agent_id)
             candidates = list(
                 (
                     await db.scalars(
@@ -1829,6 +1822,7 @@ class SessionAuthority:
                             SdkSession.agent_id == agent_id,
                             SdkSession.connection_id.is_not(None),
                         )
+                        .order_by(SdkSession.id)
                         .with_for_update()
                     )
                 ).all()
@@ -2032,9 +2026,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            agent = await db.scalar(
-                select(Agent).where(Agent.id == agent_id).with_for_update()
-            )
+            agent = await self._lock_agent(db, agent_id)
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             connection = connections.get(connection_id)
             if (
@@ -2133,9 +2125,7 @@ class SessionAuthority:
             # two of them waiting on each other. The agent row is where a
             # session being created for this room serializes, which has no row
             # of its own to be waited on yet.
-            await db.execute(
-                select(Agent.id).where(Agent.id == agent_id).with_for_update()
-            )
+            await self._lock_agent(db, agent_id)
             await db.execute(
                 select(SdkSession.id)
                 .where(
@@ -2440,6 +2430,23 @@ class SessionAuthority:
             key: value for key, value in payload["origin"].items() if key not in opaque
         }
         return {**payload, "origin": origin}
+
+    async def _lock_agent(self, db: AsyncSession, agent_id: str) -> Agent | None:
+        """Serialize an agent's session work on the agent's own row.
+
+        The mode must stay `FOR NO KEY UPDATE`. Writing any row that references
+        the agent — a session, a room admission — takes `FOR KEY SHARE` on it
+        through the foreign key, which `FOR UPDATE` conflicts with and this mode
+        does not; at the stronger mode a holder of this lock waiting on a
+        session row deadlocks against that session's own write. The weaker mode
+        still conflicts with itself, so agent-scoped work is still taken one at
+        a time, and still holds off a delete. Nothing under this lock changes
+        the agent's key.
+        """
+        agent: Agent | None = await db.scalar(
+            select(Agent).where(Agent.id == agent_id).with_for_update(key_share=True)
+        )
+        return agent
 
     async def _locked(self, db: AsyncSession, session_id: str) -> SdkSession:
         row = await db.scalar(
