@@ -115,6 +115,20 @@ class BufferedEvent:
     appended_at: float
 
 
+@dataclass(frozen=True)
+class Reader:
+    """Who is in a room, for the purpose of counting what went past it.
+
+    A session when the caller named one, otherwise the connection or transport
+    session it arrived on. Which of the two it is decides who may take a room
+    from whom: a connection may carry sessions working in several rooms, so it
+    is not the caller in any of them, and a session in the room outranks it.
+    """
+
+    id: str
+    is_session: bool
+
+
 @dataclass
 class _Counting:
     """What one room is behind by for one agent, and who is entitled to clear it.
@@ -124,7 +138,7 @@ class _Counting:
     room now: it decides whose `caught_up` counts, and nothing else.
     """
 
-    occupant: str
+    occupant: Reader
     baseline: int | None
 
 
@@ -286,22 +300,35 @@ class EventBuffer:
     # Reader bookkeeping
     # ------------------------------------------------------------------
 
-    def start_counting(
-        self, agent_id: str, reader_id: str, room_id: str, from_seq: int
+    def claim_counting(
+        self, agent_id: str, connection_id: str, room_id: str, from_seq: int
     ) -> None:
-        """Give a room a baseline and a reader, unless it already has one.
+        """A connection has claimed this room: it counts for it from `from_seq`.
 
-        Having no baseline is reported as an unknown count, so this is what
-        turns unknown into a number. It never overwrites: what is already
-        there is either progress or a deliberate unknown, and discarding
-        either would invent a zero. Nor does it take the room from whoever is
-        in it — a connection covering a room is not the caller occupying it.
+        Claiming is a room slot changing hands between connections, so the
+        claimant becomes the one whose reading clears the count — otherwise a
+        connection that took a room from another could never clear what it is
+        told it is behind by.
+
+        A baseline is only ever given, never replaced: what is already there is
+        either progress or a deliberate unknown, and discarding either would
+        invent a zero.
+
+        A session in the room keeps it. A connection carries every session of
+        an agent and claims the union of their rooms, so its claim says it
+        delivers there, not that it is the caller there.
         """
         rooms = self._counting.setdefault(agent_id, {})
-        rooms.setdefault(room_id, _Counting(occupant=reader_id, baseline=from_seq))
+        claimant = Reader(id=connection_id, is_session=False)
+        held = rooms.get(room_id)
+        if held is None:
+            rooms[room_id] = _Counting(occupant=claimant, baseline=from_seq)
+            return
+        if not held.occupant.is_session:
+            held.occupant = claimant
 
-    def hand_counting_to(self, agent_id: str, reader_id: str, room_id: str) -> None:
-        """Record that `reader_id` is the one in the room now.
+    def hand_counting_to(self, agent_id: str, reader: Reader, room_id: str) -> None:
+        """Record that `reader` is the one in the room now.
 
         Connecting to a room is taking it, so the newcomer becomes the only
         caller whose reading clears the count there — which is what stops a
@@ -317,11 +344,13 @@ class EventBuffer:
         rooms = self._counting.setdefault(agent_id, {})
         held = rooms.get(room_id)
         if held is None:
-            rooms[room_id] = _Counting(occupant=reader_id, baseline=0)
+            rooms[room_id] = _Counting(occupant=reader, baseline=0)
             return
-        held.occupant = reader_id
+        held.occupant = reader
 
-    def mark_unknown(self, agent_id: str, reader_id: str, rooms: Iterable[str]) -> None:
+    def mark_unknown(
+        self, agent_id: str, connection_id: str, rooms: Iterable[str]
+    ) -> None:
         """Record that how far behind these rooms are cannot be said.
 
         Sticky, so a reader that reclaims the room afterwards is not quietly
@@ -333,12 +362,14 @@ class EventBuffer:
         for room_id in rooms:
             counting = held.get(room_id)
             if counting is None:
-                held[room_id] = _Counting(occupant=reader_id, baseline=None)
+                held[room_id] = _Counting(
+                    occupant=Reader(id=connection_id, is_session=False), baseline=None
+                )
             else:
                 counting.baseline = None
 
     def caught_up(
-        self, agent_id: str, reader_id: str, room_id: str, through_seq: int
+        self, agent_id: str, reader: Reader, room_id: str, through_seq: int
     ) -> None:
         """Record that the room's occupant has caught up through `through_seq`.
 
@@ -351,14 +382,22 @@ class EventBuffer:
         was in flight comes back holding an answer for a room it has left; the
         session that took the room has not read a word of it, and must not be
         told otherwise.
+
+        A session reading a room a connection holds the count for takes it
+        over. Only one session of an agent can be in a room, and it is more
+        specific than the connection that carried it there — which is how a
+        session recovers a count opened in the name of its stream, rather than
+        reading forever against a baseline nothing it can say will clear.
         """
         rooms = self._counting.setdefault(agent_id, {})
         held = rooms.get(room_id)
         if held is None:
-            rooms[room_id] = _Counting(occupant=reader_id, baseline=through_seq)
+            rooms[room_id] = _Counting(occupant=reader, baseline=through_seq)
             return
-        if held.occupant != reader_id:
-            return
+        if held.occupant != reader:
+            if held.occupant.is_session or not reader.is_session:
+                return
+            held.occupant = reader
         if held.baseline is None or through_seq > held.baseline:
             held.baseline = through_seq
 

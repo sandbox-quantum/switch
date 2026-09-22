@@ -100,7 +100,7 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.sessions.attachments import normalise_mime_type
-from switch_core.sessions.service import rooms_attended
+from switch_core.sessions.service import rooms_occupied
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -1725,7 +1725,7 @@ class ProtocolService:
         # the upsert and leaving the tail outside it would put exactly the
         # visible half of the work back on whatever was ambient.
         rows: list[AgentRuntimeState] = []
-        attended: set[tuple[str, str]] = set()
+        occupied: set[tuple[str, str]] = set()
         for tenant_id in await all_tenant_ids(self.session_factory):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 # Filtered on the row's own tenant, not left to the policy: on an
@@ -1739,17 +1739,14 @@ class ProtocolService:
                 ]
                 rows.extend(active)
                 for agent_id in {row.agent_id for row in active}:
-                    attended.update(
+                    occupied.update(
                         (agent_id, room)
-                        for room in await rooms_attended(
+                        for room in await rooms_occupied(
                             session, agent_id, self.connections
                         )
                     )
         for row in rows:
-            if (
-                self.connections.has_session_in(row.agent_id, row.room_id)
-                or (row.agent_id, row.room_id) in attended
-            ):
+            if (row.agent_id, row.room_id) in occupied:
                 continue
             with tenant_scope(row.tenant_id):
                 await self._sweep_one_runtime_state(row.agent_id, row.room_id)

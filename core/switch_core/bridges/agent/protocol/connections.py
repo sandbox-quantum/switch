@@ -879,25 +879,10 @@ class ConnectionRegistry:
 
         Covers, not claims: an `all`-scope daemon is genuinely reachable in the
         rooms it has not yielded to a session. This is the *delivery* question.
-        For "is a session attending this room", use `has_session_in`.
+        For "is a session in this room", ask `sessions.service.rooms_occupied`,
+        which weighs a claim against the sessions that could account for it.
         """
         return any(self.covers(conn, room_id) for conn in self.for_agent(agent_id))
-
-    def has_session_in(self, agent_id: str, room_id: str) -> bool:
-        """Whether a connection has **claimed** this room — i.e. a session is in it.
-
-        Distinct from `live_in_room`, and the distinction matters. An
-        `all`-scope watcher covers every room no session has taken, so `covers`
-        answers "would this connection receive the room's events" — true for a
-        daemon that is merely watching. Presence for a session-shaped agent asks
-        something narrower: is a session actually attending? Only an explicit
-        claim answers that.
-
-        Conflating the two reports an agent LIVE in a room where nothing is
-        listening but a watcher, which suppresses both the "no session" reply
-        and the `auto_session` promise to start one.
-        """
-        return self.claimant_of(agent_id, room_id) is not None
 
     def can_spawn_for(self, agent_id: str, room_id: str) -> bool:
         """Whether something live will start a session for this room on demand.
@@ -946,11 +931,6 @@ class ConnectionRegistry:
 
     def live_agents_in_room(self, agent_ids: Iterable[str], room_id: str) -> set[str]:
         return {aid for aid in agent_ids if self.live_in_room(aid, room_id)}
-
-    def agents_with_session_in(
-        self, agent_ids: Iterable[str], room_id: str
-    ) -> set[str]:
-        return {aid for aid in agent_ids if self.has_session_in(aid, room_id)}
 
     def live_agents(self, agent_ids: Iterable[str]) -> set[str]:
         return {aid for aid in agent_ids if self.is_live(aid)}

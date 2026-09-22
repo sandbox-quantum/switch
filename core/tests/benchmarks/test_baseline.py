@@ -233,7 +233,7 @@ async def test_baseline_recovers_from_a_lost_host(
 
             assigned = watcher.sessions_by_room()
             assert room_id in assigned, assigned
-            assert bench.connections.has_session_in(target.agent_id, room_id)
+            assert bench.connections.claimant_of(target.agent_id, room_id) is not None
             killed = watcher.kill_session(assigned[room_id])
             assert killed > 0
 

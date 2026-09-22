@@ -6,7 +6,7 @@ from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_session_store import AgentSessionStore
-from switch_core.sessions.service import agents_attending
+from switch_core.sessions.service import agents_present_in
 
 
 async def compute_agent_statuses(
@@ -85,7 +85,7 @@ async def compute_agent_statuses(
     # always_on has no separate notion of a session: any live connection is the
     # agent being up, and its scope is room-agnostic.
     live_always_on |= connections.live_agents(always_on_ids)
-    # For the session-shaped models, LIVE means a session is *attending* the
+    # For the session-shaped models, LIVE means a session is *present* in the
     # room, which is two different facts about two kinds of client. A session
     # Switch holds a record of says so by the room it is bound to and the lease
     # its host is still renewing; a client Switch has no record of leaves only
@@ -96,14 +96,12 @@ async def compute_agent_statuses(
     # would report an agent as present in a room where nothing but a watcher is
     # listening, suppressing both the "no session" reply and the auto_session
     # promise to start one.
-    live_auto_room |= await agents_attending(
+    live_auto_room |= await agents_present_in(
         session, auto_session_ids, room_id, connections
     )
-    live_auto_room |= connections.agents_with_session_in(auto_session_ids, room_id)
-    live_addressable |= await agents_attending(
+    live_addressable |= await agents_present_in(
         session, addressable_ids, room_id, connections
     )
-    live_addressable |= connections.agents_with_session_in(addressable_ids, room_id)
     # …whereas DORMANT is a promise that a session is coming, so what it asks
     # of a connection is willingness, not mere connectivity. The client says so
     # when it opens the stream, and one connection of an agent says nothing

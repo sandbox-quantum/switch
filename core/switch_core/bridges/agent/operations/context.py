@@ -15,6 +15,7 @@ from switch_core.bridges.agent.operations.callctx import (
     CallerSession,
     current_call_context,
 )
+from switch_core.bridges.agent.protocol.event_buffer import Reader
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -71,7 +72,7 @@ def caller_session() -> CallerSession | None:
     return bound.session if bound is not None else None
 
 
-def counting_reader() -> str | None:
+def counting_reader() -> Reader | None:
     """Who a room's unread count belongs to while this caller is in it.
 
     The session when the caller named one. A controller connection carries
@@ -82,7 +83,10 @@ def counting_reader() -> str | None:
     is — and the one thing in the room.
     """
     caller = caller_session()
-    return caller.id if caller is not None else session_key()
+    if caller is not None:
+        return Reader(id=caller.id, is_session=True)
+    key = session_key()
+    return Reader(id=key, is_session=False) if key is not None else None
 
 
 async def bound_rooms() -> set[str]:

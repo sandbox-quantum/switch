@@ -242,62 +242,115 @@ def _attends(
     return _claims_room(row, room_id, connection)
 
 
-async def agents_attending(
+def _session_is_over(row: SdkSession) -> bool:
+    """Has this session finished, whatever else is still holding it open?
+
+    Its lease says a host is up, and under a shared connection that host is up
+    for its siblings. Neither says this session is still working: a stopped one
+    is not in the room it stopped in.
+    """
+    return _stored_snapshot(row).session.status == "stopped"
+
+
+def _occupies(
+    row: SdkSession, room_id: str, now: datetime, connections: ConnectionRegistry
+) -> bool:
+    """Is this session in `room_id` — the presence question, not the routing one.
+
+    Narrower than `_attends`, which asks whether a command can be delivered to
+    a session and wants a stopped one to answer for itself rather than read as
+    nobody being there.
+    """
+    return _attends(row, room_id, now, connections) and not _session_is_over(row)
+
+
+def _spoken_for(rows: Iterable[SdkSession], claimant: Connection, room_id: str) -> bool:
+    """Is this room slot a managed session's own, rather than a legacy caller's?
+
+    A claim is the only presence a client Switch holds no session record for
+    ever leaves, so it has to keep counting. But a session's `connect_to_room`
+    leaves one too, on a connection that outlives it — and reading that back as
+    presence in its own right would put the session's liveness to a vote it
+    always wins, so an expired or stopped session would hold its room for as
+    long as anything else kept the connection up.
+    """
+    return any(
+        row.connection_id == claimant.id and _claims_room(row, room_id, claimant)
+        for row in rows
+    )
+
+
+async def _sessions_of(db: AsyncSession, agent_ids: list[str]) -> list[SdkSession]:
+    return list(
+        (
+            await db.scalars(
+                select(SdkSession).where(
+                    SdkSession.tenant_id == require_tenant_id(),
+                    SdkSession.agent_id.in_(agent_ids),
+                )
+            )
+        ).all()
+    )
+
+
+async def agents_present_in(
     db: AsyncSession,
     agent_ids: Iterable[str],
     room_id: str,
     connections: ConnectionRegistry,
 ) -> set[str]:
-    """Which of these agents has a managed session attending `room_id`.
+    """Which of these agents has something of its own in `room_id`.
 
-    The authoritative answer for sessions Switch holds a record of, and the one
-    that keeps working when their connection is shared with their siblings.
-    Presence readers union it with the connection-claim arm, which is all a
-    client Switch has no session record for ever leaves behind.
+    A managed session working there, answered from its binding and its host's
+    lease; or a claimed room slot that no session of that agent accounts for,
+    which is what a legacy, standalone or MCP client leaves behind instead.
     """
     wanted = list(agent_ids)
     if not wanted:
         return set()
-    rows = (
-        await db.scalars(
-            select(SdkSession).where(
-                SdkSession.tenant_id == require_tenant_id(),
-                SdkSession.agent_id.in_(wanted),
-            )
-        )
-    ).all()
-    if not rows:
-        return set()
-    now = await _now(db)
-    return {row.agent_id for row in rows if _attends(row, room_id, now, connections)}
+    rows = await _sessions_of(db, wanted)
+    present: set[str] = set()
+    if rows:
+        now = await _now(db)
+        present = {
+            row.agent_id for row in rows if _occupies(row, room_id, now, connections)
+        }
+    for agent_id in wanted:
+        if agent_id in present:
+            continue
+        claimant = connections.claimant_of(agent_id, room_id)
+        if claimant is None:
+            continue
+        mine = [row for row in rows if row.agent_id == agent_id]
+        if not _spoken_for(mine, claimant, room_id):
+            present.add(agent_id)
+    return present
 
 
-async def rooms_attended(
+async def rooms_occupied(
     db: AsyncSession, agent_id: str, connections: ConnectionRegistry
 ) -> set[str]:
-    """Every room this agent has a managed session working in right now.
+    """Every room this agent is in right now.
 
     The set behind "it has a session, but not here — ask it over there", which
     otherwise reads the rooms off the connections and so names every room a
     controller covers rather than the ones anything is actually in.
     """
-    rows = (
-        await db.scalars(
-            select(SdkSession).where(
-                SdkSession.tenant_id == require_tenant_id(),
-                SdkSession.agent_id == agent_id,
-            )
-        )
-    ).all()
-    if not rows:
-        return set()
-    now = await _now(db)
-    return {
-        room_id
-        for row in rows
-        for room_id in _stored_snapshot(row).session.room_ids
-        if _attends(row, room_id, now, connections)
-    }
+    rows = await _sessions_of(db, [agent_id])
+    occupied: set[str] = set()
+    if rows:
+        now = await _now(db)
+        occupied = {
+            room_id
+            for row in rows
+            for room_id in _stored_snapshot(row).session.room_ids
+            if _occupies(row, room_id, now, connections)
+        }
+    for conn in connections.for_agent(agent_id):
+        occupied |= {
+            room_id for room_id in conn.rooms if not _spoken_for(rows, conn, room_id)
+        }
+    return occupied
 
 
 class SessionAuthority:

@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -27,13 +29,15 @@ from switch_core.bridges.agent.protocol.connections import (
     Connection,
     ConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
+from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import ClientRoom, Room, SdkSession, require_tenant_id
 from switch_core.sessions.contract import HostEvent, Session
 from switch_core.sessions.service import (
     SessionAuthority,
     SessionError,
-    agents_attending,
-    rooms_attended,
+    agents_present_in,
+    rooms_occupied,
 )
 
 from .test_authority import EXAMPLES, setup
@@ -436,9 +440,9 @@ async def test_presence_reads_the_rooms_its_sessions_are_in(session_factory) -> 
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
 
     async with session_factory() as db:
-        assert await agents_attending(db, [AGENT], ROOM, connections) == {AGENT}
-        assert await agents_attending(db, [AGENT], OTHER_ROOM, connections) == set()
-        assert await rooms_attended(db, AGENT, connections) == {ROOM}
+        assert await agents_present_in(db, [AGENT], ROOM, connections) == {AGENT}
+        assert await agents_present_in(db, [AGENT], OTHER_ROOM, connections) == set()
+        assert await rooms_occupied(db, AGENT, connections) == {ROOM}
 
 
 @pytest.mark.asyncio
@@ -457,9 +461,89 @@ async def test_presence_drops_a_session_whose_host_stopped(session_factory) -> N
     await _stop_host(session_factory, FIRST[0])
 
     async with session_factory() as db:
-        assert await agents_attending(db, [AGENT], ROOM, connections) == set()
-        assert await rooms_attended(db, AGENT, connections) == set()
+        assert await agents_present_in(db, [AGENT], ROOM, connections) == set()
+        assert await rooms_occupied(db, AGENT, connections) == set()
     assert connections.get(connection.id) is not None
+
+
+class _NoHeartbeats:
+    """An agent_sessions store with nothing in it.
+
+    The rows are the arm the pre-connection clients maintain, and a managed
+    session maintains none of them — so leaving them empty is what a room
+    holding only managed sessions actually looks like.
+    """
+
+    async def get_live_agent_ids(
+        self, _db: AsyncSession, agent_ids: list[str], _room_id: str | None
+    ) -> set[str]:
+        return set()
+
+
+async def _status_in_room(
+    db: AsyncSession, connections: ConnectionRegistry
+) -> AgentStatus:
+    """What the room reports about the agent — the reader everything else reads."""
+    statuses = await compute_agent_statuses(
+        db,
+        [
+            SimpleNamespace(
+                id=AGENT,
+                integration_profile={"connection_model": "session_addressable"},
+            )
+        ],
+        ROOM,
+        _NoHeartbeats(),
+        connections,
+    )
+    return statuses[AGENT]
+
+
+@pytest.mark.asyncio
+async def test_the_room_stops_reporting_a_session_whose_host_stopped(
+    session_factory,
+) -> None:
+    """The same absence, asked the way a room asks it.
+
+    Presence is composed from several arms, and the claim arm is there for the
+    clients that leave nothing else behind. A managed session leaves a claim
+    too — on a connection that outlives it — so reading that claim as presence
+    in its own right would put the session's liveness to a vote it always wins,
+    and the room would go on offering a session that has gone.
+    """
+    service, first = await setup(session_factory)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+
+    async with session_factory() as db:
+        assert await _status_in_room(db, connections) == AgentStatus.LIVE
+
+    await _stop_host(session_factory, FIRST[0])
+
+    async with session_factory() as db:
+        assert await _status_in_room(db, connections) == AgentStatus.NO_SESSION
+    assert connections.claimant_of(AGENT, ROOM) is connection
+
+
+@pytest.mark.asyncio
+async def test_the_room_still_reports_a_client_that_only_ever_claimed(
+    session_factory,
+) -> None:
+    """A claim no session accounts for is the only presence some clients leave.
+
+    Standalone and MCP clients never write a session row, so discounting the
+    claim arm wholesale would report them absent from a room they are sitting
+    in.
+    """
+    await setup(session_factory)
+    connections = ConnectionRegistry()
+    _controller(connections, [ROOM])
+
+    async with session_factory() as db:
+        assert await _status_in_room(db, connections) == AgentStatus.LIVE
+        assert await rooms_occupied(db, AGENT, connections) == {ROOM}
 
 
 @pytest.mark.asyncio

@@ -75,7 +75,7 @@ from switch_core.events import (
     TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
-from switch_core.sessions.service import agents_attending, rooms_attended
+from switch_core.sessions.service import agents_present_in, rooms_occupied
 from switch_core.transport import (
     InboundMedia,
     InboundMembership,
@@ -936,29 +936,19 @@ class AgentClient(ClientBase[ClientConfig]):
             if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
-        attended = await rooms_attended(session, self.agent.id, self._connections)
+        occupied = await rooms_occupied(session, self.agent.id, self._connections)
         room_ids = await self._agent_session_store.live_connected_rooms(
             session, self.agent.id
         )
-        # A room a connection has claimed is a session in it, whether or not
-        # anything wrote an agent_sessions row for it — and a room a recorded
-        # session is bound to is one whatever its connection covers, which
-        # under a shared connection is every room the agent belongs to.
-        room_ids = sorted(
-            set(room_ids)
-            | {
-                room
-                for conn in self._connections.for_agent(self.agent.id)
-                for room in conn.rooms
-            }
-            | attended
-        )
+        # Where the agent actually is, which is not what its connections cover:
+        # a shared one covers every room the agent belongs to, and offering the
+        # user "it is busy in these rooms" from that names rooms nothing is in.
+        room_ids = sorted(set(room_ids) | occupied)
         bound_here = (
             await self._agent_session_store.has_room_binding(
                 session, self.agent.id, meta.room_id
             )
-            or self._connections.has_session_in(self.agent.id, meta.room_id)
-            or meta.room_id in attended
+            or meta.room_id in occupied
         )
         names: list[str] = []
         holds_role_here = False
@@ -1110,13 +1100,12 @@ class AgentClient(ClientBase[ClientConfig]):
         if connection_model == "always_on":
             if self._connections.is_live(self.agent.id):
                 return True
-        elif self._connections.has_session_in(self.agent.id, room_id):
-            # A claimed room slot, not mere coverage: an `all`-scope watcher
-            # covering this room is not a session that can answer.
-            return True
-        elif self.agent.id in await agents_attending(
+        elif self.agent.id in await agents_present_in(
             session, [self.agent.id], room_id, self._connections
         ):
+            # A session in the room, or a claimed room slot no session of this
+            # agent accounts for — not mere coverage: an `all`-scope watcher
+            # covering this room is not a session that can answer.
             return True
 
         heartbeat_room = None if connection_model == "always_on" else room_id

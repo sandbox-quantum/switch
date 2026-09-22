@@ -1013,6 +1013,11 @@ async def connection_subscribe(
         for departed in held - {req.room_id}:
             protocol.connections.release_room(conn, departed)
 
+    # A room slot changes hands here as much as it does on the stream URL or in
+    # connect_to_room, and the room's unread count follows it: the holder being
+    # told how far behind the room is has to be the one whose reading clears it.
+    protocol.event_buffer.claim_counting(agent.id, conn.id, req.room_id, conn.cursor)
+
     if evicted is not None:
         logger.warning(
             "[CONN] agent=%s connection=%s took room %s from connection %s",

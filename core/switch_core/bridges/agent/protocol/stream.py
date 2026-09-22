@@ -245,7 +245,7 @@ async def _event_stream(
             # has not seen; a room claimed later starts from wherever the
             # cursor has reached by then, which is the same rule.
             for room_id in conn.rooms:
-                buffer.start_counting(agent_id, conn.id, room_id, conn.cursor)
+                buffer.claim_counting(agent_id, conn.id, room_id, conn.cursor)
 
             try:
                 pending = buffer.read_from(

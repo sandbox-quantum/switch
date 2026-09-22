@@ -36,7 +36,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.sessions.service import RoomBinding, SessionError
 
@@ -342,14 +342,16 @@ async def test_connecting_takes_the_rooms_unread_count(
     protocol = _protocol_for(registry, "room-c")
     init_operations_protocol(protocol)
     buffer = protocol.event_buffer
-    buffer.hand_counting_to(AGENT, "session-b", "room-c")
+    buffer.hand_counting_to(AGENT, Reader(id="session-b", is_session=True), "room-c")
     for index in range(2):
         buffer.enqueue(AGENT, "room-c", _chatter("room-c", index))
 
     with call_context(_caller("session-a", None)):
         await definitions.connect_to_room("room-c", include_general_instructions=False)
 
-    buffer.caught_up(AGENT, "session-b", "room-c", buffer.head(AGENT))
+    buffer.caught_up(
+        AGENT, Reader(id="session-b", is_session=True), "room-c", buffer.head(AGENT)
+    )
 
     assert buffer.unread(AGENT, "room-c", buffer.head(AGENT)).count == 2
 

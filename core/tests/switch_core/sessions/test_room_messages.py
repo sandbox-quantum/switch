@@ -204,7 +204,7 @@ async def test_the_prompt_counts_the_chatter_this_room_went_past(session_factory
     await service.bind_connection(
         "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
     )
-    buffer.start_counting(
+    buffer.claim_counting(
         "agent-demo", connection.id, "room-demo", buffer.head("agent-demo")
     )
 
@@ -233,7 +233,7 @@ async def test_a_count_that_lost_history_is_given_as_a_floor(session_factory):
     await service.bind_connection(
         "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
     )
-    buffer.start_counting("agent-demo", connection.id, "room-demo", 0)
+    buffer.claim_counting("agent-demo", connection.id, "room-demo", 0)
 
     _chatter(buffer, times=3)
     message = event()

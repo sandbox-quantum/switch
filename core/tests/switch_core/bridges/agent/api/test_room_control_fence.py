@@ -29,6 +29,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
@@ -41,6 +42,7 @@ class _Protocol:
 
     def __init__(self) -> None:
         self.connections = ConnectionRegistry()
+        self.event_buffer = EventBuffer()
         self.membership_checks: list[str] = []
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
