@@ -4,11 +4,13 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
@@ -55,19 +57,31 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       .then((list) => {
         if (!cancelled) setServerTemplates(list);
       })
-      .catch(() => {
-        if (!cancelled) setServerTemplates([]);
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setServerTemplates([]);
+        toast({
+          title: failureText(e, "Could not load the workspace's templates."),
+          description: 'The built-in ones are still offered.',
+          variant: 'destructive',
+        });
       });
     return () => {
       cancelled = true;
     };
   }, [serverId]);
-  // A built-in template that is also saved on the workspace is listed once,
-  // as the workspace copy.
+  // A built-in template the signed-in user saved to the workspace is listed
+  // once, as their copy. Names are unique only per owner, so someone else's
+  // template of the same name is not a copy.
+  const meId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
   const onWorkspace = serverTemplates.filter((t) => t.kind === 'agent');
   const templates: StoredTemplateSummary[] = [
     ...bundledTemplates
-      .filter((b) => b.kind === 'agent' && !onWorkspace.some((t) => t.name === b.name))
+      .filter(
+        (b) =>
+          b.kind === 'agent' &&
+          !onWorkspace.some((t) => t.name === b.name && meId !== null && t.ownerId === meId)
+      )
       .map(({ id, name, description, kind, creator }) => ({
         id,
         name,

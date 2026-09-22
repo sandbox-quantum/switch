@@ -640,7 +640,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       slotProblems.push('Give the agent a name.');
       return;
     }
-    if (hasPlaceholder(name)) return; // an input still fills it in
+    if (hasPlaceholder(name)) {
+      slotProblems.push(`Fill in ${placeholdersIn(name).join(', ')} to name the agent.`);
+      return;
+    }
     if (!AGENT_NAME_PATTERN.test(name)) {
       slotProblems.push(
         `${name} is not a valid agent name: lowercase letters, digits, . - _, starting with a letter or digit.`
@@ -805,7 +808,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             definitionAttributes: {},
             providerConfig: null,
             entryPoint: 'server_page',
-            templateOrigin: loaded.origin,
+            // Only a single-agent template can be loaded again for this
+            // agent's instructions; a team template has no one entry to offer.
+            templateOrigin: loaded.singular ? loaded.origin : null,
           });
           if (result.kind !== 'created') {
             setSlot(i, { status: 'failed', error: provisionErrorText(result) });
@@ -848,9 +853,17 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         .invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) })
         .catch(() => {});
     }
-    rpc.roomTemplates
-      .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
-      .catch(() => {});
+    // A recent is used again from its own text, so a bundled template whose
+    // instructions live in a separate file is stored with them inlined.
+    void (async () => {
+      const yamlText = loaded.instructions
+        ? await rpc.agentTemplates.compose({
+            yamlText: loaded.yamlText,
+            instructions: loaded.instructions,
+          })
+        : loaded.yamlText;
+      await rpc.roomTemplates.saveRecent({ serverId, name: loaded.name, yamlText });
+    })().catch(() => {});
 
     // Rooms the agents join: the one this page was opened from, and the ones
     // the template names for each agent.
