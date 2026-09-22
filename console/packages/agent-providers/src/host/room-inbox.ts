@@ -84,6 +84,14 @@ const recordSchema = z.discriminatedUnion('type', [
     reset: z.boolean(),
     gap: gapSchema,
   }),
+  /**
+   * A routed delivery given back unmade, so routing it here again is a fresh
+   * attempt rather than a repeat of one this session already finished.
+   */
+  z.strictObject({
+    type: z.literal('release'),
+    identity: z.string().min(1),
+  }),
   /** What the server answered this session's binding with. */
   z.strictObject({
     type: z.literal('rooms'),
@@ -120,6 +128,9 @@ export class SharedRoomInbox {
         const key = record.identity ?? sequences.get(record.sequence);
         if (!key) throw new Error('Room inbox acknowledges an unknown delivery.');
         this.outstanding.delete(key);
+      } else if (record.type === 'release') {
+        this.received.delete(record.identity);
+        this.outstanding.delete(record.identity);
       } else if (record.type === 'cursor') {
         if (record.reset) sequences.clear();
         cursor = record.sequence;
@@ -168,6 +179,24 @@ export class SharedRoomInbox {
     const key = identity(received);
     this.received.set(key, received);
     this.outstanding.set(key, received);
+  }
+
+  /**
+   * Gives a routed delivery back without making it.
+   *
+   * Not an acknowledgement, and the difference is the whole point of it. An
+   * acknowledgement is this session's word that the delivery is finished, and
+   * it refuses the same room and message for ever after — which is right for
+   * one that was made, and wrong for one this session was refused because the
+   * room had moved on. A room can move back, and when it does the delivery has
+   * still never been made.
+   */
+  async release(event: Pick<Received, 'roomId' | 'messageId'>): Promise<void> {
+    const key = identity(event);
+    if (!this.received.has(key)) return;
+    await this.journal.append({ type: 'release', identity: key });
+    this.received.delete(key);
+    this.outstanding.delete(key);
   }
 
   async acknowledge(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<void> {

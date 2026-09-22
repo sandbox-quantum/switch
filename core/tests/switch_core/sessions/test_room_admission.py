@@ -24,7 +24,12 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import SdkRoomAdmission, SdkSession, require_tenant_id
 from switch_core.sessions.contract import HostEvent, Session
-from switch_core.sessions.service import RoomGrant, SessionAuthority, SessionError
+from switch_core.sessions.service import (
+    ADMISSION_SECONDS,
+    RoomGrant,
+    SessionAuthority,
+    SessionError,
+)
 
 from .test_authority import EXAMPLES, setup
 
@@ -106,6 +111,15 @@ async def _age_admission(
             row.grant_expires_at = past
         if promise:
             row.expires_at = past
+
+
+async def _discard_long_ago(session_factory, message_id: str) -> None:
+    """Backdate a given-up delivery past the term its mark is kept for."""
+    async with session_factory() as db, db.begin():
+        row = await db.get(
+            SdkRoomAdmission, (require_tenant_id(), AGENT, ROOM, message_id)
+        )
+        row.discarded_at = datetime.now(UTC) - timedelta(seconds=ADMISSION_SECONDS + 60)
 
 
 async def _reserved(session_factory) -> list[tuple[str, bool]]:
@@ -357,9 +371,79 @@ async def test_an_expired_promise_is_reported_and_kept_until_it_is_given_up(
 
     await service.discard_room_reservation(AGENT, ROOM, "first")
     assert await service.room_reservations(AGENT) == []
+    # The controller's own call can be answered after it has stopped listening,
+    # so saying so a second time has to mean the same as saying it once.
+    await service.discard_room_reservation(AGENT, ROOM, "first")
+    assert await service.room_reservations(AGENT) == []
     with pytest.raises(SessionError) as gone:
-        await service.discard_room_reservation(AGENT, ROOM, "first")
+        await service.discard_room_reservation(AGENT, ROOM, "second")
     assert gone.value.code == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_a_given_up_delivery_cannot_be_made_by_the_session_holding_it(
+    session_factory,
+) -> None:
+    """Giving up is the end of the delivery, not the end of the record of it.
+
+    The controller hands the event to a session before that session submits it,
+    so a delivery it has written off can still be in flight — and the event it
+    was built from can still be in the buffer. With nothing left behind, the
+    submit reads as one no admission was ever asked for, which is the shape of
+    caller the room fence does not apply to, and the message is delivered after
+    being reported undelivered.
+    """
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    sequence = buffer.enqueue(AGENT, ROOM, _event("first"))
+    await service.bind_room(AGENT, *FIRST, epoch, ROOM)
+    await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
+    await _age_admission(session_factory, "first", grant=False, promise=True)
+    await service.discard_room_reservation(AGENT, ROOM, "first")
+
+    with pytest.raises(SessionError) as refused:
+        await service.submit_room_message(
+            AGENT, *FIRST, epoch, ROOM, "first", sequence, False, buffer
+        )
+
+    assert refused.value.code == "ROOM_MESSAGE_ABANDONED"
+    assert await service.pending(AGENT, *FIRST, epoch) == []
+    # And the controller is told the same, so a redelivery from the stream is
+    # settled rather than held for a room that will never be answered.
+    with pytest.raises(SessionError) as again:
+        await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
+    assert again.value.code == "ROOM_MESSAGE_ABANDONED"
+
+
+@pytest.mark.asyncio
+async def test_a_given_up_delivery_stops_being_kept_once_nothing_can_rebuild_it(
+    session_factory,
+) -> None:
+    """The mark outlives the promise, then goes.
+
+    It is only there to outlive every copy of the event there is. Timed from
+    when the delivery was given up rather than from when the promise ran out,
+    which is already past by then.
+    """
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    sequence = buffer.enqueue(AGENT, ROOM, _event("first"))
+    await service.bind_room(AGENT, *FIRST, epoch, ROOM)
+    await service.admit_room(AGENT, ROOM, "first", sequence, True, buffer)
+    await _age_admission(session_factory, "first", grant=False, promise=True)
+    await service.discard_room_reservation(AGENT, ROOM, "first")
+
+    second = buffer.enqueue(AGENT, ROOM, _event("second"))
+    await service.admit_room(AGENT, ROOM, "second", second, True, buffer)
+    assert [message for message, _ in await _reserved(session_factory)] == [
+        "first",
+        "second",
+    ]
+
+    await _discard_long_ago(session_factory, "first")
+    await service.admit_room(AGENT, ROOM, "second", second, True, buffer)
+
+    assert [message for message, _ in await _reserved(session_factory)] == ["second"]
 
 
 @pytest.mark.asyncio

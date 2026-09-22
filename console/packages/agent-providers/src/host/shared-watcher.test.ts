@@ -1017,6 +1017,40 @@ it('holds a delivery Switch could not be asked about rather than dropping it', a
   expect((await SharedWatchAssignments.open(root)).pending()).toEqual([]);
 });
 
+it('has Switch keep a message queued behind one that is already waiting', async () => {
+  // Its turn comes later; the copy it will be built from cannot. Switch makes
+  // that copy when it is asked, and by the time the room settles the replay
+  // buffer the message arrived in can have been trimmed or renumbered — so a
+  // message parked without asking is one nothing can rebuild.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-queued-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  server.claimed.add('room');
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: true });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(server.asked.map((ask) => ask.messageId)).toContain('message-2');
+  // Asked without the permission to start a session, whatever this controller
+  // holds: a grant minted for the message behind would block the one in front.
+  expect(server.asked.find((ask) => ask.messageId === 'message-2')?.spawning).toBe(false);
+  expect((await SharedWatchAssignments.open(root)).pending()).toEqual([
+    { sequence: 1, roomId: 'room', messageId: 'message-1', spawning: true },
+    { sequence: 2, roomId: 'room', messageId: 'message-2', spawning: true },
+  ]);
+});
+
 it('gives up loudly on a delivery Switch refuses for what it is', async () => {
   // Refused for what it is rather than for when it was asked, so waiting
   // answers the same. Held for ever it would be a room gone quiet with nothing

@@ -2248,6 +2248,12 @@ class SdkRoomAdmission(TenantScoped, Base):
     the agent the right to start one session for it, and that right has to be
     recorded where the next caller asking about the same room can see it, or
     two deliveries seconds apart each start a session for the same room.
+
+    A controller giving a delivery up leaves `discarded_at` behind rather than
+    removing the row. The row is the fence as well as the copy: a session was
+    told to make this delivery before the controller stopped waiting for it,
+    and without the tombstone the delivery would read as one no admission was
+    ever asked for — the oldest shape of caller, which is not fenced at all.
     """
 
     __tablename__ = "sdk_room_admissions"
@@ -2275,6 +2281,9 @@ class SdkRoomAdmission(TenantScoped, Base):
     )
     granted_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    discarded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

@@ -9,8 +9,10 @@ controller worked it out from the session files on its own disk. Those files
 outlive the sessions that wrote them, so a stopped session goes on claiming a
 room it left and the controller routes to nobody. This is where the answer is
 recorded instead: the verified event, so the promise survives the replay buffer
-being trimmed, and the grant to start one session for a room nothing holds, so
-two deliveries seconds apart cannot each start one.
+being trimmed, the grant to start one session for a room nothing holds, so two
+deliveries seconds apart cannot each start one, and the mark a controller
+leaves when it gives a delivery up, so a session cannot go on to make one that
+is no longer owed.
 """
 
 import sqlalchemy as sa
@@ -41,6 +43,7 @@ def upgrade() -> None:
         sa.Column("grant_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("granted_session_id", sa.Text(), nullable=True),
         sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("discarded_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("tenant_id", "agent_id", "room_id", "message_id"),
         sa.ForeignKeyConstraint(
             ["tenant_id", "agent_id"],

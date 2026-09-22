@@ -596,6 +596,95 @@ it('runs what was routed to it while it was down', async () => {
   }
 });
 
+it('gives back a delivery the room moved away from, and runs it when the room comes back', async () => {
+  // The room can leave this session while an event is on its way here and be
+  // back before the message is ever answered. A refusal is not the delivery
+  // being finished, so the second routing of it has to run.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-reassigned-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const notices: string[] = [];
+  const admitted: string[] = [];
+  let elsewhere = true;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim'))
+        return Response.json({
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...startingSession, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        if (event.body.type === 'notice') notices.push(event.body.message);
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/room-message')) {
+        const { message_id: messageId } = JSON.parse(options.body as string) as {
+          message_id: string;
+        };
+        if (elsewhere)
+          return Response.json(
+            {
+              code: 'ROOM_MESSAGE_REASSIGNED',
+              detail: 'Another session of this agent holds the room.',
+            },
+            { status: 409 }
+          );
+        admitted.push(messageId);
+        return Response.json({
+          type: 'command.status',
+          commandId: `command-${messageId}`,
+          status: 'accepted',
+          code: null,
+          message: null,
+          command: {
+            contractVersion: 1,
+            commandId: `command-${messageId}`,
+            sessionId: 'session',
+            epoch: 'server-epoch',
+            origin: {
+              actorId: '@owner:example.test',
+              surface: 'slack',
+              roomId: 'room',
+              threadId: null,
+              messageId,
+            },
+            body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+          },
+        });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    const routed = { sequence: 5, roomId: 'room', messageId: 'moved' };
+    await handOff(root, routed);
+    await vi.waitFor(() => expect(notices).toHaveLength(1), { timeout: 3000 });
+    expect(notices[0]).toContain('moved');
+    expect(ran).toEqual([]);
+    elsewhere = false;
+    await handOff(root, routed);
+    await vi.waitFor(() => expect(ran).toEqual(['moved']), { timeout: 3000 });
+    expect(admitted).toEqual(['moved']);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
 it('fetches a room command the admission handed nothing back for', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-host-room-'));
   roots.push(root);

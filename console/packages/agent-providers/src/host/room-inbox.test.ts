@@ -102,3 +102,36 @@ it('restores legacy restart evidence carried on a lower sequence delivery', asyn
   ]);
   expect(inbox.pending()).toEqual([]);
 });
+
+it('takes a released delivery again, and an acknowledged one never', async () => {
+  // The room moved to a sibling while the event was on its way here, and then
+  // moved back. The delivery was never made, so routing it here again is a
+  // first attempt — where one this session finished is refused for ever.
+  const { root, inbox } = await inboxWith([]);
+  expect(await inbox.accept({ sequence: 1, roomId: 'room', messageId: 'message-1' })).toBe(true);
+  await inbox.release({ roomId: 'room', messageId: 'message-1' });
+  expect(inbox.pending()).toEqual([]);
+
+  expect(await inbox.accept({ sequence: 7, roomId: 'room', messageId: 'message-1' })).toBe(true);
+  await inbox.acknowledge({ sequence: 7, roomId: 'room', messageId: 'message-1' });
+  expect(await inbox.accept({ sequence: 9, roomId: 'room', messageId: 'message-1' })).toBe(false);
+
+  // And the same after a restart, which is where the refusal used to outlive
+  // the session that gave it.
+  const reopened = await SharedRoomInbox.open(root);
+  expect(reopened.pending()).toEqual([]);
+  expect(await reopened.accept({ sequence: 9, roomId: 'room', messageId: 'message-1' })).toBe(
+    false
+  );
+});
+
+it('replays a release written before the delivery was acknowledged', async () => {
+  const { inbox } = await inboxWith([
+    { type: 'handoff', sequence: 1, roomId: 'room', messageId: 'message-1' },
+    { type: 'release', identity: JSON.stringify(['room', 'message-1']) },
+    { type: 'handoff', sequence: 4, roomId: 'room', messageId: 'message-1' },
+  ]);
+  expect(inbox.pending()).toEqual([
+    { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-1' },
+  ]);
+});

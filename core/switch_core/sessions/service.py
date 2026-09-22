@@ -568,6 +568,7 @@ class SessionAuthority:
         )
         if (
             reservation is None
+            or reservation.discarded_at is not None
             or reservation.grant_expires_at is None
             or reservation.grant_expires_at <= now
         ):
@@ -1118,6 +1119,19 @@ class SessionAuthority:
                     SdkRoomAdmission.expires_at <= now,
                 )
             )
+            # A given-up delivery is timed from when it was given up rather
+            # than from when the promise ran out, which is already past by
+            # then. The row is the only thing standing between a session that
+            # was handed the event and a server that would otherwise verify it
+            # afresh, so it has to outlive every copy of the event there is.
+            await db.execute(
+                delete(SdkRoomAdmission).where(
+                    SdkRoomAdmission.tenant_id == require_tenant_id(),
+                    SdkRoomAdmission.agent_id == agent_id,
+                    SdkRoomAdmission.discarded_at
+                    <= now - timedelta(seconds=ADMISSION_SECONDS),
+                )
+            )
             room = await self._room_member(db, agent_id, room_id)
             rows = list(
                 await db.scalars(
@@ -1133,6 +1147,11 @@ class SessionAuthority:
             reservation = await db.get(
                 SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
             )
+            if reservation is not None and reservation.discarded_at is not None:
+                raise SessionError(
+                    "ROOM_MESSAGE_ABANDONED",
+                    "This room delivery was given up and will not be made.",
+                )
             if reservation is None:
                 payload, bridge_id, surface = await self._verify_room_event(
                     db, agent_id, room, message_id, sequence, buffer
@@ -1199,6 +1218,7 @@ class SessionAuthority:
                     SdkRoomAdmission.tenant_id == require_tenant_id(),
                     SdkRoomAdmission.agent_id == agent_id,
                     SdkRoomAdmission.consumed_at.is_(None),
+                    SdkRoomAdmission.discarded_at.is_(None),
                 )
                 .order_by(SdkRoomAdmission.sequence)
             )
@@ -1221,17 +1241,34 @@ class SessionAuthority:
         copy away, because the controller may still be holding the event and
         about to ask for it. The copy goes when the controller says it has
         stopped holding it.
+
+        What is left behind is the mark, not nothing. The event may already
+        have been handed to a session that has yet to submit it, and a row that
+        is simply gone reads as a delivery nobody was ever admitted to make —
+        which is the one case submission does not fence. Taken under the agent
+        lock so it cannot land between a submission's own lock and its read.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
+            await db.execute(
+                select(Agent.id).where(Agent.id == agent_id).with_for_update()
+            )
             row = await db.get(
                 SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
             )
             if row is None:
                 raise SessionError("NOT_FOUND", "No such room delivery is reserved.")
-            await db.delete(row)
+            if row.consumed_at is not None:
+                raise SessionError(
+                    "ROOM_MESSAGE_DELIVERED",
+                    "A session has already made this room delivery.",
+                )
+            if row.discarded_at is not None:
+                return
+            row.delivery = {}
+            row.discarded_at = await _now(db)
 
     async def submit_room_message(
         self,
@@ -1283,6 +1320,11 @@ class SessionAuthority:
             reservation = await db.get(
                 SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
             )
+            if reservation is not None and reservation.discarded_at is not None:
+                raise SessionError(
+                    "ROOM_MESSAGE_ABANDONED",
+                    "The controller gave this room delivery up; it will not be made.",
+                )
             if reservation is None:
                 # No admission was asked for, so the position the caller names
                 # is all there is to go on. A host old enough to send nothing
@@ -2103,16 +2145,23 @@ class SessionAuthority:
     async def _evict_siblings(
         self, db: AsyncSession, agent_id: str, session_id: str, room_id: str
     ) -> str | None:
-        """Take `room_id` off every running session of `agent_id` but this one.
+        """Take `room_id` off every unfinished session of `agent_id` but this one.
 
         Written through the event log like any other change to a session, so
         the displaced session's host hears about it on its own stream rather
         than discovering it by receiving nothing.
 
-        A session whose host has stopped is left alone: nothing routes to it,
-        and rewriting the log of every session an agent has ever run in this
-        room — announcing an eviction to each — would be a great deal of noise
-        for no change in where the events go.
+        A session that has finished or been retired is left alone: it is
+        nobody's claimant already, and rewriting the log of every session an
+        agent has ever run in this room — announcing an eviction to each —
+        would be a great deal of noise for no change in where the events go.
+
+        One whose host is merely down is not left alone, though nothing can be
+        routed to it either. Its claim is durable and its recovery restores
+        what is stored, so a claim left standing here comes back with the host
+        and the room ends up held twice. `displaced` still names the session
+        that was live when it lost the room, because that is the one whose host
+        is waiting to be told.
         """
         displaced: str | None = None
         now = await _now(db)
@@ -2125,9 +2174,14 @@ class SessionAuthority:
         )
         for sibling in siblings:
             state = _stored_snapshot(sibling).session
-            if room_id not in state.room_ids or not _host_holds(sibling, now):
+            if (
+                room_id not in state.room_ids
+                or state.retired
+                or _session_is_over(sibling)
+            ):
                 continue
-            displaced = sibling.id
+            if _host_holds(sibling, now):
+                displaced = sibling.id
             await self._append(
                 db,
                 sibling,

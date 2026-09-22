@@ -522,11 +522,23 @@ export async function runSharedHost(
             // was on its way here. Switch keeps the delivery and hands it to
             // whoever holds the room now, so this session lets it go rather
             // than retrying something it is no longer entitled to submit.
-            if (error.code === 'ROOM_MESSAGE_REASSIGNED')
+            // Given back rather than acknowledged: the delivery was never
+            // made, the room can come back here, and an acknowledgement would
+            // refuse it the second time as though it had been.
+            if (error.code === 'ROOM_MESSAGE_REASSIGNED') {
               await host.notice(
                 `Room message ${event.messageId} is no longer this session's to answer; the room moved to another session of this agent, and Switch is delivering the message there.`
               );
-            else if (['UNSUPPORTED_CAPABILITY', 'ROOM_MESSAGE_RESERVED'].includes(error.code))
+              await rooms!.release(event);
+              continue;
+            }
+            if (
+              [
+                'UNSUPPORTED_CAPABILITY',
+                'ROOM_MESSAGE_RESERVED',
+                'ROOM_MESSAGE_ABANDONED',
+              ].includes(error.code)
+            )
               await host.notice(
                 `Room message ${event.messageId} was not submitted: ${error.message}`
               );

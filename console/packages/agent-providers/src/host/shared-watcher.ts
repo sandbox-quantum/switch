@@ -590,6 +590,41 @@ export async function runSharedWatcher(
       await launch(config);
       return true;
     };
+    /**
+     * Has Switch verify and keep a delivery that cannot be routed yet.
+     *
+     * A message arriving behind one already waiting is answered in its turn,
+     * not now — but the copy that answer is finally built from is only made
+     * when Switch is asked, and by the time its turn comes the replay buffer
+     * holding it can have been trimmed or renumbered. So the asking is done on
+     * arrival and the routing is left until later.
+     *
+     * Asked without the permission to start a session whatever this controller
+     * holds: a grant minted for a message that is not at the head of its
+     * room's queue would block the one that is.
+     *
+     * Answers whether the delivery is finished with, as `admit` does. Only a
+     * refusal finishes one here; anything else leaves it to wait.
+     */
+    const reserve = async (event: Handoff): Promise<boolean> => {
+      try {
+        await admissions.admit({ ...event, spawning: false }, stop.signal);
+        return false;
+      } catch (error) {
+        if (!(error instanceof RoomAdmissionError)) throw error;
+        if (error.retryable) {
+          console.warn(
+            `Switch could not be asked to keep message ${event.messageId} in room ${event.roomId}: ${error.message} It is held on this controller alone until its turn comes.`
+          );
+          return false;
+        }
+        console.error(
+          `Switch will not keep message ${event.messageId} in room ${event.roomId}: ${error.message} It is not being delivered.`
+        );
+        await assignments.handled(event.sequence);
+        return true;
+      }
+    };
     const queued = (roomId: string, messageId: string): boolean =>
       held.get(roomId)?.events.some((entry) => entry.event.messageId === messageId) === true;
     const hold = async (event: Handoff, spawning: boolean) => {
@@ -734,7 +769,10 @@ export async function runSharedWatcher(
           // waiting for is written by a session that is doing other work, and
           // an event arriving is the cheapest evidence that time has passed.
           if (held.size) await resolveHeld();
-          if (held.has(assignment.roomId)) return hold(assignment, spawning);
+          if (held.has(assignment.roomId)) {
+            if (await reserve(assignment)) return;
+            return hold(assignment, spawning);
+          }
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning);
         });
         return pending.catch((error: Error) => {

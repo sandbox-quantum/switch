@@ -163,6 +163,31 @@ async def _stop_host(session_factory, session_id: str) -> None:
         row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
 
 
+async def _finish_session(
+    service: SessionAuthority, session_id: str, host_id: str, epoch: str
+) -> None:
+    """Report a session as stopped, as its own host does on the way out."""
+    snapshot = await service.snapshot(session_id, "owner")
+    await service.ingest(
+        AGENT,
+        host_id,
+        HostEvent(
+            contract_version=1,
+            event_id=f"host-stopped-{session_id}",
+            session_id=session_id,
+            epoch=epoch,
+            host_sequence=1,
+            occurred_at="2026-09-09T12:00:00Z",
+            body={
+                "type": "session.upsert",
+                "session": snapshot.session.model_copy(
+                    update={"status": "stopped"}
+                ).model_dump(by_alias=True),
+            },
+        ),
+    )
+
+
 async def _quiesce_host(session_factory, session_id: str) -> None:
     """Stand a session's host down without letting its lease lapse.
 
@@ -367,10 +392,9 @@ async def test_a_stopped_session_stops_claiming_its_room(session_factory) -> Non
     """A dead session used to be dead by association with its connection.
 
     Its `connection_id` outlives it, and under a controller connection so does
-    the connection: the siblings still running keep it up. Its binding outlives
-    it too — a host that stopped is left the room it was in rather than being
-    announced out of it — so the session's own lease is what says whether
-    anyone is there to receive the command.
+    the connection: the siblings still running keep it up. So the session's own
+    lease is what says whether anyone is there to receive the command, and the
+    sibling that takes the room takes it outright.
     """
     service, first = await setup(session_factory)
     second = await _second_session(service)
@@ -382,7 +406,7 @@ async def test_a_stopped_session_stops_claiming_its_room(session_factory) -> Non
     await _stop_host(session_factory, FIRST[0])
     await service.bind_room(AGENT, *SECOND, second, ROOM)
     await _ready(service, *SECOND, second)
-    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == [ROOM]
+    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == []
 
     receipt = await service.submit_room_control(
         AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
@@ -411,7 +435,7 @@ async def test_a_quiesced_session_stops_claiming_its_room(session_factory) -> No
     await _quiesce_host(session_factory, FIRST[0])
     await service.bind_room(AGENT, *SECOND, second, ROOM)
     await _ready(service, *SECOND, second)
-    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == [ROOM]
+    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == []
 
     receipt = await service.submit_room_control(
         AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
@@ -654,12 +678,16 @@ async def test_a_displaced_session_leaves_nothing_for_its_next_bind_to_vacate(
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_sibling_is_not_reported_as_displaced(session_factory) -> None:
-    """Nothing was interrupted, so nothing is announced.
+async def test_a_down_host_loses_the_room_without_being_announced(
+    session_factory,
+) -> None:
+    """Its claim goes; the report of a displaced host does not gain it.
 
-    Every session an agent has ever run in a room still lists it. Evicting
-    those would append a `session.upsert` to each of their logs and tell the
-    caller it took the room off a host that stopped days ago.
+    Two different questions. Nothing was interrupted — there is no host to tell
+    and no work to stop — so the caller is not told it took the room off
+    anyone. But the claim is durable and recovery restores what is stored, so
+    leaving it behind would hand the room back to the dead host the moment it
+    came up and leave two sessions holding it.
     """
     service, first = await setup(session_factory)
     second = await _second_session(service)
@@ -668,8 +696,56 @@ async def test_a_stopped_sibling_is_not_reported_as_displaced(session_factory) -
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
-    through = (await service.snapshot(FIRST[0], "owner")).through_sequence
     await _stop_host(session_factory, FIRST[0])
+
+    assert (await service.bind_room(AGENT, *SECOND, second, ROOM)).displaced is None
+
+    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_bring_a_transferred_room_back(session_factory) -> None:
+    """The room went while the host was down, and coming up does not fetch it.
+
+    Recovery restores what is stored, so the transfer has to have reached the
+    stored snapshot and not only the live answer. Otherwise the session that
+    lost the room is handed it again the moment its host returns, both sessions
+    claim it, and each of them can go on to make a delivery reserved for the
+    room.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
+    await service.quiesce(AGENT, *FIRST, first)
+    await service.bind_room(AGENT, *SECOND, second, ROOM)
+
+    recovered = await service.recover(AGENT, *FIRST, first, "recovery", 0)
+
+    assert recovered.session.room_ids == []
+    assert (await service.snapshot(SECOND[0], "owner")).session.room_ids == [ROOM]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_sibling_is_left_alone(session_factory) -> None:
+    """Nothing is announced and nothing is written.
+
+    Every session an agent has ever run in a room still lists it. Evicting
+    those would append a `session.upsert` to each of their logs for a session
+    that stopped days ago and was nobody's claimant to begin with.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
+    await _finish_session(service, *FIRST, first)
+    through = (await service.snapshot(FIRST[0], "owner")).through_sequence
 
     assert (await service.bind_room(AGENT, *SECOND, second, ROOM)).displaced is None
 
