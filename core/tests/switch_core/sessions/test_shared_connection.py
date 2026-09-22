@@ -6,16 +6,23 @@ rooms, and a room-scoped question answered from it matches all of them at once.
 What answers instead is the session's own binding, behind the host-and-epoch
 fence — and where a session cannot be told apart, the ambiguity is raised
 rather than guessed at.
+
+That connection is agent-wide, since it is not opened for a room and holds
+whatever rooms its sessions have taken. Except where a test says otherwise
+these run against one, so they exercise the topology the hosts are moving to
+rather than a room-scoped connection standing in for it.
 """
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_TTL_SECONDS,
     ClientDeclaration,
     Connection,
     ConnectionRegistry,
@@ -64,8 +71,31 @@ async def _second_session(service: SessionAuthority) -> str:
     return (await service.acquire(AGENT, session)).session.epoch
 
 
-def _connection(connections: ConnectionRegistry, rooms: list[str]) -> Connection:
-    """One connection for the agent, carrying every room its sessions are in."""
+def _controller(connections: ConnectionRegistry, rooms: list[str]) -> Connection:
+    """The agent's one inbound connection, carrying every room it is in.
+
+    Agent-wide, which is the shape a connection shared by several sessions has
+    to take: it is not in one room, and every room it holds arrived from a
+    different session. Binding a session to it is what a room-scoped connection
+    check used to refuse.
+    """
+    connection = connections.open(
+        agent_id=AGENT,
+        connection_id="connection-demo",
+        scope="all",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(),
+        expected_generation=None,
+    )
+    for room in rooms:
+        connections.claim_room(connection, room)
+    return connection
+
+
+def _room_connection(connections: ConnectionRegistry, room: str) -> Connection:
+    """A connection opened for one room, as a host predating the controller has."""
     connection = connections.open(
         agent_id=AGENT,
         connection_id="connection-demo",
@@ -76,8 +106,7 @@ def _connection(connections: ConnectionRegistry, rooms: list[str]) -> Connection
         declaration=ClientDeclaration(),
         expected_generation=None,
     )
-    for room in rooms:
-        connections.claim_room(connection, room)
+    connections.claim_room(connection, room)
     return connection
 
 
@@ -155,7 +184,7 @@ async def test_two_sessions_bind_the_same_connection(session_factory) -> None:
     second = await _second_session(service)
     await _second_room(session_factory)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    connection = _controller(connections, [ROOM, OTHER_ROOM])
 
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
@@ -183,7 +212,7 @@ async def test_room_control_reaches_the_session_bound_to_that_room(
     second = await _second_session(service)
     await _second_room(session_factory)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    connection = _controller(connections, [ROOM, OTHER_ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
@@ -207,14 +236,14 @@ async def test_two_sessions_claiming_one_room_is_raised_not_guessed(
     """Sessions that named no room are indistinguishable behind one connection.
 
     A caller that identifies itself only by its connection never reaches
-    `bind_room`, so two of them share every room the connection holds. There is
-    no fact left to choose between them, and picking one would silently send a
-    reset to the wrong session.
+    `bind_room`, so over a connection opened for one room the two of them share
+    it. There is no fact left to choose between them, and picking one would
+    silently send a reset to the wrong session.
     """
     service, first = await setup(session_factory)
     second = await _second_session(service)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM])
+    connection = _room_connection(connections, ROOM)
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
     await _ready(service, *FIRST, first)
@@ -229,22 +258,122 @@ async def test_two_sessions_claiming_one_room_is_raised_not_guessed(
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_session_stops_claiming_its_room(session_factory) -> None:
-    """A dead session used to be dead by association with its connection.
+async def test_a_session_that_named_no_room_attends_none_of_the_controllers(
+    session_factory,
+) -> None:
+    """The same two sessions behind the agent-wide connection, in no room at all.
 
-    Its `connection_id` outlives it, and under a controller connection so does
-    the connection: the siblings still running keep it up. So the session's own
-    lease is what says whether anyone is there to receive the command.
+    The room-scoped connection above at least said which room its callers might
+    be in. This one covers every room the agent belongs to, so reading a
+    session's room off it would put both of them in all of them — and the
+    ambiguity above would follow the agent into rooms neither session has ever
+    been near. A session that has not said where it is, is nowhere.
     """
     service, first = await setup(session_factory)
     second = await _second_session(service)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM])
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
+    await _ready(service, *FIRST, first)
+    await _ready(service, *SECOND, second)
+
+    with pytest.raises(SessionError) as caught:
+        await service.submit_room_control(
+            AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
+        )
+
+    assert caught.value.code == "HOST_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_an_evicted_session_attends_neither_its_old_room_nor_any_other(
+    session_factory,
+) -> None:
+    """Losing a room leaves a session in no room, not in every room.
+
+    The eviction empties its bound rooms while its host goes on running over
+    the shared connection — and that connection covers the whole agent. The
+    command for the room it lost belongs to the session that took it, and the
+    command for a room it was never in belongs to nobody.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    await _second_room(session_factory)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM, OTHER_ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
+    await service.bind_room(AGENT, *SECOND, second, ROOM)
+    await _ready(service, *FIRST, first)
     await _ready(service, *SECOND, second)
+
+    receipt = await service.submit_room_control(
+        AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
+    )
+
+    assert receipt.status == "accepted"
+    assert await service.pending(AGENT, *FIRST, first) == []
+    assert len(await service.pending(AGENT, *SECOND, second)) == 1
+
+    with pytest.raises(SessionError) as caught:
+        await service.submit_room_control(
+            AGENT, OTHER_ROOM, "reset", OWNER, "other-message", None, connections
+        )
+
+    assert caught.value.code == "HOST_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_a_session_is_unreachable_once_its_controller_stops_beating(
+    session_factory,
+) -> None:
+    """A live session with nothing left to deliver to it is not attending.
+
+    Its binding and its lease both still say it is working in the room, and
+    under a shared connection the one that lapsed was carrying every session
+    the agent has. Queuing the reset here would report a command accepted for a
+    session that will not hear of it until its host reconnects.
+    """
+    service, first = await setup(session_factory)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await _ready(service, *FIRST, first)
+    connection.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+
+    with pytest.raises(SessionError) as caught:
+        await service.submit_room_control(
+            AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
+        )
+
+    assert caught.value.code == "HOST_OFFLINE"
+    assert await service.pending(AGENT, *FIRST, first) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_session_stops_claiming_its_room(session_factory) -> None:
+    """A dead session used to be dead by association with its connection.
+
+    Its `connection_id` outlives it, and under a controller connection so does
+    the connection: the siblings still running keep it up. Its binding outlives
+    it too — a host that stopped is left the room it was in rather than being
+    announced out of it — so the session's own lease is what says whether
+    anyone is there to receive the command.
+    """
+    service, first = await setup(session_factory)
+    second = await _second_session(service)
+    connections = ConnectionRegistry()
+    connection = _controller(connections, [ROOM])
+    await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
+    await service.bind_room(AGENT, *FIRST, first, ROOM)
+    await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
     await _stop_host(session_factory, FIRST[0])
+    await service.bind_room(AGENT, *SECOND, second, ROOM)
+    await _ready(service, *SECOND, second)
+    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == [ROOM]
 
     receipt = await service.submit_room_control(
         AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
@@ -266,12 +395,14 @@ async def test_a_quiesced_session_stops_claiming_its_room(session_factory) -> No
     service, first = await setup(session_factory)
     second = await _second_session(service)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM])
+    connection = _controller(connections, [ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
-    await _ready(service, *SECOND, second)
     await _quiesce_host(session_factory, FIRST[0])
+    await service.bind_room(AGENT, *SECOND, second, ROOM)
+    await _ready(service, *SECOND, second)
+    assert (await service.snapshot(FIRST[0], "owner")).session.room_ids == [ROOM]
 
     receipt = await service.submit_room_control(
         AGENT, ROOM, "reset", OWNER, "reset-message", None, connections
@@ -294,7 +425,7 @@ async def test_binding_a_room_displaces_the_sibling_already_in_it(
     service, first = await setup(session_factory)
     second = await _second_session(service)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM])
+    connection = _controller(connections, [ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
@@ -319,7 +450,7 @@ async def test_a_bind_reports_the_room_the_caller_actually_left(
     service, first = await setup(session_factory)
     await _second_room(session_factory)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    connection = _controller(connections, [ROOM, OTHER_ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
 
     assert (await service.bind_room(AGENT, *FIRST, first, ROOM)).vacated == ()
@@ -343,7 +474,7 @@ async def test_a_displaced_session_leaves_nothing_for_its_next_bind_to_vacate(
     second = await _second_session(service)
     await _second_room(session_factory)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    connection = _controller(connections, [ROOM, OTHER_ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)
@@ -363,7 +494,7 @@ async def test_a_stopped_sibling_is_not_reported_as_displaced(session_factory) -
     service, first = await setup(session_factory)
     second = await _second_session(service)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM])
+    connection = _controller(connections, [ROOM])
     await service.bind_connection(AGENT, *FIRST, first, connection.id, connections)
     await service.bind_room(AGENT, *FIRST, first, ROOM)
     await service.bind_connection(AGENT, *SECOND, second, connection.id, connections)

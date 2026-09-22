@@ -15,7 +15,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import can_address, parse_policy
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.connections import (
+    Connection,
+    ConnectionRegistry,
+)
 from switch_core.bridges.agent.protocol.event_buffer import (
     NO_BASELINE,
     CursorExpiredError,
@@ -167,7 +170,7 @@ def _stored_snapshot(row: SdkSession) -> Snapshot:
         ) from error
 
 
-def _claims_room(row: SdkSession, room_id: str) -> bool:
+def _claims_room(row: SdkSession, room_id: str, connection: Connection) -> bool:
     """Does this session claim `room_id`, for picking one of an agent's many.
 
     A connection's rooms are the union of every session it carries, so once
@@ -175,13 +178,19 @@ def _claims_room(row: SdkSession, room_id: str) -> bool:
     all of them for any room it covers. The session's own bound rooms can.
 
     A session that has bound none has not said where it is — a caller that
-    identified itself only by its connection never reaches `bind_room`. For
-    those the connection is still the best available answer, which leaves
-    today's single-session hosts working exactly as they do now, and leaves
-    two such sessions behind one connection genuinely indistinguishable.
+    identified itself only by its connection never reaches `bind_room`. Over a
+    single-room connection the connection is still the best available answer,
+    which leaves today's single-session hosts working exactly as they do now,
+    and leaves two such sessions behind one connection genuinely
+    indistinguishable. Over a connection covering rooms it was never told
+    about, it is not an answer at all: it would put a session that has never
+    named a room in every room its agent belongs to, including one a sibling
+    took from it.
     """
     rooms = _stored_snapshot(row).session.room_ids
-    return room_id in rooms if rooms else True
+    if rooms:
+        return room_id in rooms
+    return connection.scope == "single"
 
 
 def _host_holds(row: SdkSession, now: datetime) -> bool:
@@ -194,6 +203,35 @@ def _host_holds(row: SdkSession, now: datetime) -> bool:
     claiming its room over a connection that is very much alive.
     """
     return not row.recovery.get("quiesced") and row.lease_expires_at > now
+
+
+def _attends(
+    row: SdkSession, room_id: str, now: datetime, connections: ConnectionRegistry
+) -> bool:
+    """Is this session working in `room_id`, with something able to reach it?
+
+    Three separate facts, and the connection can only supply one of them once
+    an agent's sessions share it. The session's own binding says which room it
+    is in; its lease says a host is still running it; the connection says
+    whether anything could deliver there. A claimed room slot used to stand in
+    for all three, because a session had a connection to itself and the
+    connection died when the session did.
+
+    Deliberately not "the row exists and names a room": a row outlives the host
+    that wrote it, and a session nothing can deliver to is not attending
+    anything however recently it said otherwise.
+    """
+    if row.connection_id is None or not _host_holds(row, now):
+        return False
+    connection = connections.get(row.connection_id)
+    if (
+        connection is None
+        or connection.agent_id != row.agent_id
+        or not connection.is_alive(time.monotonic())
+        or not connections.covers(connection, room_id)
+    ):
+        return False
+    return _claims_room(row, room_id, connection)
 
 
 class SessionAuthority:
@@ -1268,15 +1306,7 @@ class SessionAuthority:
             )
             now = await self._now(db)
             live = [
-                row
-                for row in candidates
-                if row.connection_id is not None
-                and _host_holds(row, now)
-                and (connection := connections.get(row.connection_id)) is not None
-                and connection.agent_id == agent_id
-                and connection.is_alive(time.monotonic())
-                and room_id in connection.rooms
-                and _claims_room(row, room_id)
+                row for row in candidates if _attends(row, room_id, now, connections)
             ]
             if not live:
                 if candidates:
@@ -1462,6 +1492,12 @@ class SessionAuthority:
         what an agent having a single inbound connection means. The connection
         is the route, not the identity — a caller is identified by its session
         behind the host and epoch fence, never by the connection it arrived on.
+
+        Its scope is not checked, and cannot be: the connection an agent has
+        one of is agent-wide, so requiring a room-scoped one here would mean
+        the only connection there is could not carry the sessions it is for.
+        What a room-scoped question resolves against is the session's own
+        binding, which is why the scope stopped mattering to this call.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
@@ -1476,7 +1512,6 @@ class SessionAuthority:
                 agent is None
                 or connection is None
                 or connection.agent_id != agent_id
-                or connection.scope != "single"
                 or not connection.is_alive(time.monotonic())
             ):
                 raise SessionError(

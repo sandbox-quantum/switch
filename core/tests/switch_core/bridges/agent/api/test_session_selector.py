@@ -43,7 +43,7 @@ from tests.switch_core.sessions.test_authority import setup
 from tests.switch_core.sessions.test_shared_connection import (
     OTHER_ROOM,
     SECOND,
-    _connection,
+    _controller,
     _second_room,
     _second_session,
 )
@@ -190,7 +190,7 @@ async def test_two_callers_on_one_connection_resolve_their_own_rooms(
     second = await _second_session(service)
     await _second_room(session_factory)
     connections = ConnectionRegistry()
-    connection = _connection(connections, [ROOM, OTHER_ROOM])
+    connection = _controller(connections, [ROOM, OTHER_ROOM])
     protocol = _Protocol(connections)
     for names, epoch, room in (
         ((SESSION, HOST), first, ROOM),
