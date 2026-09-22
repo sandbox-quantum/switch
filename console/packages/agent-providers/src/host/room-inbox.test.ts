@@ -27,7 +27,7 @@ it('restores room bindings and outstanding deliveries without repeating acknowle
     { type: 'ack', sequence: 1 },
     { type: 'received', sequence: 2, roomId: 'room', messageId: 'two' },
   ]);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room']);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], revoked: false });
   expect(inbox.pending().map((event) => event.messageId)).toEqual(['two']);
   await inbox.acknowledge({ sequence: 2, roomId: 'room', messageId: 'two' });
   await inbox.acknowledge({ sequence: 2, roomId: 'room', messageId: 'two' });
@@ -45,14 +45,28 @@ it('writes down the rooms the server says it serves, for a reader it cannot answ
   await inbox.serves(['room']);
   const lines = (await readFile(join(root, 'room-inbox.jsonl'), 'utf8')).split('\n').slice(0, -1);
   expect(lines).toHaveLength(1);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room']);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], revoked: false });
   await inbox.serves(['room', 'other']);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room', 'other']);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({
+    rooms: ['room', 'other'],
+    revoked: false,
+  });
 });
 
 it('reports no saved rooms at all, rather than none, before the first binding', async () => {
   const { root } = await inboxWith([]);
   expect(await SharedRoomInbox.savedRooms(root)).toBeNull();
+});
+
+it('tells a room never given apart from one taken away', async () => {
+  // Both hold no rooms now. Only the session that has yet to be given one may
+  // still be handed the room's messages.
+  const { root, inbox } = await inboxWith([]);
+  await inbox.serves([]);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], revoked: false });
+  await inbox.serves(['room']);
+  await inbox.serves([]);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], revoked: true });
 });
 
 it('admits a routed event exactly once, on the message rather than the position', async () => {

@@ -110,7 +110,7 @@ async function started(agentId: string, roomId: string): Promise<SharedHostConfi
       throw error;
     }
     if (config.session.agentId !== agentId) continue;
-    if (!(await SharedRoomInbox.savedRooms(root))?.includes(roomId)) continue;
+    if (!(await SharedRoomInbox.savedRooms(root))?.rooms.includes(roomId)) continue;
     if (await stopped(config.session.sessionId)) continue;
     return config;
   }
@@ -264,11 +264,13 @@ export class SharedWatchAssignments {
    * What the server says outranks what this watcher remembers: a session is
    * serving the room if the rooms it was told when it bound say so, whoever
    * started it. Failing that, the last session this watcher started for the
-   * room still counts while the server has given it no room of its own — the
-   * room becomes the session's when the agent in it connects to the room, and
-   * it cannot have done that before the message that started it arrives. A
-   * session the server has since moved to a different room is not serving this
-   * one, and routing to it would hold the event where nothing admits it.
+   * room still counts while the server has never given it a room — the room
+   * becomes the session's when the agent in it connects to the room, and it
+   * cannot have done that before the message that started it arrives. A session
+   * that has been given a room and holds none was evicted from it by a sibling
+   * that bound it, and a session the server has since moved to a different room
+   * is serving that one; routing to either would hold the event where nothing
+   * admits it, whether or not the room's new session is on disk yet.
    */
   async serving(agentId: string, roomId: string): Promise<SharedHostConfig | null> {
     const previous = [...this.every].reverse().find((record) => record.roomId === roomId);
@@ -277,8 +279,9 @@ export class SharedWatchAssignments {
     const saved = mine
       ? await SharedRoomInbox.savedRooms(sharedSessionRoot(mine.session.sessionId))
       : null;
-    if (mine && (saved === null || saved.includes(roomId))) return mine;
-    return (await started(agentId, roomId)) ?? (saved?.length === 0 ? mine : null);
+    if (mine && (saved === null || saved.rooms.includes(roomId))) return mine;
+    const unregistered = saved?.rooms.length === 0 && !saved.revoked;
+    return (await started(agentId, roomId)) ?? (unregistered ? mine : null);
   }
 
   async assign(

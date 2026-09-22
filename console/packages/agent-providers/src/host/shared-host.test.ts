@@ -762,9 +762,13 @@ it('records the rooms Switch answers its binding with', async () => {
   admittingServer();
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(async () => expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room']), {
-      timeout: 3000,
-    });
+    await vi.waitFor(
+      async () =>
+        expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], revoked: false }),
+      {
+        timeout: 3000,
+      }
+    );
   } finally {
     stop.abort();
     expect(await outcome).toBeNull();
@@ -821,7 +825,7 @@ it('starts, and says so, when its controller is not there yet to bind to', async
     await vi.waitFor(
       async () => {
         expect(notices).toEqual(['ROOM_DELIVERY_FAILED', 'ROOM_DELIVERY_RESUMED']);
-        expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room']);
+        expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], revoked: false });
       },
       { timeout: 12000 }
     );

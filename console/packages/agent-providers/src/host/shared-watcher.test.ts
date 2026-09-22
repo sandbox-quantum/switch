@@ -167,6 +167,39 @@ it('keeps a room with the session it started for it until the server moves that 
   ).not.toBe(first.session.sessionId);
 });
 
+it('stops serving a room with the session the server has taken it from', async () => {
+  // A sibling binding the same room evicts this session from it, leaving it
+  // with no rooms — the same answer a session that has never been given one
+  // gives, and the opposite meaning. The room's new session need not have
+  // written anything down yet, so the eviction has to be read off the session
+  // that lost the room rather than off the one that took it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-evicted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const first = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  const inbox = join(root, first.session.sessionId, 'room-inbox.jsonl');
+  await writeFile(
+    inbox,
+    JSON.stringify({ type: 'rooms', rooms: ['room'] }) +
+      '\n' +
+      JSON.stringify({ type: 'rooms', rooms: [] }) +
+      '\n'
+  );
+  expect(await assignments.serving(config.session.agentId, 'room')).toBeNull();
+
+  // Read from the journal rather than from memory, so a watcher that restarts
+  // between the eviction and the next message answers the same way.
+  expect(
+    await (await SharedWatchAssignments.open(root)).serving(config.session.agentId, 'room')
+  ).toBeNull();
+});
+
 it('reaches an upgraded session over the controller, not the connection it used to open', async () => {
   // A config saved before the agent had one inbound connection names the
   // session's own. That session stops opening it as soon as it runs this

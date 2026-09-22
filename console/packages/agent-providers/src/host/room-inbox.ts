@@ -124,7 +124,20 @@ export class SharedRoomInbox {
     }
   }
 
-  static async savedRooms(root: string): Promise<string[] | null> {
+  /**
+   * What the server last told this session it serves, and whether it has ever
+   * been told a room at all.
+   *
+   * The two differ where it matters. A session that has never been given a room
+   * has yet to register one — the room becomes its own only when the agent
+   * inside it connects. A session that held a room and now holds none had it
+   * taken away, because a sibling bound the same room and the server evicted
+   * this one from it. Both answer with no rooms, and only the first may still
+   * be given the room's messages, so the distinction is read from the whole
+   * journal rather than from its last record. Null when the session has no
+   * journal yet, which is not the same as an empty one.
+   */
+  static async savedRooms(root: string): Promise<{ rooms: string[]; revoked: boolean } | null> {
     let text: string;
     try {
       text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
@@ -135,11 +148,14 @@ export class SharedRoomInbox {
     if (text && !text.endsWith('\n'))
       throw new Error('Room inbox has an incomplete record; recovery review is required.');
     let rooms: string[] | null = null;
+    let held = false;
     for (const line of text.split('\n').slice(0, -1)) {
       const record = recordSchema.parse(JSON.parse(line));
-      if (record.type === 'rooms') rooms = record.rooms;
+      if (record.type !== 'rooms') continue;
+      rooms = record.rooms;
+      held ||= record.rooms.length > 0;
     }
-    return rooms;
+    return rooms === null ? null : { rooms, revoked: held && rooms.length === 0 };
   }
 
   static async open(root: string): Promise<SharedRoomInbox> {
