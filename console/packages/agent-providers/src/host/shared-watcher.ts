@@ -300,9 +300,9 @@ export async function runSharedWatcher(
       log: console,
       onEvent: (event) => {
         // The connection is this agent's reachability; starting a session is a
-        // separate permission it may not have. The server was told which on
-        // open, so it neither reports the agent as dormant nor answers an
-        // addressed message with a session that is never going to arrive.
+        // separate permission it may not have. What a room is told follows the
+        // agent's profile rather than this declaration, so whoever sets the
+        // profile that promises a session is the one keeping that honest.
         if (!spawn) return;
         pending = pending.then(async () => {
           const messageId = roomInputId(event);

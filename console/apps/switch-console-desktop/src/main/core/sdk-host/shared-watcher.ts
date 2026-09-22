@@ -47,8 +47,8 @@ async function readSubagentSwitchId(
  * `connected` is whether it holds this agent's one inbound connection.
  * `spawning` is whether it may start a session, which is the auto-start setting
  * and only that. A controller that is connected and not spawning is an agent
- * that can be addressed and caught up on, and that answers an addressed message
- * by saying it has no session rather than promising one nothing will start.
+ * that can be addressed and caught up on, and that starts nothing for the
+ * message — so the profile promising a session must not outlive it.
  */
 export type ControllerState = { connected: boolean; spawning: boolean };
 

@@ -12,8 +12,8 @@ import { z } from 'zod';
  * and nothing else. They are separate because an agent is reachable because it
  * exists, whereas starting a session on its behalf is a decision somebody made:
  * a controller that is connected and not spawn-capable is the state where an
- * agent can be addressed, counted and caught up on, and still answers that it
- * has no session rather than promising one that will never arrive.
+ * agent can be addressed, counted and caught up on, and starts nothing when it
+ * is.
  */
 export const watchFlagsSchema = z.object({ enabled: z.boolean(), spawn: z.boolean() });
 

@@ -69,3 +69,36 @@ it('leaves the profile alone when a remote controller cannot be told it may spaw
   );
   expect(h.setAutoSession).not.toHaveBeenCalled();
 });
+
+it('leaves a spawn-capable controller unclaimed when the profile cannot be set', async () => {
+  // The other half-applied enable. The toggle did not take, and it says so, but
+  // what is left over is a controller that would start a session under a
+  // profile that does not promise one — the server asks the connection there,
+  // so nothing is claimed that cannot be kept.
+  h.setAutoSession.mockImplementationOnce(async () => {
+    h.calls.push('gateway');
+    throw new Error('Gateway unreachable');
+  });
+
+  await expect(setAgentAutoSession({ agentId: 'agent-1', enabled: true })).rejects.toThrow(
+    'Gateway unreachable'
+  );
+  expect(h.calls).toEqual(['mirror', 'controller', 'gateway']);
+});
+
+it('gives the promise up even when the controller cannot then be stood down', async () => {
+  // Disabling, with the second step failing. The profile has already stopped
+  // promising a session, so the leftover is a controller that may still start
+  // one nobody was told to expect — the direction that does not lie to a room.
+  h.state.sshHost = 'host';
+  h.ensureRemoteWatcher.mockImplementationOnce(async () => {
+    h.calls.push('controller');
+    throw new Error('Host unreachable');
+  });
+
+  await expect(setAgentAutoSession({ agentId: 'agent-1', enabled: false })).rejects.toThrow(
+    'Host unreachable'
+  );
+  expect(h.setAutoSession).toHaveBeenCalledWith({ id: 'server-1' }, 'switch-1', false);
+  expect(h.calls).toEqual(['gateway', 'mirror', 'controller']);
+});
