@@ -25,23 +25,52 @@ from switch_core.db.stores.room_store import RoomStore
 
 
 class _ClientLifecycle:
-    """Deletes the row, as the real service does, and remembers what it was
-    asked for. The real one also stops a live client; none of these are
-    running, and a MagicMock here would let a missing deletion pass."""
+    """Deletes the row in the caller's transaction, as the real service does,
+    and remembers what it was asked for. The real one also stops a live
+    client; none of these are running, and a MagicMock here would let a
+    missing deletion pass.
+
+    `delete_record` deliberately does not commit — the point of the split is
+    that the client rows join the bridge teardown's transaction, so a fake
+    that committed on its own would hide a regression back to the old shape.
+    """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self.removed: list[str] = []
+        self.stopped: list[str] = []
 
-    async def remove(self, client_id: str) -> None:
+    async def stop(self, client_id: str) -> None:
+        self.stopped.append(client_id)
+
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
         self.removed.append(client_id)
-        async with self._session_factory() as session:
-            await ClientStore().delete(session, client_id)
-            await session.commit()
+        await ClientStore().delete(session, client_id)
+
+
+class _FailingClientLifecycle(_ClientLifecycle):
+    """Deletes clients until the nth, which raises.
+
+    Stands in for anything that can go wrong partway through the teardown — a
+    foreign key, a dropped connection — so the transaction boundary can be
+    asserted rather than assumed.
+    """
+
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], *, fail_on_nth: int
+    ) -> None:
+        super().__init__(session_factory)
+        self._fail_on_nth = fail_on_nth
+
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
+        if len(self.removed) + 1 == self._fail_on_nth:
+            raise RuntimeError(f"deleting client {client_id} failed")
+        await super().delete_record(session, client_id)
 
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
+    client_lifecycle: _ClientLifecycle | None = None,
 ) -> CollaborationBridgeLifecycleService:
     """Build the service with real stores; mock the deps remove() never touches."""
     return CollaborationBridgeLifecycleService(
@@ -52,7 +81,7 @@ def _service(
         room_store=RoomStore(),
         agent_store=MagicMock(),
         client_store=MagicMock(),
-        client_lifecycle=_ClientLifecycle(session_factory),
+        client_lifecycle=client_lifecycle or _ClientLifecycle(session_factory),
         room_service=MagicMock(),
         matrix_admin=MagicMock(),
         session_factory=session_factory,
@@ -221,6 +250,52 @@ async def test_identities_that_were_in_rooms_go_too(
         # nobody left claiming to be a member on the platform's behalf.
         assert await RoomStore().get(session, room_id) is not None
         assert await RoomStore().get_client_ids(session, room_id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_client_delete_leaves_the_bridge_intact(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The teardown is one transaction, so a failure part-way undoes all of it.
+
+    This is the property that makes the orphaning survivable rather than
+    permanent. Removal used to commit the bridge and then delete the clients
+    one at a time afterwards, so a raise in that loop left the bridge gone and
+    the remaining clients behind — nothing pointed at them and nothing would
+    retry. Failing now rolls the whole thing back, and the operator can try
+    again with everything still in place.
+    """
+    lifecycle = _FailingClientLifecycle(session_factory, fail_on_nth=2)
+    service = _service(session_factory, lifecycle)
+    async with session_factory() as session:
+        bridge_id, bridge_client_id = await _make_bridge(session)
+        room_id = await _make_bridged_room(session, bridge_id=bridge_id)
+        _first_id, first_puppet = await _make_external_user(
+            session, bridge_id=bridge_id
+        )
+        _second_id, second_puppet = await _make_external_user(
+            session, bridge_id=bridge_id
+        )
+        await RoomStore().add_client(session, bridge_client_id, room_id)
+        await RoomStore().add_client(session, first_puppet, room_id)
+        await session.commit()
+
+    with pytest.raises(RuntimeError):
+        await service.remove(bridge_id)
+
+    async with session_factory() as session:
+        # Nothing committed: the bridge, its rooms, its external users and
+        # every one of its clients are as they were.
+        assert await CollaborationBridgeStore().get(session, bridge_id) is not None
+        room = await RoomStore().get(session, room_id)
+        assert room is not None
+        assert room.bridge_id == bridge_id
+        assert await ExternalUserStore().get_by_bridge(session, bridge_id) != []
+        for client_id in (bridge_client_id, first_puppet, second_puppet):
+            assert await ClientStore().get(session, client_id) is not None
+        assert sorted(await RoomStore().get_client_ids(session, room_id)) == sorted(
+            [bridge_client_id, first_puppet]
+        )
 
 
 @pytest.mark.asyncio

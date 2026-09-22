@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
     Agent,
-    ClientRoom,
     Model,
     Tool,
     require_tenant_id,
@@ -128,6 +127,13 @@ class AgentStore:
         await session.flush()
 
     async def delete(self, session: AsyncSession, agent_id: str) -> None:
+        """Delete an agent and the rows that belong to it alone.
+
+        Not the agent's client, and not that client's room memberships:
+        `ClientStore.delete` owns both, and `delete_agent` calls it in this
+        same transaction. Clearing the memberships here as well would be a
+        second statement against rows the first one already took.
+        """
         agent = await session.get(Agent, agent_id)
         if not agent:
             return
@@ -135,9 +141,6 @@ class AgentStore:
         await session.execute(delete(Model).where(Model.agent_id == agent_id))
         await session.execute(
             delete(room_agents).where(room_agents.c.agent_id == agent_id)
-        )
-        await session.execute(
-            delete(ClientRoom).where(ClientRoom.client_id == agent.client_id)
         )
         await session.delete(agent)
         await session.flush()

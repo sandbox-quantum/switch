@@ -953,12 +953,16 @@ class ProtocolService:
 
         await self._remove_bridge_identities(tenant_id, resolved_name)
 
+        # The agent and the client standing for it go together: the client is
+        # the agent's identity and nothing else refers to it, so committing
+        # the agent's delete and then failing on the client's would leave one
+        # behind that nothing points at and nothing will retry. The client is
+        # already stopped above, which is the half no transaction can undo.
         async with self.session_factory() as session:
             await self.agent_store.delete(session, resolved_id)
+            await self.client_lifecycle.delete_record(session, client_id)
             await session.commit()
         self.api_key_cache.invalidate_agent(resolved_id)
-
-        await self.client_lifecycle.remove(client_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
 

@@ -888,9 +888,18 @@ class CollaborationBridgeLifecycleService:
         so an operator who disconnects an app and reconnects one named the same
         collided with the row left by the last one.
 
-        Order matters: the clients are children of nothing but the bridge and
-        external-user rows point at them, so those go first or the foreign keys
-        refuse.
+        One transaction. The clients are children of nothing but the bridge,
+        and external-user rows point at them, so within it the dependents go
+        before the clients or the foreign keys refuse. Across it, all or
+        nothing: this used to commit the bridge teardown and then delete the
+        clients one at a time afterwards, so anything that raised in that loop
+        — a foreign key, a dropped connection, the process dying between two
+        of them — left the bridge gone and its clients behind, with nothing
+        pointing at them and nothing that would ever retry.
+
+        Stopping the in-process clients is the one part that cannot be rolled
+        back, so it happens first and deliberately: a rollback leaves clients
+        stopped but intact, which the next start repairs.
         """
         # The durable record, not `self._connected`: that is empty until a
         # connect succeeds *in this process*, so a connector that worked for
@@ -901,6 +910,15 @@ class CollaborationBridgeLifecycleService:
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)
+            puppets = await self._external_user_store.get_by_bridge(session, bridge_id)
+
+        removed = [u.client_id for u in puppets if u.client_id]
+        if bridge is not None:
+            removed.append(bridge.client_id)
+        for client_id in removed:
+            await self._client_lifecycle.stop(client_id)
+
+        async with self._session_factory() as session:
             dependent_rooms = await self._room_store.get_by_bridge(session, bridge_id)
             room_count = len(dependent_rooms)
             if dependent_rooms:
@@ -913,17 +931,11 @@ class CollaborationBridgeLifecycleService:
                 )
                 for room in dependent_rooms:
                     await self._room_store.clear_bridge(session, room.id)
-            puppets = await self._external_user_store.get_by_bridge(session, bridge_id)
-            puppet_client_ids = [u.client_id for u in puppets if u.client_id]
             await self._external_user_store.delete_by_bridge(session, bridge_id)
             await self._bridge_store.delete(session, bridge_id)
+            for client_id in removed:
+                await self._client_lifecycle.delete_record(session, client_id)
             await session.commit()
-
-        removed = list(puppet_client_ids)
-        if bridge is not None:
-            removed.append(bridge.client_id)
-        for client_id in removed:
-            await self._client_lifecycle.remove(client_id)
 
         # The Matrix accounts themselves outlive this: the homeserver offers no
         # deprovisioning call Switch can make. Said out loud because it is the
