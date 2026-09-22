@@ -1,10 +1,12 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
-import { inspectWatchers, waitForWatcherStop } from './watcher-inspection';
+import { inspectWatchers, removeWatcherRoots, waitForWatcherStop } from './watcher-inspection';
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -118,6 +120,37 @@ it('identifies the actual running remote bundle', async () => {
     child.kill();
     await exited;
   }
+});
+
+it('removes the state an agent’s controller left, under whichever key saved it', async () => {
+  const { home, root } = await fixture('agent');
+  // A root saved under an earlier key, which is how a renamed agent's journal
+  // survives: found by the id in its config, not by the directory name.
+  const keyed = join(
+    home,
+    '.local/state/switch/sdk-watchers',
+    createHash('sha256').update('agent').digest('hex')
+  );
+  await mkdir(keyed, { recursive: true });
+  await writeFile(join(keyed, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
+  const other = join(home, '.local/state/switch/sdk-watchers/other');
+  await mkdir(other, { recursive: true });
+  await writeFile(join(other, 'config.json'), JSON.stringify({ session: { agentId: 'another' } }));
+
+  await promisify(execFile)(process.execPath, ['-e', removeWatcherRoots, 'agent'], {
+    env: { ...process.env, HOME: home },
+  });
+  expect(existsSync(root)).toBe(false);
+  expect(existsSync(keyed)).toBe(false);
+  expect(existsSync(other)).toBe(true);
+});
+
+it('removing controller state is not an error when there is none', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'watcher-inspect-'));
+  roots.push(home);
+  await promisify(execFile)(process.execPath, ['-e', removeWatcherRoots, 'agent'], {
+    env: { ...process.env, HOME: home },
+  });
 });
 
 it('waits for a living supervisor even after the watcher has exited', async () => {

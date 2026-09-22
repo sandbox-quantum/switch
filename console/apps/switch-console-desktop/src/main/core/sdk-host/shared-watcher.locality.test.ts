@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   exec: vi.fn(),
   stopped: vi.fn(),
   spawning: vi.fn(),
+  removeRoots: vi.fn(),
+  agentById: vi.fn(),
+  ssh: vi.fn(),
 }));
 
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
@@ -16,13 +19,12 @@ vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   listAutoSessionAgentIds: mocks.spawning,
 }));
 
-vi.mock('@main/core/agents/getAgentById', () => ({
-  getAgentById: async () => ({
-    id: 'agent-1',
-    name: 'scout',
-    switchAgentId: 'switch-agent-1',
-    providerId: 'claude',
-  }),
+vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agentById }));
+vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: mocks.ssh }));
+vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
+  SshExecutionContext: class {
+    exec = mocks.exec;
+  },
 }));
 vi.mock('@main/core/agents/agent-location', () => ({ getAgentLocation: mocks.location }));
 vi.mock('@main/core/locations/location-manager', () => ({
@@ -43,14 +45,19 @@ vi.mock('./shared-host-deployment', () => ({
   deploySharedHost: mocks.deploy,
   runSharedHostCommand: mocks.runCommand,
 }));
-vi.mock('./watcher-inspection', () => ({ waitForWatcherStop: 'wait' }));
+vi.mock('./watcher-inspection', () => ({
+  waitForWatcherStop: 'wait',
+  removeWatcherRoots: 'fs.rmSync(root)',
+}));
 vi.mock('./adopt-subagent', () => ({ adoptSubagent: vi.fn() }));
 vi.mock('./local-host', () => ({
   startLocalWatcher: mocks.startLocal,
   stopLocalWatcher: mocks.stopLocal,
+  removeLocalWatcherRoots: mocks.removeRoots,
 }));
 
-const { applyControllerState, configureSharedWatcher } = await import('./shared-watcher');
+const { applyControllerState, configureSharedWatcher, discardControllerState } =
+  await import('./shared-watcher');
 const { controllerConnectionId } = await import('@main/core/switch-rooms/session-connection-id');
 
 beforeEach(() => {
@@ -63,6 +70,12 @@ beforeEach(() => {
   mocks.exec.mockResolvedValue({ stdout: '' });
   mocks.stopped.mockResolvedValue([]);
   mocks.spawning.mockResolvedValue([]);
+  mocks.agentById.mockResolvedValue({
+    id: 'agent-1',
+    name: 'scout',
+    switchAgentId: 'switch-agent-1',
+    providerId: 'claude',
+  });
 });
 
 it('watches a local agent inside Console without deploying a host', async () => {
@@ -154,6 +167,34 @@ it.each([true, false])(
     expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'restore', spawning: autoStart });
   }
 );
+
+it('discards a local agent’s controller state inside Console', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  await discardControllerState('agent-1');
+  expect(mocks.removeRoots).toHaveBeenCalledWith('switch-agent-1');
+  expect(mocks.exec).not.toHaveBeenCalled();
+});
+
+it('discards a deployed agent’s controller state on the host that holds it', async () => {
+  mocks.location.mockResolvedValue({ id: 'remote', dir: '/work', sshHost: 'builder' });
+  await discardControllerState('agent-1');
+  expect(mocks.removeRoots).not.toHaveBeenCalled();
+  // Removed by the Switch identity the roots are keyed and journalled under,
+  // not by the local agent row that is about to disappear.
+  expect(mocks.exec).toHaveBeenCalledWith('node', [
+    '-e',
+    expect.stringContaining('rmSync'),
+    'switch-agent-1',
+  ]);
+});
+
+it('has no controller state to discard for an agent never linked to Switch', async () => {
+  mocks.agentById.mockResolvedValue({ id: 'agent-1', name: 'scout', switchAgentId: null });
+  await discardControllerState('agent-1');
+  expect(mocks.removeRoots).not.toHaveBeenCalled();
+  expect(mocks.exec).not.toHaveBeenCalled();
+  expect(mocks.location).not.toHaveBeenCalled();
+});
 
 it('leaves a stopped controller off the air however auto-start is set', async () => {
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });

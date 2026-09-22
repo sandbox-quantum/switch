@@ -1,9 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
+import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import {
   listAutoSessionAgentIds,
   listStoppedControllerAgentIds,
@@ -11,10 +13,15 @@ import {
 import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { adoptSubagent } from './adopt-subagent';
 import { stopLegacySidecar } from './legacy-sidecar';
-import { startLocalWatcher, stopLocalWatcher, type WatcherIntent } from './local-host';
+import {
+  removeLocalWatcherRoots,
+  startLocalWatcher,
+  stopLocalWatcher,
+  type WatcherIntent,
+} from './local-host';
 import { buildSharedHostConfig } from './shared-agent-runtime';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
-import { waitForWatcherStop } from './watcher-inspection';
+import { removeWatcherRoots, waitForWatcherStop } from './watcher-inspection';
 
 const READ_SWITCH_AGENT_ID =
   "console.log(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).env.SWITCH_AGENT_ID)";
@@ -62,6 +69,27 @@ export async function applyControllerState(agentId: string, intent: WatcherInten
     { connected, spawning: connected && spawning.includes(agentId) },
     intent
   );
+}
+
+/**
+ * Discards what an agent's controller left on its host — the assignment
+ * journal, the flags, the log — once the agent itself is going. Stop the
+ * controller first: this removes the files out from under anything still
+ * running on them. A root left behind outlives the agent, and an agent
+ * registered again under the same Switch identity would adopt it and resume
+ * from a cursor belonging to an install that no longer exists.
+ */
+export async function discardControllerState(agentId: string): Promise<void> {
+  const agent = await getAgentById(agentId);
+  if (!agent?.switchAgentId) return;
+  const transport = locationTransport(await getAgentLocation(agent));
+  if (transport.kind !== 'ssh') {
+    await removeLocalWatcherRoots(agent.switchAgentId);
+    return;
+  }
+  const proxy = await ensureSshConnected(transport.connectionId, transport.host);
+  const ctx = new SshExecutionContext(proxy, { root: transport.dir });
+  await ctx.exec('node', ['-e', removeWatcherRoots, agent.switchAgentId]);
 }
 
 export async function configureSharedWatcher(

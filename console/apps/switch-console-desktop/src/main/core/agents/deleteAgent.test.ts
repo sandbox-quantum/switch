@@ -34,8 +34,13 @@ const h = vi.hoisted(() => {
     removeSwitchCredentials: vi.fn(async () => {}),
     sessionHookEmit: vi.fn(),
     trackEvent: vi.fn(),
+    discardControllerState: vi.fn(async () => {}),
   };
 });
+
+vi.mock('@main/core/sdk-host/shared-watcher', () => ({
+  discardControllerState: h.discardControllerState,
+}));
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({ behavior: { repoAgents: h.state.repoAgents } }),
@@ -182,6 +187,33 @@ describe('deleteAgent', () => {
     });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-sibling'))).toBe(true);
+  });
+
+  it('discards the controller state the agent would otherwise leave behind', async () => {
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.discardControllerState).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('still removes the agent when its controller state cannot be discarded', async () => {
+    // The host may be unreachable, and the agent is going either way; stopping
+    // here would leave the row deleted on the next attempt and the rest undone.
+    h.discardControllerState.mockRejectedValueOnce(new Error('Host unreachable'));
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.trackEvent).toHaveBeenCalledWith(
+      'agent_removed',
+      expect.objectContaining({ outcome: 'success' })
+    );
   });
 
   describe('what it reports', () => {

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { appendFile, mkdir, open, readFile, rename } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -67,6 +67,25 @@ export function localWatcherRoot(identity: string): string {
   const matches = readdirSync(base).filter((name) => savedAgentId(join(base, name)) === identity);
   if (matches.length > 1) throw new Error('Competing saved watchers require explicit cleanup.');
   return matches[0] ? join(base, matches[0]) : keyed;
+}
+
+/**
+ * Every watcher state root this identity has, including ones saved under an
+ * earlier key. Competing roots are an error to run on but not to remove, so
+ * unlike `localWatcherRoot` this reports all of them.
+ */
+function localWatcherRoots(identity: string): string[] {
+  const base = localStateBase('sdk-watchers');
+  const roots = new Set([join(base, createHash('sha256').update(identity).digest('hex'))]);
+  if (existsSync(base))
+    for (const name of readdirSync(base))
+      if (savedAgentId(join(base, name)) === identity) roots.add(join(base, name));
+  return [...roots];
+}
+
+/** Discards a local agent's watcher state once the agent itself is going. */
+export async function removeLocalWatcherRoots(identity: string): Promise<void> {
+  for (const root of localWatcherRoots(identity)) await rm(root, { recursive: true, force: true });
 }
 
 async function writeAtomic(destination: string, body: unknown): Promise<void> {

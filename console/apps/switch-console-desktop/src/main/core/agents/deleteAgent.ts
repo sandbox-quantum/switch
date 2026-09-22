@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { discardControllerState } from '@main/core/sdk-host/shared-watcher';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import {
   setAutoSessionAgent,
@@ -248,6 +249,16 @@ async function removeAgent(
   } else {
     await autoSessionWatcher.stopForAgent(agentId);
   }
+  // Left behind, the journal outlives the agent, and one registered again under
+  // the same Switch identity adopts it and resumes from its cursor. The removal
+  // is reported rather than fatal: the agent is going either way, and failing
+  // here would leave it half-removed.
+  await discardControllerState(agentId).catch((error) => {
+    log.error('deleteAgent: failed to remove the controller state root', {
+      agentId,
+      error: String(error),
+    });
+  });
 
   await setAutoSessionAgent(agentId, false);
   await setControllerStopped(agentId, false);
