@@ -52,7 +52,7 @@ version of their own to them without also giving them a release of their own.
   — or its own trailing `read_context` notice — and be read as something Switch
   said. The nonce cannot be predicted, so the frame cannot be closed early or
   reopened; sender display names are collapsed to a single line for the same
-  reason.
+  reason (#527).
 
 ### [0.26.0] - 2026-09-09
 
