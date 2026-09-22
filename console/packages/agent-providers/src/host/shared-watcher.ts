@@ -34,7 +34,18 @@ const restartSchema = z.strictObject({ restarted: z.literal(true), at: z.string(
 
 /** Marks a sequence whose routing decision has reached disk. */
 const handledSchema = z.strictObject({ handled: z.number().int().positive() });
-const recordSchema = z.union([assignmentSchema, restartSchema, handledSchema]);
+
+/**
+ * Marks a sequence held because the room's owner is undecided. Nothing has been
+ * routed and nothing started; the event waits for the session that holds the
+ * room to say so.
+ */
+const parkedSchema = z.strictObject({
+  parked: z.number().int().positive(),
+  roomId: z.string().min(1),
+  messageId: z.string().min(1),
+});
+const recordSchema = z.union([assignmentSchema, restartSchema, handledSchema, parkedSchema]);
 
 type Assignment = z.infer<typeof assignmentSchema>;
 type WatchRecord = z.infer<typeof recordSchema>;
@@ -47,9 +58,23 @@ function isHandled(record: WatchRecord): record is z.infer<typeof handledSchema>
   return 'handled' in record;
 }
 
-function isAssignment(record: WatchRecord): record is Assignment {
-  return !restarted(record) && !isHandled(record);
+function isParked(record: WatchRecord): record is z.infer<typeof parkedSchema> {
+  return 'parked' in record;
 }
+
+function isAssignment(record: WatchRecord): record is Assignment {
+  return !restarted(record) && !isHandled(record) && !isParked(record);
+}
+
+/**
+ * How often a room whose owner is undecided is asked about again. The same
+ * cadence a session re-asserts its binding on, which is what the answer is
+ * waiting for.
+ */
+const OWNERSHIP_RETRY_MS = 5000;
+
+/** How often a room still waiting for an owner says so again. */
+const HELD_DISCLOSURE_MS = 30000;
 
 function sessionIdFor(agentId: string, roomId: string, messageId: string): string {
   const bytes = createHash('sha256')
@@ -78,24 +103,41 @@ async function stopped(sessionId: string): Promise<boolean> {
   }
 }
 
+/** What the sessions on disk say about who holds a room. */
+type Ownership = {
+  /** The running session the server has confirmed serving the room, if any. */
+  owner: SharedHostConfig | null;
+  /** The room was given to a session of this agent and is no longer its. */
+  taken: boolean;
+  /**
+   * Running sessions of this agent that could be holding the room without
+   * having said so. The one the room was taken from is not among them: it is
+   * the evidence the room moved, not a candidate to have it.
+   */
+  candidates: number;
+};
+
 /**
- * A session of this agent the server has serving the room, found among the
- * sessions on disk rather than among the ones this watcher assigned.
+ * Who holds the room, read from the sessions on disk rather than from the ones
+ * this watcher assigned.
  *
  * A session somebody started from Console is not in the assignment journal and
  * has no connection of its own to hear on, so without looking for it the
  * watcher would both leave it unreachable and start a second session for a room
  * it is already answering. Only a session the server has confirmed serving the
- * room counts: the rooms are the ones it was told when it bound, not an
- * intention anybody wrote down locally.
+ * room counts as its owner: the rooms are the ones it was told when it bound,
+ * not an intention anybody wrote down locally. A session that was told the room
+ * and is no longer is evidence the other way — the room was taken by a sibling
+ * that bound it, whether or not that sibling has written anything yet.
  */
-async function started(agentId: string, roomId: string): Promise<SharedHostConfig | null> {
+async function roomOwnership(agentId: string, roomId: string): Promise<Ownership> {
+  const ownership: Ownership = { owner: null, taken: false, candidates: 0 };
   const base = sharedSessionsBase();
   let names: string[];
   try {
     names = await readdir(base);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ownership;
     throw error;
   }
   for (const name of names) {
@@ -110,11 +152,14 @@ async function started(agentId: string, roomId: string): Promise<SharedHostConfi
       throw error;
     }
     if (config.session.agentId !== agentId) continue;
-    if (!(await SharedRoomInbox.savedRooms(root))?.rooms.includes(roomId)) continue;
-    if (await stopped(config.session.sessionId)) continue;
-    return config;
+    const saved = await SharedRoomInbox.savedRooms(root);
+    const running = !(await stopped(config.session.sessionId));
+    if (saved?.rooms.includes(roomId)) {
+      if (running) ownership.owner = config;
+    } else if (saved?.everHeld.includes(roomId)) ownership.taken = true;
+    else if (running) ownership.candidates += 1;
   }
-  return null;
+  return ownership;
 }
 
 /**
@@ -219,18 +264,27 @@ export class SharedWatchAssignments {
   }
 
   /**
-   * Where the stream reopens: the last sequence whose routing reached disk.
+   * Where the stream reopens: the last sequence whose routing reached disk, and
+   * never past an event still waiting for its room's owner.
    *
    * An assignment on its own is not a position. The watcher can die between
    * recording which session serves a room and handing that session the event,
    * and reopening past the event would leave nothing holding it: this is the
    * agent's single connection, so there is no second copy of what it was sent.
+   * A held event is the same case — the server's buffer is the only copy of it,
+   * so the position stays behind it and the events after it are served again
+   * and recognised as ones already dealt with.
    */
   get cursor(): number {
     let complete = 0;
     let assigned = 0;
+    const parked = new Set<number>();
+    const handled = new Set<number>();
     for (const record of this.current) {
-      if (isHandled(record)) complete = Math.max(complete, record.handled);
+      if (isHandled(record)) {
+        complete = Math.max(complete, record.handled);
+        handled.add(record.handled);
+      } else if (isParked(record)) parked.add(record.parked);
       else if (isAssignment(record)) {
         // An assignment is only made once the one before it has been routed, so
         // a journal written before routing was recorded still resumes at its
@@ -239,12 +293,22 @@ export class SharedWatchAssignments {
         assigned = record.sequence;
       }
     }
-    return complete;
+    const held = [...parked].filter((sequence) => !handled.has(sequence));
+    return held.length ? Math.min(complete, Math.min(...held) - 1) : complete;
   }
 
   /** Records that the event has been routed, or decided not to be. */
   async handled(sequence: number): Promise<void> {
     await this.journal.append({ handled: sequence });
+  }
+
+  /** Records that the event is waiting for its room's owner to be decided. */
+  async park(event: { sequence: number; roomId: string; messageId: string }): Promise<void> {
+    await this.journal.append({
+      parked: event.sequence,
+      roomId: event.roomId,
+      messageId: event.messageId,
+    });
   }
 
   /**
@@ -257,22 +321,26 @@ export class SharedWatchAssignments {
   }
 
   /**
-   * The session already serving this room, or null if there is none to serve
-   * it. Answered from disk, because the session it names may be stopped and
-   * unable to answer for itself.
+   * The session already serving this room; null if the room is nobody's, and
+   * `undecided` if it belongs to a session that has not been identified yet.
+   * Answered from disk, because the session it names may be stopped and unable
+   * to answer for itself.
    *
    * What the server says outranks what this watcher remembers: a session is
    * serving the room if the rooms it was told when it bound say so, whoever
    * started it. Failing that, the last session this watcher started for the
    * room still counts while the server has never given it a room — the room
    * becomes the session's when the agent in it connects to the room, and it
-   * cannot have done that before the message that started it arrives. A session
-   * that has been given a room and holds none was evicted from it by a sibling
-   * that bound it, and a session the server has since moved to a different room
-   * is serving that one; routing to either would hold the event where nothing
-   * admits it, whether or not the room's new session is on disk yet.
+   * cannot have done that before the message that started it arrives.
+   *
+   * A room taken from a session was taken by a sibling that bound it, and that
+   * sibling may not have written down what it holds yet. Nothing local can name
+   * it in that window, and taking its silence for an empty room is what starts a
+   * second session for a room that already has one. So the room is undecided
+   * rather than free for as long as any session of the agent is running to
+   * claim it.
    */
-  async serving(agentId: string, roomId: string): Promise<SharedHostConfig | null> {
+  async serving(agentId: string, roomId: string): Promise<SharedHostConfig | null | 'undecided'> {
     const previous = [...this.every].reverse().find((record) => record.roomId === roomId);
     const mine =
       previous && !(await stopped(previous.config.session.sessionId)) ? previous.config : null;
@@ -280,14 +348,17 @@ export class SharedWatchAssignments {
       ? await SharedRoomInbox.savedRooms(sharedSessionRoot(mine.session.sessionId))
       : null;
     if (mine && (saved === null || saved.rooms.includes(roomId))) return mine;
-    const unregistered = saved?.rooms.length === 0 && !saved.revoked;
-    return (await started(agentId, roomId)) ?? (unregistered ? mine : null);
+    const { owner, taken, candidates } = await roomOwnership(agentId, roomId);
+    if (owner) return owner;
+    if (mine && saved && saved.everHeld.length === 0) return mine;
+    const lost = saved !== null && saved.everHeld.includes(roomId);
+    return (taken || lost) && candidates > 0 ? 'undecided' : null;
   }
 
   async assign(
     template: SharedHostConfig,
     event: { sequence: number; roomId: string; messageId: string }
-  ): Promise<SharedHostConfig> {
+  ): Promise<SharedHostConfig | 'undecided'> {
     const duplicate = this.current
       .filter(isAssignment)
       .find((record) => record.sequence === event.sequence);
@@ -303,6 +374,7 @@ export class SharedWatchAssignments {
     // this agent's one inbound connection: what reaches a session reaches it
     // through here, whether the session is new or was saved naming its own.
     const serving = await this.serving(template.session.agentId, event.roomId);
+    if (serving === 'undecided') return serving;
     let config = serving && reachableBy(serving, connectionId);
     if (!config) {
       config = structuredClone(template);
@@ -360,6 +432,7 @@ export async function runSharedWatcher(
   if (signal.aborted) abort();
   let fault: Error | null = null;
   let pending: Promise<void> = Promise.resolve();
+  let retry: NodeJS.Timeout | null = null;
   const fail = (error: Error) => {
     fault = error;
     stop.abort(error);
@@ -423,6 +496,75 @@ export async function runSharedWatcher(
     const launchAssigned = async () => {
       for (const config of assignments.sessions()) await launch(config);
     };
+    /**
+     * Rooms whose owner is undecided, and the events waiting on it in the order
+     * they arrived.
+     *
+     * Only the room in question waits. The events of every other room are dealt
+     * with as they arrive, and the ones behind a held event keep their place
+     * behind it, so a room is never answered out of order.
+     */
+    const held = new Map<
+      string,
+      { events: { event: Handoff; spawning: boolean }[]; since: number }
+    >();
+    /**
+     * Deals with the event, or reports that its room's owner is still
+     * undecided and it has to wait.
+     *
+     * The setting is the one the event arrived under rather than the one in
+     * force when it is finally admitted: a session started after somebody
+     * turned spawning off cannot be taken back, and a room that was promised a
+     * session when it was addressed should still get one.
+     */
+    const admit = async (event: Handoff, spawning: boolean): Promise<boolean> => {
+      const config = spawning
+        ? await assignments.assign(
+            sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
+            event
+          )
+        : await assignments.serving(template.session.agentId, event.roomId);
+      if (config === 'undecided') return false;
+      if (config) await route(config, event);
+      // Recorded before the session is started, because starting it is
+      // recoverable — every assigned session is launched again when the
+      // watcher restarts — where the routing decision is not.
+      await assignments.handled(event.sequence);
+      if (config && spawning) await launch(config);
+      return true;
+    };
+    const hold = async (event: Handoff, spawning: boolean) => {
+      const waiting = held.get(event.roomId);
+      if (waiting) waiting.events.push({ event, spawning });
+      else {
+        held.set(event.roomId, { events: [{ event, spawning }], since: Date.now() });
+        console.warn(
+          `Room ${event.roomId} was taken from a session of this agent and no running session has claimed it yet; holding its messages until one does.`
+        );
+      }
+      await assignments.park(event);
+    };
+    /** Re-asks who owns each held room, and answers the ones that now have one. */
+    const resolveHeld = async () => {
+      for (const [roomId, waiting] of [...held]) {
+        while (
+          waiting.events.length &&
+          (await admit(waiting.events[0]!.event, waiting.events[0]!.spawning))
+        )
+          waiting.events.shift();
+        if (!waiting.events.length) {
+          held.delete(roomId);
+          console.warn(
+            `Room ${roomId} is settled again; the messages held for it were dealt with.`
+          );
+        } else if (Date.now() - waiting.since >= HELD_DISCLOSURE_MS) {
+          waiting.since = Date.now();
+          console.warn(
+            `Room ${roomId} still has no session claiming it; ${waiting.events.length} message(s) are held and will be delivered when one does.`
+          );
+        }
+      }
+    };
     if (spawn) await launchAssigned();
     const stream = new SwitchEventStream({
       creds: {
@@ -458,20 +600,12 @@ export async function runSharedWatcher(
           // room is told follows the agent's profile rather than this
           // declaration, so whoever sets the profile that promises a session is
           // the one keeping that honest.
-          const config = spawning
-            ? await assignments.assign(
-                sharedConfigSchema.parse(
-                  JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
-                ),
-                assignment
-              )
-            : await assignments.serving(template.session.agentId, assignment.roomId);
-          if (config) await route(config, assignment);
-          // Recorded before the session is started, because starting it is
-          // recoverable — every assigned session is launched again when the
-          // watcher restarts — where the routing decision is not.
-          await assignments.handled(assignment.sequence);
-          if (config && spawning) await launch(config);
+          // Asked again here as well as on the timer: the answer a held room is
+          // waiting for is written by a session that is doing other work, and
+          // an event arriving is the cheapest evidence that time has passed.
+          if (held.size) await resolveHeld();
+          if (held.has(assignment.roomId)) return hold(assignment, spawning);
+          if (!(await admit(assignment, spawning))) await hold(assignment, spawning);
         });
         return pending.catch((error: Error) => {
           fail(error);
@@ -524,6 +658,15 @@ export async function runSharedWatcher(
       },
     });
     stream.start();
+    // Queued behind the events rather than run beside them: the decision it
+    // takes is the same one the handler takes, and two of them at once could
+    // start a session for a room the other has just found an owner for.
+    retry = setInterval(() => {
+      if (!held.size) return;
+      pending = pending.then(resolveHeld);
+      void pending.catch((error: Error) => fail(error));
+    }, OWNERSHIP_RETRY_MS);
+    retry.unref();
     while (!stop.signal.aborted) {
       const changed = await awaitWatchChange(root, flags, stop.signal);
       if (!changed || !changed.enabled) break;
@@ -539,6 +682,7 @@ export async function runSharedWatcher(
     if (!stop.signal.aborted) throw error;
   } finally {
     stop.abort();
+    if (retry) clearInterval(retry);
     signal.removeEventListener('abort', abort);
     await pending.catch(() => {});
     await releaseOwner(root, ownerPath, owner);

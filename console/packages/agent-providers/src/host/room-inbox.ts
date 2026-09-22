@@ -85,20 +85,10 @@ const recordSchema = z.discriminatedUnion('type', [
     reset: z.boolean(),
     gap: gapSchema,
   }),
-  /**
-   * What the server answered this session's binding with, and whether that was
-   * the first answer of the run that wrote it.
-   *
-   * The first answer of a run is what the session was restored holding, which
-   * is nothing until the agent inside it connects to a room. A later one is a
-   * change: no rooms there means they were taken away. A journal written before
-   * this was recorded says neither, and is read as a change, so an empty answer
-   * from one is not mistaken for a session waiting to register.
-   */
+  /** What the server answered this session's binding with. */
   z.strictObject({
     type: z.literal('rooms'),
     rooms: z.array(z.string()),
-    first: z.boolean().optional(),
   }),
 ]);
 type Received = z.infer<typeof receivedSchema>;
@@ -109,7 +99,6 @@ export class SharedRoomInbox {
   private readonly received = new Map<string, Received>();
   private readonly outstanding = new Map<string, Received>();
   private rooms: string[] | null = null;
-  private answered = false;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
     // Only a journal an older app wrote carries deliveries and the position
     // they reached: a session is served by its agent's controller, whose
@@ -140,18 +129,19 @@ export class SharedRoomInbox {
   }
 
   /**
-   * What the server last told this session it serves, and whether that was a
-   * room being taken away rather than one it has yet to be given.
+   * What the server last told this session it serves, and every room it has
+   * been told it serves at any point in its life.
    *
-   * The two look alike and mean opposite things. A session restored, or newly
-   * started, holds no room until the agent inside it connects to one, and the
-   * room it was started for is still its own. A session that held a room and
-   * was answered with none was evicted from it by a sibling that bound the same
-   * room, and the room is that sibling's now. Only the first may still be given
-   * the room's messages. Null when the session has no binding record at all,
-   * which is different again from one that records none.
+   * The two together tell a room the session has yet to be given from a room
+   * taken away from it, which look alike in the latest answer alone and mean
+   * opposite things. A session newly started holds no room until the agent
+   * inside it connects to one, and the room it was started for is still its
+   * own. A room the session was once given and is no longer was taken by a
+   * sibling that bound it, and belongs to that sibling now. Null when the
+   * session has no binding record at all, which is different again from one
+   * that records none.
    */
-  static async savedRooms(root: string): Promise<{ rooms: string[]; revoked: boolean } | null> {
+  static async savedRooms(root: string): Promise<{ rooms: string[]; everHeld: string[] } | null> {
     let text: string;
     try {
       text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
@@ -161,12 +151,15 @@ export class SharedRoomInbox {
     }
     if (text && !text.endsWith('\n'))
       throw new Error('Room inbox has an incomplete record; recovery review is required.');
-    let last: { rooms: string[]; first: boolean } | null = null;
+    let rooms: string[] | null = null;
+    const everHeld = new Set<string>();
     for (const line of text.split('\n').slice(0, -1)) {
       const record = recordSchema.parse(JSON.parse(line));
-      if (record.type === 'rooms') last = { rooms: record.rooms, first: record.first === true };
+      if (record.type !== 'rooms') continue;
+      rooms = record.rooms;
+      for (const room of record.rooms) everHeld.add(room);
     }
-    return last && { rooms: last.rooms, revoked: last.rooms.length === 0 && !last.first };
+    return rooms && { rooms, everHeld: [...everHeld] };
   }
 
   static async open(root: string): Promise<SharedRoomInbox> {
@@ -180,17 +173,13 @@ export class SharedRoomInbox {
    *
    * Written down because the controller reads it to decide whether an already
    * running session covers a room, and it must be able to do that while the
-   * session is stopped and nobody can be asked. The first answer of a run is
-   * marked as one, because it is the only thing that tells a session waiting to
-   * be given a room from a session that has had one taken away — and a run that
-   * is answered the same thing it was already holding has still been answered,
-   * so the mark is spent whether or not anything is written.
+   * session is stopped and nobody can be asked. Every answer is kept, not just
+   * the latest: a room that appears and then stops appearing was taken away,
+   * and nothing in the latest answer alone says so.
    */
   async serves(rooms: string[]): Promise<void> {
-    const first = !this.answered;
-    this.answered = true;
     if (this.rooms !== null && JSON.stringify(this.rooms) === JSON.stringify(rooms)) return;
-    await this.journal.append({ type: 'rooms', rooms, first });
+    await this.journal.append({ type: 'rooms', rooms });
     this.rooms = [...rooms];
   }
 

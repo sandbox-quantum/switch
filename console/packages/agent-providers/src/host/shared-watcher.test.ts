@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -91,14 +91,14 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     });
     const event = { sequence: 7, roomId: 'room', messageId: 'message' };
     const opened = await SharedWatchAssignments.open(root);
-    const first = await opened.assign(template, event);
+    const first = await decided(opened, template, event);
     await opened.handled(event.sequence);
     const restarted = await SharedWatchAssignments.open(root);
     expect(restarted.cursor).toBe(7);
-    expect(await restarted.assign(template, event)).toEqual(first);
-    expect(await restarted.assign(template, { ...event, sequence: 8, messageId: 'next' })).toEqual(
-      first
-    );
+    expect(await decided(restarted, template, event)).toEqual(first);
+    expect(
+      await decided(restarted, template, { ...event, sequence: 8, messageId: 'next' })
+    ).toEqual(first);
     expect(restarted.sessions()).toHaveLength(1);
     // Every session an agent has is reached over the one connection the
     // controller holds, so an assignment inherits it rather than minting one.
@@ -107,10 +107,14 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
       TEST_SETTING: 'preserved',
       SWITCHDASH_SESSION_ID: first.session.sessionId,
     });
-    await expect(restarted.assign(template, { ...event, messageId: 'forged' })).rejects.toThrow(
+    await expect(decided(restarted, template, { ...event, messageId: 'forged' })).rejects.toThrow(
       'identity'
     );
-    const another = await restarted.assign(template, { ...event, sequence: 9, roomId: 'another' });
+    const another = await decided(restarted, template, {
+      ...event,
+      sequence: 9,
+      roomId: 'another',
+    });
     expect(another.session.sessionId).not.toBe(first.session.sessionId);
     const firstRoot = join(root, first.session.sessionId);
     await mkdir(firstRoot, { recursive: true });
@@ -118,18 +122,18 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
       join(firstRoot, 'room-inbox.jsonl'),
       JSON.stringify({ type: 'rooms', rooms: ['another'] }) + '\n'
     );
-    const returned = await restarted.assign(template, {
+    const returned = await decided(restarted, template, {
       ...event,
       sequence: 10,
       messageId: 'returned',
     });
     expect(returned.session.sessionId).not.toBe(first.session.sessionId);
-    expect(await restarted.assign(template, event)).toEqual(first);
+    expect(await decided(restarted, template, event)).toEqual(first);
     const returnedRoot = join(root, returned.session.sessionId);
     await mkdir(returnedRoot, { recursive: true });
     await writeFile(join(returnedRoot, 'room-inbox.jsonl'), '{');
     await expect(
-      restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
+      decided(restarted, template, { ...event, sequence: 11, messageId: 'after-crash' })
     ).rejects.toThrow('incomplete record');
     // Nine, not ten: the tenth was assigned and never routed, so it is the one
     // event this journal still owes.
@@ -147,24 +151,24 @@ it('keeps a room with the session it started for it until the server moves that 
   paths.root = root;
   const config = template(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const first = await assignments.assign(config, {
+  const first = await decided(assignments, config, {
     sequence: 1,
     roomId: 'room',
     messageId: 'first',
   });
   const inbox = join(root, first.session.sessionId, 'room-inbox.jsonl');
-  await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: [], first: true }) + '\n');
+  await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: [] }) + '\n');
   expect(
-    (await assignments.assign(config, { sequence: 2, roomId: 'room', messageId: 'second' })).session
-      .sessionId
+    (await decided(assignments, config, { sequence: 2, roomId: 'room', messageId: 'second' }))
+      .session.sessionId
   ).toBe(first.session.sessionId);
 
   // Once the server has it serving somewhere else, it is not this room's: the
   // event would sit in an inbox that never admits it.
   await writeFile(inbox, JSON.stringify({ type: 'rooms', rooms: ['elsewhere'] }) + '\n');
   expect(
-    (await assignments.assign(config, { sequence: 3, roomId: 'room', messageId: 'third' })).session
-      .sessionId
+    (await decided(assignments, config, { sequence: 3, roomId: 'room', messageId: 'third' }))
+      .session.sessionId
   ).not.toBe(first.session.sessionId);
 });
 
@@ -179,60 +183,65 @@ it('stops serving a room with the session the server has taken it from', async (
   paths.root = root;
   const config = template(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const first = await assignments.assign(config, {
+  const first = await decided(assignments, config, {
     sequence: 1,
     roomId: 'room',
     messageId: 'first',
   });
-  const inbox = join(root, first.session.sessionId, 'room-inbox.jsonl');
-  await writeFile(
-    inbox,
-    JSON.stringify({ type: 'rooms', rooms: ['room'], first: true }) +
-      '\n' +
-      JSON.stringify({ type: 'rooms', rooms: [], first: false }) +
-      '\n'
-  );
-  expect(await assignments.serving(config.session.agentId, 'room')).toBeNull();
+  const sessionRoot = join(root, first.session.sessionId);
+  await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(first));
+  const inbox = await SharedRoomInbox.open(sessionRoot);
+  await inbox.serves(['room']);
+  await inbox.serves([]);
+  // The sibling that took the room, running and not yet answered about it.
+  const sibling = structuredClone(config);
+  sibling.session = { ...sibling.session, sessionId: randomUUID() };
+  const siblingRoot = join(root, sibling.session.sessionId);
+  await mkdir(siblingRoot, { recursive: true });
+  await writeFile(join(siblingRoot, 'config.json'), JSON.stringify(sibling));
+
+  // Undecided rather than free: reading the evicted session's empty answer as
+  // an empty room is what starts a second session for one that already has one.
+  expect(await assignments.serving(config.session.agentId, 'room')).toBe('undecided');
 
   // Read from the journal rather than from memory, so a watcher that restarts
-  // between the eviction and the next message answers the same way.
+  // between the eviction and the next message answers the same way. Restarting
+  // the evicted session does not launder it either — the room it was once given
+  // and no longer holds is what says the room was taken.
+  await (await SharedRoomInbox.open(sessionRoot)).serves([]);
   expect(
     await (await SharedWatchAssignments.open(root)).serving(config.session.agentId, 'room')
-  ).toBeNull();
+  ).toBe('undecided');
+
+  // Once the sibling answers, the room is its own and the event goes there.
+  await (await SharedRoomInbox.open(siblingRoot)).serves(['room']);
+  expect((await assignments.serving(config.session.agentId, 'room')) as typeof first).toMatchObject(
+    {
+      session: { sessionId: sibling.session.sessionId },
+    }
+  );
 });
 
-it('keeps a room with a session restored holding none, and not with an evicted one', async () => {
-  // Restoring a session clears its rooms server-side, so the first answer of a
-  // run is empty however long the session served the room before. That is a
-  // session waiting to register again, not one that has been evicted — and an
-  // evicted session must not pass for it by restarting.
-  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restored-'));
+it('frees a room taken from a session once nothing is left running to hold it', async () => {
+  // Undecided is a room whose owner has not spoken yet, not a room to be held
+  // for ever. With no session of the agent running, nothing can be holding it
+  // silently and the next message for it may start one.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-abandoned-'));
   roots.push(root);
   paths.root = root;
   const config = template(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const held = await assignments.assign(config, {
+  const first = await decided(assignments, config, {
     sequence: 1,
     roomId: 'room',
     messageId: 'first',
   });
-  // One open of the inbox is one run of the session.
-  const sessionRoot = join(root, held.session.sessionId);
-  await (await SharedRoomInbox.open(sessionRoot)).serves(['room']);
-  await (await SharedRoomInbox.open(sessionRoot)).serves([]);
-  expect((await assignments.serving(config.session.agentId, 'room'))?.session.sessionId).toBe(
-    held.session.sessionId
-  );
-
-  // The evicted session restarts and is answered the same nothing. The run is
-  // new; the answer is not, and the room stays with whoever took it.
-  const evicted = await mkdtemp(join(tmpdir(), 'shared-watch-evicted-restart-'));
-  roots.push(evicted);
-  const inbox = await SharedRoomInbox.open(evicted);
+  const sessionRoot = join(root, first.session.sessionId);
+  await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(first));
+  const inbox = await SharedRoomInbox.open(sessionRoot);
   await inbox.serves(['room']);
   await inbox.serves([]);
-  await (await SharedRoomInbox.open(evicted)).serves([]);
-  expect(await SharedRoomInbox.savedRooms(evicted)).toEqual({ rooms: [], revoked: true });
+  expect(await assignments.serving(config.session.agentId, 'room')).toBeNull();
 });
 
 it('reaches an upgraded session over the controller, not the connection it used to open', async () => {
@@ -261,7 +270,7 @@ it('reaches an upgraded session over the controller, not the connection it used 
   );
 
   const assignments = await SharedWatchAssignments.open(root);
-  const next = await assignments.assign(config, {
+  const next = await decided(assignments, config, {
     sequence: 2,
     roomId: 'room',
     messageId: 'second',
@@ -276,6 +285,18 @@ it('reaches an upgraded session over the controller, not the connection it used 
       .map((entry) => entry.roomConnection?.connectionId)
   ).toEqual([config.roomConnection?.connectionId]);
 });
+
+/** An assignment for a room whose owner the watcher could settle. */
+async function decided(
+  assignments: SharedWatchAssignments,
+  config: ReturnType<typeof template>,
+  event: { sequence: number; roomId: string; messageId: string }
+) {
+  const assigned = await assignments.assign(config, event);
+  if (assigned === 'undecided')
+    throw new Error(`This assignment was expected to settle room ${event.roomId}.`);
+  return assigned;
+}
 
 function template(root: string) {
   return sharedConfigSchema.parse({
@@ -359,14 +380,14 @@ it('asks again for an event it assigned but died before routing', async () => {
   paths.root = root;
   const config = template(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const routed = await assignments.assign(config, {
+  const routed = await decided(assignments, config, {
     sequence: 4,
     roomId: 'room',
     messageId: 'four',
   });
   await assignments.handled(4);
   // Assigned, and then the watcher dies before the session is handed the event.
-  const unrouted = await assignments.assign(config, {
+  const unrouted = await decided(assignments, config, {
     sequence: 6,
     roomId: 'other',
     messageId: 'six',
@@ -377,7 +398,7 @@ it('asks again for an event it assigned but died before routing', async () => {
   // Redelivery finds the same session, so the event is routed where it was
   // always going rather than to a second one.
   expect(
-    await restarted.assign(config, { sequence: 6, roomId: 'other', messageId: 'six' })
+    await decided(restarted, config, { sequence: 6, roomId: 'other', messageId: 'six' })
   ).toEqual(unrouted);
   await restarted.handled(6);
   expect(restarted.cursor).toBe(6);
@@ -401,7 +422,7 @@ it('resumes a journal written before routing was recorded at its last complete e
     [6, 'other'],
     [7, 'third'],
   ] as const)
-    await older.assign(config, { sequence, roomId, messageId: `m${sequence}` });
+    await decided(older, config, { sequence, roomId, messageId: `m${sequence}` });
 
   // Six, because the watcher only assigns the next event once the one before it
   // has been routed — so only the last record is still owed.
@@ -414,7 +435,7 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
   paths.root = root;
   const config = template(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const before = await assignments.assign(config, {
+  const before = await decided(assignments, config, {
     sequence: 13,
     roomId: 'room',
     messageId: 'before',
@@ -431,14 +452,18 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
   expect(reloaded.cursor).toBe(0);
 
   // Low sequence numbers are fresh events now, not duplicates of old ones.
-  const after = await reloaded.assign(config, { sequence: 2, roomId: 'other', messageId: 'after' });
+  const after = await decided(reloaded, config, {
+    sequence: 2,
+    roomId: 'other',
+    messageId: 'after',
+  });
   expect(after.session.sessionId).not.toBe(before.session.sessionId);
   await reloaded.handled(2);
   expect(reloaded.cursor).toBe(2);
 
   // The room keeps the session it already had.
   expect(
-    await reloaded.assign(config, { sequence: 3, roomId: 'room', messageId: 'again' })
+    await decided(reloaded, config, { sequence: 3, roomId: 'room', messageId: 'again' })
   ).toEqual(before);
   expect(reloaded.sessions().map((entry) => entry.session.sessionId)).toEqual([
     before.session.sessionId,
@@ -582,12 +607,12 @@ it('routes to the worker that reads handoffs and leaves the older one to its own
   paths.root = root;
   const config = await spawning(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const capable = await assignments.assign(config, {
+  const capable = await decided(assignments, config, {
     sequence: 1,
     roomId: 'reads-handoffs',
     messageId: 'first',
   });
-  const legacy = await assignments.assign(config, {
+  const legacy = await decided(assignments, config, {
     sequence: 2,
     roomId: 'older-bundle',
     messageId: 'first',
@@ -652,7 +677,7 @@ it('still owes an event its worker could not be handed', async () => {
   paths.root = root;
   const config = await spawning(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const assigned = await assignments.assign(config, {
+  const assigned = await decided(assignments, config, {
     sequence: 1,
     roomId: 'room',
     messageId: 'first',
@@ -685,12 +710,12 @@ it('leaves the rest of a restore unstarted once spawning is turned off midway', 
   paths.root = root;
   const config = await spawning(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const first = await assignments.assign(config, {
+  const first = await decided(assignments, config, {
     sequence: 1,
     roomId: 'room',
     messageId: 'first',
   });
-  await assignments.assign(config, { sequence: 2, roomId: 'other', messageId: 'second' });
+  await decided(assignments, config, { sequence: 2, roomId: 'other', messageId: 'second' });
   const started: string[] = [];
   // The restore starts its sessions one at a time, so the setting can change
   // while it is part way through and the loop itself never sees it.
@@ -814,7 +839,7 @@ it('hands a room its own live session even with spawning turned off', async () =
   paths.root = root;
   const config = await spawning(root);
   const assignments = await SharedWatchAssignments.open(root);
-  const assigned = await assignments.assign(config, {
+  const assigned = await decided(assignments, config, {
     sequence: 1,
     roomId: 'room',
     messageId: 'first',
@@ -895,6 +920,71 @@ it('hands a room to a session started outside its journal rather than starting a
   expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
     sessionRoot,
   ]);
+});
+
+it('holds a room whose owner is undecided instead of starting a second session', async () => {
+  // The session that took the room binds it before it writes anything down, so
+  // for a moment nothing local names an owner. Treating that as an empty room
+  // starts a session that then talks over the one already answering it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-undecided-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const session = async (rooms: string[][]) => {
+    const saved = structuredClone(config);
+    saved.session = { ...saved.session, sessionId: randomUUID() };
+    const sessionRoot = join(root, saved.session.sessionId);
+    await mkdir(sessionRoot, { recursive: true });
+    await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(saved));
+    await declareHandoffCapability(sessionRoot);
+    const inbox = await SharedRoomInbox.open(sessionRoot);
+    for (const answer of rooms) await inbox.serves(answer);
+    return sessionRoot;
+  };
+  // The session the room was taken from, and the running sibling that took it
+  // and has not been answered about it yet.
+  await session([['room'], []]);
+  const taker = await session([]);
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: true });
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(5, 'room'));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+    expect((await SharedWatchAssignments.open(root)).sessions()).toEqual([]);
+    expect(warning.mock.calls.at(-1)?.[0]).toContain('holding its messages');
+
+    // Held, and said so. Nothing has been dealt with, so a watcher that dies
+    // here reopens where it started rather than past the event it is holding.
+    expect((await SharedWatchAssignments.open(root)).cursor).toBe(0);
+
+    // Another room is dealt with while that one waits — and the position stops
+    // behind the held event rather than running on to the answered one.
+    await streams[0]!.onEvent!(addressed(6, 'other'));
+    expect((await SharedWatchAssignments.open(root)).sessions()).toHaveLength(1);
+    expect((await SharedWatchAssignments.open(root)).cursor).toBe(4);
+
+    // The sibling answers, and what was held goes to it — in the order it
+    // arrived, and to the session that had the room all along.
+    await (await SharedRoomInbox.open(taker)).serves(['room']);
+    await streams[0]!.onEvent!(addressed(7, 'other'));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(await readFile(join(taker, HANDOFF_FILE), 'utf8')).toBe(
+    JSON.stringify({ sequence: 5, roomId: 'room', messageId: 'message-5' }) + '\n'
+  );
+  // One session for the other room, and the room that waited recorded against
+  // the session that already had it rather than one started to take it over.
+  const journal = await SharedWatchAssignments.open(root);
+  expect(journal.sessions().map((entry) => entry.session.sessionId)).toContain(basename(taker));
+  expect(journal.sessions()).toHaveLength(2);
+  expect(journal.cursor).toBe(7);
 });
 
 it('hands a session it has just created the event that created it', async () => {

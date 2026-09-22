@@ -27,7 +27,7 @@ it('restores room bindings and outstanding deliveries without repeating acknowle
     { type: 'ack', sequence: 1 },
     { type: 'received', sequence: 2, roomId: 'room', messageId: 'two' },
   ]);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], revoked: false });
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], everHeld: ['room'] });
   expect(inbox.pending().map((event) => event.messageId)).toEqual(['two']);
   await inbox.acknowledge({ sequence: 2, roomId: 'room', messageId: 'two' });
   await inbox.acknowledge({ sequence: 2, roomId: 'room', messageId: 'two' });
@@ -45,11 +45,11 @@ it('writes down the rooms the server says it serves, for a reader it cannot answ
   await inbox.serves(['room']);
   const lines = (await readFile(join(root, 'room-inbox.jsonl'), 'utf8')).split('\n').slice(0, -1);
   expect(lines).toHaveLength(1);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], revoked: false });
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: ['room'], everHeld: ['room'] });
   await inbox.serves(['room', 'other']);
   expect(await SharedRoomInbox.savedRooms(root)).toEqual({
     rooms: ['room', 'other'],
-    revoked: false,
+    everHeld: ['room', 'other'],
   });
 });
 
@@ -63,10 +63,33 @@ it('tells a room never given apart from one taken away', async () => {
   // still be handed the room's messages.
   const { root, inbox } = await inboxWith([]);
   await inbox.serves([]);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], revoked: false });
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], everHeld: [] });
   await inbox.serves(['room']);
   await inbox.serves([]);
-  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], revoked: true });
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], everHeld: ['room'] });
+});
+
+it('remembers a room taken away while the session that lost it was not running', async () => {
+  // The answer that would have recorded the eviction never happened: the
+  // session died before its next binding, and the empty answer it gives on
+  // starting again is the first of that run. What it holds now is not the whole
+  // story, and the room it was given once is not its to be handed back.
+  const { root, inbox } = await inboxWith([]);
+  await inbox.serves(['room']);
+  await (await SharedRoomInbox.open(root)).serves([]);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({ rooms: [], everHeld: ['room'] });
+});
+
+it('tells a room a session has moved on from apart from one it still holds', async () => {
+  // Being given another room is the same eviction from the first: the sibling
+  // that bound it took it, and this session's messages for it end here.
+  const { root, inbox } = await inboxWith([]);
+  await inbox.serves(['room']);
+  await inbox.serves(['other']);
+  expect(await SharedRoomInbox.savedRooms(root)).toEqual({
+    rooms: ['other'],
+    everHeld: ['room', 'other'],
+  });
 });
 
 it('admits a routed event exactly once, on the message rather than the position', async () => {
