@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -13,8 +13,15 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
 
-export function CloudAgentRepository({ serverId }: { serverId: string }) {
+export function CloudAgentRepository({
+  serverId,
+  onSelection,
+}: {
+  serverId: string;
+  onSelection: (value: CloudRepositorySelection | null) => void;
+}) {
   const [repository, setRepository] = useState<string | null>(null);
   const { data, error, isPending, refetch } = useQuery({
     queryKey: ['cloud-agent-connections', serverId],
@@ -42,6 +49,12 @@ export function CloudAgentRepository({ serverId }: { serverId: string }) {
     : repositories.length === 1
       ? repositories[0].value
       : null;
+  const connected = data?.claude.status === 'connected';
+  useEffect(() => {
+    const ids = selected?.split(':').map(Number);
+    onSelection(connected && ids ? { installationId: ids[0], repositoryId: ids[1] } : null);
+    return () => onSelection(null);
+  }, [selected, connected, onSelection]);
   return (
     <>
       <Field>
@@ -105,10 +118,6 @@ export function CloudAgentRepository({ serverId }: { serverId: string }) {
           </FieldDescription>
         </Field>
       )}
-      <p className="rounded-md bg-background-1 p-3 text-xs text-foreground-muted">
-        <strong>Cloud setup preview.</strong> Launch is not available yet. These details are not
-        saved, and no worker will be started.
-      </p>
     </>
   );
 }

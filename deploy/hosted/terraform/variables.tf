@@ -25,7 +25,7 @@ variable "assignments" {
   description = "Pre-created per-agent secrets; never put secret values in Terraform."
   type        = map(object({ secret_arn = string, kms_key_arn = string }))
   validation {
-    condition     = length(var.assignments) > 0 && alltrue([for id in keys(var.assignments) : can(regex("^[a-z][a-z0-9-]{2,39}$", id))])
+    condition     = length(var.assignments) > 0 && alltrue([for id in keys(var.assignments) : can(regex("^[a-z0-9][a-z0-9-]{2,39}$", id))])
     error_message = "Declare at least one assignment using lowercase 3–40 character IDs."
   }
   validation {

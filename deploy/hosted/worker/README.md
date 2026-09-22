@@ -136,10 +136,20 @@ this supports GitHub App installation tokens, which cannot authenticate through
 the personal-user endpoint. Existing deployments without a repository retain the
 personal-user check.
 
-Tokens are currently read at bootstrap. Automatic installation-token renewal is
-not implemented; do not treat this as support for unattended, long-running App
-sessions. The controller must supply and renew credentials before cloud launch
-can be enabled in Console.
+Managed assignments also set `github.refresh` to `true`. Bootstrap clones the
+selected repository into an empty workspace, or verifies the existing remote.
+It obtains a fresh repository-scoped installation token from the authenticated
+Switch endpoint at startup and before each Git or GitHub CLI command. The CLI
+wrapper passes the token only to its child process. The agent environment does
+not carry a static installation token. Failed renewal stops the operation with
+a visible error. The image must provide GitHub CLI at `/usr/local/bin/gh`.
+
+A managed deployment sets `watch: true` instead of `room`. The shared watcher
+starts and reuses the normal per-room sessions. `provider.definition` contains
+the same rendered Claude agent definition used by local agents; bootstrap writes
+it beneath the selected workspace and refuses a conflicting existing definition.
+Single-room operator deployments remain supported. A deployment must specify
+exactly one of `room` and `watch`.
 
 ## Disk and boot ownership
 
@@ -178,7 +188,7 @@ inbound service; outbound Internet access is supplied by the isolated worker
 VPC's NAT path, whose hourly and data-processing charges continue independently
 of instance runtime.
 
-## Optional GitHub credential delivery
+## Legacy personal-token delivery
 
 For GitHub.com HTTPS operations, add both fields to the assignment secret:
 
@@ -196,7 +206,7 @@ The bootstrap validates the personal token against GitHub's authenticated-user
 endpoint before starting the provider. Redirects are refused and errors exclude
 response bodies and credential values. This checks token identity only: repository
 permissions, organization approval/SSO, branch rules and model readiness require
-separate checks. Installation tokens and GitHub Enterprise are outside this slice.
+separate checks. Managed installation tokens use the renewal flow above. GitHub Enterprise is not supported.
 
 The agent receives `GH_TOKEN` for GitHub CLI and a Git credential helper through
 non-secret environment configuration. The helper answers only HTTPS requests to

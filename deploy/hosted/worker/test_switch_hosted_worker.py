@@ -167,6 +167,25 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "endpoint is invalid"):
             worker.parse_secret_document(json.dumps(insecure), config())
 
+    def test_watcher_assignment_is_room_independent_and_unambiguous(self):
+        document = json.loads(secret())
+        deployment = document["deployment"]
+        deployment.pop("room")
+        deployment["watch"] = True
+        parsed = worker.parse_secret_document(json.dumps(document), config())
+        self.assertTrue(parsed.deployment["watch"])
+        self.assertNotIn("room", parsed.deployment)
+        for invalid in (
+            {**deployment, "room": {"roomId": "room-1"}},
+            {**deployment, "watch": "true"},
+            {key: value for key, value in deployment.items() if key != "watch"},
+            {**deployment, "session": {**deployment["session"], "nativeSessionId": "old"}},
+        ):
+            with self.subTest(invalid=invalid):
+                document["deployment"] = invalid
+                with self.assertRaises(worker.WorkerError):
+                    worker.parse_secret_document(json.dumps(document), config())
+
     def test_runtime_config_requires_a_fixed_baked_path_and_matching_hash(self):
         assignment = {
             "version": 1,

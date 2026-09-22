@@ -37,6 +37,7 @@ from switch_core.gateway.auth import (
     require_admin,
 )
 from switch_core.gateway.dependencies import get_session, get_system_session
+from switch_core.gateway.hosted_controller import controller_session
 
 # The only routes that may open a session with no tenant bound. `get_session`
 # is unavailable to them because there is no `get_current_user` to bind one:
@@ -175,8 +176,18 @@ def test_the_routes_that_never_bind_a_tenant_are_exactly_these() -> None:
     A route that lands here has no workspace to authorize against and has to
     say, in its own docstring, what it does instead."""
     assert {
-        route.key for route in ROUTES if get_current_user not in route.calls
+        route.key
+        for route in ROUTES
+        if get_current_user not in route.calls and controller_session not in route.calls
     } == _ROUTES_THAT_NEVER_BIND_A_TENANT
+
+
+def test_controller_credential_is_confined_to_the_controller_routes() -> None:
+    assert {route.key for route in ROUTES if controller_session in route.calls} == {
+        ("GET", "/hosted-controller"),
+        ("POST", "/hosted-controller/{request_id}/prepare"),
+        ("POST", "/hosted-controller/{request_id}/observation"),
+    }
 
 
 def test_the_routes_with_no_tenant_bound_do_not_bind_a_tenant() -> None:

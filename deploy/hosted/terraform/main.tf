@@ -65,6 +65,13 @@ resource "aws_iam_role_policy" "controller" {
   role = aws_iam_role.controller.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Sid = "Observe", Effect = "Allow", Action = ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeImages", "ec2:DescribeSubnets", "ec2:DescribeInstanceTypes"], Resource = "*" },
+    { Sid = "PopulateWorkerAssignments", Effect = "Allow", Action = ["secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue"], Resource = [for assignment in values(var.assignments) : assignment.secret_arn] },
+    { Sid = "EncryptWorkerAssignments", Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt"], Resource = [for assignment in values(var.assignments) : assignment.kms_key_arn],
+      Condition = { StringEquals = {
+        "kms:ViaService" = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"
+        "kms:EncryptionContext:SecretARN" = [for assignment in values(var.assignments) : assignment.secret_arn]
+      } }
+    },
     { Sid = "ApprovedLaunchInputs", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = [
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::image/${var.worker_image_id}",
       "${local.ec2_arn_base}:subnet/${aws_subnet.worker.id}",

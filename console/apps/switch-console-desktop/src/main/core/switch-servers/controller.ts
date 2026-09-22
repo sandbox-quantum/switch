@@ -18,6 +18,7 @@ import {
   isManagedServerRunning,
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
@@ -40,6 +41,7 @@ import {
   validateClaudeCredential,
   type ClaudeCredentialKind,
 } from '@shared/core/switch-servers/claude-credential';
+import type { CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -89,6 +91,8 @@ import { createBridgeOnServer } from './create-bridge';
 import { createRoomOnServer } from './create-room';
 import {
   getGitHubConnection,
+  createCloudLaunch,
+  listCloudLaunches,
   startGitHubConnection,
   getGitHubFlow,
   confirmGitHubConnection,
@@ -299,6 +303,19 @@ function reportRoomCreated(
 }
 
 export const switchServersController = createRPCController({
+  createCloudLaunch: async (serverId: string, input: CloudLaunchInput) => {
+    const definitions = getPlugin('claude').behavior.repoAgents;
+    if (!definitions) throw new Error('Claude Code agent definitions are unavailable.');
+    const definition = definitions.renderDefinition({
+      ...input.definition_attributes,
+      name: input.name,
+      description: input.description,
+      instructions: input.instructions,
+    });
+    return createCloudLaunch(await requireReachableServer(serverId), { ...input, definition });
+  },
+  listCloudLaunches: async (serverId: string) =>
+    listCloudLaunches(await requireReachableServer(serverId)),
   getClaudeConnection: async (serverId: string) =>
     getClaudeConnection(await requireServer(serverId)),
   connectClaude: async (serverId: string, kind: ClaudeCredentialKind, credential: string) => {

@@ -283,6 +283,32 @@ class ProviderConnection(TenantScoped, Base):
     verified_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class HostedLaunch(TenantScoped, Base):
+    __tablename__ = "hosted_launches"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        UniqueConstraint("tenant_id", "name", name="uq_hosted_launch_name"),
+        CheckConstraint(
+            "state IN ('queued', 'provisioning', 'ready', 'error')",
+            name="ck_hosted_launch_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Invitations ────────────────────────────────────────────────────────────────
 
 

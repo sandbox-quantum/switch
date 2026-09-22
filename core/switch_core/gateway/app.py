@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -36,6 +38,8 @@ from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
 from switch_core.gateway.github_connections import router as github_connections_router
+from switch_core.gateway.hosted_controller import router as hosted_controller_router
+from switch_core.gateway.hosted_launches import router as hosted_launches_router
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
@@ -54,6 +58,7 @@ from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.providers.claude_verifier import ClaudeVerifier
 from switch_core.providers.github import GitHubConnections
+from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionError
@@ -106,6 +111,23 @@ def create_gateway_app(
     )
 
     app = FastAPI(title="Switch Gateway API")
+    app.state.hosted_controller_settings = (
+        HostedControllerSettings.model_validate_json(
+            Path(config.hosted_controller_config_path).read_text()
+        )
+        if config.hosted_controller_config_path
+        else None
+    )
+    if config.hosted_launch_capacity and (
+        app.state.hosted_controller_settings is None
+        or len(app.state.hosted_controller_settings.agent_ids)
+        < config.hosted_launch_capacity
+    ):
+        raise ValueError(
+            "Cloud launch capacity requires enough configured worker identities."
+        )
+    app.include_router(hosted_launches_router, tags=["hosted-launches"])
+    app.include_router(hosted_controller_router, tags=["hosted-controller"])
     app.state.github_connections = (
         GitHubConnections(config.hosted_github_config_path)
         if config.hosted_github_config_path

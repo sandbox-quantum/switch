@@ -48,8 +48,8 @@ export const CONTRACTS = {
   },
   // The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
   'gateway-api': {
-    'switch-core': { speaks: 3, accepts: 1 },
-    'switch-console': { speaks: 3, accepts: 1 },
+    'switch-core': { speaks: 4, accepts: 1 },
+    'switch-console': { speaks: 4, accepts: 1 },
   },
   // The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
   'stack-compose': {
@@ -63,7 +63,7 @@ export const CONTRACTS = {
   },
   // The database schema switch-core expects. Internal to switch-core — this contract is never disclosed in an externally facing response.
   'db-schema': {
-    'switch-core': { speaks: 3, accepts: 1 },
+    'switch-core': { speaks: 4, accepts: 1 },
   },
 } as const satisfies Record<string, Record<string, ContractRange>>;
 

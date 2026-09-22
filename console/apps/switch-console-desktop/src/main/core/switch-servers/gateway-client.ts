@@ -11,6 +11,7 @@ import type {
   ClaudeCredentialKind,
   ClaudeConnection,
 } from '@shared/core/switch-servers/claude-credential';
+import { cloudLaunchSchema, type CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
@@ -1454,6 +1455,29 @@ export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeC
   return readClaudeConnection(response);
 }
 
+export async function createCloudLaunch(
+  server: SwitchServer,
+  input: CloudLaunchInput & { definition: string }
+) {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Cloud agents require an HTTPS Switch server.');
+  return cloudLaunchSchema.parse(
+    await (
+      await gatewayFetch(server, '/hosted-launches', {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+}
+
+export async function listCloudLaunches(server: SwitchServer) {
+  return z
+    .array(cloudLaunchSchema)
+    .parse(await (await gatewayFetch(server, '/hosted-launches', { authenticated: true })).json());
+}
+
 export async function connectClaude(
   server: SwitchServer,
   kind: ClaudeCredentialKind,
@@ -1487,16 +1511,14 @@ export async function getGitHubConnection(server: SwitchServer) {
 export async function startGitHubConnection(server: SwitchServer) {
   if (new URL(server.gatewayUrl).protocol !== 'https:')
     throw new Error('GitHub connections require HTTPS.');
-  const value = z
-    .object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() })
-    .parse(
-      await (
-        await gatewayFetch(server, '/provider-connections/github/flows', {
-          authenticated: true,
-          method: 'POST',
-        })
-      ).json()
-    );
+  const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
+    await (
+      await gatewayFetch(server, '/provider-connections/github/flows', {
+        authenticated: true,
+        method: 'POST',
+      })
+    ).json()
+  );
   const url = new URL(value.url);
   if (
     url.origin !== new URL(server.gatewayUrl).origin ||

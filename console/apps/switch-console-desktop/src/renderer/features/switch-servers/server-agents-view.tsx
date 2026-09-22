@@ -7,6 +7,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -23,10 +24,12 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import type { Agent } from '@shared/core/agents/agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import type { CloudLaunch } from '@shared/core/switch-servers/cloud-launch';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
+import { useCloudLaunches } from './use-cloud-launches';
 
 function useServerId(): string {
   return useParams('serverAgents').params.serverId;
@@ -48,6 +51,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   }, [serverId]);
 
   const agents = agentsStore.agentsOnServer(serverId);
+  const cloud = useCloudLaunches(serverId);
 
   return (
     <ServerPage
@@ -74,10 +78,65 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
+        {cloud.data?.map((launch) => (
+          <CloudAgentCard key={launch.request_id} launch={launch} serverId={serverId} />
+        ))}
       </div>
+      {cloud.error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          {failureText(cloud.error, 'Could not load cloud agents.')}
+        </p>
+      )}
     </ServerPage>
   );
 });
+
+function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: string }) {
+  const addToRooms = useShowModal('addAgentToRoomModal');
+  const { toastPromise } = useToast();
+  const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
+  const stateLabel = {
+    queued: 'Queued',
+    provisioning: 'Starting…',
+    ready: 'Ready',
+    error: 'Could not start',
+  }[launch.state];
+  const add = () => {
+    if (!launch.agent_id) return;
+    const agentId = launch.agent_id;
+    void toastPromise(
+      switchRoomsStore.fetchAgentRooms(serverId, agentId).then((rooms) => {
+        if (rooms === null) throw new Error('Could not load the agent’s rooms.');
+        addToRooms({ serverId, switchAgentId: agentId, agentName: launch.name });
+      }),
+      {
+        loading: 'Loading rooms…',
+        success: 'Choose rooms for the agent',
+        error: (error) => failureText(error, 'Could not load the agent’s rooms.'),
+      }
+    );
+  };
+  return (
+    <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+      <div className="flex flex-1 items-center justify-center py-3">
+        <AgentAvatar name={launch.name} iconUrl={iconUrl} size={66} />
+      </div>
+      <div className="truncate text-sm font-medium">{launch.name}</div>
+      <div className="text-xs text-foreground-muted">Claude Code · Cloud · {stateLabel}</div>
+      {launch.error && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {launch.error}
+        </p>
+      )}
+      {launch.state === 'ready' && (
+        <Button variant="ghost" size="sm" className="mt-2" onClick={add}>
+          <Plus className="size-3" />
+          Add to rooms
+        </Button>
+      )}
+    </div>
+  );
+}
 
 const AgentCard = observer(function AgentCard({
   agent,

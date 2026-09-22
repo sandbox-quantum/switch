@@ -54,6 +54,7 @@ ingress:
   # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
+    - /hosted
     - /mcp
     - /oauth
     - /.well-known
@@ -112,6 +113,8 @@ secrets:
 switchCore:
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
+  hostedControllerSecret: ""
+  hostedLaunchCapacity: 0
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO

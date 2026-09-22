@@ -318,12 +318,11 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
             "session",
             "provider",
             "workspacePath",
-            "room",
             "runtimeMode",
             "switchCredentialsPath",
             "mcpRuntime",
         },
-        {"github"},
+        {"github", "room", "watch"},
         "hosted deployment",
     )
     if value["version"] != 1:
@@ -335,10 +334,16 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     _identifier(session["agentId"], "deployment agent ID")
     if "nativeSessionId" in session:
         _identifier(session["nativeSessionId"], "deployment native session ID")
+    if ("room" in value) == ("watch" in value):
+        raise WorkerError("Specify either a room session or an agent watcher.")
+    if "watch" in value and (
+        not isinstance(value["watch"], bool) or "nativeSessionId" in session
+    ):
+        raise WorkerError("Deployment watcher configuration is invalid.")
     provider = _strict(
         value["provider"],
         {"kind", "credential", "binaryPath", "context"},
-        {"model"},
+        {"model", "definition"},
         "deployment provider",
     )
     if provider["kind"] != "claude":
@@ -353,6 +358,11 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     if provider["binaryPath"] != config.runtime.provider_binary_path:
         raise WorkerError("Hosted deployment provider executable is not the pinned executable.")
     _text(provider["context"], "deployment provider context", maximum=64 * 1024)
+    if "definition" in provider:
+        definition = _strict(provider["definition"], {"name", "content"}, set(), "agent definition")
+        if not isinstance(definition["name"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", definition["name"]):
+            raise WorkerError("Hosted agent definition name is invalid.")
+        _text(definition["content"], "agent definition", maximum=64 * 1024)
     if "model" in provider:
         model = _strict(provider["model"], {"id"}, {"options"}, "deployment model")
         _text(model["id"], "deployment model ID")
@@ -364,14 +374,15 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
                 raise WorkerError("Deployment model options are invalid.")
     if value["workspacePath"] != str(WORKSPACE_PATH):
         raise WorkerError("Hosted deployment workspace path is not fixed.")
-    room = _strict(value["room"], {"roomId"}, {"startCursor"}, "deployment room")
-    _identifier(room["roomId"], "deployment room ID")
-    if "startCursor" in room and (
-        isinstance(room["startCursor"], bool)
-        or not isinstance(room["startCursor"], int)
-        or room["startCursor"] < 0
-    ):
-        raise WorkerError("Deployment room cursor is invalid.")
+    if "room" in value:
+        room = _strict(value["room"], {"roomId"}, {"startCursor"}, "deployment room")
+        _identifier(room["roomId"], "deployment room ID")
+        if "startCursor" in room and (
+            isinstance(room["startCursor"], bool)
+            or not isinstance(room["startCursor"], int)
+            or room["startCursor"] < 0
+        ):
+            raise WorkerError("Deployment room cursor is invalid.")
     if value["runtimeMode"] not in {
         "approval-required",
         "auto-accept-edits",
@@ -384,7 +395,9 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     if value["mcpRuntime"] != config.runtime.mcp_runtime:
         raise WorkerError("Hosted deployment MCP runtime is not the pinned runtime.")
     if "github" in value:
-        github = _strict(value["github"], {"credentialPath"}, {"repository"}, "deployment GitHub")
+        github = _strict(value["github"], {"credentialPath"}, {"repository", "refresh"}, "deployment GitHub")
+        if "refresh" in github and (github["refresh"] is not True or "repository" not in github):
+            raise WorkerError("Hosted GitHub refresh requires a selected repository.")
         if "repository" in github and (
             not isinstance(github["repository"], str)
             or not re.fullmatch(

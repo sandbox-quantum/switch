@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "switch-hosted-controller"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bounded EC2 lifecycle controller for hosted Switch agents"
 requires-python = ">=3.11"
 dependencies = ["boto3>=1.35,<2"]

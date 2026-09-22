@@ -40,6 +40,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import type { CloudRepositorySelection } from '@shared/core/switch-servers/cloud-launch';
 import { urlOrigin, type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
@@ -78,6 +79,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   initialRunLocation,
 }: NewAgentFormProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
+  const [cloudRepository, setCloudRepository] = useState<CloudRepositorySelection | null>(null);
+  const cloudRequestId = useRef(crypto.randomUUID());
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
@@ -231,12 +234,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   const canConfigureAgent = canChooseAgentType && runHostReady;
 
   const canSubmit =
-    !isCloudRun &&
     form.isValid &&
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
-    dir.trim().length > 0 &&
+    (isCloudRun ? cloudRepository !== null && form.autoSession : dir.trim().length > 0) &&
     runHostReachable &&
     runHostReady &&
     submitState === 'idle';
@@ -245,31 +247,33 @@ export const NewAgentForm = observer(function NewAgentForm({
   const disabledReason: string | null =
     submitState !== 'idle'
       ? null
-      : isCloudRun
-        ? 'Cloud agent launch is not available yet. No details will be saved.'
-        : !pickState.serverId
-          ? 'Add a Switch server to register this agent on.'
-          : form.agentName.trim().length === 0
-            ? 'Enter a name for the agent.'
-            : !form.nameIsValid
-              ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-              : form.description.trim().length === 0
-                ? 'Add a description so people and agents know what this agent is for.'
-                : !runHostReachable
-                  ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                  : hostReadiness.checking
-                    ? `Checking what ${runLocationLabel} has installed…`
-                    : hostReadiness.blocked
-                      ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                      : !pickState.providerId
-                        ? 'Choose an agent type.'
-                        : dir.trim().length === 0
-                          ? isRemoteRun
-                            ? 'Enter the agent’s working directory on the host.'
-                            : 'Choose the agent’s working directory.'
-                          : policyHasDeadRule(form.addressingPolicy)
-                            ? 'One addressing rule can never match — fix it under Settings.'
-                            : null;
+      : isCloudRun && !form.autoSession
+        ? 'Enable auto-create sessions for cloud agents.'
+        : isCloudRun && !cloudRepository
+          ? 'Connect Claude Code and choose a GitHub repository.'
+          : !pickState.serverId
+            ? 'Add a Switch server to register this agent on.'
+            : form.agentName.trim().length === 0
+              ? 'Enter a name for the agent.'
+              : !form.nameIsValid
+                ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
+                : form.description.trim().length === 0
+                  ? 'Add a description so people and agents know what this agent is for.'
+                  : !runHostReachable
+                    ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                    : hostReadiness.checking
+                      ? `Checking what ${runLocationLabel} has installed…`
+                      : hostReadiness.blocked
+                        ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                        : !pickState.providerId
+                          ? 'Choose an agent type.'
+                          : !isCloudRun && dir.trim().length === 0
+                            ? isRemoteRun
+                              ? 'Enter the agent’s working directory on the host.'
+                              : 'Choose the agent’s working directory.'
+                            : policyHasDeadRule(form.addressingPolicy)
+                              ? 'One addressing rule can never match — fix it under Settings.'
+                              : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -338,10 +342,35 @@ export const NewAgentForm = observer(function NewAgentForm({
    * mint its identity, write its `.claude/agents/<name>.md` definition + its
    * per-agent credentials, and create the row — all via `addAgent`. */
   const createNewAgent = async () => {
-    if (isCloudRun || !canSubmit || !pickState.serverId || !pickState.providerId) return;
+    if (!canSubmit || !pickState.serverId || !pickState.providerId) return;
     setSubmitState('creating');
     setCloseGuard(true);
     try {
+      if (isCloudRun && cloudRepository) {
+        await rpc.switchServers.createCloudLaunch(pickState.serverId, {
+          request_id: cloudRequestId.current,
+          name: form.agentName,
+          description: form.description.trim(),
+          display_name: form.displayName.trim() || null,
+          icon_url: form.iconUrl,
+          instructions: form.instructions,
+          installation_id: cloudRepository.installationId,
+          repository_id: cloudRepository.repositoryId,
+          definition_attributes: advancedAttributesRef.current,
+          auto_session: form.autoSession,
+          auto_approve: form.autoApprove,
+          addressing_policy: form.addressingPolicy,
+        });
+        setCloseGuard(false);
+        setSubmitState('idle');
+        onClose();
+        navigate('serverAgents', { serverId: pickState.serverId });
+        toast({
+          title: 'Cloud agent is starting',
+          description: 'Its progress appears in Your Agents.',
+        });
+        return;
+      }
       const result = await getLocationManagerStore().addAgentAndOpen({
         sshHost: isRemoteRun ? runHost : null,
         dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
@@ -379,7 +408,9 @@ export const NewAgentForm = observer(function NewAgentForm({
       setSubmitState('idle');
       const { headline, detail } = describeFailure(
         error,
-        'Could not add the agent. Nothing was created — check the directory is reachable and writable, then try again.'
+        isCloudRun
+          ? 'Could not confirm cloud agent creation. Retry with the same details to check the request.'
+          : 'Could not add the agent. Nothing was created — check the directory is reachable and writable, then try again.'
       );
       toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
     }
@@ -550,7 +581,9 @@ export const NewAgentForm = observer(function NewAgentForm({
           />
         )}
 
-        {isCloudRun && pickState.serverId && <CloudAgentRepository serverId={pickState.serverId} />}
+        {isCloudRun && pickState.serverId && (
+          <CloudAgentRepository serverId={pickState.serverId} onSelection={setCloudRepository} />
+        )}
 
         {canConfigureAgent && !!pickState.providerId && (
           <>
@@ -582,6 +615,12 @@ export const NewAgentForm = observer(function NewAgentForm({
               if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
             }}
           />
+        )}
+        {isCloudRun && !form.autoSession && (
+          <p role="alert" className="text-sm text-destructive">
+            Cloud agents currently need auto-create sessions enabled. They start a session when
+            addressed in a room.
+          </p>
         )}
       </DialogContentArea>
     </ModalLayout>

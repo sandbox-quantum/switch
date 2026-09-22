@@ -8,6 +8,7 @@ import {
   githubRedactions,
   gitHubCredentialResponse,
   readGitHubCredential,
+  renewGitHubCredential,
   validateGitHubCredential,
 } from './hosted-github';
 import { redactHostedText } from './hosted-log';
@@ -35,6 +36,44 @@ it('provides credentials only for the exact GitHub HTTPS host', () => {
   expect(gitHubCredentialResponse('get', 'protocol=https\nhost=github.com\n', undefined)).toBe('');
   expect(gitHubCredentialResponse('store', 'protocol=https\nhost=github.com\n', token)).toBe('');
   expect(gitHubCredentialResponse('erase', 'protocol=https\nhost=github.com\n', token)).toBe('');
+});
+
+it('renews only the assigned repository credential and hides failed response bodies', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hosted-github-refresh-'));
+  roots.push(root);
+  const credentials = join(root, 'switch.json');
+  await writeFile(
+    credentials,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.com/api/agent',
+        SWITCH_API_TOKEN: 'synthetic-switch-credential',
+      },
+    })
+  );
+  const request = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          token,
+          repository: 'example/project',
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        })
+      )
+  );
+  vi.stubGlobal('fetch', request);
+  expect(await renewGitHubCredential(credentials, 'example/project')).toBe(token);
+  expect(request.mock.calls[0]).toEqual([
+    'https://switch.example.com/api/agent/hosted/github-credential',
+    expect.objectContaining({ method: 'POST', redirect: 'error' }),
+  ]);
+  await expect(renewGitHubCredential(credentials, 'example/other')).rejects.toThrow(
+    'Could not renew'
+  );
+  request.mockImplementation(async () => new Response('remote-secret-body', { status: 403 }));
+  await expect(renewGitHubCredential(credentials, 'example/project')).rejects.toThrow(
+    'Could not renew'
+  );
 });
 
 it('keeps raw and common transport encodings out of redacted output', () => {

@@ -3,7 +3,7 @@ import ssl
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
@@ -126,6 +126,8 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
+    hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
     hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the switch_auth cookie. Defaults to False so local

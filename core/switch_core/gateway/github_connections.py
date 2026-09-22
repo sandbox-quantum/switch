@@ -226,8 +226,14 @@ async def connection(
     config: Annotated[SwitchConfig, Depends(get_config)],
     github: Annotated[GitHubConnections, Depends(service)],
 ) -> dict:
-    await lock(session, user.id)
-    row = await session.scalar(select(ProviderConnection).where(*conditions(user.id)))
+    return await connection_status(user.id, session, config, github)
+
+
+async def connection_status(
+    user_id: str, session: AsyncSession, config: SwitchConfig, github: GitHubConnections
+) -> dict:
+    await lock(session, user_id)
+    row = await session.scalar(select(ProviderConnection).where(*conditions(user_id)))
     if row is None:
         return {"status": "not_connected", "install_url": github.install_url}
     credentials = json.loads(

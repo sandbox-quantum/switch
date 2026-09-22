@@ -8,6 +8,7 @@
     "controllerConfig"
   ],
   "properties": {
+    "gatewaySecretName": { "type": "string" },
     "image": {
       "type": "object",
       "required": [

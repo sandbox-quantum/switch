@@ -135,7 +135,7 @@ wheels = [
 
 [[package]]
 name = "switch-hosted-controller"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },

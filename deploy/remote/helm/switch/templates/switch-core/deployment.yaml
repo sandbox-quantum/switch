@@ -50,6 +50,12 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- if .Values.switchCore.hostedControllerSecret }}
+            - name: HOSTED_CONTROLLER_CONFIG_PATH
+              value: /etc/switch-hosted/controller.json
+            - name: HOSTED_LAUNCH_CAPACITY
+              value: {{ .Values.switchCore.hostedLaunchCapacity | quote }}
+            {{- end }}
             {{- if .Values.switchCore.githubConnectionsSecret }}
             - name: HOSTED_GITHUB_CONFIG_PATH
               value: /etc/switch-github/github.json
@@ -69,8 +75,13 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret }}
+          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.hostedControllerSecret }}
           volumeMounts:
+            {{- if .Values.switchCore.hostedControllerSecret }}
+            - name: hosted-controller
+              mountPath: /etc/switch-hosted
+              readOnly: true
+            {{- end }}
             {{- if .Values.switchCore.githubConnectionsSecret }}
             - name: github-connections
               mountPath: /etc/switch-github
@@ -80,8 +91,14 @@ spec:
             {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
             {{- end }}
           {{- end }}
-      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret }}
+      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.hostedControllerSecret }}
       volumes:
+        {{- if .Values.switchCore.hostedControllerSecret }}
+        - name: hosted-controller
+          secret:
+            secretName: {{ .Values.switchCore.hostedControllerSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
         {{- if .Values.switchCore.githubConnectionsSecret }}
         - name: github-connections
           secret:

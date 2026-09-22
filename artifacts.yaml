@@ -160,8 +160,8 @@ contracts:
       that a client can always authenticate far enough to be told what is
       wrong.
     artifacts:
-      switch-core: { speaks: 3, accepts: 1 }
-      switch-console: { speaks: 3, accepts: 1 }
+      switch-core: { speaks: 4, accepts: 1 }
+      switch-console: { speaks: 4, accepts: 1 }
 
   stack-compose:
     description: >-
@@ -185,4 +185,4 @@ contracts:
       The database schema switch-core expects. Internal to switch-core — this
       contract is never disclosed in an externally facing response.
     artifacts:
-      switch-core: { speaks: 3, accepts: 1 }
+      switch-core: { speaks: 4, accepts: 1 }

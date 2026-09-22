@@ -1,14 +1,16 @@
-# Hosted EC2 workers: operator-controlled implementation
+# Hosted EC2 workers
 
-This directory implements the first EC2 infrastructure slice. It includes a
-single-controller service, a trusted VM launcher, a Kubernetes chart and generic
-Terraform. It does **not** implement Console onboarding or make the controller the
-source of truth for production Switch placements. Operator commands maintain a
-local durable assignment database until that service integration is implemented.
+This directory implements the bounded cloud-worker pilot: a controller service,
+a trusted VM launcher, a Kubernetes chart and generic Terraform. Console submits
+durable launch requests to the authenticated gateway. The controller consumes
+those requests and maintains its own durable AWS assignment database. Operator
+commands remain available for lifecycle management.
 
 Start from [the architecture proposal](../../docs/planning/hosted-execution-backend-proposal.md).
-One ordinary EC2 VM runs one assigned Claude session with a retained encrypted
-EBS data disk. The controller runs on existing EKS; workers never join that cluster.
+One ordinary EC2 VM runs one agent with a retained encrypted EBS data disk.
+The shared watcher starts a separate session for each addressed room on that VM.
+Creating an agent does not create a room. The controller runs on existing EKS;
+workers never join that cluster.
 
 ## Components
 
@@ -39,12 +41,33 @@ It signs with an operator-supplied RSA key and requests only contents and pull
 request write access. Credentials must stay on the backend and in the worker's
 private credential transport, never in Console responses or persisted launch specs.
 
-This helper is not yet connected to the worker lifecycle. The worker bootstrap accepts repository-scoped tokens when the deployment
-selects a repository; the controller still accepts operator commands. Installation-token delivery, renewal, durable Console launch requests,
-and worker status reporting must be implemented before enabling cloud creation.
-An installation token expires after one hour; a one-time token at startup is not
-sufficient for a long-running worker. See the
-[GitHub installation-token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+Console uses the shared New Agent form, saved Claude connection and a selected
+GitHub repository. The gateway reserves an identity from the operator-configured
+pool. The controller creates the data volume, writes the assignment secret with
+that volume ID, and then starts the VM. A worker is ready only after its shared
+watcher connects. Cloud creation currently requires automatic sessions; manual
+cloud session control is not available.
+
+Managed workers request a fresh installation token before checkout and each Git
+or GitHub CLI command. The agent-authenticated renewal route checks the saved
+assignment, workspace membership and current GitHub repository access. It never
+accepts a caller-selected repository. Personal tokens remain an operator option.
+
+### Enable Console launches
+
+Mount a private backend JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
+`tenant_id`, a dedicated `token` of at least 32 characters, reserved UUID
+`agent_ids`, `github_private_key_path` and the HTTPS `agent_api_endpoint`.
+Set `HOSTED_LAUNCH_CAPACITY` no higher than that pool. Zero disables creation.
+The backend chart exposes `switchCore.hostedControllerSecret` (files
+`controller.json` and the referenced key) and `switchCore.hostedLaunchCapacity`.
+
+Mount a controller secret with `gateway.json` containing `origin`, the matching
+`token`, an allowed `instance_type`, and a pinned `mcp_runtime`. Set the controller
+chart's `gatewaySecretName` to that secret. The token authorizes only the hosted
+controller routes for its configured tenant. It is not a user or agent API key.
+The assignment UUIDs must match the Terraform and controller configurations.
+Keep all values and private keys outside this public repository.
 
 ## Prepare a deployable environment
 
@@ -185,8 +208,7 @@ The optional worker secret fields described in [the worker contract](worker/READ
 provide a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
 it in a workspace/config or passing it as a command argument. Bootstrap checks
 the token before starting the provider. Repository permission checks and actual
-clone/build/push/PR operations remain the coding task's responsibility; no live
-GitHub task or Console repository onboarding is implied by this implementation.
+clone/build/push/PR operations remain the coding task's responsibility; managed onboarding uses the renewable installation-token flow described above.
 
 ## User-owned Claude connections
 

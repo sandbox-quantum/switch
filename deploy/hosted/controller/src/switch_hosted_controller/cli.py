@@ -16,6 +16,7 @@ import boto3
 
 from .cloud import Ec2Cloud
 from .config import ConfigError, ControllerConfig, validate_agent_id
+from .gateway import Gateway, GatewayConfig, GatewayError
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import Agent, DesiredState
 from .reconciler import Reconciler
@@ -25,6 +26,7 @@ from .store import AgentStore, StoreError
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="switch-hosted-controller")
     result.add_argument("--config", required=True, type=Path)
+    result.add_argument("--gateway-config", type=Path)
     subparsers = result.add_subparsers(dest="command", required=True)
 
     create = subparsers.add_parser("create", help="reserve and request one configured agent")
@@ -56,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = ControllerConfig.load(args.config)
         if args.command in {"serve", "reconcile-once"}:
-            return _reconcile_command(config, args.command)
+            return _reconcile_command(config, args.command, args.gateway_config)
         if args.command == "health":
             return _health(args.max_age)
         return _state_command(config, args)
@@ -111,12 +113,22 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
         store.close()
 
 
-def _reconcile_command(config: ControllerConfig, command: str) -> int:
+def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Path | None) -> int:
     with ControllerLock(config.lock_path):
         store = AgentStore(config.state_db_path, config.fingerprint())
         try:
             ec2 = boto3.client("ec2", region_name=config.region)
             reconciler = Reconciler(store, Ec2Cloud(ec2, config))
+            gateway = (
+                Gateway(
+                    GatewayConfig.load(gateway_path),
+                    config,
+                    store,
+                    boto3.client("secretsmanager", region_name=config.region),
+                )
+                if gateway_path
+                else None
+            )
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -133,7 +145,13 @@ def _reconcile_command(config: ControllerConfig, command: str) -> int:
             signal.signal(signal.SIGINT, request_stop)
             while not stop.is_set():
                 try:
+                    if gateway:
+                        gateway.accept_launches()
                     reconciler.reconcile_all()
+                    if gateway:
+                        gateway.report_observations()
+                except GatewayError as error:
+                    logging.error("Cloud gateway is unavailable: HTTP %s", error.status)
                 finally:
                     _touch_health()
                 stop.wait(config.poll_interval_seconds)

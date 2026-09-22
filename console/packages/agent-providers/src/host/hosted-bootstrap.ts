@@ -6,9 +6,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { buildSharedHostConfig } from './build-shared-config';
 import {
+  ensureHostedRepository,
   githubLaunchEnvironment,
   githubRedactions,
+  prepareGitHubCli,
   readGitHubCredential,
+  renewGitHubCredential,
   validateGitHubCredential,
 } from './hosted-github';
 import { redactHostedText } from './hosted-log';
@@ -23,46 +26,66 @@ const absolutePath = z
   .refine((value) => isAbsolute(value), 'must be an absolute path');
 const identifier = z.string().min(1).max(200);
 
-export const hostedDeploymentSpecSchema = z.strictObject({
-  version: z.literal(1),
-  session: z.strictObject({
-    sessionId: identifier,
-    agentId: identifier,
-    nativeSessionId: identifier.optional(),
-  }),
-  provider: z.strictObject({
-    kind: z.literal('claude'),
-    credential: z.strictObject({
-      kind: z.enum(['api-key', 'setup-token']),
-      path: absolutePath,
+export const hostedDeploymentSpecSchema = z
+  .strictObject({
+    version: z.literal(1),
+    session: z.strictObject({
+      sessionId: identifier,
+      agentId: identifier,
+      nativeSessionId: identifier.optional(),
     }),
-    binaryPath: absolutePath,
-    model: z
+    provider: z.strictObject({
+      kind: z.literal('claude'),
+      credential: z.strictObject({
+        kind: z.enum(['api-key', 'setup-token']),
+        path: absolutePath,
+      }),
+      binaryPath: absolutePath,
+      model: z
+        .strictObject({
+          id: z.string().min(1),
+          options: z.record(z.string(), z.string()).optional(),
+        })
+        .optional(),
+      context: z.string(),
+      definition: z
+        .strictObject({
+          name: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/),
+          content: z.string().min(1).max(65536),
+        })
+        .optional(),
+    }),
+    github: z
       .strictObject({
-        id: z.string().min(1),
-        options: z.record(z.string(), z.string()).optional(),
+        credentialPath: absolutePath,
+        repository: z
+          .string()
+          .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/)
+          .optional(),
+        refresh: z.literal(true).optional(),
       })
       .optional(),
-    context: z.string(),
-  }),
-  github: z
-    .strictObject({
-      credentialPath: absolutePath,
-      repository: z
-        .string()
-        .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/)
-        .optional(),
-    })
-    .optional(),
-  workspacePath: absolutePath,
-  room: z.strictObject({
-    roomId: identifier,
-    startCursor: z.number().int().nonnegative().optional(),
-  }),
-  runtimeMode: z.enum(['approval-required', 'auto-accept-edits', 'full-access']),
-  switchCredentialsPath: absolutePath,
-  mcpRuntime: z.string().min(1),
-});
+    workspacePath: absolutePath,
+    room: z
+      .strictObject({
+        roomId: identifier,
+        startCursor: z.number().int().nonnegative().optional(),
+      })
+      .optional(),
+    watch: z.boolean().optional(),
+    runtimeMode: z.enum(['approval-required', 'auto-accept-edits', 'full-access']),
+    switchCredentialsPath: absolutePath,
+    mcpRuntime: z.string().min(1),
+  })
+  .refine((spec) => (spec.room !== undefined) !== (spec.watch !== undefined), {
+    message: 'Specify either a room session or an agent watcher.',
+  })
+  .refine((spec) => !spec.github?.refresh || spec.github.repository !== undefined, {
+    message: 'GitHub credential renewal requires a selected repository.',
+  })
+  .refine((spec) => spec.watch === undefined || spec.session.nativeSessionId === undefined, {
+    message: 'An agent watcher cannot resume a provider session.',
+  });
 export type HostedDeploymentSpec = z.infer<typeof hostedDeploymentSpecSchema>;
 
 const hostedDeploymentPlanSchema = z.strictObject({
@@ -333,7 +356,9 @@ export async function prepareHostedDeployment(
     spec.session.agentId
   );
   const githubCredential = githubCredentialPath
-    ? await readGitHubCredential(githubCredentialPath)
+    ? spec.github?.refresh
+      ? await renewGitHubCredential(switchCredentialsPath, spec.github.repository)
+      : await readGitHubCredential(githubCredentialPath)
     : undefined;
   if (githubCredential) await validateGitHubCredential(githubCredential, spec.github?.repository);
   const controlled = controlledEnvironment(root);
@@ -341,6 +366,13 @@ export async function prepareHostedDeployment(
   const environment = {
     ...controlled,
     ...(githubCredential ? githubLaunchEnvironment() : {}),
+    ...(spec.github?.refresh
+      ? {
+          SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS: switchCredentialsPath,
+          SWITCH_HOSTED_GITHUB_REPOSITORY: spec.github.repository!,
+          PATH: `${await prepareGitHubCli(root)}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+        }
+      : {}),
   };
   const mcpRuntimePath = bakedMcpRuntimePath();
   const variable = credentialVariable(spec.provider.credential.kind);
@@ -366,18 +398,30 @@ export async function prepareHostedDeployment(
           },
           capabilities: { approvals: true, userInput: true },
           roomConnection: {
-            rooms: [spec.room.roomId],
-            ...(spec.room.startCursor === undefined ? {} : { startCursor: spec.room.startCursor }),
+            rooms: spec.room ? [spec.room.roomId] : [],
+            ...(spec.room?.startCursor === undefined ? {} : { startCursor: spec.room.startCursor }),
           },
           execution: {
             credentialsPath: switchCredentialsPath,
-            inheritEnv: [...INHERITED_ENV, variable, ...(githubCredential ? ['GH_TOKEN'] : [])],
+            inheritEnv: [
+              ...INHERITED_ENV,
+              variable,
+              ...(githubCredential && !spec.github?.refresh ? ['GH_TOKEN'] : []),
+            ],
             binaryPath,
             mcpRuntime: spec.mcpRuntime,
             ...(mcpRuntimePath ? { mcpRuntimePath } : {}),
             codexConfig: '',
             skill: '',
             context: spec.provider.context,
+            ...(spec.provider.definition
+              ? {
+                  agentDefinition: {
+                    name: spec.provider.definition.name,
+                    path: `.claude/agents/${spec.provider.definition.name}.md`,
+                  },
+                }
+              : {}),
           },
           ids: {
             hostId: randomUUID(),
@@ -437,12 +481,25 @@ export async function prepareHostedDeployment(
       throw new Error('Saved hosted launch configuration differs from the deployment plan.');
   }
   const providerEnvironment: NodeJS.ProcessEnv = { ...environment };
+  if (spec.watch !== undefined) {
+    const watchPath = join(root, 'watch.json');
+    const expected = { enabled: spec.watch };
+    if (!(await writeNewJson(watchPath, expected))) {
+      const saved = await readJson(watchPath, 'Saved hosted watcher configuration is invalid.');
+      if (!sameValue(saved, expected))
+        throw new Error(
+          'Saved hosted watcher configuration differs from its deployment specification.'
+        );
+    }
+    await syncDirectory(root);
+  }
   for (const key of INHERITED_ENV) {
     const value = process.env[key];
-    if (value !== undefined) providerEnvironment[key] = value;
+    if (value !== undefined && providerEnvironment[key] === undefined)
+      providerEnvironment[key] = value;
   }
   providerEnvironment[variable] = providerCredential;
-  if (githubCredential) providerEnvironment.GH_TOKEN = githubCredential;
+  if (githubCredential && !spec.github?.refresh) providerEnvironment.GH_TOKEN = githubCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
   const machine = currentHostedMachineIdentity();
   if (machine) {
@@ -485,10 +542,44 @@ export async function runHostedBootstrap(
   const spec = await readHostedDeploymentSpec(input.specPath);
   const prepared = await prepareHostedDeployment(input.stateDirectory, spec);
   try {
+    if (spec.github?.refresh && spec.github.repository)
+      await ensureHostedRepository(
+        spec.workspacePath,
+        spec.github.repository,
+        prepared.providerEnvironment
+      );
+    if (spec.provider.definition) {
+      const directory = join(spec.workspacePath, '.claude', 'agents');
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      if (!isWithin(await realpath(spec.workspacePath), await realpath(directory)))
+        throw new Error('Cloud agent definition directory must stay inside the workspace.');
+      const path = join(directory, `${spec.provider.definition.name}.md`);
+      try {
+        const file = await open(path, 'wx', 0o600);
+        try {
+          await file.writeFile(spec.provider.definition.content);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (
+          !isWithin(await realpath(spec.workspacePath), await realpath(path)) ||
+          (await readFile(path, 'utf8')) !== spec.provider.definition.content
+        )
+          throw new Error('The saved cloud agent definition differs from the deployment.');
+      }
+    }
     await dependencies.supervise({
       root: prepared.root,
       executable: process.execPath,
-      args: [input.sharedDaemonEntrypoint, prepared.root, prepared.configPath],
+      args: [
+        input.sharedDaemonEntrypoint,
+        prepared.root,
+        prepared.configPath,
+        ...(spec.watch === undefined ? [] : ['--watch-worker']),
+      ],
       env: prepared.providerEnvironment,
       signal: input.signal,
       build: input.sharedDaemonEntrypoint,
