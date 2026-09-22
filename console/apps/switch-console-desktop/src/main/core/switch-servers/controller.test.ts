@@ -10,6 +10,8 @@ const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
+const listWorkspacesForServer = vi.hoisted(() => vi.fn());
+const createTenant = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
@@ -35,6 +37,7 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces,
 }));
+vi.mock('@main/core/workspaces/workspaces-store', () => ({ listWorkspacesForServer }));
 // Writes to the app's log file, which a test has no business creating.
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -52,6 +55,7 @@ vi.mock('./gateway-client', () => ({
   fetchAgentRooms: vi.fn(),
   fetchAgents: vi.fn(),
   fetchAuthConfig,
+  createTenant,
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
   registerKnownAgent: vi.fn(),
@@ -249,6 +253,144 @@ describe('reading the account’s workspaces once it is signed in', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+function workspaceRow(overrides: Record<string, unknown>) {
+  return {
+    id: 'ws',
+    serverId: 'srv',
+    name: 'W',
+    tenantId: 'tenant-1',
+    slug: 'w',
+    role: 'member',
+    createdAt: '',
+    updatedAt: '',
+    ...overrides,
+  };
+}
+
+describe('resolveWorkspaces', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset rather than cleared: an earlier test leaves a rejection standing on
+    // it, and `clearAllMocks` forgets the calls but keeps the behaviour.
+    reconcileServerWorkspaces.mockReset().mockResolvedValue(undefined);
+    getServer.mockResolvedValue(server({}));
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('answers with the memberships the server confirmed', async () => {
+    listWorkspacesForServer.mockResolvedValue([
+      workspaceRow({ id: 'ws-1', tenantId: 't1' }),
+      workspaceRow({ id: 'ws-2', tenantId: 't2' }),
+    ]);
+
+    const found = await switchServersController.resolveWorkspaces('srv');
+
+    expect(reconcileServerWorkspaces).toHaveBeenCalledWith('srv');
+    expect(found.map((w) => w.id)).toEqual(['ws-1', 'ws-2']);
+  });
+
+  // The placeholder a registration creates is not a membership, and offering it
+  // would scope the window to a workspace the gateway has never heard of.
+  it('leaves out the row that was never matched to a tenant', async () => {
+    listWorkspacesForServer.mockResolvedValue([
+      workspaceRow({ id: 'ws-1', tenantId: null, slug: null, role: null }),
+    ]);
+
+    await expect(switchServersController.resolveWorkspaces('srv')).resolves.toEqual([]);
+  });
+
+  /**
+   * The row is kept locally so its agents are not silently detached, but every
+   * call scoped to it is refused. Offering it puts the refusal after the click;
+   * worse, left as the only answer it is the one the caller enters without
+   * asking.
+   */
+  it('leaves out a membership the account has been removed from', async () => {
+    listWorkspacesForServer.mockResolvedValue([
+      workspaceRow({ id: 'ws-1', tenantId: 't1' }),
+      workspaceRow({ id: 'ws-gone', tenantId: 't2', role: null }),
+    ]);
+
+    const found = await switchServersController.resolveWorkspaces('srv');
+
+    expect(found.map((w) => w.id)).toEqual(['ws-1']);
+  });
+
+  // "You belong to nothing" and "nobody could be asked" are different answers,
+  // and a caller that received the empty list for both would offer to create a
+  // second workspace to someone who already has one.
+  it('raises rather than answering empty when the server cannot be asked', async () => {
+    reconcileServerWorkspaces.mockRejectedValue(new Error('gateway unreachable'));
+
+    await expect(switchServersController.resolveWorkspaces('srv')).rejects.toThrow(
+      'gateway unreachable'
+    );
+  });
+});
+
+describe('createWorkspace', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reconcileServerWorkspaces.mockReset().mockResolvedValue(undefined);
+    getServer.mockResolvedValue(server({}));
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('returns the local row for the workspace the gateway minted', async () => {
+    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    listWorkspacesForServer.mockResolvedValue([
+      workspaceRow({ id: 'ws-1', tenantId: 't1' }),
+      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Acme', role: 'owner' }),
+    ]);
+
+    const created = await switchServersController.createWorkspace({
+      serverId: 'srv',
+      name: 'Acme',
+    });
+
+    expect(createTenant).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'Acme');
+    expect(created.id).toBe('ws-9');
+  });
+
+  /**
+   * The reconcile is what records the workspace, name included — so one that
+   * failed has recorded nothing. Answering anyway would hand back whichever row
+   * happened to be there, under a name the user did not type, and report a
+   * success the install has no trace of.
+   */
+  it('raises when the reconcile that records the workspace fails', async () => {
+    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    reconcileServerWorkspaces.mockRejectedValue(new Error('the gateway stopped answering'));
+
+    await expect(
+      switchServersController.createWorkspace({ serverId: 'srv', name: 'Acme' })
+    ).rejects.toThrow('the gateway stopped answering');
+    expect(listWorkspacesForServer).not.toHaveBeenCalled();
+  });
+
+  // The workspace exists on the server either way. Returning something else, or
+  // nothing, would leave the app scoped to a workspace that is not the one just
+  // made — so it says so instead.
+  it('raises when the new workspace did not land locally', async () => {
+    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    listWorkspacesForServer.mockResolvedValue([workspaceRow({ id: 'ws-1', tenantId: 't1' })]);
+
+    await expect(
+      switchServersController.createWorkspace({ serverId: 'srv', name: 'Acme' })
+    ).rejects.toThrow('did not record it');
+  });
+
+  it('does not ask a server whose host is down to create anything', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({ sshHost: 'h', status: 'unreachable' });
+
+    await expect(
+      switchServersController.createWorkspace({ serverId: 'srv', name: 'Acme' })
+    ).rejects.toThrow();
+    expect(createTenant).not.toHaveBeenCalled();
   });
 });
 

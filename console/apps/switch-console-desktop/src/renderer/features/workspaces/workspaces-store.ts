@@ -75,6 +75,20 @@ export class WorkspacesStore {
     });
   }
 
+  /**
+   * Create a workspace on a server and return it.
+   *
+   * Refreshes before returning, so a caller that scopes the window to the new
+   * workspace is not doing it against a list that does not contain it yet.
+   * Failures propagate: the name may be refused for a slug already in use, and
+   * the form has to say so rather than appear to have worked.
+   */
+  async create(serverId: string, name: string): Promise<Workspace> {
+    const workspace = await rpc.switchServers.createWorkspace({ serverId, name });
+    await this.refresh();
+    return workspace;
+  }
+
   async refresh(): Promise<void> {
     const [workspaces, activeId] = await Promise.all([
       rpc.workspaces.list(),
