@@ -788,6 +788,7 @@ failure-mode tools are covered in the sections just above.
 - `list_room_groups` — the group tree rooms are organised into.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group.
+- `create_room_from_yaml` — provision a room or group from a YAML template.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
