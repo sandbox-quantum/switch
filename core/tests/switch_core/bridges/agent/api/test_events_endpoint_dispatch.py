@@ -7,6 +7,7 @@ coexist — but the dispatch itself is easy to break silently, hence these.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -328,3 +329,28 @@ class TestDeclaringARoomAtOpenTakesOver:
         assert claimant is not None
         assert claimant.id == "supervisor"
         assert "room-1" not in incumbent.rooms
+
+
+async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(monkeypatch):
+    protocol = _Protocol()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def record(*_):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(protocol, "record_client_declaration", record)
+    first = asyncio.create_task(
+        _call(protocol, accept="text/event-stream", connection_id="c1")
+    )
+    await entered.wait()
+    newer = await _call(protocol, accept="text/event-stream", connection_id="c1")
+    await anext(newer.body_iterator)
+    release.set()
+    older = await first
+    with pytest.raises(StopAsyncIteration):
+        await anext(older.body_iterator)
+    assert protocol.connections.beat(AGENT_ID, "c1", 0).stream_attached
+    await newer.body_iterator.aclose()
