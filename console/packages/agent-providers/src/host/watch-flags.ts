@@ -1,4 +1,4 @@
-import { watch } from 'node:fs';
+import { watch, type FSWatcher } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -21,6 +21,9 @@ export type WatchFlags = z.infer<typeof watchFlagsSchema>;
 
 export const WATCH_FLAGS_FILE = 'watch.json';
 
+/** How often the flags are re-read where the platform cannot watch for them. */
+const POLL_INTERVAL_MS = 1_000;
+
 export async function readWatchFlags(root: string): Promise<WatchFlags> {
   return watchFlagsSchema.parse(JSON.parse(await readFile(join(root, WATCH_FLAGS_FILE), 'utf8')));
 }
@@ -36,6 +39,12 @@ export async function readWatchFlags(root: string): Promise<WatchFlags> {
  * than the path, and the watch is in place before the first read so a write
  * landing between the two is still seen. A read that fails is the caller's
  * problem, not something to sit through: it rejects.
+ *
+ * A watch that cannot be established — a host at its descriptor or watch limit
+ * — is reported and the file is read on a timer instead. The controller is the
+ * agent's only inbound connection, so losing the watch costs the delay in
+ * noticing a setting change, where failing here would take the agent off the
+ * air entirely.
  */
 export function awaitWatchChange(
   root: string,
@@ -46,10 +55,13 @@ export function awaitWatchChange(
     if (signal.aborted) return resolve(null);
     let settled = false;
     let reading: Promise<void> = Promise.resolve();
+    let watcher: FSWatcher | null = null;
+    let polling: ReturnType<typeof setInterval> | null = null;
     const finish = (flags: WatchFlags | null, error?: Error) => {
       if (settled) return;
       settled = true;
-      watcher.close();
+      watcher?.close();
+      if (polling) clearInterval(polling);
       signal.removeEventListener('abort', onAbort);
       if (error) reject(error);
       else resolve(flags);
@@ -63,12 +75,27 @@ export function awaitWatchChange(
         })
         .catch((error: Error) => finish(null, error));
     };
-    const watcher = watch(root, (_event, filename) => {
-      // A null filename is the platform declining to say what changed, so the
-      // flags are re-read rather than assumed unchanged.
-      if (filename === null || filename === WATCH_FLAGS_FILE) check();
+    const readOnATimer = (reason: string) => {
+      if (settled || polling) return;
+      console.warn(
+        `Cannot watch ${WATCH_FLAGS_FILE} for changes; reading it every ${POLL_INTERVAL_MS}ms instead: ${reason}`
+      );
+      polling = setInterval(check, POLL_INTERVAL_MS);
+    };
+    try {
+      watcher = watch(root, (_event, filename) => {
+        // A null filename is the platform declining to say what changed, so the
+        // flags are re-read rather than assumed unchanged.
+        if (filename === null || filename === WATCH_FLAGS_FILE) check();
+      });
+    } catch (error) {
+      readOnATimer(String(error));
+    }
+    watcher?.on('error', (error: Error) => {
+      watcher?.close();
+      watcher = null;
+      readOnATimer(error.message);
     });
-    watcher.on('error', (error: Error) => finish(null, error));
     signal.addEventListener('abort', onAbort, { once: true });
     check();
   });

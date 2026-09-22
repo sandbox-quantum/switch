@@ -1,11 +1,30 @@
+import type { FSWatcher } from 'node:fs';
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { awaitWatchChange, readWatchFlags, type WatchFlags } from './watch-flags';
+
+const platform = vi.hoisted(() => ({ canWatch: true, watchers: [] as FSWatcher[] }));
+vi.mock('node:fs', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...real,
+    watch: (...args: Parameters<typeof real.watch>) => {
+      if (!platform.canWatch)
+        throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+      const watcher = real.watch(...args);
+      platform.watchers.push(watcher);
+      return watcher;
+    },
+  };
+});
 
 const roots: string[] = [];
 afterEach(async () => {
+  platform.canWatch = true;
+  platform.watchers.length = 0;
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -91,10 +110,47 @@ it('returns when the watcher is aborted rather than treating it as a failure', a
   ).resolves.toBeNull();
 });
 
+it('reads the flags on a timer where the platform cannot watch for them', async () => {
+  // A host at its descriptor or watch limit would otherwise take the agent's
+  // only inbound connection down over a setting file.
+  const root = await watcherRoot({ enabled: true, spawn: true });
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  platform.canWatch = false;
+  const stop = new AbortController();
+  try {
+    const waiting = awaitWatchChange(root, { enabled: true, spawn: true }, stop.signal);
+    await write(root, { enabled: true, spawn: false });
+    await expect(waiting).resolves.toEqual({ enabled: true, spawn: false });
+    expect(warning).toHaveBeenCalledOnce();
+  } finally {
+    stop.abort();
+  }
+});
+
+it('reads the flags on a timer after the watch it had dies', async () => {
+  const root = await watcherRoot({ enabled: true, spawn: true });
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const stop = new AbortController();
+  try {
+    const waiting = awaitWatchChange(root, { enabled: true, spawn: true }, stop.signal);
+    platform.watchers.at(-1)?.emit('error', new Error('EMFILE: too many open files'));
+    await write(root, { enabled: true, spawn: false });
+    await expect(waiting).resolves.toEqual({ enabled: true, spawn: false });
+    expect(warning).toHaveBeenCalledOnce();
+  } finally {
+    stop.abort();
+  }
+});
+
 it('rejects rather than standing down when the file cannot be read', async () => {
   const root = await watcherRoot({ enabled: true, spawn: true });
   const stop = new AbortController();
-  const waiting = awaitWatchChange(root, { enabled: true, spawn: true }, stop.signal);
+  // The assertion is attached before the file is broken: the rejection can
+  // land during the write, and a promise nothing is waiting on yet is an
+  // unhandled rejection rather than a result.
+  const rejected = expect(
+    awaitWatchChange(root, { enabled: true, spawn: true }, stop.signal)
+  ).rejects.toThrow();
   await writeFile(join(root, 'watch.json'), 'not json');
-  await expect(waiting).rejects.toThrow();
+  await rejected;
 });
