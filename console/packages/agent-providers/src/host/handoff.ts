@@ -53,7 +53,13 @@ export async function readsHandoffs(root: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
-  const declared = capabilitySchema.safeParse(JSON.parse(text));
+  let written: unknown = null;
+  try {
+    written = JSON.parse(text);
+  } catch {
+    written = null;
+  }
+  const declared = capabilitySchema.safeParse(written);
   if (!declared.success) {
     console.warn(
       `Session ${root} declares a worker capability this controller cannot read; routing it the way an older worker is routed.`

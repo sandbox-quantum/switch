@@ -46,6 +46,16 @@ it('reads a capability it cannot understand as one it cannot route to', async ()
   expect(warning).toHaveBeenCalledOnce();
 });
 
+it('reads a capability file it cannot parse at all as one it cannot route to', async () => {
+  // A marker caught half-written is not a reason to take the controller down
+  // with a parse error on the way to routing an event.
+  const session = await root();
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  await writeFile(join(session, 'worker.json'), '{"handoff":');
+  expect(await readsHandoffs(session)).toBe(false);
+  expect(warning).toHaveBeenCalledOnce();
+});
+
 it('hands over only what the worker has not already been given', async () => {
   const session = await root();
   const inbox = new HandoffInbox(session);
