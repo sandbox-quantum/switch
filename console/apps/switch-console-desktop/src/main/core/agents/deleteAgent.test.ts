@@ -252,6 +252,8 @@ describe('deleteAgent', () => {
     });
 
     expect(h.stopRemoteWatcher).toHaveBeenCalledWith('agent-1');
+    // Stopping is a round trip to the host, so the teardown makes it once.
+    expect(h.stopRemoteWatcher).toHaveBeenCalledTimes(1);
     expect(h.discardControllerState).toHaveBeenCalledWith('agent-1');
   });
 

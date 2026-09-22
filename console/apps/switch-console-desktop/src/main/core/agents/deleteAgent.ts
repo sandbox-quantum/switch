@@ -217,9 +217,11 @@ async function removeAgent(
   options: DeleteAgentOptions
 ): Promise<void> {
   const terminate = options.removeProvisionedFiles || options.deleteInSwitch;
-  if (terminate && agent) {
-    if (location?.sshHost) await stopRemoteWatcher(agentId);
-    else await autoSessionWatcher.stopForAgent(agentId);
+  const stopController = () =>
+    location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
+  const stoppedUpFront = terminate && agent !== undefined;
+  if (stoppedUpFront) {
+    await stopController();
     await stopSharedAgentSessions(agent);
   }
   // Gateway cascade first: fail loud before touching local state so a failure
@@ -243,7 +245,9 @@ async function removeAgent(
     })
   );
 
-  // Required where it runs at all, and the last thing that may refuse. A
+  // Required where it runs at all, and the last thing that may refuse — a full
+  // cleanup has already stopped the controller above, before the sessions it
+  // owns were torn down under it, so only the discard is left to do here. A
   // controller outlives the row it is not stopped with: it holds this agent's
   // credentials and connection and goes on answering as an agent the app says
   // is gone, and the journal it leaves is adopted by anything later registered
@@ -258,11 +262,8 @@ async function removeAgent(
   // started by another install and won the connection, and a plain remove is
   // this Console forgetting the agent rather than a claim over the host.
   // Locally there is no such ambiguity: the controller is this process.
-  if (location === null || location.sshHost === null) {
-    await autoSessionWatcher.stopForAgent(agentId);
-    await discardControllerState(agentId);
-  } else if (terminate) {
-    await stopRemoteWatcher(agentId);
+  if (location === null || location.sshHost === null || terminate) {
+    if (!stoppedUpFront) await stopController();
     await discardControllerState(agentId);
   }
 
