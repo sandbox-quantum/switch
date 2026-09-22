@@ -242,23 +242,18 @@ async function removeAgent(
     })
   );
 
-  if (location && location.sshHost !== null) {
-    await stopRemoteWatcher(agentId).catch((error) => {
-      log.warn('deleteAgent: failed to stop remote watcher', { agentId, error: String(error) });
-    });
-  } else {
-    await autoSessionWatcher.stopForAgent(agentId);
-  }
-  // Left behind, the journal outlives the agent, and one registered again under
-  // the same Switch identity adopts it and resumes from its cursor. The removal
-  // is reported rather than fatal: the agent is going either way, and failing
-  // here would leave it half-removed.
-  await discardControllerState(agentId).catch((error) => {
-    log.error('deleteAgent: failed to remove the controller state root', {
-      agentId,
-      error: String(error),
-    });
-  });
+  // Required, and the last thing that may refuse. A controller outlives the row
+  // it is not stopped with: it holds this agent's credentials and connection and
+  // goes on answering as an agent the app says is gone, and the journal it
+  // leaves is adopted by anything later registered under the same Switch
+  // identity, which then resumes from a dead cursor. Deleting over the top of
+  // that also destroys the id needed to try again. So a failure here keeps the
+  // row — the same trade as the gateway cascade above, and the reason the files
+  // below stay best-effort: litter on an unreachable host is not a live
+  // impostor.
+  if (location && location.sshHost !== null) await stopRemoteWatcher(agentId);
+  else await autoSessionWatcher.stopForAgent(agentId);
+  await discardControllerState(agentId);
 
   await setAutoSessionAgent(agentId, false);
   await setControllerStopped(agentId, false);

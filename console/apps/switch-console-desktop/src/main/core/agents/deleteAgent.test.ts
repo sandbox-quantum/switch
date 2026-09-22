@@ -22,11 +22,13 @@ const h = vi.hoisted(() => {
     repoAgents: object | null;
     agent: Record<string, unknown> | null;
     sessionRows: { id: string }[];
+    sshHost: string | null;
   } = {
     fs: fakeFs(),
     repoAgents: { removeLocal },
     agent: null,
     sessionRows: [],
+    sshHost: null,
   };
   return {
     state,
@@ -35,6 +37,8 @@ const h = vi.hoisted(() => {
     sessionHookEmit: vi.fn(),
     trackEvent: vi.fn(),
     discardControllerState: vi.fn(async () => {}),
+    deleteRow: vi.fn(async () => {}),
+    stopRemoteWatcher: vi.fn(async () => {}),
   };
 });
 
@@ -49,7 +53,7 @@ vi.mock('./agent-workspace-fs', () => ({
   resolveWorkspaceFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./agent-location', () => ({
-  getAgentLocation: vi.fn(async () => ({ sshHost: null, dir: '/repo' })),
+  getAgentLocation: vi.fn(async () => ({ sshHost: h.state.sshHost, dir: '/repo' })),
 }));
 vi.mock('./getAgentById', () => ({ getAgentById: vi.fn(async () => h.state.agent) }));
 vi.mock('./remove-switch-settings', () => ({
@@ -57,7 +61,7 @@ vi.mock('./remove-switch-settings', () => ({
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
 vi.mock('./stop-shared-agent-sessions', () => ({ stopSharedAgentSessions: vi.fn(async () => {}) }));
-vi.mock('./remote-watcher', () => ({ stopRemoteWatcher: vi.fn(async () => {}) }));
+vi.mock('./remote-watcher', () => ({ stopRemoteWatcher: h.stopRemoteWatcher }));
 vi.mock('./connect-remote-agent', () => ({ connectRemoteAgent: vi.fn() }));
 vi.mock('@main/core/agent-runtime/impl/remote-sidecar-launcher', () => ({
   killSidecarSession: vi.fn(async () => {}),
@@ -93,7 +97,7 @@ vi.mock('@main/db/schema', () => ({ agents: {}, sessions: {} }));
 vi.mock('@main/db/client', () => ({
   db: {
     select: () => ({ from: () => ({ where: async () => h.state.sessionRows }) }),
-    delete: () => ({ where: async () => undefined }),
+    delete: () => ({ where: h.deleteRow }),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
   },
 }));
@@ -114,6 +118,7 @@ describe('deleteAgent', () => {
     h.state.repoAgents = { removeLocal: h.removeLocal };
     h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
     h.state.sessionRows = [];
+    h.state.sshHost = null;
   });
 
   it('removes the per-agent credentials for a provider with no repo-agent definitions', async () => {
@@ -199,21 +204,43 @@ describe('deleteAgent', () => {
     expect(h.discardControllerState).toHaveBeenCalledWith('agent-1');
   });
 
-  it('still removes the agent when its controller state cannot be discarded', async () => {
-    // The host may be unreachable, and the agent is going either way; stopping
-    // here would leave the row deleted on the next attempt and the rest undone.
+  it('keeps the agent when its controller state cannot be discarded', async () => {
+    // Deleting the row over a controller that is still running loses the only id
+    // that could stop it later, and reports an agent as gone while it answers as
+    // itself. The row is what makes a retry possible, so it stays.
     h.discardControllerState.mockRejectedValueOnce(new Error('Host unreachable'));
 
-    await deleteAgent('agent-1', {
-      deleteInSwitch: false,
-      removeProvisionedFiles: false,
-      trigger: 'user',
-    });
+    await expect(
+      deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      })
+    ).rejects.toThrow('Host unreachable');
 
+    expect(h.deleteRow).not.toHaveBeenCalled();
     expect(h.trackEvent).toHaveBeenCalledWith(
       'agent_removed',
-      expect.objectContaining({ outcome: 'success' })
+      expect.objectContaining({ outcome: 'failure' })
     );
+  });
+
+  it('keeps a remote agent whose controller could not be stopped, even on a Console-only removal', async () => {
+    // Nothing on the host is being torn down here, but the controller is this
+    // app's own process holding the agent's credentials — leaving it connected
+    // while the row goes is the leak, not a file left in a directory.
+    h.state.sshHost = 'host';
+    h.stopRemoteWatcher.mockRejectedValueOnce(new Error('Host unreachable'));
+
+    await expect(
+      deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      })
+    ).rejects.toThrow('Host unreachable');
+
+    expect(h.deleteRow).not.toHaveBeenCalled();
   });
 
   describe('what it reports', () => {
