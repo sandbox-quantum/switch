@@ -14,15 +14,36 @@ import { titleCase } from "../../theme/hootFormat";
 
 /**
  * Disconnecting is the only way an install-created connection can be removed,
- * because it is the only one that revokes the token at the platform first.
- * Deleting the connection instead is refused, so this dialog carries the
- * warning that would otherwise sit on the delete: the rooms survive and go
- * internal-only, which is not obvious and cannot be undone by re-installing.
+ * so this dialog carries the warning that would otherwise sit on the delete
+ * (which is refused): the rooms survive and go internal-only, which is not
+ * obvious and cannot be undone by re-installing.
  *
  * It can fail with the platform's own refusal, in which case nothing has been
  * destroyed and trying again is the right move — so the error is shown here
  * rather than closing the dialog on the way out.
  */
+
+/**
+ * What Disconnect actually does differs by platform, and telling an operator a
+ * credential was revoked when it was not is the kind of thing that surfaces in
+ * an incident review. Most platforms hold a per-install token that Disconnect
+ * revokes; the distributed Discord app holds none — the bot authenticates with
+ * this deployment's own application token — so disconnect only stops delivery.
+ *
+ * Keyed on platform as a proxy for token-presence: the backend branches on
+ * whether the install has a token, but that field is not surfaced here. Any
+ * platform not listed gets the default (revoking) copy.
+ */
+const REMOVAL_COPY: Record<string, string> = {
+  discord:
+    "there is no per-install token to revoke — the bot authenticates with " +
+    "this deployment's own application token — so this stops delivery to the " +
+    "server, but the bot stays authenticated until it is removed from the " +
+    "server in Discord",
+};
+const DEFAULT_REMOVAL =
+  "the token is revoked at the platform and the connection it created is removed";
+
 interface Props {
   install: InstalledApp | null;
   onClose: () => void;
@@ -63,8 +84,8 @@ export default function DisconnectAppDialog({
       <DialogContent>
         <DialogContentText>
           Remove Switch from the {titleCase(install?.platform ?? "")} workspace{" "}
-          <b>{install?.external_workspace_id}</b>? The token is revoked at the
-          platform and the connection it created is removed.
+          <b>{install?.external_workspace_id}</b>? On disconnect,{" "}
+          {REMOVAL_COPY[install?.platform ?? ""] ?? DEFAULT_REMOVAL}.
         </DialogContentText>
         <DialogContentText sx={{ mt: 2 }}>
           Rooms that used this connection are kept, but become internal-only:
