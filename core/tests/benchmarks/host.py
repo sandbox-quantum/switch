@@ -142,7 +142,11 @@ class BenchWatcher:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if "restarted" in record:
+            # The journal also carries sequence bookkeeping — a numbering
+            # restart, a routed sequence, a held delivery and its release —
+            # and none of those name a session. An assignment is the record
+            # that carries the session's configuration.
+            if "config" not in record:
                 continue
             assigned[record["roomId"]] = record["config"]["session"]["sessionId"]
         return assigned
@@ -242,7 +246,10 @@ def bench_watcher(
             }
         )
     )
-    (root / "watch.json").write_text(json.dumps({"enabled": True}))
+    # Connected and allowed to start sessions: the workload addresses rooms
+    # nothing is running for, so a controller that may not spawn would measure
+    # a topology with no sessions in it.
+    (root / "watch.json").write_text(json.dumps({"enabled": True, "spawn": True}))
     template_path = home / "template.json"
     template_path.write_text(
         json.dumps(

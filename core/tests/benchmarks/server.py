@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import uvicorn
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
@@ -43,7 +44,12 @@ from switch_core.clients.client_base import ClientBase
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
-from switch_core.db.models import TENANT_ZERO_ID, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    SdkSession,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.main import (
     _connection_sweep_loop,
@@ -54,6 +60,12 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
+from switch_core.sessions.service import (
+    _host_lapsed,
+    _now,
+    _room_claimants,
+    _stored_snapshot,
+)
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -95,6 +107,20 @@ class _BenchBridges(_NoBridges):
 
 
 @dataclass(frozen=True, slots=True)
+class RoomState:
+    """The sessions of one room that a delivery decision turns on.
+
+    `owner` is the session whose host still holds the room, and is who a
+    delivery is routed to. `lapsed` is every unfinished session claiming the
+    room whose host was killed rather than stood down — the population the
+    server picks a session to be started again from.
+    """
+
+    owner: str | None
+    lapsed: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class BenchAgent:
     agent_id: str
     name: str
@@ -126,6 +152,7 @@ class BenchServer:
         connections: ConnectionRegistry,
         collector: TraceCollector,
         owner_id: str,
+        session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self.base_url = base_url
         self.port = port
@@ -136,7 +163,40 @@ class BenchServer:
         self.connections = connections
         self.collector = collector
         self.owner_id = owner_id
+        self._session_factory = session_factory
         self._agents: list[BenchAgent] = []
+
+    async def room_states(self, agent_id: str) -> dict[str, RoomState]:
+        """Per room of this agent, the sessions an admission answer is read off.
+
+        Taken from the session rows through the service's own predicates, so
+        the benchmark scores the topology against the authority the controller
+        routes on rather than against the connection registry, which no longer
+        sees a session worker.
+        """
+        async with self._session_factory() as db:
+            rows = list(
+                await db.scalars(
+                    select(SdkSession).where(
+                        SdkSession.tenant_id == require_tenant_id(),
+                        SdkSession.agent_id == agent_id,
+                    )
+                )
+            )
+            now = await _now(db)
+        rooms = {
+            room for row in rows for room in _stored_snapshot(row).session.room_ids
+        }
+        states: dict[str, RoomState] = {}
+        for room_id in rooms:
+            owner, claimants = _room_claimants(rows, room_id, now)
+            states[room_id] = RoomState(
+                owner=owner.id if owner else None,
+                lapsed=tuple(
+                    sorted(row.id for row in claimants if _host_lapsed(row, now))
+                ),
+            )
+        return states
 
     async def register_agent(self, name: str) -> BenchAgent:
         result = await self.protocol.register_agent(
@@ -365,6 +425,7 @@ async def bench_server(
             connections=connections,
             collector=collector,
             owner_id=owner.id,
+            session_factory=session_factory,
         )
         try:
             yield bench

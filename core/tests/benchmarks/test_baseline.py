@@ -28,7 +28,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.connections import MAX_CONNECTIONS_PER_AGENT
 from tests.benchmarks.host import bench_watcher, build_bench_bundle, marked, new_marker
-from tests.benchmarks.server import BenchServer
+from tests.benchmarks.server import BenchServer, RoomState
 from tests.benchmarks.trace import TraceCollector, correlation_for
 from tests.benchmarks.workload import (
     STREAM_TIMEOUT_SECONDS,
@@ -184,18 +184,23 @@ async def test_baseline_concurrent_delivery(
 async def test_baseline_recovers_from_a_lost_host(
     bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
 ) -> None:
-    """A session host is killed outright; a replacement must take the room over.
+    """A session host is killed outright; its room's messages must flow again.
 
     Measured because recovery is where a connection model is most likely to
-    leak: the killed host's inbound stream has to be reaped and the replacement
-    has to get one, and a topology that ends up holding both would show here as
-    a connection count that never comes back down.
+    leak: the killed host's inbound stream has to be reaped and whatever serves
+    the room next has to get one, and a topology that ends up holding both
+    would show here as a connection count that never comes back down.
 
-    The reap is waited for rather than assumed. Until the server releases the
-    dead host's claim on the room it still considers the room served, so a
-    message addressed in that window is routed to the process that is gone —
-    which makes the window itself the figure worth reporting, and makes a test
-    that posted immediately measure the window instead of the recovery.
+    The reap is waited for rather than assumed. Until the killed host's lease
+    runs out the server still considers the room served, so a message addressed
+    in that window is routed to the process that is gone — which makes the
+    window itself the figure worth reporting, and makes a test that posted
+    immediately measure the window instead of the recovery.
+
+    What comes back is the same session on the same host, not a second one: a
+    room held by an unfinished session is not free for anything else to take,
+    so recovery here means the server naming that session as startable and the
+    controller starting it again from its saved state.
     """
     target = await bench.register_agent("bench-target-recovery")
     poster = await bench.register_agent("bench-poster-recovery")
@@ -233,15 +238,25 @@ async def test_baseline_recovers_from_a_lost_host(
 
             assigned = watcher.sessions_by_room()
             assert room_id in assigned, assigned
-            assert bench.connections.claimant_of(target.agent_id, room_id) is not None
+            # The server agrees with the controller about who is working in the
+            # room. It is the answer every later delivery is routed on, so a
+            # recovery measured without it would be measuring the controller's
+            # own bookkeeping.
+            states = await bench.room_states(target.agent_id)
+            assert states.get(room_id) == RoomState(assigned[room_id], ()), states
             killed = watcher.kill_session(assigned[room_id])
             assert killed > 0
 
-            reaped = await _await_spawnable(bench, target.agent_id, room_id, 60.0)
+            reaped = await _await_recoverable(
+                bench, target.agent_id, room_id, assigned[room_id], 60.0
+            )
 
             after = new_marker()
             markers[after] = await send(after)
             assert not await dispatch_wait(watcher, markers, dispatch_timeout(1))
+            # The room it still holds was served by starting that session
+            # again, not by a second one started beside it.
+            assert watcher.sessions_by_room()[room_id] == assigned[room_id]
 
         # Once, after both phases: the file is append-only and read whole, so
         # ingesting per phase would count the first phase's records twice.
@@ -251,8 +266,8 @@ async def test_baseline_recovers_from_a_lost_host(
         label="1 session, host killed mid-run",
         rooms=1,
         collector=collector,
-        # Both messages are cold starts: the first spawns the session, and the
-        # second spawns its replacement because the first host no longer exists.
+        # Both messages are cold starts: the first starts the session, and the
+        # second starts it again because the process serving it is gone.
         posted=Posted(markers=markers, cold=frozenset(markers.values())),
         undelivered=frozenset(),
         resources=sampler.last_report,
@@ -260,8 +275,8 @@ async def test_baseline_recovers_from_a_lost_host(
     print("\n" + publish([result], tmp_path / "baseline-recovery.md"))
     print(
         f"recovery: {killed} process(es) serving the session were killed outright; "
-        f"the server released the room {reaped:.1f}s later and a replacement host "
-        "was dispatched the next message"
+        f"the server offered the session for starting again {reaped:.1f}s later "
+        "and it was serving its room by the next message"
     )
     assert result.unmeasured == ()
     # The case likeliest to execute a message twice, and the reason the figure
@@ -271,22 +286,29 @@ async def test_baseline_recovers_from_a_lost_host(
     assert result.duplicated == (), result.duplicated
 
 
-async def _await_spawnable(
-    bench: BenchServer, agent_id: str, room_id: str, timeout: float
+async def _await_recoverable(
+    bench: BenchServer, agent_id: str, room_id: str, session_id: str, timeout: float
 ) -> float:
-    """Seconds until the server will let a new host take the room over.
+    """Seconds until the server offers the killed session for starting again.
 
-    Polls the real connection registry rather than sleeping for the heartbeat
-    TTL: the figure wanted is how long the topology actually holds a dead
-    host's claim, and a fixed sleep would report the constant it was given.
+    Polls the session rows the admission answer is derived from rather than
+    sleeping for the heartbeat TTL: the figure wanted is how long the topology
+    actually holds a dead host's claim, and a fixed sleep would report the
+    constant it was given.
+
+    Waits for that one session and nothing else. A room whose session is gone
+    but still named is the state recovery starts from; a room whose claim had
+    simply disappeared would mean the delivery that comes next is answered by
+    something other than the session the messages before it went to.
     """
     started = asyncio.get_running_loop().time()
     deadline = started + timeout
     while asyncio.get_running_loop().time() < deadline:
-        if bench.connections.can_spawn_for(agent_id, room_id):
+        state = (await bench.room_states(agent_id)).get(room_id)
+        if state and state.owner is None and state.lapsed == (session_id,):
             return asyncio.get_running_loop().time() - started
         await asyncio.sleep(0.05)
     raise TimeoutError(
         f"the server still considered room {room_id} served {timeout}s after its "
-        "host was killed, so no replacement could ever be started"
+        f"host was killed, so session {session_id} could never be started again"
     )
