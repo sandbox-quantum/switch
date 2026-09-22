@@ -1,7 +1,7 @@
 """a template can be private to its owner, or open for anyone to edit
 
 Revision ID: c4d8e2a1f6b3
-Revises: 5daaea6b674d
+Revises: b8f2d0c41e57
 Create Date: 2026-09-18 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c4d8e2a1f6b3"
-down_revision: str | None = "5daaea6b674d"
+down_revision: str | None = "b8f2d0c41e57"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
