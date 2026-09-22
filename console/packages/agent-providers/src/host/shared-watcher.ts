@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import {
   EVICTION_HEARTBEAT_LAPSED,
   EVICTION_TAKEN_OVER,
@@ -20,7 +19,7 @@ import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock'
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { readTakenOver, recordTakenOver } from './taken-over';
-import { readWatchFlags } from './watch-flags';
+import { awaitWatchDisabled, readWatchFlags } from './watch-flags';
 
 const assignmentSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -358,10 +357,7 @@ export async function runSharedWatcher(
       },
     });
     stream.start();
-    while (!stop.signal.aborted) {
-      if (!(await readWatchFlags(root)).enabled) break;
-      await delay(500, undefined, { signal: stop.signal });
-    }
+    await awaitWatchDisabled(root, stop.signal);
   } catch (error) {
     if (!stop.signal.aborted) throw error;
   } finally {

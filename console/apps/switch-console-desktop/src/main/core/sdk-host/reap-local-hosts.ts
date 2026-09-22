@@ -12,8 +12,8 @@ const STOP_INTERVAL_MS = 200;
 
 /**
  * Asks a detached watcher to stop by clearing its enabled flag, which is the
- * same signal the SSH path uses. Its worker leaves the poll loop, its
- * supervisor sees a clean exit, and both release their owner records.
+ * same signal the SSH path uses. Its worker is watching the file and returns,
+ * its supervisor sees a clean exit, and both release their owner records.
  */
 async function stopDetachedWatcher(root: string): Promise<void> {
   if (!(await ownedElsewhere(root))) return;
