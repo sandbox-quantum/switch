@@ -326,7 +326,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     if (result.kind === 'directory-unusable') {
       toast({
         title: 'That working directory cannot be used. Nothing was created.',
-        description: describeRemoteDirRefusal(result.inspection, result.sshHost),
+        description: describeRemoteDirRefusal(result.inspection, runLocationLabel),
         variant: 'destructive',
       });
       return;

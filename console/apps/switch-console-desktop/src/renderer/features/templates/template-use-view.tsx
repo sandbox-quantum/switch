@@ -380,6 +380,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const { identities, refresh: refreshIdentities } = useMyIdentities(serverId);
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
   const allowedHosts = useAllowedHosts(serverId);
+  const hostLabel = useCallback(
+    (sshHost: string) => allowedHosts.find((h) => h.sshHost === sshHost)?.name ?? sshHost,
+    [allowedHosts]
+  );
 
   // The messaging app the room is created on: the bridge param's value if
   // there is one, else the bridge named in the template, else the server's default.
@@ -814,7 +818,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             templateOrigin: loaded.singular ? loaded.origin : null,
           });
           if (result.kind !== 'created') {
-            setSlot(i, { status: 'failed', error: provisionErrorText(result) });
+            setSlot(i, { status: 'failed', error: provisionErrorText(result, hostLabel) });
             setPhase('failed');
             return;
           }
@@ -1713,7 +1717,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 });
 
 function provisionErrorText(
-  result: Exclude<Awaited<ReturnType<typeof rpc.agents.addAgent>>, { kind: 'created' }>
+  result: Exclude<Awaited<ReturnType<typeof rpc.agents.addAgent>>, { kind: 'created' }>,
+  /** What the user calls the host they picked, keyed by SSH alias. */
+  hostLabel: (sshHost: string) => string
 ): string {
   switch (result.kind) {
     case 'unauthenticated':
@@ -1727,7 +1733,7 @@ function provisionErrorText(
     case 'invalid-name':
       return result.message;
     case 'directory-unusable':
-      return describeRemoteDirRefusal(result.inspection, result.sshHost);
+      return describeRemoteDirRefusal(result.inspection, hostLabel(result.sshHost));
     default:
       return result.message;
   }

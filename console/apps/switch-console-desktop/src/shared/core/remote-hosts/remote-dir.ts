@@ -70,15 +70,20 @@ export function isUsableRemoteDir(inspection: RemoteDirInspection): boolean {
 /**
  * Why a refusal was a refusal, as a sentence naming the path and the host.
  * Shared so the add-agent modal and the template use view say the same thing.
+ *
+ * `host` is what the user calls the machine — the onboarded host's display
+ * name, falling back to its SSH alias. Not the alias off the result: the picker
+ * they chose it from is labelled with the display name, and naming it two ways
+ * in one flow reads as two different machines.
  */
-export function describeRemoteDirRefusal(inspection: RemoteDirInspection, sshHost: string): string {
+export function describeRemoteDirRefusal(inspection: RemoteDirInspection, host: string): string {
   const { dir, status } = inspection;
   switch (status) {
     case 'file':
-      return `${dir} is a file on ${sshHost}, not a directory.`;
+      return `${dir} is a file on ${host}, not a directory.`;
     case 'relative':
-      return `${dir} is not an absolute path. Give the full path on ${sshHost}, starting with “/”.`;
+      return `${dir} is not an absolute path. Give the full path on ${host}, starting with “/”.`;
     default:
-      return `${dir} cannot be created on ${sshHost}: its parent directory is missing or is not a directory. Create the parent first.`;
+      return `${dir} cannot be created on ${host}: its parent directory is missing or is not a directory. Create the parent first.`;
   }
 }
