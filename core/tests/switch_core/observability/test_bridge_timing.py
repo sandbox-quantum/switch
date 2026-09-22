@@ -113,6 +113,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
 
         service = object.__new__(Service)
         service._started = {"a", "b", "c"}  # type: ignore[attr-defined]
+        service._platforms_seen = set()  # type: ignore[attr-defined]
         service._bridges = {"a": object(), "b": object()}  # type: ignore[attr-defined]
         service._tasks = {  # type: ignore[attr-defined]
             "a": _DoneTask(False),
@@ -137,11 +138,46 @@ class TestTheRunningGaugeSaysWhichPlatform:
 
         service = object.__new__(Service)
         service._started = {"c"}  # type: ignore[attr-defined]
+        service._platforms_seen = {"teams"}  # type: ignore[attr-defined]
         service._bridges = {}  # type: ignore[attr-defined]
         service._tasks = {"c": _DoneTask(True)}  # type: ignore[attr-defined]
         service._bridge_facts = {"c": ("teams", None)}  # type: ignore[attr-defined]
 
         assert service.running_by_platform() == {"teams": 0}
+
+    def test_a_platform_whose_last_bridge_was_stopped_still_reports_zero(self) -> None:
+        """`_started` drops a bridge that was stopped deliberately, so reading
+        only that would end the series at the moment it has something to say —
+        a dashboard cannot tell an ended series from one nobody is watching."""
+        from switch_core.bridges.collaboration.lifecycle_service import (
+            CollaborationBridgeLifecycleService as Service,
+        )
+
+        service = object.__new__(Service)
+        service._started = set()  # type: ignore[attr-defined]
+        service._platforms_seen = {"slack"}  # type: ignore[attr-defined]
+        service._bridges = {}  # type: ignore[attr-defined]
+        service._tasks = {}  # type: ignore[attr-defined]
+        service._bridge_facts = {}  # type: ignore[attr-defined]
+
+        assert service.running_by_platform() == {"slack": 0}
+
+    def test_a_process_with_no_bridges_at_all_reports_nothing(self) -> None:
+        """Not zero: there is no bridge here to be up or down, and five
+        platforms sitting at zero would invite an alert on one nobody
+        configured."""
+        from switch_core.bridges.collaboration.lifecycle_service import (
+            CollaborationBridgeLifecycleService as Service,
+        )
+
+        service = object.__new__(Service)
+        service._started = set()  # type: ignore[attr-defined]
+        service._platforms_seen = set()  # type: ignore[attr-defined]
+        service._bridges = {}  # type: ignore[attr-defined]
+        service._tasks = {}  # type: ignore[attr-defined]
+        service._bridge_facts = {}  # type: ignore[attr-defined]
+
+        assert service.running_by_platform() == {}
 
     def test_it_agrees_with_the_total_it_replaces(self) -> None:
         """The per-platform readings must sum to `running_count`, or two panels
@@ -152,6 +188,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
 
         service = object.__new__(Service)
         service._started = {"a", "b", "c"}  # type: ignore[attr-defined]
+        service._platforms_seen = set()  # type: ignore[attr-defined]
         service._bridges = {"a": object(), "b": object()}  # type: ignore[attr-defined]
         service._tasks = {  # type: ignore[attr-defined]
             "a": _DoneTask(False),

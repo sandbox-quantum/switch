@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from switch_core.observability.otlp import SUB_MILLISECOND_BOUNDS_MS
+
 MetricKind = Literal["sum", "gauge", "histogram"]
 
 # A ceiling, not a target: crossing it means a call site is passing something
@@ -35,6 +37,12 @@ class MetricSpec:
     unit: str
     description: str
     attributes: frozenset[str] = field(default_factory=frozenset)
+    # Histograms only, and only where the default set cannot resolve the
+    # measurement: bounds are the resolution, and a histogram whose readings
+    # all land in one bucket reports that bucket for ever. None means the
+    # shared latency bounds, which suit anything measured in tens of
+    # milliseconds and upwards.
+    bounds: tuple[float, ...] | None = None
 
 
 def _spec(
@@ -43,6 +51,7 @@ def _spec(
     unit: str,
     description: str,
     *attributes: str,
+    bounds: tuple[float, ...] | None = None,
 ) -> MetricSpec:
     return MetricSpec(
         name=name,
@@ -50,6 +59,7 @@ def _spec(
         unit=unit,
         description=description,
         attributes=frozenset(attributes),
+        bounds=bounds,
     )
 
 
@@ -106,8 +116,11 @@ DB_QUERY_DURATION = _spec(
     "ms",
     "Round trip for one statement, measured around the driver call. A "
     "statement that raised is not timed: a query that failed in four "
-    "milliseconds is not evidence the database is fast.",
+    "milliseconds is not evidence the database is fast. Not every statement "
+    "the process runs — see `observability/query.py` for what is outside it, "
+    "notably migrations and the message listener.",
     "operation",
+    bounds=SUB_MILLISECOND_BOUNDS_MS,
 )
 
 # ── Message transport ────────────────────────────────────────────────────────

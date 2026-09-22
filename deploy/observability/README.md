@@ -44,19 +44,26 @@ done
 
 ## Check these before you trust the dashboard
 
-**Histogram panels need two things, not one.** Request latency and delivery
-lag are OTLP histograms, and the `p95:`/`p99:` queries here assume the
-collector exports them to Datadog as *distributions*. Check the collector's
+**Histogram panels need two things, not one.** Request latency, delivery lag,
+database query duration and platform call duration are OTLP histograms, and the
+`p95:`/`p99:` queries here assume the collector exports them to Datadog as
+*distributions*. Check the collector's
 histogram mode — in the older `histograms` mode they arrive as separate
 `.count`, `.sum`, `.min` and `.max` series and these panels stay empty.
 
 Then check the second thing, which is easy to miss because it is on Datadog's
 side rather than the collector's: **percentile aggregations are off by default
 on a distribution metric and are billed separately.** Enable them per metric in
-Metrics Summary, and add `route` to that metric's configured tag set, or
-`p95: … by {route}` returns nothing on a fresh account. Empty is the honest
-outcome either way; a panel is never silently switched to a different
-statistic.
+Metrics Summary, and add the tag each panel groups by to that metric's
+configured tag set — `route` for requests, `operation` for database queries,
+`platform` for bridge calls — or `p95: … by {…}` returns nothing on a fresh
+account. Empty is the honest outcome either way; a panel is never silently
+switched to a different statistic.
+
+The two latency **monitors** depend on the same thing, and fail more quietly
+than a panel does: an alert over a percentile that is not enabled evaluates
+against no series and sits healthy for ever. Check them after enabling
+percentiles, not before.
 
 **`env` is a filter, not a grouping.** The dashboard's `$env` variable defaults
 to `*` and works whether or not anything sets it. The monitors deliberately do
@@ -67,8 +74,8 @@ healthy for ever. If several deployments report into one Datadog org, set
 `ENVIRONMENT` on each and add `env:<name>` to the monitor scopes by hand.
 
 **`service` is the one tag everything depends on.** Every monitor filters on
-`service:switch-core`. If a deployment changes `SERVICE_NAME`, all ten go
-silent at once.
+`service:switch-core`. If a deployment changes `SERVICE_NAME`, every one of
+them goes silent at once.
 
 ## The odd-looking first monitor
 

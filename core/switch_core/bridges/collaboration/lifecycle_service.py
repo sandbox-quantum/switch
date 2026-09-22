@@ -346,6 +346,11 @@ class CollaborationBridgeLifecycleService:
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
         self._started: set[str] = set()
+        # Every platform a bridge has been started for in this process, never
+        # removed. `running_by_platform` reports zero for each, so a platform's
+        # series survives its last bridge being stopped rather than ending —
+        # see the note there on why an absent series is the worst answer.
+        self._platforms_seen: set[str] = set()
         # The one listener every bridge that gets called back shares, and each
         # running bridge's place on it. Owned here rather than by an adapter
         # because the port is the process's, not a bridge's: two Mattermost
@@ -851,6 +856,7 @@ class CollaborationBridgeLifecycleService:
             self._bridges[bridge_id] = bridge_core
             self._tasks[bridge_id] = task
             self._started.add(bridge_id)
+            self._platforms_seen.add(normalise_platform(bridge.type))
             if wanted is not None:
                 self._held_resources[bridge_id] = wanted
 
@@ -1260,11 +1266,20 @@ class CollaborationBridgeLifecycleService:
         which is written at start from the row, so a bridge whose `BridgeCore`
         has already been discarded by a crash is still attributable.
 
-        Every started platform appears, zero included: a gauge that stops being
-        reported is indistinguishable on a dashboard from one nobody is looking
-        at, and "Slack went from one to zero" is the whole signal.
+        Every platform this process has ever started a bridge for appears,
+        zero included — which is why it is seeded from `_platforms_seen` rather
+        than from `_started` alone. A gauge that stops being reported is
+        indistinguishable on a dashboard from one nobody is looking at, and
+        "Slack went from one to zero" is the whole signal; `_started` drops a
+        bridge that was stopped deliberately, so reading only that would end
+        the series at exactly the moment it has something to say.
+
+        A process that has never started a bridge reports nothing at all, and
+        that is the honest answer rather than a gap: there is no bridge here to
+        be up or down, and five platforms sitting at zero would invite an alert
+        on a platform nobody configured.
         """
-        counts: dict[str, int] = {}
+        counts: dict[str, int] = dict.fromkeys(self._platforms_seen, 0)
         for bridge_id in self._started:
             platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
             name = normalise_platform(platform)

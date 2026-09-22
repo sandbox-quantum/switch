@@ -9,9 +9,13 @@ slow query.
 Timed with SQLAlchemy's cursor events rather than by wrapping call sites: they
 fire around the driver call itself, so what is measured is the database's round
 trip and not the Python either side of it, and there is no call site to
-remember to wrap. Both engines get them — the pooled one every request uses and
-the unpooled one the listener holds — because a `LISTEN` connection that has
-started blocking is exactly the kind of thing this should show.
+remember to wrap.
+
+What that leaves out, so nobody reads the panel as "every statement": the
+message listener, which takes the raw asyncpg connection and never executes
+through SQLAlchemy; Alembic, which builds its own engine; `BEGIN`/`COMMIT`,
+which the dialect issues directly; and pool pre-ping. An `executemany` is one
+measurement for the whole batch, because it is one round trip.
 
 **The statement text never leaves this module.** It is the most obviously
 useful attribute and the one thing that must not be a metric: it carries
@@ -32,10 +36,19 @@ from switch_core.observability.catalogue import DB_QUERY_DURATION
 from switch_core.observability.metrics import metrics
 
 # The verbs worth telling apart on a panel, and nothing else. `other` covers
-# everything from `SET` to `BEGIN` to a DDL statement a migration runs: they
-# are not what anyone is looking for when a read is slow, and naming each one
-# would put the shape of the schema on a dashboard.
+# the rest — `SET`, a DDL statement, anything a later caller invents — which is
+# not what anyone is looking for when a read is slow, and naming each one would
+# put the shape of the schema on a dashboard.
 _OPERATIONS = frozenset({"select", "insert", "update", "delete"})
+
+# Every tenant-bound transaction opens with this, from `db/tenant_session.py`'s
+# `after_begin`. It is a `SELECT`, it is always trivial, and it is roughly a
+# third of all statements — so counted as one it drags the `select` percentiles
+# toward bookkeeping and away from the queries the panel exists to show. Its
+# own label rather than dropped: a transaction rate is worth having, and a
+# `set_config` that started taking milliseconds would mean something.
+_TENANT_BIND_MARKER = "set_config("
+_TENANT_BIND = "tenant_bind"
 
 _TIMER_KEY = "_switch_query_started"
 
@@ -47,11 +60,16 @@ def _operation(statement: str) -> str:
     not worth a series of its own, and anything cleverer would have to parse
     SQL to find out — on the hot path, for a label.
     """
-    head = statement.lstrip()[:16].split(None, 1)
+    stripped = statement.lstrip()
+    head = stripped[:16].split(None, 1)
     if not head:
         return "other"
     keyword = head[0].lower()
-    return keyword if keyword in _OPERATIONS else "other"
+    if keyword not in _OPERATIONS:
+        return "other"
+    if keyword == "select" and _TENANT_BIND_MARKER in stripped[:64]:
+        return _TENANT_BIND
+    return keyword
 
 
 def _before(
@@ -66,6 +84,12 @@ def _before(
     # serves many connections at once, and anything keyed by less than the
     # statement's own context would have one query's start time read by
     # another's finish.
+    #
+    # SQLAlchemy types the context optional on this event and one dialect does
+    # pass None. A raise here lands *before* the driver call, so an
+    # unguarded `setattr` would turn a metric into a failed query.
+    if context is None:
+        return
     setattr(context, _TIMER_KEY, time.perf_counter())
 
 

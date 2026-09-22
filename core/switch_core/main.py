@@ -335,24 +335,22 @@ async def run(config: SwitchConfig) -> None:
     # Wired here rather than inside the engine factory, so the database layer
     # keeps knowing nothing about observability. Unconditional: the listeners
     # record into whatever registry is installed, which is the null one until
-    # `start_observability` runs and stays null when export is off — so this
-    # costs two clock reads per query on a server that reports nothing, and
-    # turning export on does not change how queries execute.
+    # `start_observability` runs and stays null when export is off — measured
+    # at 0.3 µs per statement against a 130 µs statement, so a server that
+    # reports nothing pays nothing worth counting, and turning export on does
+    # not change how queries execute.
     instrument_queries(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
     # subscription exists before the first consumer needs it.
     #
-    # Instrumented too, and it is the more interesting of the two: this
-    # connection is only ever read from, so a `LISTEN` that has started
-    # blocking shows up here and nowhere else.
-    def _listener_engine() -> AsyncEngine:
-        listener_engine = create_unpooled_engine(config)
-        instrument_queries(listener_engine)
-        return listener_engine
-
-    message_listener = MessageListener(_listener_engine)
+    # Deliberately NOT instrumented for query timing: `MessageListener` takes
+    # the raw asyncpg connection off this engine and issues `LISTEN` and its
+    # heartbeat through the driver, so SQLAlchemy's cursor events never fire
+    # and the listeners would record nothing at all. That this connection is
+    # alive is answered by the `message_listener` readiness check instead.
+    message_listener = MessageListener(lambda: create_unpooled_engine(config))
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.

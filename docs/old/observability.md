@@ -179,9 +179,17 @@ and those are the two the process cannot see from a count alone. A database
 statement is timed around the driver call by SQLAlchemy's cursor events
 (`observability/query.py`), so what is measured is the round trip rather than
 the Python either side of it; the statement text never becomes an attribute,
-only its leading keyword mapped through a fixed table. A statement that raised
-is not timed, because a query that failed in four milliseconds is not evidence
-the database is fast.
+only its leading keyword mapped through a fixed table — with the per-transaction
+tenant `set_config` given a label of its own, because it is a third of all
+statements and always trivial, so counted as a `select` it drags the
+percentiles toward bookkeeping. A statement that raised is not timed, because a
+query that failed in four milliseconds is not evidence the database is fast.
+
+It is not every statement the process runs. Alembic builds its own engine, the
+message listener talks to asyncpg directly, `BEGIN`/`COMMIT` come from the
+dialect, and an `executemany` is one measurement for the whole batch because it
+is one round trip. Read the panel as "the application's queries", not "all
+database work".
 
 **Not every HTTP surface is counted.** `switch.http.*` comes from middleware on
 the FastAPI app, which is the agent bridge, the MCP mount and the gateway
