@@ -69,6 +69,10 @@ OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
 SLACK_APP_CLIENT_SECRET: {{ required "secrets.slackAppClientSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppClientSecret | b64enc | quote }}
 SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppSigningSecret | b64enc | quote }}
 {{- end }}
+{{- if .Values.switchCore.discordApp.enabled }}
+DISCORD_APP_CLIENT_SECRET: {{ required "secrets.discordAppClientSecret is required when switchCore.discordApp.enabled" .Values.secrets.discordAppClientSecret | b64enc | quote }}
+DISCORD_APP_BOT_TOKEN: {{ required "secrets.discordAppBotToken is required when switchCore.discordApp.enabled" .Values.secrets.discordAppBotToken | b64enc | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -686,6 +690,34 @@ Include with `nindent 12`.
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: SLACK_APP_SIGNING_SECRET
+{{- end }}
+{{- if .Values.switchCore.discordApp.enabled }}
+{{- if not .Values.switchCore.slackApp.enabled }}
+- name: MESSAGING_PUBLIC_URL
+  value: {{ required "switchCore.discordApp.messagingPublicUrl is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.messagingPublicUrl | quote }}
+{{- end }}
+- name: DISCORD_APP_CLIENT_ID
+  value: {{ required "switchCore.discordApp.clientId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.clientId | quote }}
+- name: DISCORD_APP_APPLICATION_ID
+  value: {{ required "switchCore.discordApp.applicationId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.applicationId | quote }}
+- name: DISCORD_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: DISCORD_APP_CLIENT_SECRET
+- name: DISCORD_APP_BOT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: DISCORD_APP_BOT_TOKEN
+{{- if .Values.switchCore.discordApp.messageContent }}
+- name: DISCORD_APP_MESSAGE_CONTENT
+  value: "true"
+{{- end }}
+{{- if .Values.switchCore.discordApp.members }}
+- name: DISCORD_APP_MEMBERS
+  value: "true"
+{{- end }}
 {{- end }}
 {{- end }}
 
