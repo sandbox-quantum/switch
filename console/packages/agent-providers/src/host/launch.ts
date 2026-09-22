@@ -126,16 +126,13 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
       'The saved SDK host identity or working directory differs from the requested session.'
     );
   if (input.restart) await input.supervision.stop(input.root);
-  // A session's connection is journalled with the room it serves and the cursor
-  // it reached, so the saved one wins. A controller's is derived from the agent
-  // it watches and carries no position — its cursor comes from the assignment
-  // journal — so the caller's wins, and an agent whose identity was re-resolved
-  // gets a connection matching it instead of the one written at first launch.
+  // Every connection here is derived from the agent rather than minted for the
+  // run, so the caller's wins: an agent whose identity was re-resolved gets a
+  // connection matching it instead of the one written at first launch.
   await replaceOwner(path, {
     ...input.config,
     session: saved.session,
     resumeOperationId: input.restart ? randomUUID() : saved.resumeOperationId,
-    roomConnection: input.watcher ? input.config.roomConnection : saved.roomConnection,
   });
   const running = await liveSupervisor(input.root);
   if (running) {

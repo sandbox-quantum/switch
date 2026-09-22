@@ -8,6 +8,7 @@ export {
   eventBytes,
   hostEventSchema,
   parseHostEvent,
+  roomBindingSchema,
   roomMessageReceiptSchema,
   serverEventSchema,
   snapshotSchema,

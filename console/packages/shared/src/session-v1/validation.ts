@@ -247,6 +247,10 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
 export const roomMessageReceiptSchema = commandStatusSchema.extend({
   command: commandSchema.nullish(),
 });
+// The rooms Switch has a session serving, answered when it names the connection
+// its events arrive over. The session's own, not the connection's: one
+// connection carries every session an agent has.
+export const roomBindingSchema = z.object({ rooms: z.array(z.string().min(1)) });
 
 export function eventBytes(event: unknown): number {
   return new TextEncoder().encode(JSON.stringify(event)).byteLength;

@@ -169,9 +169,8 @@ export class SharedWatchAssignments {
    *
    * An assignment on its own is not a position. The watcher can die between
    * recording which session serves a room and handing that session the event,
-   * and reopening past the event would leave nothing holding it — the session's
-   * own connection covers that today, but it is the only copy once the watcher
-   * is the agent's single connection.
+   * and reopening past the event would leave nothing holding it: this is the
+   * agent's single connection, so there is no second copy of what it was sent.
    */
   get cursor(): number {
     let complete = 0;
@@ -203,6 +202,23 @@ export class SharedWatchAssignments {
     await this.journal.append({ restarted: true, at: new Date().toISOString() });
   }
 
+  /**
+   * The session already serving this room, or null if there is none to serve
+   * it. Answered from disk, because the session it names may be stopped and
+   * unable to answer for itself.
+   *
+   * A session whose inbox records other rooms is not one: it would hold the
+   * event without ever admitting it.
+   */
+  async serving(roomId: string): Promise<SharedHostConfig | null> {
+    const previous = [...this.every].reverse().find((record) => record.roomId === roomId);
+    if (!previous || (await stopped(previous.config.session.sessionId))) return null;
+    const saved = await SharedRoomInbox.savedRooms(
+      sharedSessionRoot(previous.config.session.sessionId)
+    );
+    return saved === null || saved.includes(roomId) ? previous.config : null;
+  }
+
   async assign(
     template: SharedHostConfig,
     event: { sequence: number; roomId: string; messageId: string }
@@ -215,18 +231,10 @@ export class SharedWatchAssignments {
         throw new Error('Watcher sequence changed message identity.');
       return duplicate.config;
     }
-    const previous = [...this.every].reverse().find((record) => record.roomId === event.roomId);
-    let config: SharedHostConfig;
-    const savedRooms = previous
-      ? await SharedRoomInbox.savedRooms(sharedSessionRoot(previous.config.session.sessionId))
-      : null;
-    if (
-      previous &&
-      !(await stopped(previous.config.session.sessionId)) &&
-      (savedRooms === null || savedRooms.includes(event.roomId))
-    )
-      config = previous.config;
-    else {
+    // A new session inherits the template's connection, which is this agent's
+    // one inbound connection: what reaches the session reaches it through here.
+    let config = await this.serving(event.roomId);
+    if (!config) {
       config = structuredClone(template);
       const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
       config.session = { ...config.session, sessionId, hostId: randomUUID(), epoch: randomUUID() };
@@ -234,11 +242,6 @@ export class SharedWatchAssignments {
       if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
         config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
       delete config.start.input.resume;
-      config.roomConnection = {
-        connectionId: randomUUID(),
-        rooms: [event.roomId],
-        startCursor: event.sequence - 1,
-      };
     }
     await this.journal.append({ ...event, config });
     return config;
@@ -327,11 +330,12 @@ export async function runSharedWatcher(
      * Puts the event in the inbox of the session that serves its room, for a
      * worker that has said it reads one.
      *
-     * A worker that has not said so keeps serving itself from its own
-     * connection and must not be routed to: nothing else would admit the event
-     * for it, and an event nobody admits is never committed, so it would be
-     * lost in silence rather than refused. Written before the worker is started
-     * or woken, so the decision is on disk before anything acts on it.
+     * A worker that has not said so was started by an app that gave every
+     * session a connection of its own, and is still serving itself from it.
+     * Routing to it would put the event somewhere nothing reads, and an event
+     * nobody admits is never committed, so it would be lost in silence rather
+     * than refused. Written before the worker is started or woken, so the
+     * decision is on disk before anything acts on it.
      */
     const route = async (config: SharedHostConfig, event: Handoff) => {
       const sessionRoot = sharedSessionRoot(config.session.sessionId);
@@ -357,11 +361,10 @@ export async function runSharedWatcher(
       signal: stop.signal,
       log: console,
       onEvent: (event) => {
-        // The connection is this agent's reachability; starting a session is a
-        // separate permission it may not have. What a room is told follows the
-        // agent's profile rather than this declaration, so whoever sets the
-        // profile that promises a session is the one keeping that honest.
-        if (!spawn) return;
+        // Read as the event arrives rather than when its turn comes: what is
+        // done with it follows the setting it was delivered under, and work
+        // queued ahead of it can take long enough for that to change.
+        const spawning = spawn;
         pending = pending.then(async () => {
           const messageId = roomInputId(event);
           if (!messageId) return;
@@ -370,16 +373,27 @@ export async function runSharedWatcher(
             roomId: event.room_id,
             messageId,
           };
-          const config = await assignments.assign(
-            sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
-            assignment
-          );
-          await route(config, assignment);
+          // The connection is this agent's reachability; starting a session is
+          // a separate permission it may not have. Without it a session that
+          // already serves the room is still served — it has no connection of
+          // its own to hear on — and a room with none goes unanswered. What a
+          // room is told follows the agent's profile rather than this
+          // declaration, so whoever sets the profile that promises a session is
+          // the one keeping that honest.
+          const config = spawning
+            ? await assignments.assign(
+                sharedConfigSchema.parse(
+                  JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+                ),
+                assignment
+              )
+            : await assignments.serving(assignment.roomId);
+          if (config) await route(config, assignment);
           // Recorded before the session is started, because starting it is
           // recoverable — every assigned session is launched again when the
           // watcher restarts — where the routing decision is not.
           await assignments.handled(assignment.sequence);
-          await launch(config);
+          if (config && spawning) await launch(config);
         });
         return pending.catch((error: Error) => {
           fail(error);

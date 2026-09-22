@@ -34,6 +34,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
+import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import {
@@ -132,7 +133,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
     const server = this.server;
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
-    const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
+    const config = await buildSharedHostConfig(session, this.params, this.transport);
     const previousEpoch = restart
       ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
       : null;
@@ -351,8 +352,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
 export async function buildSharedHostConfig(
   session: Pick<Session, 'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId'>,
   params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
-  transport: LocationTransport,
-  intended: { rooms: string[]; startCursor?: number }
+  transport: LocationTransport
 ): Promise<SharedHostConfig> {
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
@@ -432,11 +432,10 @@ export async function buildSharedHostConfig(
           : {}),
       },
     },
-    roomConnection: {
-      connectionId: randomUUID(),
-      rooms: intended.rooms,
-      startCursor: intended.startCursor,
-    },
+    // Every session of an agent is reached over that agent's one connection,
+    // held by its controller, so the identity is derived rather than minted:
+    // a session that restarts binds to the same one it did before.
+    roomConnection: { connectionId: controllerConnectionId(agent.switchAgentId) },
     execution: {
       credentialsPath: (transport.kind === 'ssh' ? posix.join : join)(
         params.sessionPath,

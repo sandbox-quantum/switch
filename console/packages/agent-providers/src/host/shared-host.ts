@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   commandSchema,
+  roomBindingSchema,
   roomMessageReceiptSchema,
   serverEventSchema,
   snapshotSchema,
@@ -257,10 +258,12 @@ export async function runSharedHost(
     lease = state.latest('lease')!;
     const session = structuredClone(lease.snapshot.session);
     const hostLease = { host_id: session.hostId, epoch: session.epoch };
-    // The room set the session is bound to, as the server was last told it,
+    // The room set the session is bound to, as the server last answered it,
     // and null until it has been told at all. The selector the runtime sends
     // resolves through that binding, so nothing is published before it exists.
     let roomBinding: string | null = null;
+    let boundAt = 0;
+    let unreachable = false;
     const publishSelector = () =>
       writeSessionSelector(options.root, {
         session_id: options.session.sessionId,
@@ -298,7 +301,27 @@ export async function runSharedHost(
     await state.journal.append({ type: 'running' });
     let rooms: SharedRoomInbox | null = null;
     let handoffs: HandoffInbox | null = null;
-    if (options.roomConnection) {
+    // Names the connection this session's room events arrive over, and answers
+    // with the rooms the server has it serving. Re-asserted while the session
+    // runs, because the connection belongs to the agent's controller, which can
+    // go away and come back under the same identity while this session keeps
+    // running — the binding is how the session finds out either way.
+    const roomConnection = options.roomConnection;
+    const bindRoomConnection = async () => {
+      boundAt = performance.now();
+      const served = roomBindingSchema.parse(
+        await request(`${sessionPath}/room-connection`, {
+          ...hostLease,
+          connection_id: roomConnection!.connectionId,
+        })
+      ).rooms;
+      const current = JSON.stringify(served);
+      if (current === roomBinding) return;
+      await rooms!.serves(served);
+      roomBinding = current;
+      await publishSelector();
+    };
+    if (roomConnection) {
       rooms = await SharedRoomInbox.open(options.root);
       // Before the first read of it, so an event this agent's controller routes
       // here while the session is still starting is waiting in the inbox rather
@@ -306,15 +329,7 @@ export async function runSharedHost(
       await declareHandoffCapability(options.root);
       handoffs = new HandoffInbox(options.root);
       handoffs.listen(executionSignal);
-      await rooms.connect(
-        { agentId: session.agentId, apiEndpoint: options.agentApiUrl, token: options.token },
-        options.roomConnection,
-        executionSignal,
-        (error) => {
-          failure = error;
-          stopped.abort(error);
-        }
-      );
+      await bindRoomConnection();
     }
     starting = true;
     host = await HostedSession.start(
@@ -410,15 +425,26 @@ export async function runSharedHost(
     let heldForDecision = false;
     while (!executionSignal.aborted) {
       await flush();
-      if (rooms && options.roomConnection) {
-        const current = JSON.stringify(rooms.currentRooms());
-        if (current !== roomBinding) {
-          await request(`${sessionPath}/room-connection`, {
-            ...hostLease,
-            connection_id: options.roomConnection.connectionId,
-          });
-          roomBinding = current;
-          await publishSelector();
+      if (roomConnection && performance.now() - boundAt >= 5000) {
+        try {
+          await bindRoomConnection();
+          if (unreachable) {
+            unreachable = false;
+            await host.roomDeliveryResumed();
+          }
+        } catch (error) {
+          if (!(error instanceof RequestError) || error.code !== 'NOT_AUTHORIZED') throw error;
+          // Not fatal, and not silent. The events are held by the server until
+          // something reaches them, and the identity this binding names is
+          // derived from the agent rather than minted per run, so a controller
+          // that comes back is the same one and delivery resumes on its own.
+          if (!unreachable) {
+            unreachable = true;
+            console.warn(error.message);
+            await host.notice(
+              "This session is not bound to its agent's room connection, so messages addressed to it in Switch are not reaching it. Delivery resumes by itself once that connection is back; if it does not, restart the agent's room watcher."
+            );
+          }
         }
       }
       if (host.snapshot().session.status === 'stopped') break;

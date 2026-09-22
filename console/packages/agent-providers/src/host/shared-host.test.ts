@@ -222,7 +222,6 @@ it('runs a room message handed back by its admission, and not again when it is r
     join(root, 'room-inbox.jsonl'),
     JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
   );
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const stop = new AbortController();
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
@@ -349,6 +348,7 @@ it('runs a room message handed back by its admission, and not again when it is r
         offeredByFetch = true;
         return Response.json([roomCommand]);
       }
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -365,7 +365,7 @@ it('runs a room message handed back by its admission, and not again when it is r
         env: {},
         mcpServers: {},
       },
-      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+      roomConnection: { connectionId: 'connection' },
     },
     adapter,
     stop.signal
@@ -508,6 +508,7 @@ function admittingServer() {
         });
       }
       if (path.endsWith('/commands')) return Response.json([]);
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -528,7 +529,7 @@ function startWorker(root: string, adapter: ProviderAdapter, signal: AbortSignal
         env: {},
         mcpServers: {},
       },
-      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+      roomConnection: { connectionId: 'connection' },
     },
     adapter,
     signal
@@ -543,7 +544,6 @@ it('runs what its controller routed to it, once however often it is handed over'
   // that dies in between hands the same event over again when it comes back.
   const root = await mkdtemp(join(tmpdir(), 'shared-host-handoff-'));
   roots.push(root);
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const stop = new AbortController();
   const { adapter, ran } = roomWorker();
   const { admitted } = admittingServer();
@@ -571,7 +571,6 @@ it('runs what was routed to it while it was down', async () => {
   // up is the only thing standing between that message and silence.
   const root = await mkdtemp(join(tmpdir(), 'shared-host-handoff-down-'));
   roots.push(root);
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   await declareHandoffCapability(root);
   await handOff(root, { sequence: 5, roomId: 'room', messageId: 'routed-while-down' });
   const stop = new AbortController();
@@ -598,7 +597,6 @@ it('fetches a room command the admission handed nothing back for', async () => {
       )
       .join('\n') + '\n'
   );
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const stop = new AbortController();
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
@@ -719,6 +717,7 @@ it('fetches a room command the admission handed nothing back for', async () => {
       }
       if (path.endsWith('/commands'))
         return Response.json(admitted.length < 2 ? [] : admitted.map(roomCommand));
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -735,7 +734,7 @@ it('fetches a room command the admission handed nothing back for', async () => {
         env: {},
         mcpServers: {},
       },
-      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+      roomConnection: { connectionId: 'connection' },
     },
     adapter,
     stop.signal
@@ -752,3 +751,82 @@ it('fetches a room command the admission handed nothing back for', async () => {
     expect(await outcome).toBeNull();
   }
 });
+
+it('records the rooms Switch answers its binding with', async () => {
+  // The controller reads them off disk to decide whether a session already
+  // covers a room, and it has to be able to while that session is stopped.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-binding-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  admittingServer();
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(async () => expect(await SharedRoomInbox.savedRooms(root)).toEqual(['room']), {
+      timeout: 3000,
+    });
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('says in the transcript when its room connection is refused, and when it is back', async () => {
+  // The connection belongs to the agent's controller, which can stop and be
+  // started again under the same session. Nothing else would tell the agent
+  // that the room it is waiting on has stopped reaching it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-unbound-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const notices: string[] = [];
+  let binds = 0;
+  let refuse = false;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim'))
+        return Response.json({
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...startingSession, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        });
+      if (path.endsWith('/room-connection')) {
+        binds += 1;
+        return refuse
+          ? Response.json(
+              { code: 'NOT_AUTHORIZED', detail: 'The SDK room connection is not live.' },
+              { status: 403 }
+            )
+          : Response.json({ rooms: ['room'] });
+      }
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        if (event.body.type === 'notice') notices.push(event.body.code);
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(binds).toBe(1), { timeout: 3000 });
+    refuse = true;
+    await vi.waitFor(() => expect(notices).toEqual(['ROOM_DELIVERY_FAILED']), { timeout: 12000 });
+    refuse = false;
+    await vi.waitFor(
+      () => expect(notices).toEqual(['ROOM_DELIVERY_FAILED', 'ROOM_DELIVERY_RESUMED']),
+      { timeout: 12000 }
+    );
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 30000);

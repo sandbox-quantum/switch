@@ -123,8 +123,7 @@ export async function configureSharedWatcher(
       agentName: name ?? agent.name ?? undefined,
     },
     { sessionPath: location.dir, ...settings },
-    transport,
-    { rooms: [], startCursor: 0 }
+    transport
   );
   if (name && name !== agent.name) {
     const remoteId = await readSubagentSwitchId(
@@ -141,10 +140,7 @@ export async function configureSharedWatcher(
   // After the subagent rename above, not before: that path replaces the Switch
   // agent id the whole configuration is about, and the controller id has to be
   // the one belonging to the agent actually being watched.
-  config.roomConnection = {
-    ...config.roomConnection!,
-    connectionId: controllerConnectionId(config.session.agentId),
-  };
+  config.roomConnection = { connectionId: controllerConnectionId(config.session.agentId) };
   // A local agent is watched from inside Console so it stops answering when
   // Console does. Only an SSH host gets a detached shared host of its own.
   if (transport.kind !== 'ssh') {

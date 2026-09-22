@@ -229,8 +229,7 @@ it.each([false, true])(
     const config = await buildSharedHostConfig(
       savedSession,
       { sessionPath: '/work', sessionEnvVars: {} },
-      { kind: 'local' } as LocationTransport,
-      { rooms: [] }
+      { kind: 'local' } as LocationTransport
     );
     expect(config.start.input.runtimeMode).toBe(enabled ? 'full-access' : 'approval-required');
   }
@@ -249,12 +248,9 @@ it('reads updated model, effort and instructions for each launch', async () => {
       instructions: 'Updated instructions',
     });
   const launch = () =>
-    buildSharedHostConfig(
-      session,
-      { sessionPath: '/work', sessionEnvVars: {} },
-      { kind: 'local' } as LocationTransport,
-      { rooms: [] }
-    );
+    buildSharedHostConfig(session, { sessionPath: '/work', sessionEnvVars: {} }, {
+      kind: 'local',
+    } as LocationTransport);
   const first = await launch();
   const second = await launch();
   expect(first.start.input.model).toEqual({ id: 'first-model', options: { effort: 'low' } });

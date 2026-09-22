@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { EVICTION_HEARTBEAT_LAPSED, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
-import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 
@@ -34,11 +33,16 @@ export function roomInputId(event: AgentBridgeEvent): string | null {
     .digest('hex')}`;
 }
 
-export const roomConnectionSchema = z.strictObject({
-  connectionId: z.string().min(1),
-  rooms: z.array(z.string().min(1)),
-  startCursor: z.number().int().nonnegative().optional(),
-});
+/**
+ * The connection a session's room events arrive over: its agent's, held by the
+ * controller that routes to it.
+ *
+ * Deliberately not strict. A config written when a session served itself also
+ * names the rooms and the cursor that connection of its own was opened on;
+ * neither is a session's to decide now, and refusing them would leave a
+ * session an older app started unopenable by this one.
+ */
+export const roomConnectionSchema = z.object({ connectionId: z.string().min(1) });
 const gapSchema = z
   .strictObject({
     fromSequence: z.number().int().nonnegative(),
@@ -90,29 +94,32 @@ const identity = (event: Pick<Received, 'roomId' | 'messageId'>): string =>
 export class SharedRoomInbox {
   private readonly received = new Map<string, Received>();
   private readonly outstanding = new Map<string, Received>();
-  private readonly sequences = new Map<number, string>();
   private rooms: string[] | null = null;
-  private cursor: number | null = null;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
+    // Only a journal an older app wrote carries deliveries and the position
+    // they reached: a session is served by its agent's controller, whose
+    // sequence numbers are that connection's rather than this one's. They are
+    // still replayed, so a session upgraded mid-flight admits what it was
+    // handed before the upgrade and acknowledges it exactly once.
+    const sequences = new Map<number, string>();
+    let cursor: number | null = null;
     for (const record of journal.records) {
       if (record.type === 'received') {
-        // Older journals carried restart evidence only on the next delivery.
-        if (record.gap && this.cursor !== null && record.sequence < this.cursor)
-          this.sequences.clear();
+        if (record.gap && cursor !== null && record.sequence < cursor) sequences.clear();
         const key = identity(record);
         this.received.set(key, record);
         this.outstanding.set(key, record);
-        this.sequences.set(record.sequence, key);
-        this.cursor = record.sequence;
+        sequences.set(record.sequence, key);
+        cursor = record.sequence;
       } else if (record.type === 'handoff') {
         this.hold({ ...record, type: 'received' });
       } else if (record.type === 'ack') {
-        const key = record.identity ?? this.sequences.get(record.sequence);
+        const key = record.identity ?? sequences.get(record.sequence);
         if (!key) throw new Error('Room inbox acknowledges an unknown delivery.');
         this.outstanding.delete(key);
       } else if (record.type === 'cursor') {
-        if (record.reset) this.sequences.clear();
-        this.cursor = record.sequence;
+        if (record.reset) sequences.clear();
+        cursor = record.sequence;
       } else this.rooms = record.rooms;
     }
   }
@@ -141,106 +148,27 @@ export class SharedRoomInbox {
     );
   }
 
-  async connect(
-    credentials: SwitchCredentials,
-    connection: z.infer<typeof roomConnectionSchema>,
-    signal: AbortSignal,
-    fail: (error: Error) => void
-  ): Promise<void> {
-    const cursor = this.cursor ?? connection.startCursor;
-    let rooms = this.rooms ?? connection.rooms;
-    await new Promise<void>((resolve, reject) => {
-      const aborted = () => reject(signal.reason);
-      signal.addEventListener('abort', aborted, { once: true });
-      const stream = new SwitchEventStream({
-        creds: credentials,
-        connectionId: connection.connectionId,
-        scope: 'single',
-        filter: 'all',
-        startCursor: cursor,
-        rooms,
-        signal,
-        log: console,
-        onEvent: async (event) => {
-          const messageId = roomInputId(event);
-          if (!messageId) return;
-          const received = receivedSchema.parse({
-            type: 'received',
-            sequence: event.sequence,
-            roomId: event.room_id,
-            messageId,
-          });
-          const key = identity(received);
-          const previous = this.sequences.get(received.sequence);
-          if (previous && previous !== key)
-            throw new Error('Room delivery sequence changed identity.');
-          if (this.received.has(key)) return;
-          await this.journal.append(received);
-          this.received.set(key, received);
-          this.outstanding.set(key, received);
-          this.sequences.set(received.sequence, key);
-          this.cursor = received.sequence;
-        },
-        onRooms: (next) => {
-          void (async () => {
-            if (this.rooms === null || JSON.stringify(next) !== JSON.stringify(rooms)) {
-              await this.journal.append({ type: 'rooms', rooms: next });
-              rooms = next;
-              this.rooms = [...next];
-            }
-            signal.removeEventListener('abort', aborted);
-            resolve();
-          })().catch((error: Error) => {
-            reject(error);
-            fail(error);
-          });
-        },
-        // A gap costs the agent context, not the connection: the stream keeps
-        // serving from wherever it resumed. What the agent is told about it
-        // comes back from the server on the next room message, which knows
-        // which rooms actually lost events; recording it here is evidence for
-        // a reader of the journal.
-        onGap: async (gap) => {
-          console.warn(
-            `Room delivery gap in ${gap.rooms?.join(', ') ?? 'unnamed rooms'}: ${gap.reason}.`
-          );
-          if (gap.resumedAt === undefined) return;
-          await this.journal.append({
-            type: 'cursor',
-            sequence: gap.resumedAt,
-            reset: gap.cursorReset === true,
-            gap: { fromSequence: gap.fromSequence, reason: gap.reason },
-          });
-          this.cursor = gap.resumedAt;
-          if (gap.cursorReset) this.sequences.clear();
-        },
-        onEvicted: ({ code, reason }) => {
-          if (code === EVICTION_HEARTBEAT_LAPSED)
-            console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
-          else fail(new Error(`Room connection was evicted: ${reason}`));
-        },
-        onRoomRejected: ({ roomId, detail }) =>
-          fail(new Error(`Room ${roomId} was refused: ${detail}`)),
-      });
-      stream.start();
-    });
+  /**
+   * Records the rooms the server says this session serves.
+   *
+   * Written down because the controller reads it to decide whether an already
+   * running session covers a room, and it must be able to do that while the
+   * session is stopped and nobody can be asked.
+   */
+  async serves(rooms: string[]): Promise<void> {
+    if (this.rooms !== null && JSON.stringify(this.rooms) === JSON.stringify(rooms)) return;
+    await this.journal.append({ type: 'rooms', rooms });
+    this.rooms = [...rooms];
   }
 
   /**
    * Takes an event this session's controller routed here and holds it for
-   * admission exactly as a delivery of its own would be.
+   * admission.
    *
-   * Both can see the same event while a session still has a connection of its
-   * own, so whichever arrives second is dropped on the room and message it
-   * names — the identity admission is keyed on — rather than on which path
-   * carried it.
-   *
-   * Its position is deliberately not taken as this connection's own: the
-   * controller reached it on a different connection, and reading it as
-   * progress here would resume this session's stream past events it never
-   * saw. For the same reason the sequence is not registered as this
-   * connection's account of that position, which a server restart the
-   * controller has already seen and this session has not would contradict.
+   * Duplicates are dropped on the room and message they name rather than on
+   * the position they arrived at: the sequence belongs to the controller's
+   * connection, and a session upgraded from one of its own can hold the same
+   * event under two of them.
    */
   async accept(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<boolean> {
     const received = receivedSchema.parse({ type: 'received', ...event });
@@ -248,10 +176,6 @@ export class SharedRoomInbox {
     await this.journal.append({ ...received, type: 'handoff' });
     this.hold(received);
     return true;
-  }
-
-  currentRooms(): string[] {
-    return [...(this.rooms ?? [])];
   }
 
   pending(): Received[] {

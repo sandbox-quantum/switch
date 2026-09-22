@@ -332,6 +332,15 @@ export class HostedSession {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
   }
 
+  roomDeliveryResumed(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'ROOM_DELIVERY_RESUMED',
+      message: 'Room messages are reaching this session again.',
+    });
+  }
+
   roomBacklogDelivered(count: number): Promise<void> {
     return this.publish({
       type: 'notice',

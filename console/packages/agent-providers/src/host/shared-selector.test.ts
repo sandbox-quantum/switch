@@ -6,7 +6,6 @@ import type { Command, HostEvent, Session } from '@switch-console/shared/session
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
-import { SharedRoomInbox } from './room-inbox';
 import { sessionSelectorPath } from './shared-config';
 import { runSharedHost } from './shared-host';
 
@@ -112,7 +111,6 @@ it('publishes the epoch the server minted, not the one the host proposed', async
     sessionSelectorPath(root),
     JSON.stringify({ session_id: 'session', host_id: 'host', epoch: 'worker-that-died' })
   );
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const stop = new AbortController();
   const seen: string[] = [];
   let atBind: Record<string, string> | null | 'never-bound' = 'never-bound';
@@ -157,7 +155,7 @@ it('publishes the epoch the server minted, not the one the host proposed', async
         env: {},
         mcpServers: {},
       },
-      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+      roomConnection: { connectionId: 'connection' },
     },
     adapterFor(),
     stop.signal
@@ -190,7 +188,6 @@ it('publishes the epoch the server minted, not the one the host proposed', async
 it('republishes the epoch a reset rotated into', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-selector-reset-'));
   roots.push(root);
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const stop = new AbortController();
   const reset: Command = {
     contractVersion: 1,
@@ -256,7 +253,7 @@ it('republishes the epoch a reset rotated into', async () => {
         env: {},
         mcpServers: {},
       },
-      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+      roomConnection: { connectionId: 'connection' },
     },
     adapterFor(),
     stop.signal
