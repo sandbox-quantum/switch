@@ -59,6 +59,7 @@ vi.mock('@main/core/agent-runtime/impl/remote-sidecar-launcher', () => ({
 }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   setAutoSessionAgent: vi.fn(async () => {}),
+  setControllerStopped: vi.fn(async () => {}),
 }));
 vi.mock('@main/core/switch-rooms/auto-session-watcher', () => ({
   autoSessionWatcher: { stopForAgent: vi.fn() },

@@ -1,5 +1,4 @@
-import { configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
-import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
+import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
 import { agentEvents } from './agent-events';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
@@ -28,13 +27,14 @@ export async function startRemoteDiscovery(agentId: string): Promise<void> {
   if ((await getAgentById(agentId))?.switchAgentId) remoteSessionReconciler.start(agentId);
 }
 /**
- * Puts the watcher back in the state it is already configured to be in, after a
- * rename or a saved provider config. Nobody asked for the watcher here, so one
- * that stood down after a takeover is left alone.
+ * Puts the controller back in the state it is already configured to be in,
+ * after a rename or a saved provider config. Nobody asked for it here, so one
+ * that stood down after a takeover is left alone. An agent with no Switch
+ * identity has nothing to connect as, and is not an error on this path.
  */
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
-  const spawning = (await listAutoSessionAgentIds()).includes(agentId);
-  await configureSharedWatcher(agentId, { connected: spawning, spawning }, 'restore');
+  if (!(await getAgentById(agentId))?.switchAgentId) return;
+  await applyControllerState(agentId, 'restore');
   remoteSessionReconciler.start(agentId);
 }
 export async function stopRemoteWatcher(agentId: string): Promise<void> {

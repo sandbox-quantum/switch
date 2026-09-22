@@ -11,11 +11,19 @@ import { appSettings } from '@main/db/schema';
  */
 const KEY = 'auto_session_agents';
 
-async function readSet(): Promise<Set<string>> {
+/**
+ * Agents whose controller someone stopped by hand. Every agent linked to Switch
+ * is given a controller at boot, so this is the only record that one of them
+ * was deliberately taken off the air — without it, quitting Console would put
+ * a stopped agent back on it.
+ */
+const STOPPED_KEY = 'stopped_controller_agents';
+
+async function readSet(key: string): Promise<Set<string>> {
   const [row] = await db
     .select({ value: appSettings.value })
     .from(appSettings)
-    .where(eq(appSettings.key, KEY));
+    .where(eq(appSettings.key, key));
   if (!row) return new Set();
   try {
     const ids = JSON.parse(row.value) as string[];
@@ -25,25 +33,39 @@ async function readSet(): Promise<Set<string>> {
   }
 }
 
-async function writeSet(ids: Set<string>): Promise<void> {
+async function writeSet(key: string, ids: Set<string>): Promise<void> {
   const serialized = JSON.stringify([...ids]);
   await db
     .insert(appSettings)
-    .values({ key: KEY, value: serialized })
+    .values({ key, value: serialized })
     .onConflictDoUpdate({ target: appSettings.key, set: { value: serialized } });
+}
+
+async function updateSet(key: string, agentId: string, member: boolean): Promise<void> {
+  const ids = await readSet(key);
+  if (member) ids.add(agentId);
+  else ids.delete(agentId);
+  await writeSet(key, ids);
 }
 
 /** Local agent ids currently mirrored as auto_session-enabled. */
 export async function listAutoSessionAgentIds(): Promise<string[]> {
-  return [...(await readSet())];
+  return [...(await readSet(KEY))];
 }
 
 /** Add or remove an agent from the local auto_session mirror. */
 export async function setAutoSessionAgent(agentId: string, enabled: boolean): Promise<void> {
-  const ids = await readSet();
-  if (enabled) ids.add(agentId);
-  else ids.delete(agentId);
-  await writeSet(ids);
+  await updateSet(KEY, agentId, enabled);
+}
+
+/** Local agent ids whose controller is stopped until someone starts it again. */
+export async function listStoppedControllerAgentIds(): Promise<string[]> {
+  return [...(await readSet(STOPPED_KEY))];
+}
+
+/** Record that an agent's controller was stopped by hand, or started again. */
+export async function setControllerStopped(agentId: string, stopped: boolean): Promise<void> {
+  await updateSet(STOPPED_KEY, agentId, stopped);
 }
 
 /**

@@ -1,7 +1,10 @@
 import { eq } from 'drizzle-orm';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
-import { setAutoSessionAgent } from '@main/core/switch-rooms/auto-session-store';
+import {
+  setAutoSessionAgent,
+  setControllerStopped,
+} from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import {
   deleteAgent as gatewayDeleteAgent,
@@ -247,6 +250,7 @@ async function removeAgent(
   }
 
   await setAutoSessionAgent(agentId, false);
+  await setControllerStopped(agentId, false);
 
   if (agent && location && options.removeProvisionedFiles) {
     await removeProvisionedFiles(agent, location).catch((error) => {

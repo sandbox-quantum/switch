@@ -4,6 +4,10 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
+import {
+  listAutoSessionAgentIds,
+  listStoppedControllerAgentIds,
+} from '@main/core/switch-rooms/auto-session-store';
 import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { adoptSubagent } from './adopt-subagent';
 import { stopLegacySidecar } from './legacy-sidecar';
@@ -40,6 +44,25 @@ async function readSubagentSwitchId(
  * by saying it has no session rather than promising one nothing will start.
  */
 export type ControllerState = { connected: boolean; spawning: boolean };
+
+/**
+ * Puts an agent's controller into the state its settings describe: connected
+ * unless somebody stopped it, and spawning only if automatic sessions are on.
+ * This is the read of those two settings — callers that are not themselves
+ * deciding one of them should come through here rather than assemble a state.
+ */
+export async function applyControllerState(agentId: string, intent: WatcherIntent): Promise<void> {
+  const [stopped, spawning] = await Promise.all([
+    listStoppedControllerAgentIds(),
+    listAutoSessionAgentIds(),
+  ]);
+  const connected = !stopped.includes(agentId);
+  await configureSharedWatcher(
+    agentId,
+    { connected, spawning: connected && spawning.includes(agentId) },
+    intent
+  );
+}
 
 export async function configureSharedWatcher(
   agentId: string,

@@ -13,26 +13,24 @@ import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
-import { ensureRemoteWatcher, stopRemoteWatcher } from './remote-watcher';
+import { ensureRemoteWatcher } from './remote-watcher';
 
 export type AgentAutoSessionParams = { agentId: string; enabled: boolean };
 
 /**
  * Apply an agent's auto_session state to the LOCAL side only: mirror the flag
- * and start/stop the watcher. Remote agents are auto-started by their on-VM
- * watcher daemon (which also writes the watch-enabled marker file), so drive
- * the VM watcher explicitly; the in-process `autoSessionWatcher.reconcile`
- * no-ops for remote agents (startForAgent skips them). Does NOT touch the
- * gateway profile — callers that also mutate the gateway must do so separately.
+ * and tell the agent's controller whether it may start sessions. The controller
+ * itself stays up either way — an agent linked to Switch holds its connection
+ * because it exists, so turning automatic sessions off leaves it addressable
+ * and answering that it has no session. A remote agent's controller runs on its
+ * host, so that side is driven over the transport rather than in process. Does
+ * NOT touch the gateway profile — callers that also mutate the gateway must do
+ * so separately.
  */
 async function applyLocalAutoSessionState(agent: Agent, enabled: boolean): Promise<void> {
   await setAutoSessionAgent(agent.id, enabled);
-  if ((await getRemoteAgentLocation(agent)) !== null) {
-    if (enabled) await ensureRemoteWatcher(agent.id);
-    else await stopRemoteWatcher(agent.id);
-  } else {
-    await autoSessionWatcher.reconcile(agent.id, enabled);
-  }
+  if ((await getRemoteAgentLocation(agent)) !== null) await ensureRemoteWatcher(agent.id);
+  else await autoSessionWatcher.reconcile(agent.id);
 }
 
 /**

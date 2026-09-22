@@ -7,6 +7,13 @@ const mocks = vi.hoisted(() => ({
   startLocal: vi.fn(),
   stopLocal: vi.fn(),
   exec: vi.fn(),
+  stopped: vi.fn(),
+  spawning: vi.fn(),
+}));
+
+vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
+  listStoppedControllerAgentIds: mocks.stopped,
+  listAutoSessionAgentIds: mocks.spawning,
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({
@@ -43,7 +50,7 @@ vi.mock('./local-host', () => ({
   stopLocalWatcher: mocks.stopLocal,
 }));
 
-const { configureSharedWatcher } = await import('./shared-watcher');
+const { applyControllerState, configureSharedWatcher } = await import('./shared-watcher');
 const { controllerConnectionId } = await import('@main/core/switch-rooms/session-connection-id');
 
 beforeEach(() => {
@@ -54,6 +61,8 @@ beforeEach(() => {
     entrypoint: 'shared-host.mjs',
   });
   mocks.exec.mockResolvedValue({ stdout: '' });
+  mocks.stopped.mockResolvedValue([]);
+  mocks.spawning.mockResolvedValue([]);
 });
 
 it('watches a local agent inside Console without deploying a host', async () => {
@@ -134,4 +143,23 @@ it('passes the spawn decision to a local watcher', async () => {
   mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
   await configureSharedWatcher('agent-1', { connected: true, spawning: false }, 'explicit');
   expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'explicit', spawning: false });
+});
+
+it.each([true, false])(
+  'connects an agent nobody stopped, spawning only when auto-start is %s',
+  async (autoStart) => {
+    mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+    mocks.spawning.mockResolvedValue(autoStart ? ['agent-1'] : []);
+    await applyControllerState('agent-1', 'restore');
+    expect(mocks.startLocal.mock.calls[0][1]).toEqual({ intent: 'restore', spawning: autoStart });
+  }
+);
+
+it('leaves a stopped controller off the air however auto-start is set', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  mocks.stopped.mockResolvedValue(['agent-1']);
+  mocks.spawning.mockResolvedValue(['agent-1']);
+  await applyControllerState('agent-1', 'restore');
+  expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
+  expect(mocks.startLocal).not.toHaveBeenCalled();
 });

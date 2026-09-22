@@ -59,16 +59,18 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
       {data &&
         (deployed ? (
           <p className="text-sm text-foreground-muted">
-            The sidecar is a background service on the SSH host that watches this agent’s rooms and
-            starts sessions while Console is closed. Manage conversations in Sessions below. Update
-            and Restart reload the service. Stop turns off automatic sessions; existing sessions
-            continue running.
+            The sidecar is a background service on the SSH host that holds this agent’s room
+            connection while Console is closed, and starts sessions for it when “Auto-create a
+            session on notify” is on. Manage conversations in Sessions below. Update and Restart
+            reload the service. Stop takes the agent off the air until you press Start; existing
+            sessions continue running.
           </p>
         ) : (
           <p className="text-sm text-foreground-muted">
-            Console watches this agent’s rooms itself and starts a session when the agent is
-            addressed with none running. It runs inside Console, so quitting Console stops the
-            watcher and the sessions it started. Turn it off with Automatic sessions above.
+            Console holds this agent’s room connection itself, and starts a session when the agent
+            is addressed with none running if “Auto-create a session on notify” is on. It runs
+            inside Console, so quitting Console takes the agent off the air along with the sessions
+            it started.
           </p>
         ))}
       {query.isPending && <p className="text-sm">Checking the watcher…</p>}
@@ -152,7 +154,8 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
           )}
           {enabled && !running && !takenOver && (
             <p role="alert" className="text-sm text-destructive">
-              New room messages cannot automatically start this agent.{' '}
+              This agent is not holding its room connection, so messages addressed to it go
+              unanswered.{' '}
               {deployed
                 ? 'Inspect the log before restarting.'
                 : 'Inspect the log below; reopening Console starts it again.'}

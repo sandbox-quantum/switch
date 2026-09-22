@@ -1,6 +1,7 @@
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { getAgents } from '@main/core/agents/getAgents';
 import { disposeLocalHosts } from '@main/core/sdk-host/local-host';
-import { configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
+import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
 import { log } from '@main/lib/logger';
 import {
   listAutoSessionAgentIds,
@@ -10,16 +11,28 @@ import {
 } from './auto-session-store';
 
 class AutoSessionWatcher {
+  /**
+   * Brings up a controller for every agent linked to Switch, whether or not it
+   * may start sessions: an agent is reachable because it exists, and the
+   * auto-start setting only decides what its controller does with a message it
+   * is addressed in.
+   */
   async initialize(): Promise<void> {
-    for (const agentId of await listAutoSessionAgentIds()) {
-      if (!(await getAgentById(agentId))) {
-        await setAutoSessionAgent(agentId, false);
-        continue;
-      }
+    for (const agentId of await listAutoSessionAgentIds())
+      if (!(await getAgentById(agentId))) await setAutoSessionAgent(agentId, false);
+    for (const agent of await getAgents()) {
+      if (!agent.switchAgentId) continue;
       try {
-        await this.startForAgent(agentId);
+        // Restoring a controller an earlier run was already meant to be
+        // holding, not a decision to reclaim a connection something else has
+        // since taken: one that stood down stays down until someone asks for it
+        // by name.
+        await applyControllerState(agent.id, 'restore');
       } catch (error) {
-        log.error('Shared SDK watcher could not start', { agentId, error: String(error) });
+        log.error('Shared SDK watcher could not start', {
+          agentId: agent.id,
+          error: String(error),
+        });
       }
     }
     for (const { parentAgentId, name } of await listAutoSessionSubagents()) {
@@ -38,14 +51,6 @@ class AutoSessionWatcher {
       }
     }
   }
-  /**
-   * Booting restores the watcher an earlier run left enabled. That is not a
-   * decision to reclaim a connection something else has since taken, so a
-   * watcher that stood down stays down until someone asks for it by name.
-   */
-  startForAgent(agentId: string): Promise<void> {
-    return configureSharedWatcher(agentId, { connected: true, spawning: true }, 'restore');
-  }
   stopForAgent(agentId: string): Promise<void> {
     return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
   }
@@ -55,8 +60,12 @@ class AutoSessionWatcher {
   stopForSubagent(agentId: string, name: string): Promise<void> {
     return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore', name);
   }
-  reconcile(agentId: string, enabled: boolean): Promise<void> {
-    return configureSharedWatcher(agentId, { connected: enabled, spawning: enabled }, 'explicit');
+  /**
+   * Applies the saved auto-start setting. The controller stays connected either
+   * way — only Stop, or deleting the agent, takes an agent's connection away.
+   */
+  reconcile(agentId: string): Promise<void> {
+    return applyControllerState(agentId, 'explicit');
   }
   reconcileSubagent(agentId: string, name: string, enabled: boolean): Promise<void> {
     return configureSharedWatcher(
