@@ -51,6 +51,12 @@ export { detachedSupervision, ensureSharedProcess, sharedSessionRoot } from './h
 export type { Supervision } from './host/launch';
 export { runSharedWatcher } from './host/shared-watcher';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export {
+  readWatchFlags,
+  WATCH_FLAGS_FILE,
+  type WatchFlags,
+  watchFlagsSchema,
+} from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
 
 export { prepareCodexSessionHome } from './codex/home';

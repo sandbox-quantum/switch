@@ -11,6 +11,9 @@ import {
   sharedSessionRoot,
   superviseSharedHost,
   type Supervision,
+  WATCH_FLAGS_FILE,
+  type WatchFlags,
+  watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { log } from '@main/lib/logger';
@@ -77,9 +80,9 @@ async function writeAtomic(destination: string, body: unknown): Promise<void> {
   await rename(temporary, destination);
 }
 
-export async function writeWatchEnabled(root: string, enabled: boolean): Promise<void> {
+export async function writeWatchFlags(root: string, flags: WatchFlags): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await writeAtomic(join(root, 'watch.json'), { enabled });
+  await writeAtomic(join(root, WATCH_FLAGS_FILE), watchFlagsSchema.parse(flags));
 }
 
 /**
@@ -215,12 +218,12 @@ export async function readLocalHostFailure(root: string): Promise<unknown> {
  */
 export async function startLocalWatcher(
   config: SharedHostConfig,
-  intent: WatcherIntent
+  options: { intent: WatcherIntent; spawning: boolean }
 ): Promise<void> {
   const root = localWatcherRoot(config.session.agentId);
   await clearStaleOwners(root);
-  if (intent === 'explicit') await clearTakenOver(root);
-  await writeWatchEnabled(root, true);
+  if (options.intent === 'explicit') await clearTakenOver(root);
+  await writeWatchFlags(root, { enabled: true, spawn: options.spawning });
   await ensureSharedProcess({
     root,
     config,
@@ -246,7 +249,7 @@ export async function startLocalWatcher(
 
 export async function stopLocalWatcher(identity: string): Promise<void> {
   const root = localWatcherRoot(identity);
-  await writeWatchEnabled(root, false);
+  await writeWatchFlags(root, { enabled: false, spawn: false });
   // Turning the watcher off answers the question the marker was holding open.
   // Leaving it would make the next enable a no-op that reports nothing.
   await clearTakenOver(root);

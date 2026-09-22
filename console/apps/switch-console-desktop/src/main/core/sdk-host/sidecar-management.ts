@@ -26,6 +26,6 @@ export async function manageAgentSidecar(
     );
   // Someone pressed Update or Restart, so this is the explicit ask that brings
   // a watcher back after it stood down for a connection something else took.
-  await configureSharedWatcher(agentId, false, 'explicit');
-  await configureSharedWatcher(agentId, true, 'explicit');
+  await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
+  await configureSharedWatcher(agentId, { connected: true, spawning: true }, 'explicit');
 }

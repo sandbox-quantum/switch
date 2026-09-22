@@ -17,10 +17,14 @@ it('starts watchers for saved agents and reconciles them off on request', async 
   await autoSessionWatcher.initialize();
   // Restoring at boot, not asking for the watcher back: one that stood down
   // because another client took its connection stays down until someone says so.
-  expect(configure).toHaveBeenCalledWith('agent', true, 'restore');
+  expect(configure).toHaveBeenCalledWith('agent', { connected: true, spawning: true }, 'restore');
   configure.mockClear();
   await autoSessionWatcher.reconcile('agent', false);
-  expect(configure).toHaveBeenCalledWith('agent', false, 'explicit');
+  expect(configure).toHaveBeenCalledWith(
+    'agent',
+    { connected: false, spawning: false },
+    'explicit'
+  );
 });
 
 it('stops everything it hosts when Console closes', async () => {

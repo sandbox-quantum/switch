@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { log } from '@main/lib/logger';
-import { localStateBase, savedAgentId, writeWatchEnabled } from './local-host';
+import { localStateBase, savedAgentId, writeWatchFlags } from './local-host';
 import { ownedElsewhere } from './local-host-owners';
 
 const STOP_ATTEMPTS = 100;
@@ -20,7 +20,7 @@ async function stopDetachedWatcher(root: string): Promise<void> {
   log.warn('Stopping a detached watcher that an earlier build left running for a local agent', {
     root,
   });
-  await writeWatchEnabled(root, false);
+  await writeWatchFlags(root, { enabled: false, spawn: false });
   for (let attempt = 0; attempt < STOP_ATTEMPTS; attempt++) {
     if (!(await ownedElsewhere(root))) return;
     await delay(STOP_INTERVAL_MS);

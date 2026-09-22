@@ -15,7 +15,7 @@ async function fixture(agentId: string) {
   const root = join(home, '.local/state/switch/sdk-watchers/example');
   await mkdir(join(root, 'supervisor'), { recursive: true });
   await writeFile(join(root, 'config.json'), JSON.stringify({ session: { agentId } }));
-  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true }));
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
   return { home, root };
 }
 async function inspect(home: string, mode: 'status' | 'logs') {

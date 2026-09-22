@@ -44,22 +44,27 @@ class AutoSessionWatcher {
    * watcher that stood down stays down until someone asks for it by name.
    */
   startForAgent(agentId: string): Promise<void> {
-    return configureSharedWatcher(agentId, true, 'restore');
+    return configureSharedWatcher(agentId, { connected: true, spawning: true }, 'restore');
   }
   stopForAgent(agentId: string): Promise<void> {
-    return configureSharedWatcher(agentId, false, 'restore');
+    return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
   }
   startForSubagent(agentId: string, name: string): Promise<void> {
-    return configureSharedWatcher(agentId, true, 'restore', name);
+    return configureSharedWatcher(agentId, { connected: true, spawning: true }, 'restore', name);
   }
   stopForSubagent(agentId: string, name: string): Promise<void> {
-    return configureSharedWatcher(agentId, false, 'restore', name);
+    return configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore', name);
   }
   reconcile(agentId: string, enabled: boolean): Promise<void> {
-    return configureSharedWatcher(agentId, enabled, 'explicit');
+    return configureSharedWatcher(agentId, { connected: enabled, spawning: enabled }, 'explicit');
   }
   reconcileSubagent(agentId: string, name: string, enabled: boolean): Promise<void> {
-    return configureSharedWatcher(agentId, enabled, 'explicit', name);
+    return configureSharedWatcher(
+      agentId,
+      { connected: enabled, spawning: enabled },
+      'explicit',
+      name
+    );
   }
   /** Stops every locally hosted watcher and session, so none outlives Console. */
   dispose(): Promise<void> {

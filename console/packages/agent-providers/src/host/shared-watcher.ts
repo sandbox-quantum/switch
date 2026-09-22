@@ -20,6 +20,7 @@ import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock'
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { readTakenOver, recordTakenOver } from './taken-over';
+import { readWatchFlags } from './watch-flags';
 
 const assignmentSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -243,11 +244,9 @@ export async function runSharedWatcher(
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
     const connectionId = template.roomConnection.connectionId;
-    const enabled = async () =>
-      z
-        .object({ enabled: z.boolean() })
-        .parse(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).enabled;
-    if (!(await enabled())) return;
+    const flags = await readWatchFlags(root);
+    if (!flags.enabled) return;
+    const spawn = flags.spawn;
     // Stood down after a takeover, and staying down. Starting would reopen the
     // connection, which is itself a takeover — the watcher would win it back
     // from whoever displaced it, and the two would trade the agent's one
@@ -262,7 +261,8 @@ export async function runSharedWatcher(
     const credentials = await readSharedCredentials(template);
     const assignments = await SharedWatchAssignments.open(root);
     const launch = async (config: SharedHostConfig) => {
-      if (!(await enabled()) || (await stopped(config.session.sessionId))) return;
+      if (!(await readWatchFlags(root)).enabled || (await stopped(config.session.sessionId)))
+        return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
         config,
@@ -273,7 +273,7 @@ export async function runSharedWatcher(
       });
     };
     await replaceSupersededSessions(template.session.agentId, supervision);
-    for (const config of assignments.sessions()) await launch(config);
+    if (spawn) for (const config of assignments.sessions()) await launch(config);
     const stream = new SwitchEventStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -283,12 +283,17 @@ export async function runSharedWatcher(
       connectionId,
       scope: 'all',
       filter: 'addressed',
-      spawnCapable: true,
+      spawnCapable: spawn,
       rooms: [],
       startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
       onEvent: (event) => {
+        // The connection is this agent's reachability; starting a session is a
+        // separate permission it may not have. The server was told which on
+        // open, so it neither reports the agent as dormant nor answers an
+        // addressed message with a session that is never going to arrive.
+        if (!spawn) return;
         pending = pending.then(async () => {
           const messageId = roomInputId(event);
           if (!messageId) return;
@@ -354,10 +359,7 @@ export async function runSharedWatcher(
     });
     stream.start();
     while (!stop.signal.aborted) {
-      const enabled = z
-        .object({ enabled: z.boolean() })
-        .parse(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).enabled;
-      if (!enabled) break;
+      if (!(await readWatchFlags(root)).enabled) break;
       await delay(500, undefined, { signal: stop.signal });
     }
   } catch (error) {

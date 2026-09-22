@@ -67,7 +67,11 @@ it('stops all server-owned sessions for this agent before removing local views',
     { ...session, sessionId: 'ended', status: 'stopped' },
   ]);
   await resetRemoteAgent('local');
-  expect(mocks.disable).toHaveBeenCalledWith('local', false, 'explicit');
+  expect(mocks.disable).toHaveBeenCalledWith(
+    'local',
+    { connected: false, spawning: false },
+    'explicit'
+  );
   expect(mocks.stop).toHaveBeenCalledExactlyOnceWith({ id: 'server' }, 'remote-only');
   expect(mocks.remove).toHaveBeenCalledTimes(1);
   expect(mocks.restart).toHaveBeenCalledWith('local');

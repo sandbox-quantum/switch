@@ -162,7 +162,7 @@ it('stays down while a takeover marker says another client holds the connection'
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-taken-over-'));
   roots.push(root);
   paths.root = root;
-  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true }));
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
   await recordTakenOver(root, {

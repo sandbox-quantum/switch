@@ -33,13 +33,10 @@ export async function startRemoteDiscovery(agentId: string): Promise<void> {
  * that stood down after a takeover is left alone.
  */
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
-  await configureSharedWatcher(
-    agentId,
-    (await listAutoSessionAgentIds()).includes(agentId),
-    'restore'
-  );
+  const spawning = (await listAutoSessionAgentIds()).includes(agentId);
+  await configureSharedWatcher(agentId, { connected: spawning, spawning }, 'restore');
   remoteSessionReconciler.start(agentId);
 }
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
-  await configureSharedWatcher(agentId, false, 'restore');
+  await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
 }

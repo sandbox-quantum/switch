@@ -30,17 +30,28 @@ async function readSubagentSwitchId(
   return stdout.trim();
 }
 
+/**
+ * What an agent's controller should be doing.
+ *
+ * `connected` is whether it holds this agent's one inbound connection.
+ * `spawning` is whether it may start a session, which is the auto-start setting
+ * and only that. A controller that is connected and not spawning is an agent
+ * that can be addressed and caught up on, and that answers an addressed message
+ * by saying it has no session rather than promising one nothing will start.
+ */
+export type ControllerState = { connected: boolean; spawning: boolean };
+
 export async function configureSharedWatcher(
   agentId: string,
-  enabled: boolean,
+  state: ControllerState,
   intent: WatcherIntent,
   name?: string
 ): Promise<void> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
   if (!agent.switchAgentId) {
-    if (!enabled) return;
-    throw new Error('Link the agent to Switch before enabling automatic sessions.');
+    if (!state.connected) return;
+    throw new Error('Link the agent to Switch before it can hold a room connection.');
   }
   const location = await getAgentLocation(agent);
   const transport = locationTransport(location);
@@ -86,7 +97,7 @@ export async function configureSharedWatcher(
   // A local agent is watched from inside Console so it stops answering when
   // Console does. Only an SSH host gets a detached shared host of its own.
   if (transport.kind !== 'ssh') {
-    if (enabled) await startLocalWatcher(config, intent);
+    if (state.connected) await startLocalWatcher(config, { intent, spawning: state.spawning });
     else await stopLocalWatcher(config.session.agentId);
     return;
   }
@@ -102,12 +113,13 @@ export async function configureSharedWatcher(
   // watcher that was displaced stays displaced across a Console restart.
   await ctx.exec('node', [
     '-e',
-    "const fs=require('node:fs');const path=require('node:path');const [root,enabled,clear]=process.argv.slice(1);fs.mkdirSync(root,{recursive:true,mode:0o700});if(clear==='true')try{fs.unlinkSync(path.join(root,'taken-over.json'))}catch(e){if(e.code!=='ENOENT')throw e}const dest=path.join(root,'watch.json');const tmp=dest+'.'+require('node:crypto').randomUUID();const fd=fs.openSync(tmp,'wx',0o600);try{fs.writeFileSync(fd,JSON.stringify({enabled:enabled==='true'}));fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(tmp,dest)",
+    "const fs=require('node:fs');const path=require('node:path');const [root,enabled,spawn,clear]=process.argv.slice(1);fs.mkdirSync(root,{recursive:true,mode:0o700});if(clear==='true')try{fs.unlinkSync(path.join(root,'taken-over.json'))}catch(e){if(e.code!=='ENOENT')throw e}const dest=path.join(root,'watch.json');const tmp=dest+'.'+require('node:crypto').randomUUID();const fd=fs.openSync(tmp,'wx',0o600);try{fs.writeFileSync(fd,JSON.stringify({enabled:enabled==='true',spawn:spawn==='true'}));fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(tmp,dest)",
     root,
-    String(enabled),
-    String(!enabled || intent === 'explicit'),
+    String(state.connected),
+    String(state.spawning),
+    String(!state.connected || intent === 'explicit'),
   ]);
-  if (!enabled) {
+  if (!state.connected) {
     await ctx.exec('node', ['-e', waitForWatcherStop, root]);
     return;
   }
