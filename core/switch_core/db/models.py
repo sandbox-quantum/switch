@@ -2235,6 +2235,50 @@ class SdkSessionCommand(TenantScoped, Base):
     room_control_followup: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class SdkRoomAdmission(TenantScoped, Base):
+    """One room delivery an agent's controller has been promised it may make.
+
+    Keyed on the delivery rather than on a position, because the stream the
+    controller reads can be renumbered while the delivery waits and the same
+    sequence then stands for another message. The verified event is kept here
+    so the promise survives the replay buffer being trimmed: this row, not the
+    buffer, is what the delivery is finally built from.
+
+    It carries the grant as well. A room nothing holds is answered by giving
+    the agent the right to start one session for it, and that right has to be
+    recorded where the next caller asking about the same room can see it, or
+    two deliveries seconds apart each start a session for the same room.
+    """
+
+    __tablename__ = "sdk_room_admissions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", "room_id", "message_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_sdk_room_admissions_agent",
+            ondelete="CASCADE",
+        ),
+        Index("ix_sdk_room_admissions_room", "tenant_id", "agent_id", "room_id"),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    delivery: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    grant_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    granted_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this

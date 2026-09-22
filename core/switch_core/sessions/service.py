@@ -35,6 +35,7 @@ from switch_core.db.models import (
     ExternalUserClaim,
     MediaBlob,
     Room,
+    SdkRoomAdmission,
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
@@ -90,6 +91,17 @@ logger = logging.getLogger(__name__)
 
 LEASE_SECONDS = 30
 
+# How long the server keeps promising a room delivery it has verified. The
+# controller holding it retries on its own tick; past this the promise is over
+# and the controller is told so rather than left retrying something that will
+# never be admitted.
+ADMISSION_SECONDS = 15 * 60
+
+# How long the right to start a session for a room stays with the delivery it
+# was issued to. Long enough to launch a session and claim it, short enough
+# that a launch that never happened does not hold the room shut.
+GRANT_SECONDS = 120
+
 
 class SessionError(ValueError):
     def __init__(self, code: str, message: str) -> None:
@@ -124,6 +136,55 @@ class RoomBinding:
 
     vacated: tuple[str, ...]
     displaced: str | None
+
+
+@dataclass(frozen=True)
+class RoomGrant:
+    """The delivery a session is being started for, presented when it is created.
+
+    Named by the delivery rather than by a token of its own. The controller is
+    already authenticated as the agent, and the grant it is redeeming is the
+    one it was answered with for this room and this message; anything else is
+    a grant it was never given.
+    """
+
+    room_id: str
+    message_id: str
+
+
+@dataclass(frozen=True)
+class RoomAdmission:
+    """Who, if anyone, an agent's controller may hand a room delivery to.
+
+    `owner` names a running session that holds the room. `unavailable` means
+    the room is spoken for by something that cannot take the delivery yet — a
+    session whose host has gone but which has not finished, or one a grant has
+    already been issued for — or that nothing holds it and the caller may not
+    start one; either way the delivery waits and the question is asked again.
+    `none` comes with the right to start exactly one session for the room.
+    """
+
+    status: str
+    session_id: str | None
+    host_id: str | None
+    epoch: str | None
+    grant_expires_at: datetime | None
+
+
+@dataclass(frozen=True)
+class RoomReservation:
+    """A verified delivery the server is still holding for an agent.
+
+    `expired` says the promise has run out: the controller stops retrying and
+    reports the drop rather than holding the message for ever. The row stays
+    until the controller discards it, so the only verified copy is never taken
+    away while the delivery is still being promised.
+    """
+
+    room_id: str
+    message_id: str
+    sequence: int
+    expired: bool
 
 
 def _unread_notice(unread: Unread) -> str:
@@ -264,6 +325,29 @@ def _occupies(
     return _attends(row, room_id, now, connections) and not _session_is_over(row)
 
 
+def _room_claimants(
+    rows: Iterable[SdkSession], room_id: str, now: datetime
+) -> tuple[SdkSession | None, bool]:
+    """The session working in `room_id`, and whether any unfinished one claims it.
+
+    The two answers come apart exactly where a controller reading its own disk
+    goes wrong. A session that has stopped or been retired leaves its claim on
+    the room behind it and is nobody's owner. One whose host has gone but which
+    has not finished still has the room: it is coming back to it, and handing
+    the room to a session started in the meantime would take it away.
+    """
+    owner: SdkSession | None = None
+    claimed = False
+    for row in rows:
+        state = _stored_snapshot(row).session
+        if room_id not in state.room_ids or state.retired or _session_is_over(row):
+            continue
+        claimed = True
+        if _host_holds(row, now):
+            owner = row
+    return owner, claimed
+
+
 def _spoken_for(rows: Iterable[SdkSession], claimant: Connection, room_id: str) -> bool:
     """Is this room slot a managed session's own, rather than a legacy caller's?
 
@@ -358,11 +442,24 @@ class SessionAuthority:
         self._sessions = session_factory
 
     async def acquire(
-        self, agent_id: str, session: Session, operation_id: str | None = None
+        self,
+        agent_id: str,
+        session: Session,
+        operation_id: str | None = None,
+        grant: RoomGrant | None = None,
     ) -> Snapshot:
+        """Take the lease on a session, optionally for the room it was started for.
+
+        A session started to answer a room message is created already holding
+        that room, rather than created empty and then told to bind: between
+        those two writes the room is free, and the next delivery for it would
+        be answered by starting a second session for the same room.
+        """
         if session.agent_id != agent_id:
             raise SessionError("NOT_AUTHORIZED", "Session belongs to another agent.")
-        session = session.model_copy(update={"room_ids": [], "retired": False})
+        session = session.model_copy(
+            update={"room_ids": [grant.room_id] if grant else [], "retired": False}
+        )
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
@@ -408,6 +505,8 @@ class SessionAuthority:
                     "RECOVERY_REQUIRED",
                     "Resume the saved session before acquiring a replacement lease.",
                 )
+            if grant is not None:
+                await self._consume_grant(db, agent_id, session.session_id, grant, now)
             verified = session.model_copy(
                 update={
                     "epoch": str(uuid.uuid4()),
@@ -445,6 +544,57 @@ class SessionAuthority:
                 db, row, SessionUpsert(type="session.upsert", session=verified)
             )
             return _stored_snapshot(row)
+
+    async def _consume_grant(
+        self,
+        db: AsyncSession,
+        agent_id: str,
+        session_id: str,
+        grant: RoomGrant,
+        now: datetime,
+    ) -> None:
+        """Spend the right to start a session for a room, once and for this session.
+
+        Held against the delivery it was issued to, so a controller retrying a
+        launch redeems the same grant rather than being given another. A grant
+        that has lapsed, or that a session was already created under, is
+        refused: the answer the controller acted on is out of date and the
+        room has to be asked about again.
+        """
+        reservation = await db.get(
+            SdkRoomAdmission,
+            (require_tenant_id(), agent_id, grant.room_id, grant.message_id),
+            with_for_update=True,
+        )
+        if (
+            reservation is None
+            or reservation.grant_expires_at is None
+            or reservation.grant_expires_at <= now
+        ):
+            raise SessionError(
+                "ROOM_GRANT_LAPSED",
+                "The right to start a session for this room is no longer held.",
+            )
+        if reservation.granted_session_id not in (None, session_id):
+            raise SessionError(
+                "ROOM_GRANT_LAPSED",
+                "Another session was already started for this room delivery.",
+            )
+        rows = await db.scalars(
+            select(SdkSession)
+            .where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id == agent_id,
+            )
+            .order_by(SdkSession.id)
+            .with_for_update()
+        )
+        owner, claimed = _room_claimants(list(rows), grant.room_id, now)
+        if owner is not None or claimed:
+            raise SessionError(
+                "ROOM_GRANT_LAPSED", "Another session took the room while it was free."
+            )
+        reservation.granted_session_id = session_id
 
     async def quiesce(
         self, agent_id: str, session_id: str, host_id: str, epoch: str
@@ -834,6 +984,241 @@ class SessionAuthority:
         await self._append(db, row, status)
         return status
 
+    async def _verify_room_event(
+        self,
+        db: AsyncSession,
+        agent_id: str,
+        room: Room,
+        message_id: str,
+        sequence: int,
+        buffer: EventBuffer,
+    ) -> tuple[MessagePayload, str | None, str]:
+        """The event the server itself holds at `sequence`, or nothing.
+
+        The only place a room delivery is taken on trust from the agent is the
+        position it names; everything the session is finally told comes from
+        the server's own copy of the event at that position. A subscribed
+        event has no message id of its own, so the one the caller named has to
+        reproduce the digest of the payload the server holds.
+        """
+        try:
+            candidates = buffer.read_from(agent_id, sequence - 1, limit=1)
+        except CursorExpiredError as error:
+            raise SessionError(
+                "ROOM_EVENT_UNAVAILABLE",
+                "The room event is no longer retained; it was not submitted.",
+            ) from error
+        entry = candidates[0] if candidates else None
+        if entry is None or entry.seq != sequence or entry.room_id != room.id:
+            raise SessionError(
+                "ROOM_EVENT_UNAVAILABLE", "The verified room event is unavailable."
+            )
+        payload = entry.event.payload
+        if entry.event.type == "room_join" or entry.event.type.startswith("task_"):
+            canonical = json.dumps(
+                payload.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            expected_id = (
+                f"{entry.event.type}:" + hashlib.sha256(canonical.encode()).hexdigest()
+            )
+            if not entry.notifiable or message_id != expected_id:
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "Only the verified subscribed event can be submitted.",
+                )
+            payload = MessagePayload(
+                addressed=True,
+                sender="switch",
+                sender_name="Switch",
+                message_id=expected_id,
+                body=f"{entry.event.type}: {canonical}",
+                timestamp=0,
+            )
+        if (
+            not isinstance(payload, MessagePayload)
+            or not payload.addressed
+            or payload.message_id != message_id
+        ):
+            raise SessionError(
+                "NOT_AUTHORIZED",
+                "Only the verified addressed message can be submitted.",
+            )
+        bridge = (
+            await db.get(CollaborationBridge, room.bridge_id)
+            if room.bridge_id
+            else None
+        )
+        if (
+            (bridge is not None and bridge.type not in get_args(Surface))
+            or entry.event.bridge_id != (bridge.id if bridge else None)
+            or (room.bridge_id is not None and bridge is None)
+        ):
+            raise SessionError(
+                "NOT_AUTHORIZED", "The room event has no verified platform origin."
+            )
+        surface = bridge.type if bridge else "switch-web"
+        return payload, bridge.id if bridge else None, surface
+
+    async def _room_member(self, db: AsyncSession, agent_id: str, room_id: str) -> Room:
+        agent = await db.get(Agent, agent_id)
+        room = await db.get(Room, room_id)
+        if (
+            agent is None
+            or room is None
+            or await db.get(ClientRoom, (agent.client_id, room_id)) is None
+        ):
+            raise SessionError(
+                "NOT_AUTHORIZED", "The agent is not a member of this room."
+            )
+        return room
+
+    async def admit_room(
+        self,
+        agent_id: str,
+        room_id: str,
+        message_id: str,
+        sequence: int,
+        spawning: bool,
+        buffer: EventBuffer,
+    ) -> RoomAdmission:
+        """Say which session of `agent_id` a room delivery belongs to.
+
+        The question a controller cannot answer for itself. Its only local
+        evidence is the files its sessions wrote, and a session that stopped
+        leaves its claim on the room behind in them — the server is the only
+        party that can tell a session still working in a room from one that
+        merely said so before it died.
+
+        Verifying the event and recording the answer are one write, so a
+        delivery admitted here is one the server can still build after the
+        replay buffer holding it has been trimmed.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            await db.execute(
+                select(Agent.id).where(Agent.id == agent_id).with_for_update()
+            )
+            room = await self._room_member(db, agent_id, room_id)
+            rows = list(
+                await db.scalars(
+                    select(SdkSession)
+                    .where(
+                        SdkSession.tenant_id == require_tenant_id(),
+                        SdkSession.agent_id == agent_id,
+                    )
+                    .order_by(SdkSession.id)
+                    .with_for_update()
+                )
+            )
+            now = await _now(db)
+            reservation = await db.get(
+                SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
+            )
+            if reservation is None:
+                payload, bridge_id, surface = await self._verify_room_event(
+                    db, agent_id, room, message_id, sequence, buffer
+                )
+                reservation = SdkRoomAdmission(
+                    agent_id=agent_id,
+                    room_id=room_id,
+                    message_id=message_id,
+                    sequence=sequence,
+                    delivery={
+                        "payload": payload.model_dump(mode="json"),
+                        "bridgeId": bridge_id,
+                        "surface": surface,
+                    },
+                    expires_at=now + timedelta(seconds=ADMISSION_SECONDS),
+                )
+                db.add(reservation)
+                await db.flush()
+            owner, claimed = _room_claimants(rows, room_id, now)
+            if owner is not None:
+                return RoomAdmission(
+                    status="owner",
+                    session_id=owner.id,
+                    host_id=owner.host_id,
+                    epoch=owner.epoch,
+                    grant_expires_at=None,
+                )
+            if claimed:
+                return RoomAdmission("unavailable", None, None, None, None)
+            live = await db.scalars(
+                select(SdkRoomAdmission).where(
+                    SdkRoomAdmission.tenant_id == require_tenant_id(),
+                    SdkRoomAdmission.agent_id == agent_id,
+                    SdkRoomAdmission.room_id == room_id,
+                    SdkRoomAdmission.granted_session_id.is_(None),
+                    SdkRoomAdmission.grant_expires_at > now,
+                )
+            )
+            held = {row.message_id for row in live}
+            if held - {message_id}:
+                return RoomAdmission("unavailable", None, None, None, None)
+            if message_id in held:
+                return RoomAdmission(
+                    "none", None, None, None, reservation.grant_expires_at
+                )
+            if not spawning:
+                return RoomAdmission("unavailable", None, None, None, None)
+            reservation.grant_expires_at = now + timedelta(seconds=GRANT_SECONDS)
+            return RoomAdmission("none", None, None, None, reservation.grant_expires_at)
+
+    async def room_reservations(self, agent_id: str) -> list[RoomReservation]:
+        """Every verified delivery this agent has been promised and not yet made.
+
+        The controller writes down that it handed an event over before the
+        session submits it, so a submit refused for reassignment would be safe
+        here and forgotten there. This is how it finds those again, and how it
+        learns that one it is still holding will never be admitted.
+        """
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            now = await _now(db)
+            rows = await db.scalars(
+                select(SdkRoomAdmission)
+                .where(
+                    SdkRoomAdmission.tenant_id == require_tenant_id(),
+                    SdkRoomAdmission.agent_id == agent_id,
+                    SdkRoomAdmission.consumed_at.is_(None),
+                )
+                .order_by(SdkRoomAdmission.sequence)
+            )
+            return [
+                RoomReservation(
+                    room_id=row.room_id,
+                    message_id=row.message_id,
+                    sequence=row.sequence,
+                    expired=row.expires_at <= now,
+                )
+                for row in rows
+            ]
+
+    async def discard_room_reservation(
+        self, agent_id: str, room_id: str, message_id: str
+    ) -> None:
+        """Give up a promised delivery, on the controller's word rather than a clock.
+
+        Expiry only stops the server promising; it does not throw the verified
+        copy away, because the controller may still be holding the event and
+        about to ask for it. The copy goes when the controller says it has
+        stopped holding it.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            row = await db.get(
+                SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
+            )
+            if row is None:
+                raise SessionError("NOT_FOUND", "No such room delivery is reserved.")
+            await db.delete(row)
+
     async def submit_room_message(
         self,
         agent_id: str,
@@ -855,19 +1240,11 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            agent = await db.scalar(
-                select(Agent).where(Agent.id == agent_id).with_for_update()
+            await db.execute(
+                select(Agent.id).where(Agent.id == agent_id).with_for_update()
             )
             row = await self._host(db, agent_id, session_id, host_id, epoch)
-            room = await db.get(Room, room_id)
-            if (
-                agent is None
-                or room is None
-                or await db.get(ClientRoom, (agent.client_id, room_id)) is None
-            ):
-                raise SessionError(
-                    "NOT_AUTHORIZED", "The agent is not a member of this room."
-                )
+            room = await self._room_member(db, agent_id, room_id)
             previous = await db.scalar(
                 select(SdkSessionCommand)
                 .join(
@@ -889,65 +1266,28 @@ class SessionAuthority:
                     )
                 status = CommandStatus.model_validate(previous.status)
                 return _receipt(status, None) if include_command else status
-            try:
-                candidates = buffer.read_from(agent_id, sequence - 1, limit=1)
-            except CursorExpiredError as error:
-                raise SessionError(
-                    "ROOM_EVENT_UNAVAILABLE",
-                    "The room event is no longer retained; it was not submitted.",
-                ) from error
-            entry = candidates[0] if candidates else None
-            if entry is None or entry.seq != sequence or entry.room_id != room_id:
-                raise SessionError(
-                    "ROOM_EVENT_UNAVAILABLE", "The verified room event is unavailable."
-                )
-            payload = entry.event.payload
-            if entry.event.type == "room_join" or entry.event.type.startswith("task_"):
-                canonical = json.dumps(
-                    payload.model_dump(mode="json"),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
-                expected_id = (
-                    f"{entry.event.type}:"
-                    + hashlib.sha256(canonical.encode()).hexdigest()
-                )
-                if not entry.notifiable or message_id != expected_id:
-                    raise SessionError(
-                        "NOT_AUTHORIZED",
-                        "Only the verified subscribed event can be submitted.",
-                    )
-                payload = MessagePayload(
-                    addressed=True,
-                    sender="switch",
-                    sender_name="Switch",
-                    message_id=expected_id,
-                    body=f"{entry.event.type}: {canonical}",
-                    timestamp=0,
-                )
-            if (
-                not isinstance(payload, MessagePayload)
-                or not payload.addressed
-                or payload.message_id != message_id
-            ):
-                raise SessionError(
-                    "NOT_AUTHORIZED",
-                    "Only the verified addressed message can be submitted.",
-                )
-            bridge = (
-                await db.get(CollaborationBridge, room.bridge_id)
-                if room.bridge_id
-                else None
+            reservation = await db.get(
+                SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
             )
-            if (
-                (bridge is not None and bridge.type not in get_args(Surface))
-                or entry.event.bridge_id != (bridge.id if bridge else None)
-                or (room.bridge_id is not None and bridge is None)
-            ):
-                raise SessionError(
-                    "NOT_AUTHORIZED", "The room event has no verified platform origin."
+            if reservation is None:
+                # No admission was asked for, so the position the caller names
+                # is all there is to go on. A host old enough to send nothing
+                # else is also one whose session is the only one its agent
+                # runs, and it is not fenced below for the same reason: it
+                # never bound a room to be moved out of.
+                payload, bridge_id, surface = await self._verify_room_event(
+                    db, agent_id, room, message_id, sequence, buffer
                 )
+            else:
+                if room_id not in _stored_snapshot(row).session.room_ids:
+                    raise SessionError(
+                        "ROOM_MESSAGE_REASSIGNED",
+                        "This session no longer holds the room; the delivery stays reserved.",
+                    )
+                payload = MessagePayload.model_validate(reservation.delivery["payload"])
+                bridge_id = reservation.delivery["bridgeId"]
+                surface = reservation.delivery["surface"]
+                sequence = reservation.sequence
             attachments = []
             attachment_notices = []
             capabilities = _stored_snapshot(row).session.capabilities
@@ -1038,7 +1378,7 @@ class SessionAuthority:
                 origin=Origin.model_validate(
                     {
                         "actorId": payload.sender,
-                        "surface": bridge.type if bridge else "switch-web",
+                        "surface": surface,
                         "roomId": room_id,
                         "threadId": payload.thread_id,
                         "messageId": payload.message_id,
@@ -1053,7 +1393,9 @@ class SessionAuthority:
             )
             if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
                 raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
-            status = await self._accept(db, row, command, bridge.id if bridge else None)
+            status = await self._accept(db, row, command, bridge_id)
+            if reservation is not None:
+                reservation.consumed_at = await _now(db)
             if not include_command:
                 return status
             queued = await self._queued_elsewhere(db, row, command.command_id)
@@ -1701,10 +2043,16 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            # Every session of the agent, in one order, before the caller's own
-            # row is locked: two siblings binding into the same room at once
-            # each want the other's row, and taking them in id order is what
-            # stops the two of them waiting on each other.
+            # The agent row first, then every session of the agent in one
+            # order, before the caller's own row is locked: two siblings
+            # binding into the same room at once each want the other's row,
+            # and taking them in the same order everywhere is what stops the
+            # two of them waiting on each other. The agent row is where a
+            # session being created for this room serializes, which has no row
+            # of its own to be waited on yet.
+            await db.execute(
+                select(Agent.id).where(Agent.id == agent_id).with_for_update()
+            )
             await db.execute(
                 select(SdkSession.id)
                 .where(

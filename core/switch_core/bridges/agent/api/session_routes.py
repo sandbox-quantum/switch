@@ -26,7 +26,7 @@ from switch_core.sessions.contract import (
     Session,
     Snapshot,
 )
-from switch_core.sessions.service import SessionAuthority, SessionError
+from switch_core.sessions.service import RoomGrant, SessionAuthority, SessionError
 
 router = APIRouter(prefix="/sessions")
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -95,10 +95,21 @@ async def pending(
     )
 
 
+class Grant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    room_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+
+
 class Acquisition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session: Session
     operation_id: str = Field(min_length=1, max_length=128)
+    # Absent for a session nobody addressed a room message to — one a person
+    # started, or one an older controller is claiming with no admission behind
+    # it. Present, it is the delivery the session is being started for, and
+    # the session is created already holding that room.
+    grant: Grant | None = None
 
 
 class Recovery(HostLease):
@@ -111,7 +122,10 @@ async def claim(
     body: Acquisition, agent: AuthenticatedAgent, factory: Factory
 ) -> Snapshot:
     return await SessionAuthority(factory).acquire(
-        agent.id, body.session, body.operation_id
+        agent.id,
+        body.session,
+        body.operation_id,
+        RoomGrant(body.grant.room_id, body.grant.message_id) if body.grant else None,
     )
 
 
@@ -229,6 +243,90 @@ async def download_attachment(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+class RoomDelivery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    room_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+
+
+class RoomAdmissionRequest(RoomDelivery):
+    sequence: int = Field(ge=1)
+    # Whether the controller asking may start a session. It decides whether the
+    # server issues the right to start one, and it belongs to the delivery
+    # rather than to the controller: the setting can be turned off while the
+    # message waits, and the permission it arrived under is the one it is
+    # finally admitted on.
+    spawning: bool
+
+
+class RoomAdmissionResponse(BaseModel):
+    status: str
+    session_id: str | None
+    host_id: str | None
+    epoch: str | None
+    grant_expires_at: str | None
+
+
+@router.post("/room-admission")
+async def room_admission(
+    body: RoomAdmissionRequest,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    buffer: Annotated[EventBuffer, Depends(get_event_buffer)],
+) -> RoomAdmissionResponse:
+    admission = await SessionAuthority(factory).admit_room(
+        agent.id,
+        body.room_id,
+        body.message_id,
+        body.sequence,
+        body.spawning,
+        buffer,
+    )
+    return RoomAdmissionResponse(
+        status=admission.status,
+        session_id=admission.session_id,
+        host_id=admission.host_id,
+        epoch=admission.epoch,
+        grant_expires_at=(
+            admission.grant_expires_at.isoformat()
+            if admission.grant_expires_at
+            else None
+        ),
+    )
+
+
+class ReservedDelivery(BaseModel):
+    room_id: str
+    message_id: str
+    sequence: int
+    expired: bool
+
+
+@router.get("/room-reservations")
+async def room_reservations(
+    agent: AuthenticatedAgent, factory: Factory
+) -> list[ReservedDelivery]:
+    return [
+        ReservedDelivery(
+            room_id=reservation.room_id,
+            message_id=reservation.message_id,
+            sequence=reservation.sequence,
+            expired=reservation.expired,
+        )
+        for reservation in await SessionAuthority(factory).room_reservations(agent.id)
+    ]
+
+
+@router.post("/room-reservations/discard")
+async def discard_room_reservation(
+    body: RoomDelivery, agent: AuthenticatedAgent, factory: Factory
+) -> dict[str, bool]:
+    await SessionAuthority(factory).discard_room_reservation(
+        agent.id, body.room_id, body.message_id
+    )
+    return {"discarded": True}
 
 
 class RoomConnection(HostLease):
