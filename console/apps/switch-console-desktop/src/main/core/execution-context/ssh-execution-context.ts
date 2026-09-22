@@ -97,7 +97,15 @@ export class SshExecutionContext implements IExecutionContext {
     const profile = await this.proxy.getRemoteShellProfile().catch((err: unknown) => {
       throw isTransportShaped(err) ? toTransportError(err) : err;
     });
-    const full = buildSshCommand(this.root, command, args, profile, EXEC_STDOUT_MARKER);
+    const full = opts.env
+      ? buildSshCommand(
+          this.root,
+          'env',
+          [...Object.entries(opts.env).map(([key, value]) => `${key}=${value}`), command, ...args],
+          profile,
+          EXEC_STDOUT_MARKER
+        )
+      : buildSshCommand(this.root, command, args, profile, EXEC_STDOUT_MARKER);
     const combined = this._signal(signal);
 
     return new Promise((resolve, reject) => {

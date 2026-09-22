@@ -45,6 +45,14 @@ from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachm
 from switch_core.db.session_scope import tenant_session
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
+from switch_core.observability.catalogue import (
+    DELIVERY_FAILURES,
+    DELIVERY_LAG,
+    MESSAGES_DELIVERED,
+    MESSAGES_SENT,
+    SEND_FAILURES,
+)
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.ephemeral import EphemeralBus
@@ -79,6 +87,48 @@ logger = logging.getLogger(__name__)
 # outstanding, so a room that moved a long way while a handler was busy is
 # delivered in bounded steps instead of one unbounded read.
 _DELIVERY_PAGE = 200
+
+# What makes an `m.room.message` a file rather than text.
+_MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
+
+
+def _sent_kind(event_type: str, content: dict[str, object]) -> str:
+    """A bounded label for what was sent.
+
+    `send_event` takes whatever event type its caller passes, so four values
+    rather than the field itself: an attribute a caller chooses is a series a
+    caller can mint.
+    """
+    if event_type in EPHEMERAL:
+        return "ephemeral"
+    if event_type != "m.room.message":
+        return "event"
+    return "media" if content.get("msgtype") in _MEDIA_MSGTYPES else "message"
+
+
+def _delivered_kind(event: InboundEvent) -> str:
+    if isinstance(event, InboundMedia):
+        return "media"
+    if isinstance(event, InboundMembership):
+        return "membership"
+    if isinstance(event, InboundCustomEvent):
+        return "custom"
+    return "message"
+
+
+def _age_ms(sent_at: object) -> float | None:
+    """How long ago a row was written, in milliseconds.
+
+    None rather than a guess when the value cannot be subtracted: this is the
+    number an alert fires on. Clamped at zero because the timestamp is the
+    database's clock and the subtraction is against this process's, so a small
+    negative is skew rather than a delivery before its send.
+    """
+    if not isinstance(sent_at, datetime):
+        return None
+    when = sent_at if sent_at.tzinfo is not None else sent_at.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - when).total_seconds() * 1000.0)
+
 
 MEMBERSHIP_EVENT_TYPE = "m.room.member"
 
@@ -239,6 +289,9 @@ class PostgresTransport:
                     except Exception:
                         # One room's failure is not the other rooms' problem,
                         # and this loop is the only delivery this client has.
+                        # Counted as well as logged: swallowing it is what
+                        # makes a stalled room invisible.
+                        metrics().increment(DELIVERY_FAILURES, {})
                         logger.error(
                             "Delivery failed for client %s in room %s",
                             self.user_id,
@@ -400,6 +453,11 @@ class PostgresTransport:
         handler = self._handler_for(event)
         if handler is None:
             return
+        kind = _delivered_kind(event)
+        metrics().increment(MESSAGES_DELIVERED, {"kind": kind})
+        lag_ms = _age_ms(row.sent_at)
+        if lag_ms is not None:
+            metrics().observe(DELIVERY_LAG, {"kind": kind}, lag_ms)
         await handler(room, event)
 
     def _handler_for(self, event: InboundEvent) -> Handler | None:
@@ -485,6 +543,7 @@ class PostgresTransport:
         result = SendResult(
             event_id=new_event_id(), event_type=event_type, content=content
         )
+        kind = _sent_kind(event_type, content)
         if event_type in EPHEMERAL:
             # Presence-like state, replaced by its own next value. Storing it
             # would put a row in the room's order for something no reader is
@@ -502,25 +561,36 @@ class PostgresTransport:
                     event_type=event_type,
                 ),
             )
+            metrics().increment(MESSAGES_SENT, {"kind": kind})
             return result
 
-        room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            message = Message(
-                room_id=room_id,
-                transport_event_id=result.event_id,
-                sender_id=self.user_id,
-                sender_client_id=self.client_id,
-                sender_name=sender_name,
-                event_type=event_type,
-                msgtype=text_field(content.get("msgtype")),
-                body=text_field(content.get("body")),
-                formatted_body=text_field(content.get("formatted_body")),
-                thread_root_event_id=thread_root_of(content),
-                content=content,
-            )
-            await self._message_store.create(session, message, attachments_in(content))
-            await session.commit()
+        try:
+            room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                message = Message(
+                    room_id=room_id,
+                    transport_event_id=result.event_id,
+                    sender_id=self.user_id,
+                    sender_client_id=self.client_id,
+                    sender_name=sender_name,
+                    event_type=event_type,
+                    msgtype=text_field(content.get("msgtype")),
+                    body=text_field(content.get("body")),
+                    formatted_body=text_field(content.get("formatted_body")),
+                    thread_root_event_id=thread_root_of(content),
+                    content=content,
+                )
+                await self._message_store.create(
+                    session, message, attachments_in(content)
+                )
+                await session.commit()
+        except Exception:
+            # `MESSAGES_SENT` is recorded only after the commit, so without
+            # this a database outage reads as silence — and so does a quiet
+            # room.
+            metrics().increment(SEND_FAILURES, {"kind": kind})
+            raise
+        metrics().increment(MESSAGES_SENT, {"kind": kind})
         return result
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
@@ -538,7 +608,7 @@ class PostgresTransport:
         """
         uri = f"switch-media://{uuid.uuid4().hex}"
         # This client's tenant, not whatever a caller happens to have bound.
-        # `media_blobs` is scoped, and the uri is opaque and globally unique,
+        # `media_blobs` is scoped, and the uri is opaque,
         # so an unguessable identifier is not an isolation boundary and the
         # row has to name a tenant that means something. It is the same answer
         # a room's tenant would give — a client is only in rooms of its own —

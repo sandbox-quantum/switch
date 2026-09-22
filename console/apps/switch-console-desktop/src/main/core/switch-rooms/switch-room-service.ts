@@ -9,7 +9,6 @@ import {
   listPersistedRoomSessionIds,
   persistRoomConnection,
 } from './session-room-store';
-import { switchNotificationPoller } from './switch-notification-poller';
 
 export type SessionRoomContext = {
   sessionId: string;
@@ -33,7 +32,7 @@ type ConnectionState = SessionRoomConnection & {
  * the `switchRooms` RPC controller.
  *
  * This service is also the home for notification injection (Part B): the poller
- * that pulls addressed room events and injects them into the session's PTY is
+ * that pulls addressed room events and delivers them through the session's SDK adapter is
  * driven off the same connect/disconnect lifecycle.
  */
 class SwitchRoomService implements IDisposable {
@@ -166,7 +165,7 @@ class SwitchRoomService implements IDisposable {
   /**
    * Re-establish a session's connection to its room from persisted state.
    *
-   * Called when a session's PTY (re)launches — e.g. after an app restart. A
+   * Called when a session's SDK runtime reconnects — e.g. after an app restart. A
    * resumed session does not re-run its initial prompt, so it never calls
    * `connect_to_room` again: nobody else is going to say which room it was in,
    * and without this it comes back connected to nothing.
@@ -183,7 +182,6 @@ class SwitchRoomService implements IDisposable {
     });
 
     this.setSessionRoom(ctx, persisted.roomId, persisted.switchAgentId, persisted.roomName);
-    switchNotificationPoller.connect(ctx, persisted.roomId, persisted.roomName);
   }
 
   /**

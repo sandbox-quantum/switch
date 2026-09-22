@@ -287,17 +287,50 @@ the message it is answering, and clears the reaction when the turn ends. It
 needs no administrator rights, and it is the same reaction the Slack and
 Mattermost bridges use, so a room reads the same wherever it is bridged.
 
-It marks the *last thing a person said* in the chat, because outside forum
-topics Telegram has no threads — only reply chains — so there is no thread for
-a status to belong to. If an agent is asked two things at once, both messages
-are marked and both are cleared when the turn ends.
+Only that one. Those bridges also show ⏳ on a message whose prompt is waiting
+behind one already running; Telegram does not, because a bot may hold exactly
+one reaction on a message and the mark that matters is the one saying work is
+under way.
+
+It marks **the message that asked** — the one that started the turn, not
+whatever was said most recently. Where a command was answered inside an
+existing reply chain, that is the reply itself rather than the message the
+chain started from. If an agent is asked two things at once, both of those
+messages are marked. A mark comes off once the last turn holding it has ended,
+so a message two prompts are waiting on keeps its mark until both are done.
 
 A chat can have reactions switched off. Then the mark is lost and the turn
 carries on; the bridge logs it rather than failing the turn.
 
-**The "⚙️ Working on it…" message.** Alongside the reaction, the bridge posts a
-status message and edits it in place as the agent's activity changes, removing
-it when the turn ends.
+**The status message.** Alongside the reaction, the bridge posts a status
+message and edits it in place as the agent's activity changes: "Working… 41s"
+while the turn runs, "Worked for 2m 14s." when it finishes. It stays in the chat
+afterwards as the record of the turn, which is why it is kept short — a chat is
+the conversation itself, so the finished message carries the state, the
+duration, the agent's name, one Switch Console link and, where a tool call
+failed or was declined, the tally saying so. There is no tool log and no
+line naming the tool of the moment; Telegram declines both.
+
+**Stopping an agent.** The status message carries a **Stop current work**
+button while there is something to stop. Pressing it asks the agent to end its
+current turn; the agent decides how quickly it can, and the same message says
+when it has. The control names the turn it was drawn for, so a press on a
+message that has not been redrawn since a new turn started is refused rather
+than stopping the newer one. It disappears when the turn ends. On a queued
+message the button stops the work in front of it, not the queued message, and
+the message says so. Whoever presses it must be allowed to stop that agent —
+the same check a typed `!interrupt` goes through — and the result, accepted or
+refused, comes back as an alert on that person's screen alone.
+
+The button is drawn in Telegram's `danger` style, which is red. That style
+arrived in Bot API 9.4 and only clients released after February 2026 draw it;
+an older one shows an ordinary button and no error, so the label still carries
+the whole of the warning for anyone on one.
+
+Telegram allows 64 bytes in the hidden payload a press carries. A provider
+whose turn ids are longer than about 60 bytes gets no button and a warning in
+the log rather than a control whose press Telegram would refuse — `!interrupt`
+still stops the turn.
 
 Telegram has a native animated "Thinking…" placeholder — the one it uses for
 its own AI features — but it is **not reachable here**. It is written with

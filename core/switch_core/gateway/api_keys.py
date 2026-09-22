@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +15,7 @@ from switch_core.db.models import ApiKey, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_api_key_store,
     get_config,
     get_protocol,
@@ -25,8 +27,26 @@ from switch_core.gateway.schemas import (
     CreateApiKeyResponse,
     RevealKeyResponse,
 )
+from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
+
+
+def _key_type(value: str) -> str:
+    """A key's type as the catalogue spells it.
+
+    The label an operator gave the key never goes anywhere near this — only
+    what the key is *for*, which is a fixed set the code chooses.
+    """
+    return value if value in ("agent", "registration", "bootstrap") else "other"
+
+
+def _age_days(created_at: object) -> float:
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
+
 
 router = APIRouter()
 
@@ -72,6 +92,9 @@ async def create_api_key(
     await session.commit()
 
     logger.info("Created API key '%s' for user %s", req.label, user.email)
+    emit_safely(
+        current_telemetry(), "api_key_created", {"key_type": _key_type(key.type)}
+    )
     return CreateApiKeyResponse(
         id=key.id,
         label=key.label,
@@ -116,4 +139,9 @@ async def delete_api_key(
     get_protocol().api_key_cache.invalidate(key_hash)
 
     logger.info("Deleted API key '%s' for user %s", key.label, user.email)
+    emit_safely(
+        current_telemetry(),
+        "api_key_revoked",
+        {"key_type": _key_type(key.type), "age_days": _age_days(key.created_at)},
+    )
     return {"ok": True}

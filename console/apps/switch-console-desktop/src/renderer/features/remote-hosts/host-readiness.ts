@@ -55,7 +55,7 @@ export const OBSERVATION_TTL_MS = 10 * 60_000;
  *
  * Deliberately narrow: only the host's own prerequisites plus the one agent
  * type being created. Re-checking every type meant picking Codex probed git,
- * tmux, node and Claude Code as well, roughly thirty SSH commands to answer a
+ * node and Claude Code as well, roughly thirty SSH commands to answer a
  * question about one of them.
  */
 export function stepsNeedingObservation(

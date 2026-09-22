@@ -193,7 +193,7 @@ def test_losing_the_stream_does_not_kill_the_connection() -> None:
     conn = _open(registry, "c1")
     registry.claim_room(conn, ROOM_A)
 
-    registry.detach_stream(conn.id, conn.stream_generation)
+    registry.detach_stream(conn, conn.stream_generation)
 
     # Still alive, still holding its room: a brief drop must not cost the slot.
     assert registry.require(AGENT, "c1") is conn
@@ -203,7 +203,7 @@ def test_losing_the_stream_does_not_kill_the_connection() -> None:
 def test_a_beat_without_a_stream_is_rejected() -> None:
     registry = ConnectionRegistry()
     conn = _open(registry, "c1")
-    registry.detach_stream(conn.id, conn.stream_generation)
+    registry.detach_stream(conn, conn.stream_generation)
 
     # The client is alive but receiving nothing. It must be told, not left
     # believing it is connected.
@@ -229,7 +229,7 @@ def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
     stale_generation = conn.stream_generation
 
     _open(registry, "c1")  # reattach; generation bumps
-    registry.detach_stream(conn.id, stale_generation)
+    registry.detach_stream(conn, stale_generation)
 
     assert conn.stream_attached
 

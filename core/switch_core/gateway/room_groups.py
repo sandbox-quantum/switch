@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -11,6 +12,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_room_group_store,
     get_room_store,
     get_session,
@@ -22,6 +24,15 @@ from switch_core.gateway.schemas import (
     RoomGroupDetail,
     RoomGroupUpdateRequest,
 )
+from switch_core.telemetry import emit_safely
+
+
+def _age_days(created_at: object) -> float:
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
+
 
 router = APIRouter()
 
@@ -67,6 +78,11 @@ async def create_room_group(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
+    emit_safely(
+        current_telemetry(),
+        "room_group_created",
+        {"has_parent": req.parent_group_id is not None},
+    )
     return _to_detail(group, 0)
 
 
@@ -148,8 +164,20 @@ async def delete_room_group(
     room_group_store: Annotated[RoomGroupStore, Depends(get_room_group_store)],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> Response:
+    # Read before the delete: afterwards there is nothing left to say how much
+    # was filed under it, which is the difference between tidying up an empty
+    # group and dismantling a working one.
+    group = await room_group_store.get(session, group_id)
+    room_count = (await room_group_store.get_room_counts(session)).get(group_id, 0)
+    age = _age_days(group.created_at) if group else 0.0
+
     removed = await room_group_store.delete(session, group_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Room group not found")
     await session.commit()
+    emit_safely(
+        current_telemetry(),
+        "room_group_deleted",
+        {"room_count": room_count, "age_days": age},
+    )
     return Response(status_code=204)

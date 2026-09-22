@@ -8,7 +8,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     wget \
-    tmux \
     sudo \
     jq \
     ca-certificates \
@@ -45,7 +44,7 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # ── Optional: additional agents (uncomment as needed) ────────────────────────
 # RUN npm install -g @openai/codex
-# RUN npm install -g @google/gemini-cli
+# RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # ── Dev user ──────────────────────────────────────────────────────────────────
 # Username: devuser  Password: devpass
@@ -79,9 +78,6 @@ RUN git config --global user.email "devuser@switch-console-dev" \
 RUN mkdir -p /home/devuser/workspace \
     && mkdir -p /home/devuser/.ssh && chmod 700 /home/devuser/.ssh
 
-RUN echo 'set -g default-terminal "xterm-256color"' > /home/devuser/.tmux.conf \
-    && echo 'set -g history-limit 50000' >> /home/devuser/.tmux.conf \
-    && echo 'set-option -g allow-rename on' >> /home/devuser/.tmux.conf
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 USER root

@@ -1,13 +1,5 @@
 import type { IDisposable } from '@switch-console/shared';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
-import { createLifecycleScriptTerminalId } from '@shared/core/terminals/terminals';
-import type { Pty, PtyExitInfo } from '../pty/pty';
-import { ptySessionRegistry } from '../pty/pty-session-registry';
-import type { TerminalProvider } from '../terminals/terminal-provider';
-
-const DEFAULT_COLS = 80;
-const DEFAULT_ROWS = 24;
-const OUTPUT_TAIL_CAP = 16 * 1024;
+import type { IExecutionContext } from '@main/core/execution-context/types';
 
 type LifecycleScript = {
   type: 'setup' | 'run' | 'teardown';
@@ -15,187 +7,71 @@ type LifecycleScript = {
   shellSetup?: string;
 };
 
-type LifecycleRespawnRequest = {
-  script: LifecycleScript;
-  initialSize: { cols: number; rows: number };
-};
-
 export type LifecycleScriptExecutionResult =
-  | { kind: 'started' }
   | { kind: 'already-running' }
-  | {
-      kind: 'exited';
-      exitCode?: number;
-      signal?: string | number;
-      outputTail: string;
-    };
-
-function stripTerminalControls(value: string): string {
-  return value
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
-    .replace(/\r/g, '');
-}
-
-function appendOutputTail(current: string, chunk: string): string {
-  const next = current + stripTerminalControls(chunk);
-  return next.length > OUTPUT_TAIL_CAP ? next.slice(-OUTPUT_TAIL_CAP) : next;
-}
+  | { kind: 'exited'; exitCode?: number; signal?: string | number; outputTail: string };
 
 export class LifecycleScriptService implements IDisposable {
-  private readonly locationId: string;
-  private readonly terminals: TerminalProvider;
-  private readonly sessionsWithRespawnHandler = new Set<string>();
-  private readonly sessionsWaitingForExit = new Set<string>();
-  private readonly latestRespawnRequest = new Map<string, LifecycleRespawnRequest>();
+  private readonly active = new Map<string, AbortController>();
   private disposed = false;
 
-  constructor({ locationId, terminals }: { locationId: string; terminals: TerminalProvider }) {
-    this.locationId = locationId;
-    this.terminals = terminals;
-  }
-
-  private respawnAfterExit(sessionId: string): void {
-    const respawnRequest = this.latestRespawnRequest.get(sessionId);
-    this.latestRespawnRequest.delete(sessionId);
-    this.sessionsWithRespawnHandler.delete(sessionId);
-    if (this.disposed || !respawnRequest) return;
-    void this.prepareLifecycleScript(respawnRequest.script, {
-      initialSize: respawnRequest.initialSize,
-    });
-  }
-
-  private ensureRespawnAfterExit({
-    sessionId,
-    pty,
-    script,
-    initialSize,
-  }: {
-    sessionId: string;
-    pty: Pty;
-    script: LifecycleScript;
-    initialSize: { cols: number; rows: number };
-  }): void {
-    // Restores the user-facing prompt after manual script completion/stop. Later reruns
-    // already work because the PTY registry drops exited sessions.
-    this.latestRespawnRequest.set(sessionId, { script, initialSize });
-    if (this.sessionsWithRespawnHandler.has(sessionId)) return;
-
-    this.sessionsWithRespawnHandler.add(sessionId);
-    pty.onExit(() => this.respawnAfterExit(sessionId));
-  }
-
-  private resolveIds(script: Pick<LifecycleScript, 'type'>): {
-    terminalId: string;
-    sessionId: string;
-  } {
-    const terminalId = createLifecycleScriptTerminalId(script.type);
-    const sessionId = makePtySessionId(this.locationId, this.locationId, terminalId);
-    return { terminalId, sessionId };
-  }
-
-  async prepareLifecycleScript(
-    script: LifecycleScript,
-    options: { initialSize?: { cols: number; rows: number } } = {}
-  ): Promise<void> {
-    const { initialSize = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS } } = options;
-    const { terminalId, sessionId } = this.resolveIds(script);
-    if (ptySessionRegistry.get(sessionId)) return;
-
-    await this.terminals.spawnLifecycleScript({
-      terminal: {
-        id: terminalId,
-        locationId: this.locationId,
-        sessionId: this.locationId,
-        shellId: 'system',
-        name: script.type,
-      },
-      shellSetup: script.shellSetup,
-      initialSize,
-      respawnOnExit: false,
-      preserveBufferOnExit: true,
-      watchDevServer: script.type === 'run',
-    });
-  }
-
-  async runLifecycleScript(
-    script: LifecycleScript,
-    options: {
-      waitForExit?: boolean;
-      exit?: boolean;
-      respawnAfterExit?: boolean;
-      initialSize?: { cols: number; rows: number };
-    } = {}
-  ): Promise<LifecycleScriptExecutionResult> {
-    const {
-      waitForExit = false,
-      exit = false,
-      respawnAfterExit = false,
-      initialSize = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS },
-    } = options;
-
-    const { sessionId } = this.resolveIds(script);
-
-    if (!ptySessionRegistry.get(sessionId)) {
-      await this.prepareLifecycleScript(script, { initialSize });
+  constructor(
+    private readonly options: {
+      ctx: IExecutionContext;
+      sessionEnvVars: Record<string, string>;
+      windows: boolean;
     }
+  ) {}
 
-    const pty = ptySessionRegistry.get(sessionId);
-    if (!pty) {
-      throw new Error(
-        `Lifecycle script session unavailable for ${script.type} in location ${this.locationId}`
-      );
-    }
+  stop(type: LifecycleScript['type']): boolean {
+    const controller = this.active.get(type);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
 
-    if (waitForExit) {
-      if (this.sessionsWaitingForExit.has(sessionId)) {
-        return { kind: 'already-running' };
-      }
-      this.sessionsWaitingForExit.add(sessionId);
-    }
-
-    if (exit && (respawnAfterExit || !waitForExit)) {
-      this.ensureRespawnAfterExit({ sessionId, pty, script, initialSize });
-    }
-
+  async runLifecycleScript(script: LifecycleScript): Promise<LifecycleScriptExecutionResult> {
+    if (this.disposed) throw new Error('Location execution has been disposed');
+    if (this.active.has(script.type)) return { kind: 'already-running' };
+    const controller = new AbortController();
+    this.active.set(script.type, controller);
+    const line = script.shellSetup ? `${script.shellSetup} && ${script.script}` : script.script;
+    const { ctx, sessionEnvVars, windows } = this.options;
     try {
-      let outputTail = '';
-      const exitPromise = waitForExit
-        ? new Promise<PtyExitInfo>((resolve) => {
-            pty.onData((data) => {
-              outputTail = appendOutputTail(outputTail, data);
-            });
-            pty.onExit((info) => resolve(info));
-          })
-        : null;
-
-      const command = exit ? `${script.script}; exit` : script.script;
-      pty.write(`${command}\n`);
-
-      if (!exitPromise) {
-        return { kind: 'started' };
-      }
-
-      const exitInfo = await exitPromise;
+      // Redirect the whole script so commands reading stdin receive EOF.
+      const result = await ctx.exec(
+        windows ? 'cmd.exe' : 'sh',
+        windows ? ['/d', '/s', '/c', `(${line}) < NUL`] : ['-c', `{\n${line}\n} < /dev/null`],
+        { signal: controller.signal, env: sessionEnvVars, maxBuffer: 16 * 1024 * 1024 }
+      );
       return {
         kind: 'exited',
-        exitCode: exitInfo.exitCode,
-        signal: exitInfo.signal,
-        outputTail,
+        exitCode: 0,
+        outputTail: (result.stdout + result.stderr).slice(-16384),
+      };
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      const failure = error as {
+        code?: unknown;
+        stdout?: string;
+        stderr?: string;
+        signal?: string;
+      };
+      if (typeof failure.code !== 'number') throw error;
+      return {
+        kind: 'exited',
+        exitCode: failure.code,
+        signal: failure.signal,
+        outputTail: `${failure.stdout ?? ''}${failure.stderr ?? ''}`.slice(-16384),
       };
     } finally {
-      if (waitForExit) {
-        this.sessionsWaitingForExit.delete(sessionId);
-      }
+      this.active.delete(script.type);
     }
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
-    this.sessionsWithRespawnHandler.clear();
-    this.sessionsWaitingForExit.clear();
-    this.latestRespawnRequest.clear();
-    await this.terminals.destroyAll();
+    for (const controller of this.active.values()) controller.abort();
+    this.options.ctx.dispose();
   }
 }

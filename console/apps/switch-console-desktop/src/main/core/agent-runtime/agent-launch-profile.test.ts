@@ -103,7 +103,7 @@ describe('resolveAgentLaunchProfile', () => {
     expect(profile.files[0].content).not.toContain('model_instructions_file');
   });
 
-  it('keeps the system prompt out of the argv the SSH and tmux paths re-quote', () => {
+  it('keeps the system prompt out of the argv the SSH paths re-quote', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
       workingDir: WD,

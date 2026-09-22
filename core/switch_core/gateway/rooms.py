@@ -21,6 +21,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_bridge_store,
     get_collab_lifecycle,
     get_external_user_store,
@@ -59,6 +60,7 @@ from switch_core.rooms_yaml import (
     RoomYamlService,
     template_json_schema,
 )
+from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
 
@@ -558,6 +560,9 @@ async def create_room_role(
 ) -> list[RoomRoleDetail]:
     await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
+        emit_safely(
+            current_telemetry(), "room_role_defined", {"exclusive": req.exclusive}
+        )
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
         )
@@ -602,6 +607,7 @@ async def delete_room_role(
     await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await protocol.room_role_store.delete_role(session, room_id, name)
+        emit_safely(current_telemetry(), "room_role_deleted", {})
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     await session.commit()

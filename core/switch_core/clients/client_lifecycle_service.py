@@ -268,6 +268,13 @@ class ClientLifecycleService:
     def get(self, client_id: str) -> ClientBase[ClientConfig] | None:
         return self._clients.get(client_id)
 
+    def running_count(self) -> int:
+        """Clients believed to be running right now.
+
+        A crashed client removes itself, so this falling is the only signal.
+        """
+        return len(self._clients)
+
     def get_by_agent_id(self, agent_id: str) -> ClientBase[ClientConfig] | None:
         for client in self._clients.values():
             if isinstance(client, AgentClient) and client._agent is not None:

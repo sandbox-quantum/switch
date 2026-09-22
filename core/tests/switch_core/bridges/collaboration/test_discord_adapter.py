@@ -10,6 +10,7 @@ import pytest
 from switch_core.bridges.agent.commands import COMMANDS
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord.adapter import (
+    _WEBHOOK_NAME,
     DiscordAdapter,
     DiscordConnectionConfig,
 )
@@ -560,7 +561,7 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", "**hello**"))
 
@@ -580,7 +581,7 @@ def test_long_message_is_split_across_posts_not_dropped() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
     body = "\n".join(f"line {i}" for i in range(1000))
 
     ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
@@ -615,7 +616,7 @@ def test_failed_part_leaves_a_visible_truncation_notice() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
     body = "\n".join(f"line {i}" for i in range(1000))
 
     sends = {"n": 0}
@@ -644,7 +645,7 @@ def test_send_message_with_thread_root_posts_into_thread() -> None:
     channel.messages[4000] = root
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_message(
@@ -664,7 +665,7 @@ def test_send_message_reuses_existing_thread() -> None:
     thread = _FakeThread(parent=channel, thread_id=4000)
     adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(
         adapter.send_message(
@@ -694,7 +695,7 @@ def test_send_attachment_posts_via_webhook_with_agent_identity() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_attachment(
@@ -725,7 +726,7 @@ def test_send_attachment_without_caption_sends_empty_content() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(
         adapter.send_attachment(
@@ -743,7 +744,7 @@ def test_send_attachment_into_thread() -> None:
     thread = _FakeThread(parent=channel, thread_id=4000)
     adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_attachment(
@@ -787,7 +788,7 @@ def test_send_attachment_falls_back_to_text_note_on_http_error() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FileRejectingWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_attachment(
@@ -825,7 +826,7 @@ def test_update_message_edits_via_webhook_with_thread() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(adapter.update_message(str(CHANNEL_ID), "4000:901", "new text"))
 
@@ -843,7 +844,7 @@ def test_update_message_falls_back_to_bot_message_edit() -> None:
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     webhook.edit_raises_not_found = True
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(adapter.update_message(str(CHANNEL_ID), f"{CHANNEL_ID}:502", "edited"))
 
@@ -908,143 +909,6 @@ def test_send_typing_triggers_once_and_off_is_noop() -> None:
     _run(adapter.send_typing(str(CHANNEL_ID), "my-agent", False))
 
     assert channel.typing_count == 1
-
-
-# ── Runtime state (working-on-it activity) ──────────────────────────────────
-
-
-def _runtime_setup() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
-    adapter = _adapter()
-    channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
-    webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
-    return adapter, channel, webhook
-
-
-def test_runtime_state_working_posts_persistent_indicator() -> None:
-    adapter, _, webhook = _runtime_setup()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    assert len(webhook.sent) == 1
-    assert webhook.sent[0]["content"] == "⚙️ _Working on it…_"
-    assert webhook.sent[0]["username"] == "my-agent"
-    assert (
-        adapter._working_msg[(str(CHANNEL_ID), "my-agent")].message_ref
-        == f"{CHANNEL_ID}:901"
-    )
-
-
-def test_runtime_state_detail_edits_message_in_place() -> None:
-    adapter, _, webhook = _runtime_setup()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-            detail="Editing adapter.py",
-        )
-    )
-
-    assert len(webhook.sent) == 1
-    assert len(webhook.edits) == 1
-    assert webhook.edits[0]["message_id"] == 901
-    assert webhook.edits[0]["content"] == "⚙️ Editing adapter.py"
-    assert (
-        adapter._working_msg[(str(CHANNEL_ID), "my-agent")].message_ref
-        == f"{CHANNEL_ID}:901"
-    )
-
-
-def test_runtime_state_idle_clears_working_message() -> None:
-    adapter, channel, webhook = _runtime_setup()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "idle",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    assert [d["message_id"] for d in webhook.deletes] == [901]
-    assert channel.deleted_ids == []
-    assert (str(CHANNEL_ID), "my-agent") not in adapter._working_msg
-
-
-def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
-    adapter, channel, webhook = _runtime_setup()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "awaiting-input",
-            mention_handle="louis",
-            thread_root_id=None,
-        )
-    )
-
-    # Working indicator stays up; a ping was posted and tracked.
-    assert len(webhook.sent) == 2
-    assert "@louis" in webhook.sent[1]["content"]
-    assert "needs your input" in webhook.sent[1]["content"]
-    assert adapter._input_pings[(str(CHANNEL_ID), "my-agent")] == [f"{CHANNEL_ID}:902"]
-
-    # Resuming work means the input was provided — the ping is deleted, the
-    # working indicator is refreshed in place.
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    assert [d["message_id"] for d in webhook.deletes] == [902]
-    assert (str(CHANNEL_ID), "my-agent") not in adapter._input_pings
 
 
 # ── Webhook management ───────────────────────────────────────────────────────
@@ -1258,29 +1122,3 @@ def test_start_times_out_when_never_ready_and_stops() -> None:
             assert adapter._client is None
 
     _run(scenario())
-
-
-def test_awaiting_input_with_nobody_linked_says_so() -> None:
-    # The ping used to post with the mention simply missing, which on the
-    # channel reads exactly like a ping that worked — an agent waiting on input
-    # nobody knows to give. The handle is the agent owner's linked account
-    # (CHOO-2137), so "nobody" now means the owner has not said which account
-    # here is theirs, and the line says that instead of trailing off.
-    adapter, _channel, webhook = _runtime_setup()
-
-    _run(
-        adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "awaiting-input",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    content = webhook.sent[-1]["content"]
-    assert "needs your input" in content
-    assert "pings no one" in content
-    # Named as a person would name it, not as the class is.
-    assert "Discord" in content
-    assert "Adapter" not in content

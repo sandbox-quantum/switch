@@ -1,60 +1,81 @@
-import { describe, expect, it } from 'vitest';
-import { agentSidecarTmuxName } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
-import { exactTmuxTarget, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
-import { buildKillTmuxScript, resetTmuxTargets } from './reset-remote-agent-tmux';
-
-const REPO = '/home/dev/repo';
-const SLUG = 'agent-a';
-
-describe('resetTmuxTargets', () => {
-  it('kills every agent session plus this agent’s sidecar', () => {
-    const targets = resetTmuxTargets(['s1', 's2'], REPO, SLUG);
-    expect(targets).toContain(makeAgentTmuxSessionName('s1'));
-    expect(targets).toContain(makeAgentTmuxSessionName('s2'));
-    expect(targets).toContain(agentSidecarTmuxName(REPO, SLUG));
-    expect(targets).toHaveLength(3);
-  });
-
-  it('kills the sidecar even when the agent has no sessions', () => {
-    expect(resetTmuxTargets([], REPO, SLUG)).toEqual([agentSidecarTmuxName(REPO, SLUG)]);
-  });
-
-  it('targets only this agent’s sidecar, not a co-located agent’s', () => {
-    expect(resetTmuxTargets([], REPO, SLUG)).not.toContain(agentSidecarTmuxName(REPO, 'agent-b'));
-  });
-
-  it('deduplicates repeated session ids', () => {
-    const targets = resetTmuxTargets(['s1', 's1'], REPO, SLUG);
-    expect(targets).toEqual([makeAgentTmuxSessionName('s1'), agentSidecarTmuxName(REPO, SLUG)]);
-  });
+import { afterEach, expect, it, vi } from 'vitest';
+import { resetRemoteAgent } from './reset-remote-agent';
+const mocks = vi.hoisted(() => ({
+  list: vi.fn(),
+  stop: vi.fn(),
+  disable: vi.fn(),
+  remove: vi.fn(async () => ({ changes: 1 })),
+  restart: vi.fn(),
+  teardown: vi.fn(async () => ({ success: true })),
+}));
+vi.mock('./getAgentById', () => ({
+  getAgentById: async () => ({ id: 'local', serverId: 'server', switchAgentId: 'agent' }),
+}));
+vi.mock('@main/core/switch-servers/servers-store', () => ({
+  getServer: async () => ({ id: 'server' }),
+}));
+vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchSdkSessions: mocks.list }));
+vi.mock('@main/core/sdk-host/shared-agent-runtime', () => ({ stopSharedSession: mocks.stop }));
+vi.mock('@main/core/sdk-host/shared-watcher', () => ({ configureSharedWatcher: mocks.disable }));
+vi.mock('@main/core/sessions/session-runtime-manager', () => ({
+  sessionRuntimeManager: { teardownSession: mocks.teardown },
+}));
+vi.mock('@main/core/sessions/session-hooks', () => ({ sessionHooks: { _emit: vi.fn() } }));
+vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
+  switchRoomService: { clearSession: vi.fn() },
+}));
+vi.mock('@main/core/view-state/view-state-service', () => ({ viewStateService: { del: vi.fn() } }));
+vi.mock('@main/db/schema', () => ({ sessions: { id: 'id', agentId: 'agentId' } }));
+vi.mock('@main/db/client', () => ({
+  db: {
+    select: () => ({ from: () => ({ where: async () => [{ id: 'local-session' }] }) }),
+    delete: () => ({ where: mocks.remove }),
+  },
+}));
+vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
+vi.mock('@main/lib/events', () => ({ events: { emit: vi.fn() } }));
+vi.mock('./remote-session-reconciler', () => ({ remoteSessionReconciler: { stop: vi.fn() } }));
+vi.mock('./remote-watcher', () => ({
+  ensureRemoteWatcher: mocks.restart,
+  startRemoteDiscovery: vi.fn(),
+}));
+const session = {
+  sessionId: 'remote-only',
+  agentId: 'agent',
+  hostId: 'host',
+  epoch: 'epoch',
+  provider: 'codex',
+  status: 'ready',
+  connectivity: 'online',
+  pendingRequestIds: [],
+  capabilities: {
+    input: 'queue',
+    approvals: true,
+    questions: true,
+    interrupt: true,
+    reset: false,
+    compact: false,
+    modelChange: false,
+    attachmentMimeTypes: [],
+  },
+};
+afterEach(() => vi.clearAllMocks());
+it('stops all server-owned sessions for this agent before removing local views', async () => {
+  mocks.list.mockResolvedValue([
+    session,
+    { ...session, sessionId: 'foreign', agentId: 'another' },
+    { ...session, sessionId: 'ended', status: 'stopped' },
+  ]);
+  await resetRemoteAgent('local');
+  expect(mocks.disable).toHaveBeenCalledWith('local', false);
+  expect(mocks.stop).toHaveBeenCalledExactlyOnceWith({ id: 'server' }, 'remote-only');
+  expect(mocks.remove).toHaveBeenCalledTimes(1);
+  expect(mocks.restart).toHaveBeenCalledWith('local');
 });
-
-describe('buildKillTmuxScript', () => {
-  it('returns null when there is nothing to kill', () => {
-    expect(buildKillTmuxScript([])).toBeNull();
-  });
-
-  it('fails loud (set -e) and guards each kill behind has-session', () => {
-    const script = buildKillTmuxScript(['alpha', 'beta']);
-    expect(script).not.toBeNull();
-    const lines = script!.split('\n');
-    expect(lines[0]).toBe('set -e');
-    expect(lines).toHaveLength(3);
-    for (const name of ['alpha', 'beta']) {
-      const line = lines.find((l) => l.includes(name));
-      expect(line).toBeDefined();
-      // Each target is killed only if it exists, so an already-gone session is a
-      // no-op rather than an error.
-      expect(line).toContain('tmux has-session -t');
-      expect(line).toContain('tmux kill-session -t');
-    }
-  });
-
-  it('uses exact-match tmux targets so a name never prefix-matches its sidecar', () => {
-    const name = makeAgentTmuxSessionName('s1');
-    const script = buildKillTmuxScript([name]);
-    // exactTmuxTarget prefixes '=', forcing an exact session-name match.
-    expect(script).toContain(exactTmuxTarget(name));
-    expect(exactTmuxTarget(name).startsWith('=')).toBe(true);
-  });
+it('keeps local state and auto-start disabled when stop has an unknown outcome', async () => {
+  mocks.list.mockResolvedValue([session]);
+  mocks.stop.mockRejectedValueOnce(new Error('Unknown outcome'));
+  await expect(resetRemoteAgent('local')).rejects.toThrow('Unknown outcome');
+  expect(mocks.remove).not.toHaveBeenCalled();
+  expect(mocks.restart).not.toHaveBeenCalled();
 });

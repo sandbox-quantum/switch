@@ -17,7 +17,7 @@ const HOTKEY_PLATFORM = detectPlatform();
 
 /**
  * Dispatches TanStack hotkey registrations for events captured by widgets that
- * stop normal document-level hotkey propagation (Monaco, xterm, webviews, etc.).
+ * stop normal document-level hotkey propagation (Monaco, webviews, etc.).
  */
 export function dispatchMatchingHotkeys(
   event: KeyboardEvent,

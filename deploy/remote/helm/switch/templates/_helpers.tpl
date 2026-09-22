@@ -62,6 +62,13 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
+{{- if .Values.secrets.otlpHeaders }}
+OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.slackApp.enabled }}
+SLACK_APP_CLIENT_SECRET: {{ required "secrets.slackAppClientSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppClientSecret | b64enc | quote }}
+SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppSigningSecret | b64enc | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -455,6 +462,35 @@ error rather than a crash loop.
 {{- end }}
 
 {{/*
+Refuse to render an observability config that would report nothing.
+
+The collector drops payloads that do not identify the deployment, silently and
+with a 200, so a chart that shipped without an id would produce a pod that
+looks configured and appears on no dashboard. switch-core refuses to start in
+that state too; failing here means the operator finds out at `helm upgrade`
+rather than from a CrashLoopBackOff.
+*/}}
+{{- define "switch.validateObservability" -}}
+{{- with .Values.switchCore.observability }}
+{{- if and .otlpEndpoint (not .deploymentId) -}}
+{{- fail "switchCore.observability.deploymentId must be set when otlpEndpoint is: the collector drops payloads it cannot attribute to a deployment, so this server would report nothing while looking correctly configured. Use a UUID, and keep it stable across upgrades." -}}
+{{- end -}}
+{{- if and .deploymentId (not .otlpEndpoint) -}}
+{{- fail "switchCore.observability.deploymentId is set but otlpEndpoint is not, so nothing is reported anywhere. Set the endpoint, or remove the id." -}}
+{{- end -}}
+{{- if and .logs (not .otlpEndpoint) -}}
+{{- fail "switchCore.observability.logs is on but no otlpEndpoint is set." -}}
+{{- end -}}
+{{- if and .deploymentId (not (regexMatch "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" .deploymentId)) -}}
+{{- fail (printf "switchCore.observability.deploymentId must be a UUID, got %q. switch-core validates the same thing and refuses to start, so without this check the render succeeds and the pod CrashLoopBackOffs instead. Generate one with `uuidgen`." .deploymentId) -}}
+{{- end -}}
+{{- if and .otlpEndpoint (not (regexMatch "^https?://[^/?#]+/?$" .otlpEndpoint)) -}}
+{{- fail (printf "switchCore.observability.otlpEndpoint must be an http(s) base URL with no path, query or fragment, got %q. The signal path is appended to it, so `.../v1/logs` would be posted to `.../v1/logs/v1/metrics`, and a query string is discarded entirely when the signal path is resolved against it. Put a credential in `headers`." .otlpEndpoint) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -590,6 +626,37 @@ Include with `nindent 12`.
 - name: ENVIRONMENT
   value: {{ . | quote }}
 {{- end }}
+{{- with .Values.switchCore.observability }}
+{{- if .otlpEndpoint }}
+- name: OTLP_ENDPOINT
+  value: {{ .otlpEndpoint | quote }}
+- name: DEPLOYMENT_ID
+  value: {{ .deploymentId | quote }}
+- name: OTLP_METRICS_ENABLED
+  value: {{ .metrics | quote }}
+- name: OTLP_LOGS_ENABLED
+  value: {{ .logs | quote }}
+- name: OTLP_EXPORT_INTERVAL_SECONDS
+  value: {{ .exportIntervalSeconds | quote }}
+- name: OTLP_TIMEOUT_SECONDS
+  value: {{ .timeoutSeconds | quote }}
+{{- if $.Values.secrets.otlpHeaders }}
+- name: OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: OTLP_HEADERS
+{{- end }}
+{{- end }}
+{{- end }}
+- name: TELEMETRY_ENABLED
+  value: {{ .Values.switchCore.telemetry.enabled | quote }}
+{{- if .Values.switchCore.telemetry.enabled }}
+- name: TELEMETRY_ENDPOINT
+  value: {{ .Values.switchCore.telemetry.endpoint | quote }}
+- name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
+  value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+{{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
 # Host/Origin guard (default-on since mcp 1.28) only rejects the
@@ -603,6 +670,22 @@ Include with `nindent 12`.
 {{- if .Values.switchCore.gatewayPublicUrl }}
 - name: GATEWAY_PUBLIC_URL
   value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
+{{- end }}
+{{- if .Values.switchCore.slackApp.enabled }}
+- name: MESSAGING_PUBLIC_URL
+  value: {{ required "switchCore.slackApp.messagingPublicUrl is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.messagingPublicUrl | quote }}
+- name: SLACK_APP_CLIENT_ID
+  value: {{ required "switchCore.slackApp.clientId is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.clientId | quote }}
+- name: SLACK_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SLACK_APP_CLIENT_SECRET
+- name: SLACK_APP_SIGNING_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SLACK_APP_SIGNING_SECRET
 {{- end }}
 {{- end }}
 

@@ -79,7 +79,7 @@ async def test_a_room_created_after_the_bridge_started_resolves_its_tenant() -> 
     async def _handler(event: object) -> None:
         seen.append(current_tenant_id())
 
-    traced = bridge._traced(_handler)
+    traced = bridge._traced("message", _handler)
 
     # Exactly what room creation does once the room exists (room_service),
     # long after `_load_channel_map` ran.
@@ -101,7 +101,7 @@ async def test_an_unmapped_channel_binds_the_bridges_own_tenant() -> None:
     async def _handler(event: object) -> None:
         seen.append(current_tenant_id())
 
-    await bridge._traced(_handler)(_event("C-unknown"))
+    await bridge._traced("message", _handler)(_event("C-unknown"))
 
     assert seen == [BRIDGE_TENANT]
 
@@ -113,7 +113,7 @@ async def test_the_binding_does_not_outlive_the_event() -> None:
     async def _handler(event: object) -> None:
         assert current_tenant_id() == ROOM_TENANT
 
-    await bridge._traced(_handler)(_event("C1"))
+    await bridge._traced("message", _handler)(_event("C1"))
 
     assert current_tenant_id() is None
 
@@ -154,7 +154,7 @@ async def test_the_dispatch_style_cannot_change_the_tenant() -> None:
     async def _handler(event: object) -> None:
         seen.append(current_tenant_id())
 
-    traced = bridge._traced(_handler)
+    traced = bridge._traced("message", _handler)
     loop = asyncio.get_running_loop()
     from_thread: list[concurrent.futures.Future[None]] = []
 

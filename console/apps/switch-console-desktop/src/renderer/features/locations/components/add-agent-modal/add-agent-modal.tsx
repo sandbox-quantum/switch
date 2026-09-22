@@ -13,6 +13,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -205,6 +206,9 @@ export const AddAgentModal = observer(function AddAgentModal({
   const onLaunchProfileConfigChange = useCallback((config: AgentProviderConfig | null) => {
     launchProfileConfigRef.current = config;
   }, []);
+
+  // Drive the agent through its provider's own server rather than a terminal.
+  // Held in state rather than a ref: the switch has to render what it holds.
 
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
   const dir = isRemoteRun ? trimmedRemoteDir : pickState.path;
@@ -540,9 +544,22 @@ export const AddAgentModal = observer(function AddAgentModal({
           />
         )}
 
+        {canChooseAgentType && pickState.providerId && (
+          <ProviderConnectionStatus
+            providerId={pickState.providerId}
+            sshHost={isRemoteRun ? runHost : null}
+            dir={dir}
+          />
+        )}
+
         {canConfigureAgent && !!pickState.providerId && (
           <>
-            <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
+            <AgentAdvancedConfig
+              providerId={pickState.providerId}
+              sshHost={isRemoteRun ? runHost : null}
+              dir={dir}
+              onChange={onAdvancedChange}
+            />
             <LaunchProfileConfig
               providerId={pickState.providerId}
               sshHost={isRemoteRun ? runHost : null}

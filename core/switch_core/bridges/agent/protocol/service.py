@@ -22,6 +22,7 @@ from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_detail import (
@@ -98,6 +99,9 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.sessions.attachments import normalise_mime_type
+from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     TransportError,
@@ -126,6 +130,20 @@ if TYPE_CHECKING:
     from switch_core.rooms_yaml import RoomYamlService
 
 logger = logging.getLogger(__name__)
+
+
+def _age_days(created_at: object) -> float:
+    """How old a row is, in days, for reporting. Zero if unknown.
+
+    Takes `object` because the timestamp columns are annotated `Mapped[str]`
+    while carrying real `datetime`s, so the honest signature is "whatever the
+    column hands back", checked here rather than trusted.
+    """
+    if not isinstance(created_at, datetime):
+        return 0.0
+    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
+
 
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
 # trailing newline, which would let an identifier carry a line break.
@@ -238,6 +256,11 @@ def _describe_room(room: Room) -> RoomDescriptor:
 
 
 class ProtocolService:
+    # Class-level defaults: several tests assemble a minimal instance without
+    # `__init__`, and `emit_safely` treats None as "report nothing".
+    telemetry: TelemetryService | None = None
+    sessions: SessionReporter = SessionReporter(None)
+
     def __init__(
         self,
         *,
@@ -257,7 +280,13 @@ class ProtocolService:
         bridge_store: CollaborationBridgeStore,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        telemetry: TelemetryService | None = None,
     ) -> None:
+        self.telemetry = telemetry
+        # Pairs session start with session end. Held here because the handler
+        # that starts a session and the registry listener that ends one must
+        # be the same object — an end is reported only for a start this saw.
+        self.sessions = SessionReporter(telemetry, connections)
         self.agent_store = agent_store
         self.agent_session_store = agent_session_store
         self.agent_runtime_state_store = AgentRuntimeStateStore()
@@ -310,6 +339,7 @@ class ProtocolService:
         overwrite: bool = False,
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
+        registration_path: str = "other",
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -379,6 +409,11 @@ class ProtocolService:
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         encrypted_key = encrypt_token(api_key, self.config.jwt_secret_key)
 
+        # Reported only for a genuinely new agent: a re-registration rotates a
+        # key on an agent that already existed, and counting it would make a
+        # CLI that re-registers on every launch look like adoption.
+        newly_registered = False
+
         async with self.session_factory() as session:
             existing = await self.agent_store.get_by_name(session, name)
             if existing and not overwrite:
@@ -445,6 +480,24 @@ class ProtocolService:
                     ),
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
+                newly_registered = True
+
+        if newly_registered:
+            runtime = normalise_known_agent_type(metadata)
+            emit_safely(
+                self.telemetry,
+                "agent_registered",
+                {
+                    "agent_type": agent_type,
+                    "known_agent_type": runtime,
+                    "registration_path": registration_path,
+                    "has_parent": parent_agent_id is not None,
+                },
+            )
+            if self.telemetry is not None:
+                await self.telemetry.emit_milestone(
+                    "first_agent_registered", known_agent_type=runtime
+                )
 
         await self._create_bridge_identities(tenant_id, name, description)
 
@@ -538,6 +591,7 @@ class ProtocolService:
                 overwrite=overwrite,
                 addressable_by_agent_ids=addressable_by_agent_ids,
                 owner_only=owner_only,
+                registration_path="bootstrap",
             )
 
     async def _create_agent(
@@ -885,6 +939,15 @@ class ProtocolService:
         client_id = agent.client_id
         resolved_id = agent.id
         resolved_name = agent.name
+        # Captured before the row goes: afterwards there is nothing left to
+        # describe what was removed, and "an agent was deleted" without its
+        # runtime or its age says almost nothing.
+        removed: dict[str, str | int | float | bool] = {
+            "known_agent_type": normalise_known_agent_type(agent.metadata_),
+            "age_days": _age_days(agent.created_at),
+            "had_parent": agent.parent_agent_id is not None,
+        }
+        removed["room_count"] = await self._room_count_for(resolved_id)
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 
@@ -896,6 +959,29 @@ class ProtocolService:
         self.api_key_cache.invalidate_agent(resolved_id)
 
         await self.client_lifecycle.remove(client_id)
+
+        emit_safely(self.telemetry, "agent_deleted", removed)
+
+    async def _room_count_for(self, agent_id: str) -> int:
+        """How many rooms an agent is in, for reporting only.
+
+        Never raises, and skipped when nothing is listening: this exists to
+        label an analytics event, and deleting an agent must not fail because
+        a count did.
+        """
+        if self.telemetry is None:
+            return 0
+        try:
+            async with self.session_factory() as session:
+                return len(await self.room_store.get_rooms_for_agent(session, agent_id))
+        except Exception:
+            logger.warning(
+                "Could not count rooms for agent %s while reporting its "
+                "deletion; reporting 0.",
+                agent_id,
+                exc_info=True,
+            )
+            return 0
 
     # ── Rooms ──────────────────────────────────────────────────────────────────
 
@@ -1172,6 +1258,10 @@ class ProtocolService:
         """
         if not files:
             raise ValueError("no attachments provided")
+        files = [
+            (data, filename, normalise_mime_type(mimetype))
+            for data, filename, mimetype in files
+        ]
         max_bytes = self.config.agent_media_max_bytes
         for data, filename, _mimetype in files:
             if not data:
@@ -1497,24 +1587,15 @@ class ProtocolService:
         """Record and broadcast an agent's runtime state in a room.
 
         Persists the latest state (so it is queryable via `!status`) and emits
-        a `com.switch.agent.runtime_state` room event the collaboration bridge
-        picks up to surface the state on the bridged channel. Reported by the
-        Switch Console connector as its managed session transitions.
+        a `com.switch.agent.runtime_state` room event for protocol clients that
+        watch it. Reported by the Switch Console connector as its managed
+        session transitions.
 
-        `thread_id` (the triggering message's thread, when it was in one) rides
-        the event so the bridge can surface the state in that thread. It is
-        transient routing only — it is never persisted as part of the state.
-
-        `detail` is a short activity line for the running turn (e.g. "Editing
-        foo.py"); like `thread_id` it is transient and rides the event only —
-        the bridge surfaces it in place on the live working message.
-
-        `anchor_event_id` is the latest message the reporting connector has
-        actually handed to the agent's session. The bridge repositions the
-        indicator when it changes, so position follows what the agent has
-        genuinely been given rather than what merely arrived in the room. Also
-        transient routing — reported on every refresh, and only a change moves
-        anything.
+        What a bridged channel shows of a running turn is the SDK session
+        publication, not this: no collaboration adapter renders the event any
+        more. `thread_id`, `detail` and `anchor_event_id` still ride it as
+        transient routing — never persisted as part of the state — and describe
+        where the turn is happening for a client that wants to draw it.
 
         The `switchdash://` deeplink is rewritten to a gateway HTTP redirect for
         platforms that linkify only http(s) (Discord, Telegram), so the "Open in
@@ -2364,6 +2445,7 @@ class ProtocolService:
             protection_config=security_config,
             instructions=instructions,
             created_by=agent.owner_id,
+            created_by_kind="agent",
             owner_id=agent.owner_id,
             group_id=group_id,
             read_visibility=read_visibility,
@@ -2459,7 +2541,10 @@ class ProtocolService:
                 include_for = [target.id]
         try:
             await self.room_service.add_agents_to_room(
-                room_id, agent_names=[agent_name], include_subagents_for=include_for
+                room_id,
+                agent_names=[agent_name],
+                include_subagents_for=include_for,
+                added_by_kind="agent",
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e
@@ -3520,8 +3605,11 @@ class ProtocolService:
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, room_id, "write")
-            await self.room_store.set_archived(session, room_id, archived)
-            await session.commit()
+        # Through RoomService rather than straight at the store: archiving is
+        # reported, and writing the row here instead would make an agent's
+        # archive the one kind nothing observes while the snapshot's archived
+        # count rose anyway.
+        await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
 
     async def list_all_agents(self, agent_id: str) -> list[Agent]:

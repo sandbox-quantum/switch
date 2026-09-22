@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
-from typing import ClassVar
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, ClassVar, Literal
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
+from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
@@ -17,33 +18,28 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    WebhookDeliveryUnsupported,
+)
+from switch_core.bridges.collaboration.session.renderers import (
+    MARKDOWN,
+    Markup,
+    RequestReference,
+)
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    request_summary,
+    turn_summary,
+)
+from switch_core.sessions.contract import (
+    Item,
+    SnapshotRequest,
+    TurnUpsert,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def format_elapsed(seconds: float) -> str:
-    """How long a turn took, for the marker its status line becomes.
-
-    Rounded to whole seconds and written the way a reader skims it — "8s",
-    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
-    second turns report "0s" instead of an empty string.
-
-    Lives here rather than beside one adapter because every platform that
-    retires a status line by editing it rather than deleting it wants the same
-    words on it.
-    """
-    total = max(0, int(seconds))
-    if total < 60:
-        return f"{total}s"
-    minutes, secs = divmod(total, 60)
-    if minutes < 60:
-        return f"{minutes}m{secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"
 
 
 @dataclass(frozen=True)
@@ -78,27 +74,269 @@ class AgentRendering:
 
 
 @dataclass(frozen=True)
-class LiveRuntimeIndicator:
-    """The runtime status message currently posted for one agent in one channel.
+class TurnActivity:
+    """A turn's items and its own status, as `post_rich` / `update_rich` draw it.
 
-    ``body`` and ``thread_root_id`` are retained so the indicator can be
-    reposted verbatim, in the same thread, when it is moved to follow newer
-    traffic — a move has no access to the ``detail``/``deeplink_url`` the body
-    was originally rendered from.
+    Carries the contract types directly rather than a pre-rendered payload —
+    an adapter with a card of its own reads them to build one; the base,
+    which has none, reads them to build `turn_summary` instead. Neither has to
+    agree on a shape neither of them owns.
 
-    ``started_at`` is a ``time.monotonic()`` reading from when the turn's
-    indicator first went up, for adapters that report how long the turn took
-    once it ends. Monotonic because it measures an elapsed span, which a clock
-    adjustment must not distort.
+    `elapsed_seconds` is not part of the contract — neither a turn nor an item
+    carries a timestamp — so it travels here instead, from whatever tracked
+    one against the session's own event log. `None` until a caller has one to
+    give. Running turns use it for the live clock; ended turns show the final duration.
     """
 
-    message_ref: str
-    body: str
-    thread_root_id: str | None
-    started_at: float
+    items: list[Item]
+    turn: TurnUpsert
+    elapsed_seconds: float | None = None
+    status_only: bool = False
+    # Stable recovery marker for a reserved platform post, not an answer token.
+    publication_token: str | None = None
+    session_url: str | None = None
+    notify_external_id: str | None = None
+    # There was someone who should be told and nobody here to name: the agent
+    # has no owner, or an owner who has claimed no account on this platform.
+    # Distinct from `notify_external_id` being None on a redraw, which means
+    # the mention has already been made and must not be repeated.
+    notify_unreachable: bool = False
+    # Canned, room-safe attention message. Never raw host/provider output.
+    error_summary: str | None = None
+    # The turn a stop control on this message interrupts, which is the session's
+    # running turn and not necessarily `turn`: a queued turn's message offers to
+    # stop whatever is in front of it, because that is what has to end before
+    # this one starts. None where there is nothing to stop — no running turn, or
+    # a session that cannot be interrupted — and the control is not drawn.
+    #
+    # It is carried rather than looked up when the press arrives, because the
+    # reader pressed what they could see. A message drawn against turn A and not
+    # yet redrawn still names A after B has started, so a press on it is refused
+    # for naming an ended turn rather than silently stopping B.
+    interrupt_turn_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ActivitySnapshot:
+    """The same turn as `TurnActivity`, read back because a reader asked.
+
+    `TurnActivity` is pushed at an adapter when a turn changes; this is pulled
+    by one because somebody operated a control on the message a turn is being
+    shown in, and wants what is behind it. What that reader is shown must
+    therefore say when it was read: a view opened ten minutes ago and never
+    refreshed is not wrong, but it is not current either, and it has no way of
+    knowing that unless it is told.
+    """
+
+    items: list[Item]
+    turn: TurnUpsert
+    elapsed_seconds: float | None
+    session_url: str | None
+    read_at: datetime
+
+
+@dataclass(frozen=True)
+class RequestCard:
+    """A request and how a platform refers back to it, as `post_rich` /
+    `update_rich` draw it. See `TurnActivity` for why the contract type
+    travels rather than a rendering of it.
+
+    `turn`/`items`/`elapsed_seconds` are set only once the request's own
+    turn is drawn with it rather than apart from it — a card whose turn has
+    not been folded in yet, or never will be, carries `turn=None` and draws
+    exactly as it always has. `turn` alone is the switch: `items` defaults
+    to empty rather than to `None`, so a turn that has emitted nothing yet
+    is a state this can represent and draw correctly, not one a caller can
+    accidentally leave unset and have silently dropped.
+    """
+
+    request: SnapshotRequest
+    reference: RequestReference
+    turn: TurnUpsert | None = None
+    items: list[Item] = field(default_factory=list)
+    elapsed_seconds: float | None = None
+
+    responder_external_id: str | None = None
+    # Presentation only: never changes the SDK request or its authorization.
+    unavailable_reason: str | None = None
+    notify_external_id: str | None = None
+    # As on `TurnActivity`, and for the same reason: a card being asked of
+    # nobody is not the same as a redraw of one already asked, and only the
+    # first is worth saying out loud.
+    notify_unreachable: bool = False
+
+
+RichContent = TurnActivity | RequestCard
+
+
+class RichContentFailed(Exception):
+    """`post_rich` or `update_rich` could not draw its content on this platform.
+
+    Every implementation raises this — chaining the platform's own error as
+    `__cause__` where there is one, the way `SlackAdapter`'s does with
+    `SlackApiError` — so a caller has one thing to catch regardless of which
+    platform posted the content. Unlike `send_message` and `update_message`,
+    which report failure by return value or not at all, this seam raises on
+    both ends: a caller cannot forget to check what it did not ask to be told.
+
+    `text` is what the platform was attempting to show — the same string a
+    reader would have seen, whichever renderer produced it. A caller updating
+    a card, in particular, needs it: the existing "could not be updated, here
+    is the outcome" fallback reply is only honest if it names what the card
+    now can't, and it must do that without knowing how any given platform
+    drew it.
+    """
+
+    def __init__(self, message: str, *, text: str) -> None:
+        super().__init__(message)
+        self.text = text
+
+
+class RemovalFailed(Exception):
+    """A published message could not be taken back, or not provably.
+
+    Deliberately not `delete_message`, which every adapter but Teams' answers
+    by logging: that one is best-effort housekeeping for things like the
+    typing indicator, where a leftover is untidy and nothing more. Taking back
+    an answered permission card is the opposite — the caller has to write down
+    that the card is gone, and writing that down on a refusal it never heard
+    about is how a restart comes to skip a card still sitting in the channel.
+
+    So this seam raises, the way `post_rich` and `update_rich` do, and a
+    platform's own error is chained as `__cause__`. A refusal and a request
+    that never came back are one exception because the caller does the same
+    thing with both: keep the settled card, record no removal, and try again
+    on a widening interval. What is *not* folded in here is a wait the
+    platform asked for — that is `RichContentThrottled`, and it carries the
+    delay, so being busy cannot be read as being unable.
+    """
+
+
+class RichContentThrottled(RichContentFailed):
+    """The platform asked us to wait before attempting another update."""
+
+    def __init__(self, *, retry_after: float, text: str) -> None:
+        super().__init__("Platform updates are rate limited.", text=text)
+        self.retry_after = retry_after
+
+
+class RichContentWedged(RichContentFailed):
+    """The platform will not change this message, and never will again.
+
+    Slack leaves a message flagged as streaming while dropping the stream that
+    flag refers to. An edit is then refused as an edit to something streaming,
+    both stream calls are refused because the stream is gone, and a delete is
+    refused as well — measured, not assumed. Nothing sendable moves it, so it
+    keeps whatever it last showed, which for a turn that has since ended is a
+    card still drawn as running.
+
+    Separate from `RichContentFailed` because the two want opposite things. An
+    ordinary failure is worth another attempt; this one is worth none, and
+    retrying spends the workspace's rate budget on a message that cannot move.
+    What it does deserve is for the reader to be told, since what they are
+    looking at is untrue and nothing about the message itself can say so.
+
+    Raised on the attempt that discovers the state. Later attempts on the same
+    message return quietly: the caller has already been told, and the point of
+    telling it was to stop.
+    """
+
+
+class ThreadUnavailable(RichContentFailed):
+    """No thread exists under the root message, and none could be made.
+
+    A statement of fact, not a verdict on where the content should go instead.
+    An absent thread looks the same whether it was never made or was made
+    privately and then deleted, and only the caller knows which: it holds the
+    recorded origin of the command, and the platform does not. Posting to the
+    parent channel is right in the first case and hands a private
+    conversation's contents to an audience in the second.
+
+    Nothing has been posted when this is raised, so a caller may post
+    elsewhere — or release its reservation, as for any `RichContentFailed`.
+    """
+
+
+class ActivityMarkRefused(RuntimeError):
+    """The platform will not change the work mark, and another attempt will not.
+
+    Reactions switched off in the chat, or a permission the bot does not have:
+    refused now means refused for the life of the turn. Anything a retry might
+    fix is left to raise as itself, so the publisher can tell the two apart.
+
+    Raised for a refused *removal* as well as a refused addition. Whether that
+    matters is not the adapter's to decide — it depends on whether a mark was
+    ever put there, which only the durable record knows after a restart.
+    """
+
+
+#: Which indicator a message is carrying, where a platform can carry one.
+#:
+#: "working" is the agent reading and acting on the message. "queued" is the
+#: agent holding it behind something else and not started, which is a different
+#: thing to be told and is why it is a mark of its own rather than a second
+#: meaning for the first.
+ActivityMark = Literal["working", "queued"]
 
 
 class CollaborationAdapter(ABC):
+    # Platforms opt in only when their SDK request and activity rendering is ready.
+    publishes_sdk_sessions: ClassVar[bool] = False
+
+    #: Whether a problem somebody has to act on gets a message of its own.
+    #:
+    #: One durable reply per turn, reused as the problem changes and cleared
+    #: when it goes away — never a second one. A turn's own activity stays in
+    #: the one message it is drawn in; this is the exception, because a failure
+    #: has to arrive as something a reader is notified about rather than as an
+    #: edit to a message they have already scrolled past.
+    separate_attention_slot: ClassVar[bool] = False
+
+    #: Whether a mention is the only way an attention post reaches anyone.
+    #:
+    #: True where nobody follows a thread they are not already in, so a post
+    #: that names no one is read by no one. What follows from that is the
+    #: admission: an attention post with nobody to name says so, because one
+    #: that notified no one otherwise looks exactly like one that notified the
+    #: right person. Who gets named is not decided here — the asker leads
+    #: everywhere, with the agent's owner as the fallback.
+    #:
+    #: False where the platform's own following does that work: a Slack
+    #: participant gets the threaded reply without being named, and naming
+    #: them is a notification they already had.
+    notifies_only_by_mention: ClassVar[bool] = False
+
+    #: Whether a ticking clock is reason enough to redraw a running turn.
+    #:
+    #: True where the status is a small line of its own that a reader watches
+    #: for exactly that, so the seconds advancing is the message doing its job.
+    #: False where the status is the turn's one post: there the elapsed time
+    #: rides along with the next real change — a tool, a state, the ending —
+    #: rather than rewriting the post a reader is in the middle of, and the
+    #: final update still shows what the turn actually took.
+    redraws_for_elapsed_time: ClassVar[bool] = False
+
+    supports_activity_reactions: ClassVar[bool] = False
+
+    #: Whether a prompt still waiting its turn can be marked as well.
+    #:
+    #: A second reaction beside the working one, saying the agent has the
+    #: prompt but has not started on it. Separate from
+    #: `supports_activity_reactions` because it asks more of the platform: not
+    #: that a bot can react, but that it can hold two reactions on one message
+    #: at once. Telegram allows a bot exactly one, so the queued state is
+    #: carried by its status text alone and never by a mark.
+    supports_queue_reaction: ClassVar[bool] = False
+
+    #: Whether the work reaction belongs to the agent that added it.
+    #:
+    #: True where each agent posts as its own bot, so two agents working on one
+    #: message leave two independent marks and each must be claimed, held and
+    #: removed on its own. False where every agent shares one bot account: the
+    #: platform has one reaction between them, so the first turn to want it
+    #: puts it on and the last to finish takes it off.
+    activity_reactions_per_agent: ClassVar[bool] = False
+
     #: Whether this platform can create a channel from Switch at all.
     #:
     #: A ceiling, not a preference: an operator may withhold channel creation
@@ -131,21 +369,57 @@ class CollaborationAdapter(ABC):
     #: instead of each bridge discovering it in its own way.
     renders_custom_url_schemes: ClassVar[bool] = True
 
-    #: Whether a runtime-state report with no thread of its own should anchor
-    #: to the message the agent is working on.
+    #: Whether `find_request_card` can actually search this platform.
     #:
-    #: A report only carries a `thread_id` when the agent was addressed inside
-    #: an existing thread. Addressed at the conversation root it carries none,
-    #: while the agent's reply still opens a thread on the triggering message —
-    #: so the status and the answer to it end up in two different places.
-    #: Where this is True the anchor the agent reports (the last message it was
-    #: actually handed) stands in, putting the status in the thread the reply
-    #: will land in.
+    #: False here because the base `find_request_card` returns `None` for
+    #: every call: it has nowhere to look. An adapter that implements the
+    #: search sets this True, and the difference is not cosmetic — `None`
+    #: from a platform that searched means "not there yet, ask again", while
+    #: `None` from a platform that cannot search means "never, however long
+    #: you wait". Retrying the second one forever leaves a card visible in
+    #: the chat that silently refuses the answer it asks for, which is the
+    #: outcome the publisher discloses instead.
+    recovers_uncertain_posts: ClassVar[bool] = False
+
+    #: Whether a publication carries a marker `find_request_card` can match on
+    #: regardless of what the message says.
     #:
-    #: Off by default: on a platform that renders a thread as a side panel
-    #: rather than inline, moving the status out of the channel hides it, and
-    #: that trade is the platform's to make.
-    runtime_state_follows_anchor: ClassVar[bool] = False
+    #: Slack writes the token into a `block_id` and message metadata,
+    #: Mattermost into a post prop: both are exact, invisible, and present on
+    #: every publication, so anything this bridge posted can be recognised
+    #: again. Discord has nowhere to put one on a webhook message, so it
+    #: recognises a card by the handle the card itself prints — which works
+    #: for a card and cannot work for a turn's activity, because activity
+    #: prints no handle.
+    #:
+    #: Separate from `recovers_uncertain_posts` because the two answer
+    #: different questions. That one asks whether the platform can be searched
+    #: at all; this one asks whether a search can find a publication that
+    #: prints nothing to search for. A platform can recover its cards and
+    #: still never recover a status, and a caller that cannot tell those apart
+    #: either repeats a lookup that has no way to succeed or abandons a card
+    #: that would have been found.
+    #:
+    #: Not a statement about the platform — a statement about this adapter. An
+    #: adapter that starts carrying a marker of its own sets this True and the
+    #: publications it could not recognise before become recoverable.
+    carries_publication_marker: ClassVar[bool] = False
+
+    #: Whether this platform may say in the channel that a card's delivery was
+    #: never confirmed.
+    #:
+    #: Deliberately not implied by `recovers_uncertain_posts`. That one is a
+    #: fact about the adapter — whether a lost publication can be looked for.
+    #: This is a decision about what the people in the channel are told when it
+    #: cannot be, and it posts a message they did not ask for into a
+    #: conversation this bridge does not own. The two were one flag, and a
+    #: platform gaining the first answer silently acquired the second.
+    #:
+    #: False here so a new platform discloses nothing until somebody has agreed
+    #: it should. Where it is False and recovery is impossible, the reservation
+    #: is still kept and the request is still answerable in Console — what is
+    #: withheld is the notice, not the request.
+    discloses_unconfirmed_posts: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
@@ -155,6 +429,20 @@ class CollaborationAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_interaction_handler. Called when someone operates a control
+        # on a message this bridge posted. Left unset on a platform with no such
+        # controls, and on an adapter running without a bridge core behind it.
+        self._on_interaction: Callable[[InboundInteraction], Awaitable[None]] | None = (
+            None
+        )
+        # Set by set_activity_resolver. Asked what turn is being shown in the
+        # message at (channel, reference), for a platform that offers a reader
+        # the activity behind a status rather than printing it. None is the
+        # answer for a message this bridge is not showing a turn in, which
+        # includes every message once the session or the bridge is gone.
+        self._resolve_activity: (
+            Callable[[str, str], Awaitable[ActivitySnapshot | None]] | None
+        ) = None
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
@@ -171,15 +459,6 @@ class CollaborationAdapter(ABC):
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
-        # (channel_id, agent_name) -> the agent's live "working on it…" runtime
-        # indicator, and the operator pings posted alongside it. Adapters that
-        # render runtime state as a persistent message maintain these; the
-        # typing-indicator default leaves them empty.
-        self._working_msg: dict[tuple[str, str], LiveRuntimeIndicator] = {}
-        self._input_pings: dict[tuple[str, str], list[str]] = {}
-        # One lock per (channel_id, agent_name). Every mutation of the entries
-        # above happens under it — see _runtime_lock.
-        self._runtime_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -248,6 +527,29 @@ class CollaborationAdapter(ABC):
     @abstractmethod
     async def stop(self) -> None: ...
 
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> None:
+        """Handle one event that arrived over the public webhook.
+
+        Concrete on the base and raising, rather than abstract, because
+        receiving events over HTTP is a property of a platform and of which app
+        a bridge's token came from — most adapters dial out and are handed
+        their events on a connection they opened, and have nothing to override
+        here.
+
+        Raising rather than returning quietly matters: the caller is a route
+        that has already proved the request genuine and resolved which bridge
+        it belongs to, so reaching an adapter that cannot take it means a
+        workspace's traffic is being delivered nowhere. Silence there is the
+        failure that reads as "the platform has gone quiet".
+        """
+        raise WebhookDeliveryUnsupported(
+            f"{type(self).__name__} does not receive events over HTTP, so the "
+            "event posted for this bridge cannot be delivered. A bridge reached "
+            "this way was installed as a distributed app; this one was not."
+        )
+
     @abstractmethod
     async def send_message(
         self,
@@ -272,6 +574,7 @@ class CollaborationAdapter(ABC):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         """Post a first-class admin/system message to the external channel,
         rendered in the platform's native way as the bridge's own identity (not
@@ -290,13 +593,25 @@ class CollaborationAdapter(ABC):
         notices, and the relayed admin events alike. An override must therefore
         run `translate_outbound` itself. Splitting that responsibility between
         callers is what once sent a body through the conversion twice, and the
-        second pass escapes the markup the first one produced."""
+        second pass escapes the markup the first one produced.
+
+        `drawn` is content this adapter drew, in the platform's own spelling,
+        to go under the notice — a card's fallback text, where the notice is
+        about that card. It is appended after the conversion and never through
+        it. Written into `content` instead it would be converted as if it were
+        Markdown, and a reader is shown the platform's own tags as prose: the
+        very failure the paragraph above describes, arriving from the other
+        side. An override joins the two with `_admin_body`."""
         return await self.send_message(
             channel_id,
             self._bridge_display_name(),
-            self.translate_outbound(content),
+            self._admin_body(self.translate_outbound(content), drawn),
             thread_root_id,
         )
+
+    def _admin_body(self, rendered: str, drawn: str | None) -> str:
+        """A rendered notice, and under it whatever the adapter already drew."""
+        return rendered if drawn is None else f"{rendered}\n{drawn}"
 
     def _bridge_display_name(self) -> str:
         return "Switch"
@@ -407,251 +722,299 @@ class CollaborationAdapter(ABC):
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None: ...
 
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's activity or a request's card, in whatever form this
+        platform draws it.
+
+        This base has no card or activity renderer of its own, so it falls
+        back to `rich_fallback_text`. Override to draw a real one — the way
+        `SlackAdapter` does, choosing its own renderer by `content`'s type —
+        and this is never called.
+
+        Raises `RichContentFailed` on any failure — whether the platform
+        raised (Teams' `send_message` does, on any non-2xx status) or merely
+        returned `None` (Slack's does, on a caught `SlackApiError`). Unlike
+        `send_message`, whose other callers already handle a `None` ref, this
+        is a new seam and raises on both shapes of failure instead: a caller
+        here cannot forget to check what it did not ask to be told.
+        """
+        text = self.rich_fallback_text(content)
+        try:
+            ref = await self.send_message(channel_id, agent_name, text, thread_root_id)
+        except Exception as error:
+            raise RichContentFailed(
+                f"{self.platform_name} could not send the message in channel "
+                f"{channel_id}: {error}",
+                text=text,
+            ) from error
+        if ref is None:
+            raise RichContentFailed(
+                f"{self.platform_name} did not accept the message in channel "
+                f"{channel_id}.",
+                text=text,
+            )
+        return ref
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw what `post_rich` posted, in place.
+
+        Falls back the same way `post_rich` does. Most adapters'
+        `update_message` swallows its own errors by design, for the
+        runtime-status paths that depend on that — but not all of them, so this
+        catches broadly rather than trusting the convention: whichever it does,
+        a caller of *this* wrapper sees `RichContentFailed` or nothing.
+
+        That is the default, not the port's whole contract. An adapter with its
+        own failure policy overrides this, and the overrides deliberately let a
+        throttle and an unknown outcome through unwrapped, because a caller has
+        to be able to tell "refused" from "come back to this". What the port
+        does promise is that a *refusal* arrives as `RichContentFailed`, never
+        as a platform client's own exception.
+
+        `agent_name` is the same name `post_rich` was given, and is here for
+        the platform that writes it into the body: one bot identity means the
+        name is part of what was drawn, so a redraw that did not know it would
+        quietly rewrite the message as somebody else. Passing it on every call
+        keeps that out of an in-memory map that a restart empties.
+
+        `thread_root_id` is the same thread `post_rich` was given, for the same
+        reason. On most platforms a message id is an address on its own and
+        this is ignored; on Teams an edit is addressed to the *conversation*,
+        and for a reply inside a channel post that conversation is named by the
+        thread rather than by the message. Passing it keeps the one durable
+        answer flowing from the journal or the card row, instead of a
+        process-local map that a restart turns into a guess.
+        """
+        text = self.rich_fallback_text(content)
+        try:
+            await self.update_message(channel_id, message_ref, text)
+        except Exception as error:
+            raise RichContentFailed(
+                f"{self.platform_name} could not update the message in "
+                f"channel {channel_id}: {error}",
+                text=text,
+            ) from error
+
+    def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
+        """Where a notice *about* a publication has to be said.
+
+        Beside the publication, so the people who can see the stale card are
+        the people who read the correction: the thread it went into where there
+        was one, and otherwise the publication itself, which is then the root
+        of its own conversation.
+
+        Not the publication's id where a thread exists — on a platform that
+        addresses a reply by its conversation rather than by the message, a
+        publication that is itself a reply names no conversation, and a notice
+        nobody can see is worse than the stale card it is about. An adapter
+        whose own reference carries a confirmed conversation overrides this to
+        prefer it: a rebuilt address is the weaker of the two.
+        """
+        return thread_root_id or message_ref
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """The neutral text form of `content`, for `post_rich` / `update_rich`'s
+        base and for any adapter that wants the same fallback rather than its
+        own.
+
+        A turn falls back to `turn_summary` — the last thing the agent said,
+        and the turn's own state. A request falls back to `request_summary`:
+        the question, its numbered options and the typed-answer grammar for
+        this particular form, in whichever state the request is in. Neither
+        is the compact presentation a platform publishing SDK sessions wants
+        (`turn_status` is), which is why an adapter that does publish them
+        overrides this rather than inheriting it.
+
+        The card's own extras go with it. `unavailable_reason` is the notice
+        that replaces the instruction on a card that cannot be answered where
+        it is showing, and dropping it here would leave the reader an
+        instruction that is about to be refused. `responder_external_id` is
+        not passed on: it is a platform id, and an adapter that can turn one
+        into a name renders the card itself.
+
+        The result is ready to send as-is — `post_rich` and `update_rich` do
+        not run it through `translate_outbound` again. `_rich_escape` already
+        does, so the budget these renderers cut to is measured on the string
+        that actually reaches the wire rather than the one before that last
+        transform, which can expand it (Telegram's turns one `&` into five
+        characters). The turn's own state line skips both passes rather than
+        being measured through them: it is a handful of fixed words, never
+        host text and never Switch Markdown, so translating it is assumed to
+        be a no-op — the same assumption that already excuses it from escaping.
+        """
+        escape = self._rich_escape
+        if isinstance(content, TurnActivity):
+            return turn_summary(
+                content.items,
+                content.turn,
+                escape=escape,
+                limit=self.rich_fallback_limit(),
+            )
+        return request_summary(
+            content.request,
+            content.reference,
+            escape=escape,
+            limit=self.rich_fallback_limit(),
+            markup=self.rich_markup(),
+            unavailable_reason=content.unavailable_reason,
+        )
+
+    def rich_markup(self) -> Markup:
+        """How this platform spells emphasis, a copyable literal and a link.
+
+        Markdown by default, which is what every platform reaching the neutral
+        renderer today parses. A platform whose message body is something else
+        — Telegram's is HTML — overrides this rather than carrying a renderer
+        of its own, so the budget and faithfulness logic stays in one copy.
+        """
+        return MARKDOWN
+
+    def _rich_escape(self, label: str) -> str:
+        """`rich_fallback_text`'s host text, neutralised and then rendered.
+
+        Composed so the one function `turn_summary` / `request_summary` cut
+        their budget against is the same pipeline `post_rich` / `update_rich`
+        actually sends: `escape_label_for_body` first, because that is what
+        keeps a display name or an assistant's words from forging markup;
+        `translate_outbound` after, because that is what turns Switch
+        Markdown into this platform's own and is the last thing to touch the
+        string before it goes on the wire.
+        """
+        return self.translate_outbound(self.escape_label_for_body(label))
+
+    def rich_fallback_limit(self) -> int:
+        """How many characters `rich_fallback_text` may spend on one message.
+
+        2000 by default — Discord's own limit, the tightest of the platforms
+        without a card renderer of their own today. A conservative
+        placeholder rather than a value read from each platform's real API
+        contract; override once a platform's actual limit is known.
+        """
+        return 2000
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+        handle: str | None,
+    ) -> str | None:
+        """Search for a publication already on the platform, by its marker.
+
+        `recover` calls this when a post's outcome is uncertain, so it can
+        bind the reservation to what is actually there instead of risking a
+        duplicate. `None` means either nothing was found or, as here, that
+        this platform has no way to look — a publication recovers only where
+        an adapter can search for one.
+
+        `token` is the marker the adapter was given to carry, and is what a
+        platform with somewhere to hide one matches on. `handle` is the
+        request's own name, the one printed in the card for people to type
+        back, and it is here for the platform that has nowhere to hide a
+        marker at all: on Discord a webhook message carries no metadata, so
+        the visible handle is the only durable thing that distinguishes one
+        card from another. It is `None` for an activity publication, which
+        has no handle and so cannot be recovered that way.
+        """
+        return None
+
     @abstractmethod
     async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take back a card this bridge published, or say why it is still there.
+
+        Returning is the claim that nothing of the card remains at that
+        address — including the case where it had already gone, which is the
+        same fact arrived at differently and is logged rather than raised.
+        That second case is what lets a deletion whose response was lost be
+        settled by simply asking again. `RichContentThrottled` where the
+        platform named a wait, `RemovalFailed` for anything else.
+
+        Not reached unless the adapter also sets `removes_answered_cards`,
+        which is why this refuses rather than quietly doing nothing: a
+        platform brought into the removal flow without an implementation
+        should stop, not report success for a card still on the screen.
+        """
+        raise RemovalFailed(
+            f"{type(self).__name__} cannot prove a published message was removed."
+        )
 
     @abstractmethod
     async def send_typing(
         self, channel_id: str, sender_name: str, is_typing: bool
     ) -> None: ...
 
-    def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
-        """The lock serialising runtime-indicator work for one agent in one
-        channel.
-
-        The indicator is mutated from two independent places — the periodic
-        activity refresh and a reposition triggered by new traffic — and each
-        reads the tracked message, awaits a platform call, then writes it back.
-        Left to interleave, the later write restores a superseded message ref:
-        the entry then names a message that has just been deleted while the one
-        actually on screen is referenced by nothing, so the end-of-turn clear
-        cannot remove it and it stays in the channel for good.
-        """
-        return self._runtime_locks.setdefault((channel_id, agent_name), asyncio.Lock())
-
-    async def apply_runtime_state(
+    async def mark_activity(
         self,
         channel_id: str,
-        agent_name: str,
-        state: str,
+        message_ref: str,
         *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
     ) -> None:
-        """Serialise against any other runtime-indicator work for this agent,
-        then apply the state. Adapters override ``_apply_runtime_state``."""
-        async with self._runtime_lock(channel_id, agent_name):
-            await self._apply_runtime_state(
-                channel_id,
-                agent_name,
-                state,
-                mention_handle=mention_handle,
-                thread_root_id=thread_root_id,
-                deeplink_url=deeplink_url,
-                detail=detail,
-                trigger_thread_root_id=trigger_thread_root_id,
-                anchor_message_ref=anchor_message_ref,
-            )
+        """Update a platform work indicator when the adapter supports one.
 
-    async def reposition_runtime_state(
+        `agent_name` is which agent is working, and it is required rather than
+        optional because a platform where each agent posts as its own bot
+        cannot add or remove a reaction without knowing whose it is. A
+        platform with one shared bot ignores it — there is one reaction
+        between every agent there — but a caller that could not supply it
+        would be a caller that cannot serve the per-agent platforms at all.
+
+        `mark` says which indicator, and the two are independent: a prompt can
+        be queued and not yet worked on, and the same message can carry another
+        turn's working mark at the same time. An adapter that declares no
+        `supports_queue_reaction` is never asked for the queued one.
+        """
+
+    async def notify_working(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
     ) -> None:
-        """Serialise against any other runtime-indicator work for this agent,
-        then move the indicator. Adapters override
-        ``_reposition_runtime_state``."""
-        async with self._runtime_lock(channel_id, agent_name):
-            await self._reposition_runtime_state(channel_id, agent_name, thread_root_id)
+        """Signal once, where the work was asked for, that the agent has begun.
 
-    async def _apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
-    ) -> None:
-        """Surface a Switch Console-managed agent's runtime state on the channel.
+        A platform's own ephemeral "typing" affordance, which expires by itself
+        and so is a nudge rather than a state to switch off. Called once as a
+        turn opens and never on a redraw: repeated, it would claim the agent
+        was typing for as long as the turn ran.
 
-        How a state is rendered is the adapter's choice — this default uses the
-        typing indicator for ``working``. Slack and Mattermost override this to
-        show a persistent status message they remove (Slack) or edit to a
-        terminal marker (Mattermost, whose delete leaves a tombstone).
+        `thread_root_id` is where the *asking* happened, which is not
+        necessarily where the status went — someone who wrote at the channel
+        root is watching the root, not a thread they have not opened yet. None
+        means the channel root.
 
-        ``thread_root_id``, when set, is the external thread the state belongs
-        in; the state surfaces there.
-
-        ``trigger_thread_root_id`` is where the triggering message itself sits,
-        and is None when it came from the channel root. The two differ on an
-        adapter that pins a status to a thread the conversation is not in yet
-        (see ``runtime_state_follows_anchor``): the status belongs in the
-        thread, but a typing indicator belongs where the person who is waiting
-        for it is looking. Defaulted because only an adapter that draws the
-        distinction reads it, and its callers should not have to restate a
-        value the other adapters ignore.
-
-        ``anchor_message_ref`` is the external post the agent reports it is
-        answering — the last message it was actually handed. Unlike the two
-        above it names a *message* rather than a thread, and it is set whether
-        or not that message opened one, so an adapter can mark the message
-        itself (Discord puts a reaction on it) without moving where the status
-        is posted. None when nothing the agent was handed crossed this bridge.
-
-        ``deeplink_url``, when set, is an https link (served by the gateway) that
-        opens the agent's session in the Switch Console desktop app; adapters that
-        post a visible status message append it so a reader can jump there.
-
-        - ``working`` → typing on.
-        - ``awaiting-input`` → keep the working/typing indicator (the agent is
-          mid-turn, paused for input) and ping the configured operator.
-        - ``idle`` (where ``completed`` collapses) → typing off.
+        Best effort by nature. Nothing is waiting on it and the posted status
+        carries the state from here on, so an adapter that cannot send one
+        does nothing and says nothing.
         """
-        if state == "working":
-            await self.send_typing(channel_id, agent_name, True)
-        elif state == "awaiting-input":
-            await self.send_typing(channel_id, agent_name, True)
-            await self._ping_operator(
-                channel_id,
-                agent_name,
-                mention_handle,
-                thread_root_id,
-                deeplink_url,
-                detail,
-            )
-        else:
-            await self.send_typing(channel_id, agent_name, False)
 
-    def agents_with_live_runtime_state(self, channel_id: str) -> list[str]:
-        """Agents with a runtime indicator currently posted in this channel.
+    def unnotified_notice(self) -> str:
+        """Why an attention post named nobody, for a platform that says so.
 
-        Cheap and synchronous so a caller can skip the work of deciding whether
-        a message warrants a move when there is nothing to move."""
-        return [
-            agent_name
-            for (posted_channel, agent_name) in self._working_msg
-            if posted_channel == channel_id
-        ]
-
-    async def _reposition_runtime_state(
-        self, channel_id: str, agent_name: str, thread_root_id: str | None
-    ) -> None:
-        """Move the agent's live runtime indicator to follow the latest message.
-
-        Called when a message the agent is party to has just crossed the bridge,
-        so the indicator no longer sits below the conversation it belongs to.
-        The replacement is posted *before* the original is removed: the
-        indicator is therefore never briefly absent, and a failed repost leaves
-        the original in place rather than clearing it.
-
-        ``thread_root_id`` is the thread that message belonged to, and is where
-        the indicator lands — so it follows the agent between threads (and back
-        out to the channel root) rather than being stranded in whichever thread
-        the turn happened to start in.
-
-        Runs under the agent's runtime lock, so the tracked indicator cannot be
-        cleared or refreshed part-way through.
-
-        Adapters that render runtime state as a typing indicator have nothing
-        positional to move, so the default does nothing.
+        The reader is told this reached no one and what to do so the next one
+        does, rather than being left to assume the person who can act has
+        already seen it.
         """
-        key = (channel_id, agent_name)
-        live = self._working_msg.get(key)
-        if live is None:
-            return
-
-        ref = await self.send_message(channel_id, agent_name, live.body, thread_root_id)
-        if ref is None:
-            logger.warning(
-                "Could not repost the runtime indicator for %s in %s; leaving it "
-                "at its current position",
-                agent_name,
-                channel_id,
-            )
-            return
-
-        self._working_msg[key] = replace(
-            live, message_ref=ref, thread_root_id=thread_root_id
+        return (
+            "Nobody here is linked to this agent's owner, so this notified no one. "
+            f"Link your {self.platform_name} account in Switch Console to be notified."
         )
-        await self._remove_runtime_indicator(channel_id, live.message_ref)
-
-    async def _remove_runtime_indicator(
-        self, channel_id: str, message_ref: str
-    ) -> None:
-        """Delete a superseded runtime indicator.
-
-        Separate from ``delete_message`` so an adapter whose delete raises can
-        keep a failed cleanup from tearing down the turn — the worst case is a
-        duplicate indicator, which is visible, rather than a broken turn."""
-        await self.delete_message(channel_id, message_ref)
-
-    @staticmethod
-    def _deeplink_suffix(deeplink_url: str | None) -> str:
-        """A trailing ``(Open in Switch Console)`` link to the session, or empty.
-
-        Appended inline in parentheses after the status text. Rendered through
-        ``translate_outbound`` along with the rest of the body, so it converts
-        to each platform's link format."""
-        if not deeplink_url:
-            return ""
-        return f" ([Open in Switch Console]({deeplink_url}))"
-
-    def _working_body(self, detail: str | None, deeplink_url: str | None) -> str:
-        """The "working on it…" status text, rendered for this platform.
-
-        Uses the connector-supplied `detail` (e.g. "Editing foo.py") as the live
-        activity line when present, falling back to the generic phrase. The
-        deeplink is appended as a trailing link either way."""
-        activity = detail.strip() if detail and detail.strip() else "_Working on it…_"
-        return self.translate_outbound(
-            f"⚙️ {activity}" + self._deeplink_suffix(deeplink_url)
-        )
-
-    async def _ping_operator(
-        self,
-        channel_id: str,
-        agent_name: str,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-    ) -> str | None:
-        """Post a message nudging the operator that the agent needs attention.
-
-        ``detail``, when set, is the reason the session stalled — an API or auth
-        failure the agent cannot recover from on its own. It replaces the
-        generic "needs your input" wording so the operator knows what is wrong
-        before clicking through.
-
-        `mention_handle` is the agent owner's account on this platform, or None
-        when there is nobody to reach — no owner, or an owner who has not said
-        which account here is theirs. That case says so instead of posting a
-        line nobody is notified about: a nudge that reaches no one looks
-        identical to an agent that never asked.
-
-        Returns the posted message ref so callers that can remove it (Slack,
-        Mattermost) track it for cleanup when the turn ends."""
-        label = await self.agent_label_for_body(agent_name)
-        reason = detail.strip() if detail and detail.strip() else ""
-        need = f"hit an error: {reason}" if reason else "needs your input"
-        lead = "⚠️ " if reason else ""
-        if mention_handle:
-            text = f"@{mention_handle} {lead}**{label}** {need}."
-        else:
-            text = (
-                f"{lead}**{label}** {need} — but nobody here is linked "
-                f"to its owner, so this pings no one. Link your "
-                f"{self.platform_name} account in Switch Console to be notified."
-            )
-        body = self.translate_outbound(text + self._deeplink_suffix(deeplink_url))
-        return await self.send_message(channel_id, agent_name, body, thread_root_id)
 
     @abstractmethod
     async def create_channel(
@@ -849,6 +1212,20 @@ class CollaborationAdapter(ABC):
         silently kills capture in every channel outside the configured team."""
         return None
 
+    def set_callback_endpoint(self, endpoint: CallbackEndpoint) -> None:
+        """Hand the adapter its own place on the shared callback listener.
+
+        Default is a no-op, and the right answer for every adapter that only
+        dials out: nothing has to reach Switch for it to work, so it never asks
+        to be served and the listener never binds. Mattermost overrides it,
+        because a button press there is delivered to a URL.
+
+        The endpoint arrives already bound to this bridge. An adapter is built
+        from its connection config alone and is never told which bridge it is,
+        which is what stops it addressing another bridge's callbacks even by
+        mistake."""
+        return None
+
     def set_channel_migration_handler(
         self, handler: Callable[[str, str], Awaitable[None]]
     ) -> None:
@@ -860,6 +1237,126 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_interaction_handler(
+        self, handler: Callable[[InboundInteraction], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a control on a posted message being operated.
+
+        A setter rather than another argument to `start` because only the
+        platforms with interactive message controls ever call it, and an adapter
+        that never does needs no change to go on working."""
+        self._on_interaction = handler
+
+    def set_activity_resolver(
+        self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]
+    ) -> None:
+        """Install the read-back for the turn behind a status message.
+
+        Separate from the interaction handler because the two answer different
+        questions. That one carries an answer inwards and is told nothing
+        back; this one is a read, made because somebody is waiting on the
+        platform for what it returns, and the platform is holding an
+        acknowledgement open until it does."""
+        self._resolve_activity = resolver
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether `message_ref` is the first thing said under `root_ref`.
+
+        Asked when someone answers a request card with a word that names no
+        request — a bare "yes". That only counts as an answer while nothing
+        else has been said under the card, because once a thread has a
+        conversation in it a "yes" is as likely to be about the conversation.
+
+        Read from the platform each time rather than tracked here: two replies
+        arriving at once would both look like the first to anything counting
+        locally, and each would decide the request.
+
+        False is the answer whenever a platform cannot tell, and this base is a
+        platform that cannot. Refusing costs someone the retype of a handle;
+        accepting decides a permission from a word that was about something
+        else. Only reachable on a platform that posts request cards.
+
+        An implementation must not raise. This is asked on the inbound path of
+        every message, ahead of the relay, so an exception out of it is not a
+        refused answer but a message the room never sees."""
+        logger.warning(
+            "Cannot tell whether %s is the first reply under %s in %s, so it "
+            "does not answer the card there. %s posts request cards without a "
+            "way to read a thread back.",
+            message_ref,
+            root_ref,
+            channel_id,
+            self.platform_name,
+        )
+        return False
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person that the answer they gave a request card did not land.
+
+        Privately, where the platform has a private reply: only they need to
+        know, and a channel post saying so puts the failure in front of
+        everyone who was not answering.
+
+        This base is a platform that has none, so it says it in the card's
+        thread instead. Everyone reading that thread sees a notice addressed to
+        somebody else, which costs less than the alternative it replaced:
+        silence, and one person waiting on a card that is never going to move.
+
+        `text` is plain words, and `actor_name` is the display name of whoever
+        answered — needed only where the notice is not private, so that a
+        thread reading it can tell whose answer failed. Both are neutralised
+        with `escape_label_for_body`, which is the per-platform rule for
+        untrusted text going into a body: a refusal quotes back what the person
+        typed, and the reason for one quotes what the host called an option.
+
+        Nothing is said without a thread to say it in. A press carries none,
+        and the channel root is a wider audience than the card's thread — but
+        the controls that produce a press are inert on every platform that
+        reaches this base, so what that branch really guards is a platform
+        gaining buttons before it gains a private reply.
+
+        An implementation must not raise. This runs on the inbound path of
+        every message, ahead of the relay, so an exception out of it is not an
+        unreported refusal but a message the room never sees."""
+        if thread_ref is None:
+            logger.warning(
+                "Cannot tell %s in %s that their answer did not land: %s has no "
+                "way to say something to one person, and there is no thread to "
+                "say it in instead. The notice was: %s",
+                actor_ref,
+                channel_id,
+                self.platform_name,
+                text,
+            )
+            return
+        notice = (
+            f"{self.escape_label_for_body(actor_name)}: "
+            f"{self.escape_label_for_body(text)}"
+        )
+        try:
+            await self.admin_message(channel_id, notice, thread_ref)
+        except Exception as e:
+            # Broad because this runs on the inbound path of every message: a
+            # notice that cannot be posted must not cost the room the message
+            # that triggered it.
+            logger.warning(
+                "Could not tell %s in %s that their answer did not land: %s. "
+                "The notice was: %s",
+                actor_ref,
+                channel_id,
+                e,
+                text,
+            )
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]
@@ -895,10 +1392,10 @@ class CollaborationAdapter(ABC):
     def escape_label_for_body(self, label: str) -> str:
         """Neutralise a label's markup before it goes into message text.
 
-        A display name is presentation text an agent's owner chooses, and
-        `_ping_operator` inlines it into a body. Two constructs are near
-        universal across chat platforms and are the ones a name can use to
-        claim something it is not:
+        A display name is presentation text an agent's owner chooses, and an
+        adapter inlines it into a body. Two constructs are near universal
+        across chat platforms and are the ones a name can use to claim
+        something it is not:
 
         - `@…` addresses somebody. Whether the platform resolves `@channel`,
           `@here`, a person or one of our own agent handles, the label gets to

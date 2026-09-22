@@ -19,8 +19,7 @@ function makeTrackingGit(isFileCleanlyTracked: boolean) {
 
 vi.mock('@main/core/settings/settings-service', () => ({
   appSettingsService: {
-    get: vi.fn().mockImplementation((key: string) => {
-      if (key === 'location') return Promise.resolve({ tmuxByDefault: false });
+    get: vi.fn().mockImplementation((_key: string) => {
       return Promise.resolve({
         defaultWorktreeDirectory: '/tmp/switch-console/worktrees',
       });
@@ -286,7 +285,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     tempDirs.push(rootPath);
     const row = {
       baseSettingsJson: JSON.stringify({
-        tmux: true,
+        autoRunSetupScriptOnSessionCreation: true,
       }),
       shareableSettingsJson: JSON.stringify({
         preservePatterns: ['.env.local'],
@@ -308,12 +307,12 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     expect(result.success).toBe(true);
     expect(JSON.parse(row.baseSettingsJson)).toEqual({
       githubAccountId: 'github.com:42',
-      tmux: true,
+      autoRunSetupScriptOnSessionCreation: true,
     });
     await expect(provider.get()).resolves.toMatchObject({
       githubAccountId: 'github.com:42',
       preservePatterns: ['.env.local'],
-      tmux: true,
+      autoRunSetupScriptOnSessionCreation: true,
     });
   });
 

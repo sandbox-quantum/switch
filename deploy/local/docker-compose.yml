@@ -70,6 +70,11 @@ services:
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      # Mattermost refuses to call a private address from an integration unless
+      # the host is named here, and a button on a Switch card is delivered by
+      # exactly that path. switch-core runs on the host in this compose, not as
+      # a service, so what Mattermost has to be allowed to reach is the host.
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: host.docker.internal
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
       # Both of these exist for Switch Console's embedded room view (CHOO-1674):
@@ -92,6 +97,10 @@ services:
       SWITCH_URL: http://host.docker.internal:8000
       MATTERMOST_URL: http://mattermost:8065
       MATTERMOST_URL_FOR_SWITCH: http://localhost:8065
+      # The route back: where the Mattermost container reaches switch-core's
+      # callback port, for the button presses Mattermost delivers by HTTP.
+      # switch-core runs on the host in this compose, not as a service.
+      MATTERMOST_CALLBACK_BASE_URL: http://host.docker.internal:8081
       MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER}
       MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
       MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME}

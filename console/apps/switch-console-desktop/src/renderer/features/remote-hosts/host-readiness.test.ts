@@ -230,7 +230,7 @@ describe('resolveReadiness — the agent-creation gate', () => {
  * The persisted plan is the answer most of the time (CHOO-1809).
  *
  * The gate used to re-probe whenever a verdict read `unchecked`, and the probe
- * it ran was a whole-host re-check: picking Codex went and looked at git, tmux,
+ * it ran was a whole-host re-check: picking Codex went and looked at git,
  * node and Claude Code too. Roughly thirty SSH commands, each opening a login
  * shell, to answer a question about one agent type — which is what made the
  * modal feel slow after changing machines.

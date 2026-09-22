@@ -99,9 +99,9 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     agentId: 'agent-1',
     providerId: 'claude',
     title: 'Session 1',
-    shellId: 'system',
+
     status: 'todo',
-    agentSessionId: null,
+
     isInitialSession: false,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',

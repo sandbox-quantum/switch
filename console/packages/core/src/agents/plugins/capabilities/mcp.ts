@@ -31,7 +31,7 @@ export type SwitchLaunchProfile = {
    * Not every host can be pointed at a config file from the command line. Codex
    * takes `--profile <name>`; OpenCode has no equivalent flag at all and names
    * its extra config through `OPENCODE_CONFIG`, so for that host the environment
-   * is the only way in. Values should stay short — the SSH and tmux paths render
+   * is the only way in. Values should stay short — the SSH paths render
    * the launch as a shell string — so a profile puts its content in a file and
    * uses this to point at it.
    *
@@ -140,7 +140,7 @@ export type IMcpBehavior = {
    * Claude Code leaves this undefined: it takes its specialization on argv.
    * Codex returns a per-agent profile (`~/.codex/<name>.config.toml`) and
    * `--profile <name>`, because free-form instructions cannot ride a command
-   * line that the SSH and tmux paths re-render as a shell string. OpenCode
+   * line that the SSH paths re-render as a shell string. OpenCode
    * returns a config file and the environment variable naming it, having no
    * profile flag to load it with.
    *

@@ -21,7 +21,7 @@ Go to [Slack API apps](https://api.slack.com/apps), select **Create New App**, t
 
 The manifest configures the permissions, the events, the Switch slash commands, Socket Mode and the app home in one step, which is why it's worth using over building the app by hand.
 
-It also asks for the user group scopes and declares the app an **Agent**. Both are about how agents look in Slack rather than whether the bridge works, and you choose whether to use either one when you connect.
+It also asks for user group scopes and declares the app an **Agent**. Agent name autocomplete is optional when you connect. SDK progress and permission requests use threaded messages.
 
 **Warning**
 
@@ -167,14 +167,11 @@ The token fields are masked as you type and aren't shown again afterwards.
 
 ### Decide how agents appear in Slack
 
-These checkboxes settle how much of Slack's own interface your agents get. They're on by default, and they're about how agents look rather than whether the bridge works.
+**Agent name autocomplete** is on by default. It completes an agent's name when you type `@` in a channel. It needs a paid Slack plan and permission for the bot to manage user groups.
 
-- **Agent name autocomplete** — an agent's name completes when you type `@` in a channel. Needs a paid Slack plan, and permission for the bot to manage user groups.
-- **Native progress card** — an agent's progress appears in Slack's own live card rather than in a message Switch posts. Needs the app to have been declared an **Agent** when you created it.
+If Slack refuses user-group creation, Switch reports the reason and agents remain addressable by typing their names. This setting does not control SDK progress or permission cards.
 
-You don't have to know in advance whether your workspace can host either. Switch tries, and where Slack refuses it says so once and carries on without that feature. Nothing else is affected, and agents stay addressable by typing their name. [Agent names and progress](#agent-names-and-progress) covers what a workspace with neither still gets.
-
-**Agent name autocomplete** and **Native progress card** can't be changed in Switch Console once the connection exists. Channel creation can be edited later; these two can't. They're changed on the Switch server by the server administrator.
+To change autocomplete after creating the connection, ask the Switch server administrator. Switch Console does not expose that setting on existing connections.
 
 ### Connect
 
@@ -236,19 +233,13 @@ If the bot is refused, make the groups by hand: one whose handle or name is exac
 
 ### Progress on the message being worked on
 
-While an agent is working, Slack draws a live progress card under the agent's own name and icon, linking back to the session in Switch Console. It's an indicator rather than a record, so it goes when the turn ends. This is what declaring the app an **Agent** in the manifest buys you.
+Switch posts a compact status with the elapsed time and a **Console app** link in the agent's thread. An expandable tool log follows it, with permission and question cards below. The Console link appears when the server has a configured public URL.
 
-Where the card can't be drawn, Switch posts a status message under the agent's name carrying the same **Open in Switch Console** link, so a turn always shows its progress somewhere.
+When the turn ends, the status shows the final runtime in place and the tool log remains available. The message that asked is marked with 👀 during the turn. Use `!interrupt @agent-name` to interrupt the agent.
 
-Separately, and needing nothing beyond the reaction scopes: **the message that asked is marked with 👀 for as long as the turn lasts.** It marks the message rather than the thread around it, so it works anywhere in a channel, and it's the one progress signal that's always available.
+If Slack rejects a card's block format, Switch uses a text fallback in the same message or thread. The former **Native progress card** setting and native stream renderer have been removed.
 
-### What a workspace without either still gets
-
-Nothing breaks, and there's no configuration to undo:
-
-- Agents are addressed by typing `@agent-name`, exactly as before. What's lost is the autocomplete, not the addressing.
-- An agent's progress arrives as a status message posted under its own name and icon, with the **Open in Switch Console** link.
-- The message being worked on is marked with 👀, on any plan and in any channel.
+Without user-group autocomplete, you can still address agents by typing `@agent-name`. This does not affect SDK status, permission requests, or reactions.
 
 ## Configure the app by hand
 

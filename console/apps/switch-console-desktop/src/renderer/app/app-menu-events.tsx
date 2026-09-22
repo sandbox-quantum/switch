@@ -32,7 +32,7 @@ export function AppMenuEvents({ onOpenSettings }: { onOpenSettings?: () => boole
     return events.on(menuQuitRequestedChannel, () => {
       showConfirmQuitModal({
         title: 'Quit Switch Console?',
-        description: 'Active terminal sessions and running agents will stop when the app quits.',
+        description: 'SDK sessions continue running in the background after the app quits.',
         confirmLabel: 'Quit',
         onSuccess: () => {
           void rpc.app.quit();
@@ -57,7 +57,7 @@ export function AppMenuEvents({ onOpenSettings }: { onOpenSettings?: () => boole
     const disposers = new Set<() => void>();
 
     const unlisten = events.on(notificationFocusSessionChannel, ({ agentId, sessionId }) => {
-      // A session shows its single terminal automatically, so navigating is enough.
+      // A session shows its transcript automatically, so navigating is enough.
       // The event carries the agent; resolve its location to route the session view.
       void rpc.agents.getAgentById(agentId).then((agent) => {
         if (agent) navigate('session', { locationId: agent.locationId, sessionId });

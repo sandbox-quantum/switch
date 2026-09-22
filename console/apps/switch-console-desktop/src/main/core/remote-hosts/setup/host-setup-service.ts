@@ -1,3 +1,4 @@
+import type { DependencyId, HostDependencyManager } from '@switch-console/core/deps/runtime';
 /**
  * Wires the setup runner to a real remote host (CHOO-1809).
  *
@@ -6,8 +7,6 @@
  * `check` and `install` implementations for each step kind, and owns the
  * per-host lifecycle (build, resume, run, skip, discard).
  */
-
-import type { DependencyId, HostDependencyManager } from '@switch-console/core/deps/runtime';
 import { agentUpdateService } from '@main/core/dependencies/agent-update-service';
 import { CORE_DEPENDENCIES } from '@main/core/dependencies/core-dependencies';
 import { installOutput } from '@main/core/dependencies/install-output';
@@ -22,6 +21,7 @@ import type { TelemetryHostSetupAction, TelemetryOutcome } from '@main/core/tele
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
+import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import {
   agentIdForStep,
   hostSetupActivityEventChannel,
@@ -44,7 +44,7 @@ import {
 const runners = new Map<string, HostSetupRunner>();
 
 /**
- * Agent types worth planning for: those whose connector Switch Console can drive.
+ * Supported SDK providers and the connector steps each one requires.
  *
  * Read from the plugin registry, not from the host. Whether a type is
  * *supported* is a static fact about the plugin — its `switchSetup` dialect and
@@ -57,11 +57,12 @@ function plannableAgentTypes() {
   return listPlugins()
     .filter(
       (plugin) =>
-        plugin.capabilities.switchSetup.kind !== 'none' &&
+        AGENT_PROVIDER_IDS.some((id) => id === plugin.metadata.id) &&
         plugin.capabilities.hostDependency.binaryNames.length > 0
     )
     .map((plugin) => ({
       agentId: plugin.metadata.id,
+      connectorRequired: plugin.capabilities.switchSetup.kind !== 'none',
       name: remoteDependencyDescriptor(plugin.metadata.id)?.name ?? plugin.metadata.id,
     }));
 }

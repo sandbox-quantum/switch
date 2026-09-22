@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { createContext, useContext, type ReactNode } from 'react';
 import { LocationViewWrapper } from '@renderer/features/locations/components/location-view-wrapper';
+import { SessionHeaderSlotsProvider } from '@renderer/features/sessions/session-header-slots';
 import type { SessionAgentStore } from '@renderer/features/sessions/stores/session-agent-store';
 import type { SessionRuntimeStore } from '@renderer/features/sessions/stores/session-runtime-store';
 import {
@@ -31,7 +32,7 @@ export const SessionViewWrapper = observer(function SessionViewWrapper({
   return (
     <LocationViewWrapper locationId={locationId}>
       <SessionViewContext.Provider value={{ locationId, sessionId }}>
-        {children}
+        <SessionHeaderSlotsProvider>{children}</SessionHeaderSlotsProvider>
       </SessionViewContext.Provider>
     </LocationViewWrapper>
   );
