@@ -15,7 +15,9 @@ import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
+import { CreateWorkspacePage } from './create-workspace-page';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
+import { PickWorkspacePage } from './pick-workspace-page';
 import { WelcomePage } from './welcome-page';
 
 /**
@@ -27,6 +29,11 @@ import { WelcomePage } from './welcome-page';
  * get" in two. `firstRun` on the event is what keeps them apart where it
  * matters. The welcome page belongs to neither: nothing has been chosen on it
  * and there is no server being added yet.
+ *
+ * The workspace pages are unreported for the opposite reason: they are not
+ * steps of the add-server wizard at all — the modal has nothing like them,
+ * because by the time you open it you are already in a workspace — so counting
+ * them here would put drop-offs from one funnel into the other's numbers.
  */
 const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
   welcome: null,
@@ -34,6 +41,8 @@ const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
   local: 'local',
   connect: 'external',
   signIn: 'signIn',
+  pickWorkspace: null,
+  createWorkspace: null,
   linkAccounts: 'linkAccounts',
 };
 
@@ -49,6 +58,8 @@ const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
   local: 'local',
   connect: 'external',
   signIn: 'external',
+  pickWorkspace: 'external',
+  createWorkspace: 'external',
   linkAccounts: 'external',
 };
 
@@ -126,7 +137,29 @@ function currentPage(
           server={server}
           onBack={() => goTo('connect')}
           onClose={null}
-          onSignedIn={() => goTo('linkAccounts')}
+          onSignedIn={() => goTo('pickWorkspace')}
+        />
+      );
+    case 'pickWorkspace':
+      if (server === null) break;
+      return (
+        <PickWorkspacePage
+          server={server}
+          onBack={() => goTo('signIn')}
+          onPicked={() => goTo('linkAccounts')}
+          onCreate={() => goTo('createWorkspace')}
+        />
+      );
+    case 'createWorkspace':
+      if (server === null) break;
+      return (
+        <CreateWorkspacePage
+          server={server}
+          // Nothing to go back to when the account is in no workspace: the
+          // picker sent the user straight here, and returning to it would be a
+          // door onto the list it had nothing to show.
+          onBack={onboardingStore.serverWorkspaces?.length ? () => goTo('pickWorkspace') : null}
+          onCreated={() => goTo('linkAccounts')}
         />
       );
     case 'linkAccounts':

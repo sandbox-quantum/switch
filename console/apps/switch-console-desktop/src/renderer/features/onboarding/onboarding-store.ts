@@ -1,5 +1,6 @@
 import { makeAutoObservable } from 'mobx';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /** Where a fresh install is in getting its first server. */
 export type OnboardingPage =
@@ -8,6 +9,8 @@ export type OnboardingPage =
   | 'local'
   | 'connect'
   | 'signIn'
+  | 'pickWorkspace'
+  | 'createWorkspace'
   | 'linkAccounts';
 
 /**
@@ -27,6 +30,8 @@ class OnboardingStore {
   page: OnboardingPage = 'welcome';
   /** The server the connect page added, and the subject of the pages after it. */
   server: SwitchServer | null = null;
+  /** The workspaces that server said the account is in, once it has been asked. */
+  serverWorkspaces: Workspace[] | null = null;
 
   constructor() {
     makeAutoObservable(this);
@@ -51,9 +56,21 @@ class OnboardingStore {
     this.page = 'signIn';
   }
 
+  /**
+   * What the server answered when asked which workspaces this account is in.
+   *
+   * Kept so the create page knows whether there was anything to come back to:
+   * an account with no membership is sent straight to the form, and offering it
+   * a Back to a list of nothing would be a door onto a blank wall.
+   */
+  resolved(workspaces: Workspace[]): void {
+    this.serverWorkspaces = workspaces;
+  }
+
   reset(): void {
     this.page = 'welcome';
     this.server = null;
+    this.serverWorkspaces = null;
   }
 }
 

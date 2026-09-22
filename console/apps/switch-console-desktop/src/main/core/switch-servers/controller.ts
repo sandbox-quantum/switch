@@ -6,6 +6,7 @@ import { isManagedServerRunning } from '@main/core/managed-switch-server/managed
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
+import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
@@ -20,10 +21,11 @@ import type {
   UpdateServerParams,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
+import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
-import { fetchAuthConfig, fetchMe, GatewayError } from './gateway-client';
+import { createTenant, fetchAuthConfig, fetchMe, GatewayError } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
 import {
@@ -127,6 +129,54 @@ export const switchServersController = createRPCController({
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
 
   setActiveServer: (serverId: string): Promise<void> => setActiveServerId(serverId),
+
+  /**
+   * Ask a server which workspaces this account belongs to, and return the local
+   * rows for them.
+   *
+   * Local rows rather than the gateway's answer directly, because what a caller
+   * does next is scope the window to one, and that is addressed by the row's
+   * id. Reconciling first is what guarantees there is a row for each.
+   *
+   * An empty list means the server answered and the account belongs to nothing
+   * — a real answer, and the one the first-run flow turns into "create your
+   * workspace". A server that cannot be asked raises instead, because the two
+   * are not the same and a caller that treated them alike would offer to create
+   * a second workspace to someone who already has one.
+   */
+  resolveWorkspaces: async (serverId: string): Promise<Workspace[]> => {
+    await reconcileServerWorkspaces(serverId);
+    const workspaces = await listWorkspacesForServer(serverId);
+    return workspaces.filter((workspace) => workspace.tenantId !== null);
+  },
+
+  /**
+   * Create a workspace on a server, owned by the signed-in user.
+   *
+   * Addressed by server rather than by workspace — the exception the split
+   * allows itself, because the thing being created is the workspace: there is
+   * no id to address it by until the gateway has minted one, and on a fresh
+   * install there is no other workspace to address it from either.
+   *
+   * Reconciling afterwards rather than inserting a row here keeps one
+   * implementation of "which local row is this membership": the new workspace
+   * may claim the tenant-less row a freshly registered server starts with, and
+   * deciding that twice is how the two answers come to differ.
+   */
+  createWorkspace: async (params: { serverId: string; name: string }): Promise<Workspace> => {
+    const server = await requireReachableServer(params.serverId);
+    const tenant = await createTenant(server, params.name);
+    await reconcileServerWorkspaces(params.serverId);
+
+    const workspaces = await listWorkspacesForServer(params.serverId);
+    const created = workspaces.find((workspace) => workspace.tenantId === tenant.id);
+    if (!created) {
+      throw new Error(
+        `${server.name} created the workspace ${tenant.name}, but this install did not record it.`
+      );
+    }
+    return created;
+  },
 
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>
     fetchAuthConfig(await requireReachableServer(serverId)),
