@@ -22,10 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TENANT_ZERO_ID, Client, ClientRoom, Room, Tenant
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     InboundCustomEvent,
@@ -38,7 +40,7 @@ from switch_core.transport import (
 )
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
-from switch_core.transport.postgres import PostgresTransport
+from switch_core.transport.postgres import _DELIVERY_PAGE, PostgresTransport
 from tests.conftest import RLSHarness
 
 
@@ -59,6 +61,18 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
     session.add(room)
     await session.flush()
     return room.id, room.matrix_room_id, client.id, client.matrix_user_id
+
+
+async def _make_client(session: AsyncSession, label: str) -> tuple[str, str]:
+    """Insert one more Client. Returns (client id, client mxid)."""
+    client = Client(
+        matrix_user_id=f"@{label}-{uuid.uuid4().hex[:8]}:test",
+        display_name=label,
+        type="agent",
+    )
+    session.add(client)
+    await session.flush()
+    return client.id, client.matrix_user_id
 
 
 async def _watched_room(transport: PostgresTransport) -> str:
@@ -123,12 +137,20 @@ class _Received:
     def __init__(self) -> None:
         self.events: list[object] = []
 
-    def handlers(self) -> TransportHandlers:
+    def handlers(
+        self,
+        *,
+        on_invite: object | None = None,
+        on_message: object | None = None,
+        on_removed: object | None = None,
+    ) -> TransportHandlers:
         return TransportHandlers(
-            on_message=self._take,
+            on_message=on_message or self._take,  # type: ignore[arg-type]
             on_media=self._take,
             on_member_event=self._take,
             on_custom_event=self._take,
+            on_invite=on_invite,  # type: ignore[arg-type]
+            on_removed=on_removed,  # type: ignore[arg-type]
         )
 
     async def _take(self, _room, event) -> None:
@@ -143,6 +165,7 @@ def _transport(
     tenant_id: str = TENANT_ZERO_ID,
     listener: _FakeListener | None = None,
     ephemeral: EphemeralBus | None = None,
+    invites: InviteBus | None = None,
 ) -> PostgresTransport:
     """A transport for `client_id`, acting in `tenant_id`.
 
@@ -164,7 +187,7 @@ def _transport(
         message_store=MessageStore(),
         media_store=MediaStore(),
         listener=listener or _FakeListener(),
-        invites=InviteBus(),
+        invites=invites or InviteBus(),
         ephemeral=ephemeral or EphemeralBus(),
     )
 
@@ -1481,3 +1504,450 @@ class TestWhatIsMeasured:
         assert {
             str(point.attributes["kind"]): point.value for point in payload.numbers
         } == {"message": 1.0}
+
+
+class TestBeingRemovedFromARoom:
+    """A removal has to reach the client, not only the table.
+
+    The homeserver enforced a kick: a removed client's sync stopped returning
+    the room, so nothing downstream had to check membership a second time.
+    Here the subscription is the client's own and outlives the row it was
+    resolved from, so a removal is rung over the same bus an invitation is and
+    the transport drops the room.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    def _provisioning(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        invites: InviteBus,
+    ) -> PostgresProvisioning:
+        return PostgresProvisioning(
+            session_factory=session_factory,
+            room_store=RoomStore(),
+            client_store=ClientStore(),
+            message_store=MessageStore(),
+            invites=invites,
+        )
+
+    async def _two_in_a_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[str, str, tuple[str, str], tuple[str, str]]:
+        """A room with two members already recorded.
+
+        Written directly rather than joined so that no arrival event is in the
+        way of what the test is reading.
+        """
+        async with session_factory() as session:
+            room_id, room, leaving_id, leaving_user = await _make_room(session)
+            staying_id, staying_user = await _make_client(session, "staying")
+            await RoomStore().add_client(session, leaving_id, room_id)
+            await RoomStore().add_client(session, staying_id, room_id)
+            await session.commit()
+        return room_id, room, (leaving_id, leaving_user), (staying_id, staying_user)
+
+    async def test_it_stops_being_delivered_the_rooms_messages(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, room, leaving, staying = await self._two_in_a_room(session_factory)
+        listener = _FakeListener()
+        invites = InviteBus()
+        received = _Received()
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=listener,
+            invites=invites,
+        )
+        removed.register_handlers(received.handlers())
+        member = _transport(
+            session_factory,
+            client_id=staying[0],
+            user_id=staying[1],
+            listener=listener,
+            invites=invites,
+        )
+        member.register_handlers(_Received().handlers())
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        await _watched_room(removed)
+        await _watched_room(member)
+
+        # While a member, it hears the room.
+        await member.send_message(room, "while a member", sender_name="agent one")
+        await listener.announce(room_id)
+        assert [event.body for event in received.events] == ["while a member"]
+
+        await self._provisioning(session_factory, invites).kick_user(room, leaving[1])
+
+        async with session_factory() as session:
+            members = await RoomStore().get_client_ids(session, room_id)
+        assert leaving[0] not in members
+        assert staying[0] in members
+
+        await member.send_message(room, "after removal", sender_name="agent one")
+        await listener.announce(room_id)
+
+        assert [event.body for event in received.events] == ["while a member"]
+        assert room_id not in removed._watching
+
+    async def test_being_put_back_does_not_hand_over_what_was_said_while_out(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The cursor goes with the subscription.
+
+        Keeping it would mean a client added back resumed from where it left
+        off and was handed everything said while it was out, which is the same
+        leak one restart later.
+        """
+        room_id, room, leaving, staying = await self._two_in_a_room(session_factory)
+        listener = _FakeListener()
+        invites = InviteBus()
+        received = _Received()
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=listener,
+            invites=invites,
+        )
+
+        async def _accept(room_ref, _event) -> None:
+            """What the client does with an invitation, so a put-back is one."""
+            await removed.join_room(room_ref.room_id)
+
+        removed.register_handlers(received.handlers(on_invite=_accept))
+        member = _transport(
+            session_factory,
+            client_id=staying[0],
+            user_id=staying[1],
+            listener=listener,
+            invites=invites,
+        )
+        member.register_handlers(_Received().handlers())
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        await _watched_room(removed)
+        await _watched_room(member)
+
+        provisioning = self._provisioning(session_factory, invites)
+        await provisioning.kick_user(room, leaving[1])
+        await member.send_message(
+            room, "said while it was out", sender_name="agent one"
+        )
+        await listener.announce(room_id)
+
+        await provisioning.invite_to_room(room, leaving[1])
+        await _settled(removed)
+
+        bodies = [
+            event.body for event in received.events if isinstance(event, InboundMessage)
+        ]
+        assert bodies == []
+        # It is back in, and told so, which is how it was told the first time.
+        assert room_id in removed._watching
+        assert [type(event) for event in received.events] == [InboundMembership]
+
+    async def test_the_client_is_told_as_well_as_unsubscribed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Dropping the subscription only stops what has not been read yet.
+
+        What has already been handed over belongs to the client — an agent's
+        event buffer holds it for the retention window and serves it to a poll
+        or a resumed stream — so the removal has to reach whoever is holding
+        it, not only the reader that would have fetched more.
+        """
+        _room_id, room, leaving, _staying = await self._two_in_a_room(session_factory)
+        invites = InviteBus()
+        received = _Received()
+        told: list[object] = []
+
+        async def _on_removed(room_ref, event) -> None:
+            told.append((room_ref.room_id, event.membership))
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=_FakeListener(),
+            invites=invites,
+        )
+        removed.register_handlers(received.handlers(on_removed=_on_removed))
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        await _watched_room(removed)
+
+        await self._provisioning(session_factory, invites).kick_user(room, leaving[1])
+
+        assert told == [(room, "leave")]
+
+    async def test_a_removal_mid_page_stops_the_rest_of_the_page(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Every delivery is a suspension point, so a page is not atomic.
+
+        A removal landing on one of them has to stop the rows it has not
+        reached — and must not be undone by them. The cursor is written per
+        row, so a row delivered after the unwatch would put the room back in
+        `_cursors` with nothing in `_watching`, and `_watch` would then decline
+        to re-subscribe for good: the client would be a member of the room and
+        permanently silent in it.
+        """
+        room_id, room, leaving, staying = await self._two_in_a_room(session_factory)
+        listener = _FakeListener()
+        invites = InviteBus()
+        provisioning = self._provisioning(session_factory, invites)
+        delivered: list[str] = []
+
+        member = _transport(
+            session_factory,
+            client_id=staying[0],
+            user_id=staying[1],
+            listener=listener,
+            invites=invites,
+        )
+        member.register_handlers(_Received().handlers())
+
+        async def _kick_on_the_first(_room_ref, event) -> None:
+            delivered.append(event.body)
+            if len(delivered) == 1:
+                await provisioning.kick_user(room, leaving[1])
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=listener,
+            invites=invites,
+        )
+        removed.register_handlers(_Received().handlers(on_message=_kick_on_the_first))
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        await _watched_room(removed)
+        await _watched_room(member)
+
+        for i in range(4):
+            await member.send_message(room, f"line {i}", sender_name="agent one")
+        await listener.announce(room_id)
+
+        # The removal landed on the first delivery; the rest of the page is
+        # not the removed client's to read.
+        assert delivered == ["line 0"]
+        assert room_id not in removed._watching
+        # And nothing was left behind to make the room unsubscribable.
+        assert room_id not in removed._cursors
+
+        await provisioning.invite_to_room(room, leaving[1])
+        await removed.join_room(room)
+        assert room_id in removed._watching
+
+    async def test_a_removal_during_startup_is_not_overtaken_by_the_subscription(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reading the room list and subscribing to it is several round trips.
+
+        A removal rung during them used to find nothing to unwatch and then be
+        stepped over by the subscription that followed, leaving the client
+        reading a room it is not in until the process restarted — and unlike an
+        invitation, there is no membership row for the caller to write instead.
+        The listener goes up before the list is read, and the row is confirmed
+        before the subscription is taken.
+        """
+        room_id, room, leaving, _staying = await self._two_in_a_room(session_factory)
+        invites = InviteBus()
+        provisioning = self._provisioning(session_factory, invites)
+        original = PostgresTransport.joined_rooms
+        kicked = asyncio.Event()
+
+        async def _kicked_while_reading(self) -> list[str]:
+            rooms = await original(self)
+            await provisioning.kick_user(room, leaving[1])
+            kicked.set()
+            return rooms
+
+        monkeypatch.setattr(PostgresTransport, "joined_rooms", _kicked_while_reading)
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=_FakeListener(),
+            invites=invites,
+        )
+        removed.register_handlers(_Received().handlers())
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+
+        await asyncio.wait_for(kicked.wait(), timeout=5)
+        # Let the rest of the startup path run and decide what to subscribe
+        # to. Bailing out the moment it subscribes keeps a regression fast to
+        # see rather than making every run wait out the window.
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if room_id in removed._watching:
+                break
+        assert room_id not in removed._watching
+        assert room_id not in removed._cursors
+
+    async def test_a_stray_cursor_does_not_make_a_room_unsubscribable(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The "already watching" guard is a repair, not just an idempotence check.
+
+        `_cursors` and `_watching` are written together and should never
+        disagree — the removal races that used to part them are closed above.
+        But the cost of the guard being on the wrong one is not symmetric: a
+        cursor left behind with no subscription would make every later `_watch`
+        return early, from a re-invite, a `join_room` on a recorded membership,
+        or a reconnect alike, and the client would be a member of the room and
+        permanently silent in it. Keyed on `_watching` — the fact the rest of
+        the class tests — the same divergence repairs itself on the next watch.
+
+        The divergence is forced here rather than provoked, because there is no
+        longer a way to provoke it. That is the point: this pins which of the
+        two maps the guard reads, so a later change cannot quietly move it back
+        to the one that cannot recover.
+        """
+        room_id, room, leaving, _staying = await self._two_in_a_room(session_factory)
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=_FakeListener(),
+            invites=InviteBus(),
+        )
+        removed.register_handlers(_Received().handlers())
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        await _watched_room(removed)
+
+        # A subscription dropped without its cursor: the shape the two maps
+        # take when anything writes one and not the other.
+        del removed._watching[room_id]
+
+        await removed._watch(room)
+
+        assert room_id in removed._watching
+
+    async def test_a_removal_on_a_page_boundary_stops_the_next_page(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The between-pages guard, which a removal inside a page never reaches.
+
+        A room that moved a long way while a handler was busy is read in
+        bounded steps. A removal landing anywhere but the last row of a page is
+        caught by the per-row check and the loop never comes back — so to reach
+        the top of the loop at all, the kick has to land on the page boundary
+        exactly, with a full page read and the loop about to ask for another.
+
+        Reading the cursor with `.get` is what makes that arrival safe:
+        `_unwatch` pops it, so indexing would raise KeyError, and the drain
+        would be recorded as a delivery failure rather than a removal being
+        honoured — the room stops either way, but one of them pages someone.
+        """
+        room_id, room, leaving, staying = await self._two_in_a_room(session_factory)
+        listener = _FakeListener()
+        invites = InviteBus()
+        provisioning = self._provisioning(session_factory, invites)
+        delivered: list[str] = []
+
+        member = _transport(
+            session_factory,
+            client_id=staying[0],
+            user_id=staying[1],
+            listener=listener,
+            invites=invites,
+        )
+        member.register_handlers(_Received().handlers())
+
+        async def _kick_on_the_page_boundary(_room_ref, event) -> None:
+            delivered.append(event.body)
+            if len(delivered) == _DELIVERY_PAGE:
+                await provisioning.kick_user(room, leaving[1])
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=listener,
+            invites=invites,
+        )
+        removed.register_handlers(
+            _Received().handlers(on_message=_kick_on_the_page_boundary)
+        )
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        await _watched_room(removed)
+        await _watched_room(member)
+
+        # More than one page, so the loop would come back for another.
+        for i in range(_DELIVERY_PAGE + 25):
+            await member.send_message(room, f"line {i}", sender_name="agent one")
+        await listener.announce(room_id)
+
+        # The whole of page one, and none of page two.
+        assert delivered == [f"line {i}" for i in range(_DELIVERY_PAGE)]
+        assert room_id not in removed._watching
+        assert room_id not in removed._cursors
+        assert "Delivery failed" not in caplog.text, (
+            "the drain came back for another page and fell over the popped "
+            "cursor instead of noticing the removal"
+        )
+
+    async def test_a_restart_does_not_deafen_the_new_loop_to_removals(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A client row can have two receive loops briefly overlapping.
+
+        The older one unregisters from its `finally`, which runs whenever that
+        loop ends — including after a newer instance took the slot. Giving the
+        slot up by id alone would take the live loop's removal listener with
+        it, and a kick would then reach nobody: no membership row for the
+        caller to write instead, and a transport still delivering a room it is
+        not in.
+        """
+        room_id, room, leaving, _staying = await self._two_in_a_room(session_factory)
+        invites = InviteBus()
+
+        def _make() -> PostgresTransport:
+            t = _transport(
+                session_factory,
+                client_id=leaving[0],
+                user_id=leaving[1],
+                listener=_FakeListener(),
+                invites=invites,
+            )
+            t.register_handlers(_Received().handlers())
+            return t
+
+        old, new = _make(), _make()
+        self._tasks.append(asyncio.create_task(old.receive_forever()))
+        await _watched_room(old)
+        self._tasks.append(asyncio.create_task(new.receive_forever()))
+        await _watched_room(new)
+
+        # The older loop finishes unwinding after the newer one took the slot.
+        await old.close()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if not old._receiving:
+                break
+        assert not old._receiving, "the superseded loop never finished unwinding"
+
+        await self._provisioning(session_factory, invites).kick_user(room, leaving[1])
+
+        assert room_id not in new._watching, (
+            "the superseded transport's teardown deafened the live one: the kick "
+            "reached nobody and it is still delivering a room it is not in"
+        )

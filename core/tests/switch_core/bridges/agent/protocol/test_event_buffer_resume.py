@@ -167,8 +167,8 @@ async def test_legacy_pollers_no_longer_steal_from_each_other() -> None:
     buf.enqueue(AGENT, ROOM_A, _message("hello", addressed=True))
 
     room = await buf.poll_room(AGENT, ROOM_A, timeout=0)
-    notif = await buf.poll_notifications(AGENT, timeout=0)
-    every = await buf.poll(AGENT, timeout=0)
+    notif = await buf.poll_notifications(AGENT, timeout=0, rooms={ROOM_A})
+    every = await buf.poll(AGENT, timeout=0, rooms={ROOM_A})
 
     assert [e.payload.body for e in room] == ["hello"]
     assert [e.payload.body for e in notif] == ["hello"]
