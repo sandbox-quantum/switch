@@ -123,7 +123,7 @@ export function ManagedClaudeConnectionStep({
             >
               Remove
             </Button>
-            <Button onClick={onDone}>Done</Button>
+            <Button onClick={onDone}>Continue to GitHub</Button>
           </>
         )}
       </DialogFooter>

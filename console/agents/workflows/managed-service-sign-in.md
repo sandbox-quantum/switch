@@ -29,3 +29,11 @@ See `deploy/hosted/README.md` for the backend verifier image. A backend without
 verification enabled returns a visible unavailable error. GitHub connection,
 worker credential delivery and cloud agent creation are separate steps; connecting
 Claude does not provision a worker or start a room agent.
+
+## GitHub preview
+
+The connected Claude screen continues to a GitHub App introduction. It explains
+repository selection, intended contents and pull request access, and revocation.
+Back reloads the Claude connection; Set up later ends onboarding. The connection
+button is disabled with an explicit preview notice. No authorization flow or
+GitHub credential storage is implemented in this increment.

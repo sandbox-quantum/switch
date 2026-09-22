@@ -35,6 +35,7 @@ import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import { ManagedClaudeConnectionStep } from './managed-claude-connection-step';
+import { ManagedGitHubStep } from './managed-github-step';
 import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
@@ -83,6 +84,7 @@ type Props = BaseModalProps<void> & {
 };
 
 type Step =
+  | 'managedGitHub'
   | 'managedClaude'
   | 'managedReady'
   | 'managed'
@@ -140,6 +142,7 @@ const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   managed: 'managed',
   managedReady: 'managed',
   managedClaude: 'managed',
+  managedGitHub: 'managed',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
@@ -260,7 +263,15 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       <ManagedClaudeConnectionStep
         serverId={connected.id}
         onBack={() => goToStep('managedReady')}
-        onDone={() => finish(connected.id)}
+        onDone={() => goToStep('managedGitHub')}
+      />
+    );
+  }
+  if (step === 'managedGitHub' && connected) {
+    return (
+      <ManagedGitHubStep
+        onBack={() => goToStep('managedClaude')}
+        onSkip={() => finish(connected.id)}
       />
     );
   }
