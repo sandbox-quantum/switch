@@ -108,7 +108,7 @@ def sampler_for(
     # Both trees: the server runs in this process, and the hosts hang off the
     # detached watcher supervisor, which is not a descendant of it.
     return ResourceSampler(
-        root_pids=[os.getpid(), watcher.supervisor_pid],
+        root_pids=lambda: [os.getpid(), watcher.supervisor_pid],
         port=bench.port,
         # The registry is in this process, so the server's own count of the
         # agent's open protocol connections is free to read alongside the

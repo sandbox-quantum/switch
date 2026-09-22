@@ -26,7 +26,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.benchmarks.host import bench_watcher, build_bench_bundle, marked, new_marker
+from tests.benchmarks.host import (
+    bench_watcher,
+    build_bench_bundle,
+    dispatched,
+    marked,
+    new_marker,
+)
 from tests.benchmarks.server import BenchServer, RoomState
 from tests.benchmarks.trace import TraceCollector, correlation_for
 from tests.benchmarks.workload import (
@@ -276,6 +282,104 @@ async def test_baseline_recovers_from_a_lost_host(
     # is collected at all: the host is killed at a point where it may already
     # have dispatched, and a replacement then takes the room over. Recovering
     # by redoing work that was already done is not recovery.
+    assert result.duplicated == (), result.duplicated
+
+
+async def test_baseline_survives_a_controller_restart(
+    bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
+) -> None:
+    """The controller is killed and started again with deliveries outstanding.
+
+    Two messages are exposed to the loss. One is posted immediately before the
+    kill, so it may be anywhere between the server's buffer and the worker's
+    hands when the controller disappears; the other is posted while there is no
+    controller at all, which is the case a per-session connection never had —
+    nothing else is listening for the agent, so a restart that resumed from the
+    wrong place would lose it in silence.
+
+    The assertion is exactly-once on both, and that the room is still served by
+    the session that was serving it: a restarted controller re-reads its own
+    journal, and one that instead started a second session for the room would
+    leave two workers answering it.
+    """
+    target = await bench.register_agent("bench-target-restart")
+    poster = await bench.register_agent("bench-poster-restart")
+    await bench.start_clients(timeout=60.0)
+    room_id = await bench.create_room(
+        "bench-restart", [target.agent_id, poster.agent_id]
+    )
+    home = tmp_path / "home-restart"
+    home.mkdir(parents=True)
+
+    async def send(marker: str) -> str:
+        return correlation_for(
+            room_id,
+            await bench.address(
+                sender=poster,
+                room_id=room_id,
+                target=target.name,
+                body=f"@{target.name} {marked(marker)}",
+            ),
+        )
+
+    with bench_watcher(
+        bundle=bundle,
+        home=home,
+        base_url=bench.base_url,
+        agent_id=target.agent_id,
+        api_key=target.api_key,
+    ) as watcher:
+        await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
+        sampler = sampler_for(bench, watcher, target.agent_id)
+        async with sampler.running("1 session, controller restarted mid-flight"):
+            cold = new_marker()
+            markers = {cold: await send(cold)}
+            assert not await dispatch_wait(watcher, markers, dispatch_timeout(1))
+            assigned = watcher.sessions_by_room()
+            assert room_id in assigned, assigned
+
+            in_flight = new_marker()
+            markers[in_flight] = await send(in_flight)
+            watcher.stop_controller()
+            # Whether the kill caught the message before it reached a provider
+            # is a race, and reported rather than asserted. The exactly-once
+            # claim below holds either way; this says which of the two cases
+            # the run actually exercised.
+            interrupted = in_flight not in dispatched(watcher, markers)
+
+            orphaned = new_marker()
+            markers[orphaned] = await send(orphaned)
+            watcher.start_controller()
+
+            assert not await dispatch_wait(watcher, markers, dispatch_timeout(2))
+            # The same session, from the journal the killed controller left
+            # behind — not a second one started beside a worker that never
+            # stopped serving the room.
+            assert watcher.sessions_by_room()[room_id] == assigned[room_id]
+
+        collector.ingest_jsonl(watcher.trace_path, markers)
+
+    result = score(
+        label="1 session, controller restarted mid-flight",
+        rooms=1,
+        collector=collector,
+        # Only the first message pays for starting a session. The worker
+        # survives the controller, so the two that follow are served warm.
+        posted=Posted(markers=markers, cold=frozenset([markers[cold]])),
+        undelivered=frozenset(),
+        resources=sampler.last_report,
+    )
+    print("\n" + publish([result], tmp_path / "baseline-controller-restart.md"))
+    print(
+        "controller restart: the message posted before the kill was "
+        f"{'still in flight' if interrupted else 'already dispatched'} when the "
+        "controller died; the message posted while there was no controller was "
+        "delivered once by the one that replaced it"
+    )
+    assert result.unmeasured == ()
+    # One connection across the restart too: a controller that left its
+    # predecessor's registered behind would be two by the server's own count.
+    assert result.resources.peak_streams == 1, result.resources
     assert result.duplicated == (), result.duplicated
 
 

@@ -236,7 +236,7 @@ async def test_sampling_does_not_stall_the_loop_the_server_runs_on(
     """
     taken = _fake_slow_os(monkeypatch, {4242: ProcessSample(4242, 1024, 0.0, "worker")})
     sampler = ResourceSampler(
-        root_pids=[1],
+        root_pids=lambda: [1],
         port=0,
         count_streams=lambda: 0,
         interval_seconds=0.01,
@@ -284,7 +284,7 @@ async def test_cpu_is_counted_for_a_process_that_exits_before_the_run_ends(
     monkeypatch.setattr(metrics, "established_connections", lambda port: 0)
 
     sampler = ResourceSampler(
-        root_pids=[1],
+        root_pids=lambda: [1],
         port=0,
         count_streams=lambda: 0,
         interval_seconds=60.0,
@@ -319,7 +319,7 @@ async def test_cpu_already_burned_before_the_run_is_not_charged_to_it(
     monkeypatch.setattr(metrics, "established_connections", lambda port: 0)
 
     sampler = ResourceSampler(
-        root_pids=[1],
+        root_pids=lambda: [1],
         port=0,
         count_streams=lambda: 0,
         interval_seconds=60.0,
@@ -346,7 +346,7 @@ async def test_a_reused_pid_does_not_erase_the_cpu_of_the_process_before_it(
     monkeypatch.setattr(metrics, "established_connections", lambda port: 0)
 
     sampler = ResourceSampler(
-        root_pids=[1],
+        root_pids=lambda: [1],
         port=0,
         count_streams=lambda: 0,
         interval_seconds=60.0,
@@ -368,7 +368,7 @@ async def test_a_reused_pid_does_not_erase_the_cpu_of_the_process_before_it(
 def test_a_sampler_that_never_ran_refuses_to_report() -> None:
     """Zero resource usage and unmeasured resource usage are not the same."""
     sampler = ResourceSampler(
-        root_pids=[1], port=0, count_streams=lambda: 0, interval_seconds=1.0
+        root_pids=lambda: [1], port=0, count_streams=lambda: 0, interval_seconds=1.0
     )
     with pytest.raises(ValueError, match="never run"):
         sampler.report("nothing happened", wall_seconds=1.0)

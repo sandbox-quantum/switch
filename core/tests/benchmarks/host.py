@@ -106,13 +106,21 @@ def build_bench_bundle() -> Path:
     return _BUNDLE
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class BenchWatcher:
-    """A running watcher and everything spawned beneath it."""
+    """A running watcher and everything spawned beneath it.
+
+    `supervisor_pid` is not fixed for the life of the run: a controller can be
+    killed and another started on the same state, and everything that reads the
+    process tree has to follow it to the one that is running now.
+    """
 
     root: Path
     home: Path
     trace_path: Path
+    bundle: Path
+    template_path: Path
+    environment: Mapping[str, str]
     supervisor_pid: int
 
     def process_tree(self) -> list[int]:
@@ -177,6 +185,67 @@ class BenchWatcher:
             except ProcessLookupError:
                 continue
         return len(tree)
+
+    def session_pids(self) -> set[int]:
+        """Every process serving a session this controller assigned.
+
+        A session whose supervisor record is missing contributes nothing rather
+        than raising: the journal names every session the controller ever
+        assigned, including ones whose processes are already gone.
+        """
+        pids: set[int] = set()
+        for session_id in set(self.sessions_by_room().values()):
+            try:
+                pids.update(self.session_tree(session_id))
+            except RuntimeError:
+                continue
+        return pids
+
+    def stop_controller(self) -> None:
+        """Kill the controller outright, leaving its sessions running.
+
+        What this reproduces is the controller being lost — a Console killed —
+        and taking its workers down with it would be the worker-recovery case
+        instead.
+
+        SIGKILL, so nothing is written on the way out. A controller given the
+        chance to record what it was holding would be measuring a graceful
+        stop, and the state a restart has to recover from is the state a
+        killed one left behind: a stale owner record, a journal, and whatever
+        the server is still holding for it.
+        """
+        sessions = self.session_pids()
+        doomed = [pid for pid in self.process_tree() if pid not in sessions]
+        for pid in sorted(doomed, reverse=True):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        deadline = time.monotonic() + 15.0
+        while any(_alive(pid) for pid in doomed):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"{len([pid for pid in doomed if _alive(pid)])} controller "
+                    "process(es) survived SIGKILL, so whatever is started next "
+                    "would be the agent's second controller rather than its only one"
+                )
+            time.sleep(0.05)
+
+    def start_controller(self) -> None:
+        """Start a controller on this root again, after one was stopped.
+
+        The state it starts from is whatever the last one left on disk, which
+        after a kill includes its own owner record: reclaiming that is part of
+        what a restart has to do.
+        """
+        superseded = self.supervisor_pid
+        _start_watcher(
+            bundle=self.bundle,
+            root=self.root,
+            template_path=self.template_path,
+            environment=self.environment,
+        )
+        self.supervisor_pid = _await_supervisor(self.root, superseded)
 
 
 def _template(
@@ -262,22 +331,17 @@ def bench_watcher(
         "HOME": str(home),
         "SWITCH_BENCH_TRACE": str(trace_path),
     }
-    started = subprocess.run(
-        ["node", str(bundle), str(root), str(template_path), "--ensure-watch"],
-        capture_output=True,
-        text=True,
-        env=environment,
-        timeout=120,
+    _start_watcher(
+        bundle=bundle, root=root, template_path=template_path, environment=environment
     )
-    if started.returncode != 0:
-        raise RuntimeError(
-            f"the benchmark watcher did not start.\n{started.stdout}\n{started.stderr}"
-        )
     watcher = BenchWatcher(
         root=root,
         home=home,
         trace_path=trace_path,
-        supervisor_pid=_await_supervisor(root),
+        bundle=bundle,
+        template_path=template_path,
+        environment=environment,
+        supervisor_pid=_await_supervisor(root, None),
     )
     try:
         yield watcher
@@ -285,12 +349,37 @@ def bench_watcher(
         _terminate(watcher.process_tree)
 
 
-def _await_supervisor(root: Path) -> int:
+def _start_watcher(
+    *,
+    bundle: Path,
+    root: Path,
+    template_path: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Ask for a watcher on this root, whether or not one has run here before."""
+    started = subprocess.run(
+        ["node", str(bundle), str(root), str(template_path), "--ensure-watch"],
+        capture_output=True,
+        text=True,
+        env=dict(environment),
+        timeout=120,
+    )
+    if started.returncode != 0:
+        raise RuntimeError(
+            f"the benchmark watcher did not start.\n{started.stdout}\n{started.stderr}"
+        )
+
+
+def _await_supervisor(root: Path, superseded: int | None) -> int:
     """The pid of the detached supervisor that now owns this root.
 
     Read from its own owner record rather than from the process that launched
     it: that process spawns the supervisor detached and exits, so the
     supervisor is reparented and is not in the driver's process tree.
+
+    `superseded` is the controller this one replaces, if there was one. A
+    killed controller leaves its owner record behind, so without it the caller
+    would be handed the pid of the process it has just killed.
     """
     owner = root / "supervisor" / "owner.json"
     failure = root / "supervisor" / "failure.json"
@@ -302,7 +391,9 @@ def _await_supervisor(root: Path) -> int:
                 f"{json.loads(failure.read_text())['message']}"
             )
         if owner.exists():
-            return int(json.loads(owner.read_text())["pid"])
+            pid = int(json.loads(owner.read_text())["pid"])
+            if pid != superseded:
+                return pid
         time.sleep(0.05)
     raise RuntimeError(f"no watcher supervisor claimed {root} within 30s")
 
@@ -376,13 +467,24 @@ def await_dispatches(
     outstanding = set(markers)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        for line in watcher.trace_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            if record["point"] == PROVIDER_DISPATCH:
-                outstanding.discard(record["correlation"])
+        outstanding -= dispatched(watcher, markers)
         if not outstanding:
             break
         time.sleep(0.05)
     return frozenset(markers[marker] for marker in outstanding)
+
+
+def dispatched(watcher: BenchWatcher, markers: Mapping[str, str]) -> frozenset[str]:
+    """Which of `markers` a provider has already been handed, read right now.
+
+    Asked rather than waited for, so a scenario that interrupts a delivery can
+    say whether it interrupted anything.
+    """
+    served = {
+        record["correlation"]
+        for line in watcher.trace_path.read_text().splitlines()
+        if line.strip()
+        for record in (json.loads(line),)
+        if record["point"] == PROVIDER_DISPATCH
+    }
+    return frozenset(marker for marker in markers if marker in served)

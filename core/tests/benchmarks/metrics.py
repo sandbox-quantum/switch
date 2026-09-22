@@ -203,7 +203,7 @@ class ResourceSampler:
     def __init__(
         self,
         *,
-        root_pids: Sequence[int],
+        root_pids: Callable[[], Sequence[int]],
         port: int,
         count_streams: Callable[[], int],
         interval_seconds: float,
@@ -212,7 +212,11 @@ class ResourceSampler:
         # process tree: the server runs inside the driver, while the hosts are
         # spawned detached and reparented away from it. Counting either alone
         # would answer half the question.
-        self._root_pids = tuple(root_pids)
+        #
+        # Asked at every sample rather than fixed, because a controller can be
+        # killed and replaced mid-workload, and a sampler still scanning the
+        # dead one would report the topology emptying out.
+        self._root_pids = root_pids
         self._port = port
         self._count_streams = count_streams
         self._interval = interval_seconds
@@ -269,7 +273,7 @@ class ResourceSampler:
 
     def _collect(self) -> OsSample:
         """The blocking half: every subprocess this module runs. Thread-safe."""
-        tree = {pid for root in self._root_pids for pid in descendants(root)}
+        tree = {pid for root in self._root_pids() for pid in descendants(root)}
         return OsSample(
             processes=sample_processes(tree),
             connections=established_connections(self._port),
