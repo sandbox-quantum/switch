@@ -244,6 +244,69 @@ describe('recovering when connectivity returns', () => {
   });
 });
 
+describe('reading the server list', () => {
+  it('serves callers arriving together one read', async () => {
+    // The shell asks on the first frame and so does the sidebar. Two reads of
+    // the same list race each other into the same fields for no gain.
+    listServers.mockResolvedValue([server('srv-a')]);
+    selectServer('srv-a');
+    const store = new SwitchServersStore();
+
+    await Promise.all([store.init(), store.init(), store.init()]);
+
+    expect(revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads again for a caller arriving after the last read settled', async () => {
+    // Sharing only the read in flight: the paths that change something and then
+    // ask for the list back must not be handed the answer from before it.
+    const store = new SwitchServersStore();
+    await store.init();
+    listServers.mockResolvedValue([server('srv-a')]);
+
+    await store.init();
+
+    expect(store.servers.map((s) => s.id)).toEqual(['srv-a']);
+  });
+
+  it('keeps the failure on screen for as long as the retry runs', async () => {
+    // The window draws its failure page — message, detail and the button that
+    // starts the retry — from `listError`. Clearing it as the retry begins
+    // unmounts the page and the button with it, leaving a blank window until
+    // the retry lands.
+    listServers.mockRejectedValueOnce(new Error('gateway unreachable'));
+    const store = new SwitchServersStore();
+    await store.init();
+    expect(store.listError).not.toBeNull();
+
+    const retryRead = deferred<SwitchServer[]>();
+    listServers.mockReturnValueOnce(retryRead.promise);
+    const retrying = store.init();
+    await flush();
+
+    expect(store.listError).not.toBeNull();
+    expect(store.loadingServers).toBe(true);
+
+    retryRead.resolve([server('srv-a')]);
+    await retrying;
+
+    expect(store.listError).toBeNull();
+    expect(store.listErrorDetail).toBeNull();
+  });
+
+  it('keeps a failure from elsewhere out of the slot the window reads', async () => {
+    // `error` is the banner, written by every action here — a rename, a sign-out,
+    // adding a server. None of those is a reason to take the window away.
+    const store = newStore([server('srv-a')]);
+    removeServer.mockRejectedValue(new Error('still in use'));
+
+    await store.removeServer('srv-a');
+
+    expect(store.error).not.toBeNull();
+    expect(store.listError).toBeNull();
+  });
+});
+
 describe('a page left on a server that is gone', () => {
   it('is revalidated when the server is removed', async () => {
     const store = newStore([server('srv-a')]);

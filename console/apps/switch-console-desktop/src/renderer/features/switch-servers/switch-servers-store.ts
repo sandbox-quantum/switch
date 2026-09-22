@@ -1,7 +1,7 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { describeFailure } from '@renderer/lib/errors/describe-failure';
+import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type {
@@ -63,9 +63,24 @@ export class SwitchServersStore {
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
   errorDetail: string | null = null;
+  /**
+   * The list read's own failure, as opposed to {@link error}, which every
+   * action in this store writes — adding a server, renaming one, signing out.
+   *
+   * The shell decides what fills the window from this. Reading `error` there
+   * would put the whole window into its failure shape because a rename went
+   * wrong. Set only when a read fails and cleared only when one succeeds:
+   * clearing it as a retry starts would take the failure page off screen — and
+   * the retry button with it — for as long as the retry ran.
+   */
+  listError: string | null = null;
+  /** Diagnostics for the failure in {@link listError}. */
+  listErrorDetail: string | null = null;
+  /** The read in flight, so callers arriving together share one. Nothing renders it. */
+  initInFlight: Promise<void> | null = null;
 
   constructor() {
-    makeAutoObservable(this);
+    makeAutoObservable(this, { initInFlight: false });
   }
 
   /** Headline and detail as one string, for the modals that have a single slot. */
@@ -146,7 +161,23 @@ export class SwitchServersStore {
     return this.authConfigInFlight.has(serverId);
   }
 
-  async init(): Promise<void> {
+  /**
+   * Read the server list, once however many callers ask for it.
+   *
+   * The shell and the sidebar both ask on the first frame, and so does every
+   * panel that needs a server list to draw. They share the read in flight
+   * rather than making the same round-trip several times over; a caller
+   * arriving after it settles starts a fresh one, so this never hands back a
+   * stale answer to someone refreshing after a change of their own.
+   */
+  init(): Promise<void> {
+    this.initInFlight ??= this.readServers().finally(() => {
+      this.initInFlight = null;
+    });
+    return this.initInFlight;
+  }
+
+  private async readServers(): Promise<void> {
     runInAction(() => {
       this.loadingServers = true;
       this.error = null;
@@ -160,6 +191,8 @@ export class SwitchServersStore {
       runInAction(() => {
         this.servers = servers;
         this.loaded = true;
+        this.listError = null;
+        this.listErrorDetail = null;
       });
       // A page restored onto a server that has since been deleted can only be
       // judged once the list is known, and startup restores navigation before
@@ -168,7 +201,11 @@ export class SwitchServersStore {
       await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
-      this.setError(cause, 'Could not load your Switch servers.');
+      const { headline, detail } = this.setError(cause, 'Could not load your Switch servers.');
+      runInAction(() => {
+        this.listError = headline;
+        this.listErrorDetail = detail;
+      });
     } finally {
       runInAction(() => {
         this.loadingServers = false;
@@ -527,13 +564,17 @@ export class SwitchServersStore {
    * shared boundary rather than carrying whatever was thrown. The fallback is
    * per-action: the store knows which request failed, and the failure itself
    * usually does not.
+   *
+   * Returns what it wrote, for the one caller that also keeps the failure in a
+   * slot of its own.
    */
-  private setError(cause: unknown, fallback: string): void {
+  private setError(cause: unknown, fallback: string): FailureDescription {
     const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
       this.error = headline;
       this.errorDetail = detail;
     });
+    return { headline, detail };
   }
 }
 
