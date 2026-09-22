@@ -140,9 +140,8 @@ describe('addAgent', () => {
     h.state.repoAgents = h.repoAgents;
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
-    // `clearAllMocks` resets call records but not implementations, so without a
-    // default here whichever test last set one decides the answer for every test
-    // after it — and a remote add would otherwise read `status` off `undefined`.
+    // `clearAllMocks` resets call records but not implementations: without a
+    // default, whichever test last set one decides the answer for the rest.
     inspectRemoteDir.mockResolvedValue({ dir: '/repo', status: 'directory' });
   });
 
@@ -170,9 +169,6 @@ describe('addAgent', () => {
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
   });
 
-  // One directory, one spelling: the location row, the gateway's `repo_dir` and
-  // the credential slot are all keyed by this path, so the one that was checked
-  // has to be the one they get.
   it('settles on a canonical remote path before anything keys off it', async () => {
     await addAgent(params({ sshHost: 'vm-1', dir: '/home/u/./x/../agents/deploy/' }));
 
@@ -355,10 +351,9 @@ describe('addAgent', () => {
 
       await addAgent(params({ sshHost: 'build-box', entryPoint: 'server_page' }));
 
-      // `failure_reason` is asserted alongside `location` so this keeps covering
-      // the gateway refusal it names: `location: 'remote'` alone is also what a
-      // preflight refusal reports, so a directory check that short-circuits before
-      // minting would satisfy it without ever reaching `registerAgentIdentity`.
+      // `failure_reason` too: `location: 'remote'` alone is also what a preflight
+      // refusal reports, so asserting it by itself would pass without ever
+      // reaching `registerAgentIdentity`.
       expect(trackEvent).toHaveBeenCalledWith(
         'agent_created',
         expect.objectContaining({ location: 'remote', failure_reason: 'unauthenticated' })

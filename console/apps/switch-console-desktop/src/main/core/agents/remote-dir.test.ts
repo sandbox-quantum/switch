@@ -47,8 +47,7 @@ describe('inspectRemoteDir', () => {
     });
   });
 
-  // Long-standing behaviour, and not something this ticket should take away:
-  // recursive mkdir may create the working directory itself, just not its
+  // Recursive mkdir creates the working directory itself, just not its
   // ancestors, so a missing leaf under an existing parent needs no intervention.
   it('reports a missing directory whose parent exists as creatable', async () => {
     existingDirs(['/home/ubuntu/switch-agents']);
@@ -59,7 +58,6 @@ describe('inspectRemoteDir', () => {
     });
   });
 
-  // The ticket's repro: the parent is missing too, so the write cannot recover.
   it('reports a missing directory whose parent is also missing', async () => {
     existingDirs(['/home/ubuntu']);
 
@@ -98,9 +96,6 @@ describe('inspectRemoteDir', () => {
     await expect(inspectRemoteDir('host', REPO_DIR)).rejects.toThrow('Permission denied');
   });
 
-  // Refused as a status rather than a throw: a throw reaches the user as the
-  // generic "nothing was created" toast carrying a raw error string, which is
-  // the outcome this check exists to remove.
   it('refuses a relative path rather than resolving it against the login dir', async () => {
     expect(await inspectRemoteDir('host', 'switch-agents/repo')).toEqual({
       dir: 'switch-agents/repo',

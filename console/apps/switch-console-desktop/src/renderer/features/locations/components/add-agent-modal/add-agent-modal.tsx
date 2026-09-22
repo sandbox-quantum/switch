@@ -236,9 +236,8 @@ export const AddAgentModal = observer(function AddAgentModal({
   const canChooseAgentType = runHostReachable && !hostLevelBlocked;
   const canConfigureAgent = canChooseAgentType && runHostReady;
 
-  // A remote working directory is typed by hand, and a relative one would
-  // resolve against whatever directory the SSH session starts in. Caught here so
-  // it reads as a greyed-out button with a reason rather than a failed create.
+  // A relative remote dir would resolve against whatever directory the SSH
+  // session starts in. Caught here so it greys the button out with a reason.
   const remoteDirIsAbsolute = !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
 
   const canSubmit =
@@ -295,10 +294,8 @@ export const AddAgentModal = observer(function AddAgentModal({
     navigate('location', { locationId: agent.locationId, agentName: agent.name });
   };
 
-  /** Typed off the RPC rather than `ProvisionAgentResult`: the only thing ever
-   * passed here is an `addAgent` result, and typing it as the provision union
-   * meant every variant `addAgent` gained had to be added there too — claiming a
-   * refusal `provisionAgent`/`provisionRemoteAgent` cannot actually make. */
+  /** Typed off the RPC, not `ProvisionAgentResult`: an `addAgent` result is the
+   * only thing passed here, and the two unions do not have to agree. */
   const reportProvisionError = (result: Awaited<ReturnType<typeof rpc.agents.addAgent>>) => {
     if (result.kind === 'unauthenticated' && pickState.serverId) {
       toast({
