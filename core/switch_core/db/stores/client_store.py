@@ -50,9 +50,16 @@ class ClientStore:
         `client_rooms` carries a composite foreign key on
         `(tenant_id, client_id)` with no `ON DELETE` rule, so a client that has
         ever joined a room cannot be deleted while its membership rows stand —
-        Postgres refuses the delete. Clearing them is part of removing a
-        client rather than something each caller remembers: the rows describe
-        where the client was, and once it is gone they describe nothing.
+        Postgres refuses the delete. Memberships are cleared here rather than
+        by each caller: the rows describe where the client was, and once it is
+        gone they describe nothing.
+
+        Memberships only. `agents`, `collaboration_bridges` and
+        `external_users` also reference a client with no `ON DELETE` rule, and
+        those rows are owned by something with its own lifecycle, so deleting
+        them is the caller's to sequence — the client goes last, after whatever
+        claims it. A caller that gets that order wrong gets the same foreign
+        key violation this clears for `client_rooms`.
         """
         client = await session.get(Client, client_id)
         if client is None:
