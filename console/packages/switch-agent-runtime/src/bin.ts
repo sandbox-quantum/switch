@@ -69,11 +69,11 @@ let AGENT_ID = '';
 let AGENT_NAME = '';
 
 // When this session is managed by Switch Console, Switch Console reads the agent
-// bridge itself and injects addressed messages into the PTY. Reads are no
-// longer destructive, so both can read the same events without stealing from
-// each other — but the agent would be told twice. So we still hold the
-// connection (it is what correlates every tool call and proves this session is
-// reachable) and simply do not surface events as notifications.
+// bridge itself and delivers addressed messages through the session's SDK
+// adapter. Reads are no longer destructive, so both can read the same events
+// without stealing from each other — but the agent would be told twice. So we
+// still hold the connection (it is what correlates every tool call and proves
+// this session is reachable) and simply do not surface events as notifications.
 // Env var name kept for compatibility with Switch Console releases in the wild.
 const SUPPRESS_NOTIFICATIONS = process.env.SWITCH_CHANNEL_DISABLE_POLL === '1';
 

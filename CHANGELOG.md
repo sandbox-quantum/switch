@@ -44,6 +44,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- Room message bodies are delivered to an agent inside `BEGIN`/`END SWITCH
+  MESSAGE` markers carrying a per-message nonce. Any room participant writes the
+  body, and it previously sat as plain text directly under the `[Switch] …
+  addressed you …` header, so it could spell out a convincing header of its own
+  — or its own trailing `read_context` notice — and be read as something Switch
+  said. The nonce cannot be predicted, so the frame cannot be closed early or
+  reopened; sender display names are collapsed to a single line for the same
+  reason.
+
 ### [0.26.0] - 2026-09-09
 
 #### Added

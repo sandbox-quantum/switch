@@ -4,13 +4,14 @@
  * One connection to Switch: an SSE stream carrying events, a heartbeat proving
  * the client is alive, and a cursor so a reconnect resumes exactly where it
  * stopped. Everything a process needs to be reachable as an agent, and nothing
- * about what it then does with the events — injecting them into a terminal,
+ * about what it then does with the events — submitting them to a session,
  * surfacing them as MCP notifications, or deciding to start a session are all
  * the consumer's business.
  *
- * Imported by Switch Console (which delivers into a session's pane) and by this
- * package's own MCP runtime (which serves them next to the agent). It exists
- * because those two had a copy each and the copies drifted within a day.
+ * Imported by Switch Console (which submits them to a session's SDK adapter)
+ * and by this package's own MCP runtime (which serves them next to the agent).
+ * It exists because those two had a copy each and the copies drifted within a
+ * day.
  *
  * The MCP runtime is a separate entry point (`./bin`) so importing the client
  * does not drag in the MCP SDK.
