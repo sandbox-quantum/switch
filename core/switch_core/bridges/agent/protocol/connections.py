@@ -955,6 +955,11 @@ class ConnectionRegistry:
     def live_agents(self, agent_ids: Iterable[str]) -> set[str]:
         return {aid for aid in agent_ids if self.is_live(aid)}
 
+    def agents_that_can_spawn_for(
+        self, agent_ids: Iterable[str], room_id: str
+    ) -> set[str]:
+        return {aid for aid in agent_ids if self.can_spawn_for(aid, room_id)}
+
     def rooms_covered(self, agent_id: str, candidate_rooms: Iterable[str]) -> set[str]:
         """Which of `candidate_rooms` this agent is reachable in right now."""
         return {room for room in candidate_rooms if self.live_in_room(agent_id, room)}

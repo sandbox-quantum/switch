@@ -924,10 +924,16 @@ class AgentClient(ClientBase[ClientConfig]):
             return _STARTING_SESSION_MESSAGE
 
         if connection_model == "auto_session":
+            # The heartbeat arm only: a client still running the
+            # /watch/heartbeat loop declares no capability, and that loop meant
+            # willingness. A connection declares its own, which the check above
+            # has already asked — reading a connection as willing because it
+            # exists promises a session over a session worker that will never
+            # spawn one, or over a controller with auto-start switched off.
             watching = await self._agent_session_store.get_live_agent_ids(
                 session, [self.agent.id], None
             )
-            if self.agent.id in watching or self._connections.is_live(self.agent.id):
+            if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
         attended = await rooms_attended(session, self.agent.id, self._connections)

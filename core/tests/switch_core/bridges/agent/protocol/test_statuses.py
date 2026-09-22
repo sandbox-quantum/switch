@@ -212,7 +212,7 @@ class TestPresenceIsAUnion:
         """
         agents = [_agent("auto", "auto_session")]
         store = _FakeSessionStore(live_ids=set())
-        registry = _registry(agent_id="auto", scope="all")
+        registry = _registry(agent_id="auto", scope="all", spawn_capable=True)
 
         statuses = await compute_agent_statuses(db, agents, "room-1", store, registry)
 
@@ -225,14 +225,61 @@ class TestPresenceIsAUnion:
         """The connection replaces /watch/heartbeat.
 
         DORMANT is what licenses the "Starting a session…" reply, so losing it
-        would silently turn a spawnable agent into an unreachable one.
+        would silently turn a spawnable agent into an unreachable one. A
+        watcher holds the shape this asserts: `all` scope, no room of its own,
+        and spawn capability declared when it opened the stream.
         """
         agents = [_agent("auto", "auto_session")]
         store = _FakeSessionStore(live_ids=set())
-        # `single` scope, no room claimed: watching, covering nothing.
-        registry = _registry(agent_id="auto")
+        registry = _registry(agent_id="auto", scope="all", spawn_capable=True)
 
         statuses = await compute_agent_statuses(db, agents, "room-1", store, registry)
+
+        assert statuses == {"auto": AgentStatus.DORMANT}
+
+    async def test_a_connection_that_will_not_spawn_is_not_watching(
+        self, db: AsyncSession
+    ) -> None:
+        """Being connected is not being willing, and DORMANT is a promise.
+
+        An agent's connection is not its watcher: a session worker is
+        connected and will never spawn, and a controller whose auto-start is
+        switched off has declared that it will not. Counting either as
+        watching answers the room with "Starting a session…" when nothing is
+        coming.
+        """
+        agents = [_agent("auto", "auto_session")]
+        store = _FakeSessionStore(live_ids=set())
+        registry = _registry(agent_id="auto", scope="all", spawn_capable=False)
+
+        statuses = await compute_agent_statuses(db, agents, "room-1", store, registry)
+
+        assert statuses == {"auto": AgentStatus.DISCONNECTED}
+
+    async def test_the_watch_heartbeat_arm_still_makes_it_dormant(
+        self, db: AsyncSession
+    ) -> None:
+        """An un-migrated connector declares nothing, and still gets DORMANT.
+
+        The /watch/heartbeat loop *was* the declaration of willingness, so the
+        row arm keeps standing on its own while clients still send it.
+        """
+
+        class _WatchingOnlyStore:
+            async def get_live_agent_ids(
+                self, _session: Any, agent_ids: list[str], room_id: str | None
+            ) -> set[str]:
+                return set(agent_ids) if room_id is None else set()
+
+        agents = [_agent("auto", "auto_session")]
+
+        statuses = await compute_agent_statuses(
+            db,
+            agents,
+            "room-1",
+            _WatchingOnlyStore(),  # type: ignore[arg-type]
+            _registry(),
+        )
 
         assert statuses == {"auto": AgentStatus.DORMANT}
 

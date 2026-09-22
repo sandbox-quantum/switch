@@ -104,9 +104,15 @@ async def compute_agent_statuses(
         session, addressable_ids, room_id, connections
     )
     live_addressable |= connections.agents_with_session_in(addressable_ids, room_id)
-    # …whereas watching is exactly "has any live connection": that is what the
-    # /watch/heartbeat loop used to assert, and what DORMANT means.
-    watching_auto |= connections.live_agents(auto_session_ids)
+    # …whereas DORMANT is a promise that a session is coming, so what it asks
+    # of a connection is willingness, not mere connectivity. The client says so
+    # when it opens the stream, and one connection of an agent says nothing
+    # about another: a session worker is connected and will never spawn, and a
+    # controller with auto-start off is connected and has declined to. Reading
+    # either as watching promises "Starting a session…" over a room nothing
+    # will ever join. The heartbeat rows keep their own arm: a client still on
+    # /watch/heartbeat declares nothing, and that loop meant willingness.
+    watching_auto |= connections.agents_that_can_spawn_for(auto_session_ids, room_id)
     # A spawn-capable connection covering the room will start a session on
     # demand, whatever the agent was configured as. DORMANT rather than
     # NO_SESSION is the honest report: nothing is attending yet, but something
