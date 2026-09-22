@@ -45,7 +45,26 @@ const parkedSchema = z.strictObject({
   roomId: z.string().min(1),
   messageId: z.string().min(1),
 });
-const recordSchema = z.union([assignmentSchema, restartSchema, handledSchema, parkedSchema]);
+
+/**
+ * Marks a held delivery as dealt with, named by the room and message rather
+ * than by the sequence it arrived on. A held event outlives the numbering it
+ * was delivered under: the server can restart its sequence while the event
+ * waits, and the position it held then means something else afterwards.
+ */
+const releasedSchema = z.strictObject({
+  released: z.strictObject({
+    roomId: z.string().min(1),
+    messageId: z.string().min(1),
+  }),
+});
+const recordSchema = z.union([
+  assignmentSchema,
+  restartSchema,
+  handledSchema,
+  parkedSchema,
+  releasedSchema,
+]);
 
 type Assignment = z.infer<typeof assignmentSchema>;
 type WatchRecord = z.infer<typeof recordSchema>;
@@ -62,9 +81,16 @@ function isParked(record: WatchRecord): record is z.infer<typeof parkedSchema> {
   return 'parked' in record;
 }
 
-function isAssignment(record: WatchRecord): record is Assignment {
-  return !restarted(record) && !isHandled(record) && !isParked(record);
+function isReleased(record: WatchRecord): record is z.infer<typeof releasedSchema> {
+  return 'released' in record;
 }
+
+function isAssignment(record: WatchRecord): record is Assignment {
+  return !restarted(record) && !isHandled(record) && !isParked(record) && !isReleased(record);
+}
+
+const delivery = (event: { roomId: string; messageId: string }): string =>
+  JSON.stringify([event.roomId, event.messageId]);
 
 /**
  * How often a room whose owner is undecided is asked about again. The same
@@ -263,6 +289,13 @@ export class SharedWatchAssignments {
     return this.journal.records.filter(isAssignment);
   }
 
+  /** Held deliveries this journal has finished with, by room and message. */
+  private get settled(): Set<string> {
+    return new Set(
+      this.journal.records.filter(isReleased).map((record) => delivery(record.released))
+    );
+  }
+
   /**
    * Where the stream reopens: the last sequence whose routing reached disk, and
    * never past an event still waiting for its room's owner.
@@ -271,21 +304,23 @@ export class SharedWatchAssignments {
    * recording which session serves a room and handing that session the event,
    * and reopening past the event would leave nothing holding it: this is the
    * agent's single connection, so there is no second copy of what it was sent.
-   * A held event is the same case — the server's buffer is the only copy of it,
-   * so the position stays behind it and the events after it are served again
-   * and recognised as ones already dealt with.
+   * A held event is the same case, and the position stays behind it: the events
+   * after it are served again and recognised as ones already dealt with. The
+   * held event itself is kept in this journal rather than left to that replay,
+   * because the server's buffer can be trimmed or renumbered while it waits.
    */
   get cursor(): number {
     let complete = 0;
     let assigned = 0;
-    const parked = new Set<number>();
-    const handled = new Set<number>();
+    const parked = new Map<number, string>();
+    const released = this.settled;
     for (const record of this.current) {
-      if (isHandled(record)) {
-        complete = Math.max(complete, record.handled);
-        handled.add(record.handled);
-      } else if (isParked(record)) parked.add(record.parked);
-      else if (isAssignment(record)) {
+      if (isHandled(record)) complete = Math.max(complete, record.handled);
+      else if (isParked(record)) parked.set(record.parked, delivery(record));
+      // A held delivery's assignment is not a position. It can be made under a
+      // numbering the sequence it names does not belong to, and the release
+      // that closes it says where it got to.
+      else if (isAssignment(record) && !released.has(delivery(record))) {
         // An assignment is only made once the one before it has been routed, so
         // a journal written before routing was recorded still resumes at its
         // last complete event instead of from the beginning.
@@ -293,13 +328,46 @@ export class SharedWatchAssignments {
         assigned = record.sequence;
       }
     }
-    const held = [...parked].filter((sequence) => !handled.has(sequence));
-    return held.length ? Math.min(complete, Math.min(...held) - 1) : complete;
+    const waiting: number[] = [];
+    for (const [sequence, identity] of parked)
+      if (released.has(identity)) complete = Math.max(complete, sequence);
+      else waiting.push(sequence);
+    return waiting.length ? Math.min(complete, Math.min(...waiting) - 1) : complete;
+  }
+
+  /**
+   * The held deliveries still waiting for their room's owner, oldest first.
+   *
+   * Read across every numbering the journal has seen, because a held event
+   * outlives them: the point of writing it down is that the server's copy may
+   * be gone by the time the room has an owner again.
+   */
+  pending(): { sequence: number; roomId: string; messageId: string }[] {
+    const released = this.settled;
+    const waiting = new Map<string, { sequence: number; roomId: string; messageId: string }>();
+    for (const record of this.journal.records) {
+      if (!isParked(record)) continue;
+      const identity = delivery(record);
+      if (released.has(identity) || waiting.has(identity)) continue;
+      waiting.set(identity, {
+        sequence: record.parked,
+        roomId: record.roomId,
+        messageId: record.messageId,
+      });
+    }
+    return [...waiting.values()];
   }
 
   /** Records that the event has been routed, or decided not to be. */
   async handled(sequence: number): Promise<void> {
     await this.journal.append({ handled: sequence });
+  }
+
+  /** Records that a held event has been routed, or decided not to be. */
+  async released(event: { roomId: string; messageId: string }): Promise<void> {
+    await this.journal.append({
+      released: { roomId: event.roomId, messageId: event.messageId },
+    });
   }
 
   /** Records that the event is waiting for its room's owner to be decided. */
@@ -359,9 +427,14 @@ export class SharedWatchAssignments {
     template: SharedHostConfig,
     event: { sequence: number; roomId: string; messageId: string }
   ): Promise<SharedHostConfig | 'undecided'> {
-    const duplicate = this.current
-      .filter(isAssignment)
-      .find((record) => record.sequence === event.sequence);
+    // A held delivery is recognised by the room and message it names. The
+    // sequence it arrived on may belong to a numbering the server has since
+    // restarted, where it now stands for somebody else's message.
+    const waiting = new Set(this.pending().map(delivery));
+    const assignments = this.current.filter(isAssignment);
+    const duplicate = waiting.has(delivery(event))
+      ? assignments.find((record) => delivery(record) === delivery(event))
+      : assignments.find((record) => record.sequence === event.sequence);
     if (duplicate) {
       if (duplicate.roomId !== event.roomId || duplicate.messageId !== event.messageId)
         throw new Error('Watcher sequence changed message identity.');
@@ -516,8 +589,11 @@ export async function runSharedWatcher(
      * force when it is finally admitted: a session started after somebody
      * turned spawning off cannot be taken back, and a room that was promised a
      * session when it was addressed should still get one.
+     *
+     * A held event is closed by the room and message it names rather than by
+     * the position it arrived on, which the server may since have renumbered.
      */
-    const admit = async (event: Handoff, spawning: boolean): Promise<boolean> => {
+    const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
       const config = spawning
         ? await assignments.assign(
             sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
@@ -529,11 +605,17 @@ export async function runSharedWatcher(
       // Recorded before the session is started, because starting it is
       // recoverable — every assigned session is launched again when the
       // watcher restarts — where the routing decision is not.
-      await assignments.handled(event.sequence);
+      if (waiting) await assignments.released(event);
+      else await assignments.handled(event.sequence);
       if (config && spawning) await launch(config);
       return true;
     };
+    const queued = (roomId: string, messageId: string): boolean =>
+      held.get(roomId)?.events.some((entry) => entry.event.messageId === messageId) === true;
     const hold = async (event: Handoff, spawning: boolean) => {
+      // The server serves a held event again whenever the stream reopens behind
+      // it, and this journal holds its own copy; neither is a second message.
+      if (queued(event.roomId, event.messageId)) return;
       const waiting = held.get(event.roomId);
       if (waiting) waiting.events.push({ event, spawning });
       else {
@@ -549,7 +631,7 @@ export async function runSharedWatcher(
       for (const [roomId, waiting] of [...held]) {
         while (
           waiting.events.length &&
-          (await admit(waiting.events[0]!.event, waiting.events[0]!.spawning))
+          (await admit(waiting.events[0]!.event, waiting.events[0]!.spawning, true))
         )
           waiting.events.shift();
         if (!waiting.events.length) {
@@ -565,6 +647,21 @@ export async function runSharedWatcher(
         }
       }
     };
+    // What was held when the last watcher stopped is picked up from the journal
+    // rather than from the server. The stream reopens behind a held event, but
+    // that buffer can be trimmed or renumbered while the event waits, and this
+    // is the copy that cannot be.
+    for (const event of assignments.pending()) {
+      const waiting = held.get(event.roomId);
+      if (waiting) waiting.events.push({ event, spawning: spawn });
+      else {
+        held.set(event.roomId, { events: [{ event, spawning: spawn }], since: Date.now() });
+        console.warn(
+          `Room ${event.roomId} was still waiting for a session to claim it when this controller last stopped; its messages are held until one does.`
+        );
+      }
+    }
+    if (held.size) await resolveHeld();
     if (spawn) await launchAssigned();
     const stream = new SwitchEventStream({
       creds: {
@@ -605,7 +702,7 @@ export async function runSharedWatcher(
           // an event arriving is the cheapest evidence that time has passed.
           if (held.size) await resolveHeld();
           if (held.has(assignment.roomId)) return hold(assignment, spawning);
-          if (!(await admit(assignment, spawning))) await hold(assignment, spawning);
+          if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning);
         });
         return pending.catch((error: Error) => {
           fail(error);
