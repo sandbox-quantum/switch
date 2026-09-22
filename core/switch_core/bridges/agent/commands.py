@@ -349,7 +349,10 @@ async def _dispatch_control_command(
             # command args so the controller can fold it into the reconnect
             # prompt.
             role = await client._room_role_store.agent_room_role(
-                session, meta.room_id, agent.id, client._connections.live_agent_ids()
+                session,
+                meta.room_id,
+                agent.id,
+                client._connections.live_connection_ids(),
             )
         live = statuses.get(agent.id) == AgentStatus.LIVE
         caps = (runtime.control_capabilities or {}) if runtime else {}
@@ -809,7 +812,7 @@ async def _cmd_roles(
             await _reply(client, room, event, "No roles defined in this room.")
             return
         holders = await client._room_role_store.live_holders_for_room(
-            session, meta.room_id, client._connections.live_agent_ids()
+            session, meta.room_id, client._connections.live_connection_ids()
         )
         holder_names: dict[str, str] = {}
         for holder_id in {h for ids in holders.values() for h in ids}:

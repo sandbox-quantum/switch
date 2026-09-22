@@ -1609,12 +1609,18 @@ class RoleLease(TenantScoped, Base):
     `RoomRoleStore.LEASE_TTL`); a stale lease is logically free, so the next
     agent can assume the role without a background reaper.
 
-    Liveness is keyed to the agent's session (room-agnostic): the long-running
-    channel process renews the lease on a fast cadence while the session is
-    alive, so hopping to another room keeps the seat. One lease per agent is
-    enforced by the unique index on `agent_id`; `release_role` (or session death
-    + TTL) frees it. `transport_session_id` records which MCP transport assumed
-    the role.
+    Liveness belongs to the holder, not the agent (room-agnostic, so hopping
+    rooms keeps the seat). A holder that owns its inbound connection renews the
+    lease on a fast cadence and is live by `last_seen_at`; an SDK session
+    supervised by something else renews nothing, and is live for as long as
+    `session_id` names a session whose host lease is current. An agent's
+    permanent controller connection is neither, and so keeps no role alive.
+
+    One lease per agent is enforced by the unique index on `agent_id`;
+    `release_role` (or holder death + TTL) frees it, and release stays open to
+    any of the agent's sessions. `transport_session_id` records the connection
+    or MCP transport that assumed the role, and identifies the holder when
+    there is no `session_id`.
     """
 
     __tablename__ = "role_leases"
@@ -1646,6 +1652,7 @@ class RoleLease(TenantScoped, Base):
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     acquired_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

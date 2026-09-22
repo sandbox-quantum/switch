@@ -1037,7 +1037,7 @@ class ProtocolService:
             # holds at most one role (unique agent_id), so the inverse map is
             # well-defined even for shared roles with several holders.
             live_holders = await self.room_role_store.live_holders_for_room(
-                session, room_id, self.connections.live_agent_ids()
+                session, room_id, self.connections.live_connection_ids()
             )
             roles = await self.room_role_store.list_roles(session, room_id)
             role_name_by_id = {r.id: r.name for r in roles}
@@ -1450,7 +1450,7 @@ class ProtocolService:
                     )
                 role_by_id = {role.id: role.name for role in defined_roles}
                 holders = await self.room_role_store.live_holders_for_room(
-                    session, room_id, self.connections.live_agent_ids()
+                    session, room_id, self.connections.live_connection_ids()
                 )
                 for role_id, agent_ids in holders.items():
                     if role_by_id.get(role_id) not in roles:
@@ -2769,12 +2769,12 @@ class ProtocolService:
         could `assume_role` it right now: the caller holds no other live lease,
         and the role is either non-exclusive or not live-held by someone else.
         """
-        alive = self.connections.live_agent_ids()
+        live_connection_ids = self.connections.live_connection_ids()
         leases = await self.room_role_store.live_leases_for_room(
-            session, room_id, alive
+            session, room_id, live_connection_ids
         )
         my_lease = await self.room_role_store.get_agent_live_lease(
-            session, agent_id, alive
+            session, agent_id, live_connection_ids
         )
         # Resolve holder agent ids → names.
         holder_names: dict[str, str] = {}
@@ -2897,11 +2897,17 @@ class ProtocolService:
         room_id: str,
         role_name: str,
         transport_session_id: str | None,
+        session_id: str | None,
     ) -> dict[str, Any]:
         """Assume a role, acquiring its lease. Returns the role instruction delta.
 
         Requires room membership. Rejects if the caller already holds a lease,
         or if the role is exclusive and live-held by another agent.
+
+        `session_id` is the caller's SDK session when it named one. It becomes
+        the lease's holder: what keeps it alive, and who may renew it. Without
+        one the holder is `transport_session_id`, which must renew its own
+        heartbeat to keep the seat.
         """
         async with self.session_factory() as session:
             # Membership check (assume is open to any member; exclusivity is the
@@ -2910,13 +2916,18 @@ class ProtocolService:
             role = await self.room_role_store.get_role(session, room_id, role_name)
             if role is None:
                 raise ValueError(f"Role '{role_name}' not found in this room")
-            alive = self.connections.live_agent_ids()
+            live_connection_ids = self.connections.live_connection_ids()
             prior = await self.room_role_store.get_agent_live_lease(
-                session, agent_id, alive
+                session, agent_id, live_connection_ids
             )
             already_held = prior is not None and prior.role_id == role.id
             await self.room_role_store.acquire_lease(
-                session, role, agent_id, transport_session_id, alive
+                session,
+                role,
+                agent_id,
+                transport_session_id,
+                session_id,
+                live_connection_ids,
             )
             await session.commit()
             result = {"role": role.name, "instructions": role.instructions}
@@ -2933,14 +2944,15 @@ class ProtocolService:
         If a live lease is dropped, announce the release in its room.
         """
         async with self.session_factory() as session:
+            live_connection_ids = self.connections.live_connection_ids()
             live = await self.room_role_store.get_agent_live_lease(
-                session, agent_id, self.connections.live_agent_ids()
+                session, agent_id, live_connection_ids
             )
             released_role: str | None = None
             matrix_room_id: str | None = None
             if live is not None:
                 released_role = await self.room_role_store.agent_room_role(
-                    session, live.room_id, agent_id, self.connections.live_agent_ids()
+                    session, live.room_id, agent_id, live_connection_ids
                 )
                 room = await self.room_store.get(session, live.room_id)
                 matrix_room_id = room.matrix_room_id if room is not None else None
@@ -2951,10 +2963,17 @@ class ProtocolService:
                 agent_id, matrix_room_id, f"released the `{released_role}` role"
             )
 
-    async def touch_role_lease(self, agent_id: str) -> bool:
-        """Refresh the caller's role-lease heartbeat. Returns False if none held."""
+    async def touch_role_lease(self, agent_id: str, holder: str | None) -> bool:
+        """Refresh `holder`'s role-lease heartbeat. False if it holds none.
+
+        `holder` is the caller's SDK session id, or the connection it called
+        on when it named no session. A caller that identified itself as
+        neither renews only a lease no session owns.
+        """
         async with self.session_factory() as session:
-            refreshed = await self.room_role_store.touch_lease(session, agent_id)
+            refreshed = await self.room_role_store.touch_lease(
+                session, agent_id, holder
+            )
             await session.commit()
             return refreshed
 

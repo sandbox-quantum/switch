@@ -924,14 +924,21 @@ class ConnectionRegistry:
         return sum(1 for conn in self._by_id.values() if conn.is_alive(now))
 
     def live_agent_ids(self) -> set[str]:
-        """Every agent with at least one live connection.
-
-        Passed to the role-lease predicates: a connection keeps a role held,
-        so a client that has stopped sending `/leases/renew` because it moved
-        to the single heartbeat does not silently lose its seat.
-        """
+        """Every agent with at least one live connection."""
         now = time.monotonic()
         return {conn.agent_id for conn in self._by_id.values() if conn.is_alive(now)}
+
+    def live_connection_ids(self) -> set[str]:
+        """Every connection currently alive, by id.
+
+        Passed to the role-lease predicates: a seat taken over a connection is
+        held for as long as that connection is, so a client that has stopped
+        sending `/leases/renew` because it moved to the single heartbeat does
+        not silently lose it. The connection, not the agent — an agent's other
+        connections say nothing about a seat this one took.
+        """
+        now = time.monotonic()
+        return {conn.id for conn in self._by_id.values() if conn.is_alive(now)}
 
     def live_agents_in_room(self, agent_ids: Iterable[str], room_id: str) -> set[str]:
         return {aid for aid in agent_ids if self.live_in_room(aid, room_id)}

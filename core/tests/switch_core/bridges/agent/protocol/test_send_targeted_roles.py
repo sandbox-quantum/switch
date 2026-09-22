@@ -31,7 +31,7 @@ class _FakeRoomRoleStore:
         return list(self._roles)
 
     async def live_holders_for_room(
-        self, _session: Any, _room_id: str, _alive: Any = ()
+        self, _session: Any, _room_id: str, _live_conns: Any = ()
     ) -> dict[str, list[str]]:
         return {k: list(v) for k, v in self._holders.items()}
 

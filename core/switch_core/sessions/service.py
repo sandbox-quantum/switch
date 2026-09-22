@@ -29,9 +29,7 @@ from switch_core.db.models import (
     ExternalUser,
     ExternalUserClaim,
     MediaBlob,
-    RoleLease,
     Room,
-    RoomRole,
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
@@ -1291,21 +1289,12 @@ class SessionAuthority:
             )
 
             if receipt.status == "accepted" and action in ("reset", "compact"):
-                role = await db.scalar(
-                    select(RoomRole.name)
-                    .join(
-                        RoleLease,
-                        (RoleLease.tenant_id == RoomRole.tenant_id)
-                        & (RoleLease.role_id == RoomRole.id),
-                    )
-                    .where(
-                        RoomRole.tenant_id == row.tenant_id,
-                        RoomRole.room_id == room_id,
-                        RoleLease.agent_id == agent_id,
-                        RoleLease.last_seen_at
-                        > (await self._now(db)) - RoomRoleStore.LEASE_TTL,
-                    )
-                )
+                # No connection registry here, and none is wanted: the seat
+                # being restored belongs to the session this command is for,
+                # so it is held by that session's own lease or its own
+                # heartbeat. Another connection of the same agent standing in
+                # for it is what the holder-scoped arms exist to stop.
+                role = await RoomRoleStore().agent_room_role(db, room_id, agent_id, ())
                 user = await db.scalar(
                     select(Client.display_name).where(
                         Client.tenant_id == row.tenant_id,

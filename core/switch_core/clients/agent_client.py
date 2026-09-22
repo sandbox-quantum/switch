@@ -270,7 +270,7 @@ class AgentClient(ClientBase[ClientConfig]):
             client_store=self.client_store,
             agent_store=agent_store,
             external_user_store=external_user_store,
-            live_agent_ids=connections.live_agent_ids,
+            live_connection_ids=connections.live_connection_ids,
         )
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
@@ -959,7 +959,7 @@ class AgentClient(ClientBase[ClientConfig]):
                     session,
                     meta.room_id,
                     self.agent.id,
-                    self._connections.live_agent_ids(),
+                    self._connections.live_connection_ids(),
                 )
                 is not None
             )

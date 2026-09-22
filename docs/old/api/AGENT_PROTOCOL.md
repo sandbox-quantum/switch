@@ -928,7 +928,7 @@ three renews is unaffected and unaware.
    | `AgentClient._is_available` | a covering connection means reachable |
    | `AgentClient` "sessions elsewhere" / `bound_here` | connection rooms merged with the bound rooms |
    | `auto_session` spawn reply | any live connection counts as watching |
-   | `room_role_store` (6 predicates + `acquire_lease`) | `last_seen_at` fresh **OR** `agent_id` in `alive_agent_ids` |
+   | `room_role_store` (6 predicates + `acquire_lease`) | `last_seen_at` fresh **OR** `agent_id` in `alive_agent_ids` — *superseded, see below* |
    | `assemble_agent_detail` | connections listed as sessions, `lifecycle: "connection"` |
 
    Neither arm alone is correct while both kinds of client exist. Stage C
@@ -938,9 +938,21 @@ three renews is unaffected and unaware.
    `connections` is a **required** argument on `compute_agent_statuses` and
    `assemble_agent_detail`: a call site that forgot it would report a migrated
    agent as offline, and nothing at the call site would show it. Pass an empty
-   registry to mean "DB arm only". The store-level predicates default
-   `alive_agent_ids` to empty, since the store is a query layer with no registry
-   to hand and its own tests exercise the freshness rule directly.
+   registry to mean "DB arm only".
+
+   **The role-lease arm has since been replaced.** Once one connection can
+   serve several sessions of an agent, "the agent has a live connection" is
+   permanently true and no seat would ever be freed, so liveness is now keyed
+   to the holder that took the seat, not to the agent. A lease is live while
+   its own `last_seen_at` is fresh, **or** the SDK session it names still holds
+   a current host lease, **or** — for a lease naming no session — the
+   connection it was assumed over is still up. `/leases/renew` carries
+   `X-Switch-Connection-Id` so a beat renews the seat its sender holds and no
+   other, and only a process that owns its connection beats at all: a seat
+   taken by a supervised SDK session is kept alive by that session's lease
+   instead. The store's liveness argument is the set of live *connection* ids
+   and is required, not defaulted, so no call site can quietly ask the narrower
+   question.
 
    One registry is created in `main.py` and injected into `AgentClient`,
    `AdminClient` and the bridge app — the Matrix clients are wired before the

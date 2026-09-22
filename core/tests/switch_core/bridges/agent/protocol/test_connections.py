@@ -597,3 +597,29 @@ class TestAReattachCanBeFenced:
             _open(registry, "c1", expected_generation=stale)
 
         assert registry.require(AGENT, "c1") is fresh
+
+
+class TestLiveConnectionIds:
+    """What the registry hands the role-lease predicates.
+
+    A seat is taken over one connection and must be held by that one only, so
+    the answer has to name connections. Answering with agent ids collapses
+    every connection an agent has into one indistinguishable fact, and a seat
+    whose holder died would be kept open by a sibling that never touched it.
+    """
+
+    def test_reports_connection_ids_not_agent_ids(self) -> None:
+        registry = ConnectionRegistry()
+        _open(registry, "c1")
+        _open(registry, "c2")
+
+        assert registry.live_connection_ids() == {"c1", "c2"}
+
+    def test_a_dead_connection_is_not_reported(self) -> None:
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        _open(registry, "c2")
+
+        conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+
+        assert registry.live_connection_ids() == {"c2"}

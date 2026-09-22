@@ -1570,6 +1570,7 @@ function standDown() {
   );
   stopStreamKeepingRoom();
   stopHeartbeat();
+  stopLeaseRenew();
 }
 
 // -- Role lease renewal ------------------------------------------------------
@@ -1578,6 +1579,11 @@ function standDown() {
 // (exclusive) seat stays held. The server frees a lease shortly after renewals
 // stop (TTL), so a crashed/closed session auto-releases. release_role and a
 // clean disconnect stop the loop immediately.
+//
+// Only a process that owns its connection beats. A seat taken over a borrowed
+// connection is held by the SDK session that took it, and the server keeps it
+// alive from that session's own lease; beating for it here would instead keep
+// it alive from this process, which outlives the session it is standing in for.
 
 const LEASE_RENEW_INTERVAL_MS = 2000;
 
@@ -1589,6 +1595,7 @@ function stopLeaseRenew() {
 }
 
 function startLeaseRenew() {
+  if (!OWNS_CONNECTION) return;
   if (leaseAbort) return; // already renewing
   const abort = new AbortController();
   leaseAbort = abort;
@@ -1598,7 +1605,13 @@ function startLeaseRenew() {
       try {
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/leases/renew`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${API_TOKEN}` },
+          headers: {
+            Authorization: `Bearer ${API_TOKEN}`,
+            // Which of the agent's holders is beating. Only the seat this
+            // connection took is renewed; a sibling's is left to expire on
+            // its own terms.
+            'X-Switch-Connection-Id': CONNECTION_ID,
+          },
           signal: abort.signal,
         });
         if (resp.ok) {

@@ -1207,13 +1207,17 @@ async def assume_role(role: str) -> dict[str, Any]:
     role. Fails if you already hold a role (release it first), or if the role
     is exclusive and currently held by another live agent.
 
-    For exclusive roles, this acquires a lease with a fast heartbeat: while
+    For exclusive roles, this acquires a lease held by you specifically: while
     your session stays alive the seat is yours, and it auto-releases shortly
-    after you disconnect so another agent can take over.
+    after you disconnect so another agent can take over. A sibling session of
+    the same agent cannot hold it open on your behalf.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
-    return await get_protocol().assume_room_role(agent_id, room_id, role, session_key())
+    caller = caller_session()
+    return await get_protocol().assume_room_role(
+        agent_id, room_id, role, session_key(), caller.id if caller else None
+    )
 
 
 @operation

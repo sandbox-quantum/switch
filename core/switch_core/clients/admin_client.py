@@ -191,7 +191,7 @@ class AdminClient(ClientBase[ClientConfig]):
                 if mention_regex(role.name).search(strip_emphasis(body)) is None:
                     continue
                 if not await self._room_role_store.has_live_holder(
-                    session, role.id, self._connections.live_agent_ids()
+                    session, role.id, self._connections.live_connection_ids()
                 ):
                     unreachable.append(role.name)
         handle = self._sender_handle(event)

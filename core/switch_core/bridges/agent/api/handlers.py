@@ -577,15 +577,21 @@ async def renew_role_lease(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    connection_id: Annotated[str | None, Header(alias="x-switch-connection-id")] = None,
 ) -> dict[str, bool]:
-    """Refresh the agent's role-lease heartbeat (room-agnostic).
+    """Refresh the caller's role-lease heartbeat (room-agnostic).
 
-    Called on a fast cadence by the channel process while the agent holds a
-    role, so an exclusive seat stays held while the session is alive and
-    auto-releases shortly after it stops renewing. `held` is False when the
-    agent holds no lease (the caller may then stop renewing).
+    Called on a fast cadence by a process that owns its connection while it
+    holds a role, so an exclusive seat stays held while that process is alive
+    and auto-releases shortly after it stops renewing. `held` is False when
+    the caller holds no lease, and it may then stop renewing.
+
+    `X-Switch-Connection-Id` says which of the agent's holders is beating.
+    Only a self-renewing holder beats at all — a seat held by an SDK session
+    is kept alive by that session's own host lease — so the connection is the
+    whole of the identity needed here, and no session selector is read.
     """
-    held = await protocol.touch_role_lease(agent.id)
+    held = await protocol.touch_role_lease(agent.id, connection_id)
     return {"ok": True, "held": held}
 
 

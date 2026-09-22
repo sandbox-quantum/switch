@@ -133,7 +133,7 @@ def _client(
         client_store=client.client_store,
         agent_store=client._agent_store,
         external_user_store=client._external_user_store,
-        live_agent_ids=client._connections.live_agent_ids,
+        live_connection_ids=client._connections.live_connection_ids,
     )
     client._frontend_base_url = None
     client._room_meta = {

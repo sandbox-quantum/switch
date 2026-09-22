@@ -37,12 +37,12 @@ class _FakeRoomRoleStore:
         return list(self._roles)
 
     async def live_leases_for_room(
-        self, _session: Any, _room_id: str, _alive: Any = ()
+        self, _session: Any, _room_id: str, _live_conns: Any = ()
     ) -> dict[str, list[Any]]:
         return {k: list(v) for k, v in self._leases.items()}
 
     async def get_agent_live_lease(
-        self, _session: Any, _agent_id: str, _alive: Any = ()
+        self, _session: Any, _agent_id: str, _live_conns: Any = ()
     ) -> Any | None:
         return self._my_lease
 
