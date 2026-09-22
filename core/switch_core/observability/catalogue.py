@@ -96,6 +96,19 @@ DB_POOL_OVERFLOW = _spec(
     "{connection}",
     "Connections open beyond the pool's nominal size.",
 )
+# The pool gauges say whether connections are scarce; this says whether the
+# database is slow, which is the other half and the one a slow request is
+# usually about. `operation` is the statement's leading keyword mapped through
+# a fixed table — never the statement, which is unbounded and carries literals.
+DB_QUERY_DURATION = _spec(
+    "switch.db.query.duration",
+    "histogram",
+    "ms",
+    "Round trip for one statement, measured around the driver call. A "
+    "statement that raised is not timed: a query that failed in four "
+    "milliseconds is not evidence the database is fast.",
+    "operation",
+)
 
 # ── Message transport ────────────────────────────────────────────────────────
 MESSAGES_SENT = _spec(
@@ -169,8 +182,20 @@ BRIDGES_RUNNING = _spec(
     "switch.bridges.running",
     "gauge",
     "{bridge}",
-    "Collaboration bridges with a live task. A configured bridge missing here "
-    "has crashed.",
+    "Collaboration bridges with a live task, by platform. A configured bridge "
+    "missing here has crashed — and without `platform` the total says how many "
+    "died and never which, which is the first thing anyone asks.",
+    "platform",
+)
+BRIDGE_CALL_DURATION = _spec(
+    "switch.bridge.call.duration",
+    "histogram",
+    "ms",
+    "Round trip for one outbound call to a collaboration platform. The bridge "
+    "counters say whether relays are failing; this says whether they are "
+    "arriving late, which is what a room that feels unresponsive actually is.",
+    "platform",
+    "kind",
 )
 
 # ── Agent protocol ───────────────────────────────────────────────────────────
@@ -273,6 +298,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
+        DB_QUERY_DURATION,
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
         SEND_FAILURES,
@@ -282,6 +308,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
+        BRIDGE_CALL_DURATION,
         AGENT_EVENTS_DROPPED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,

@@ -339,14 +339,16 @@ class SwitchConfig(BaseSettings):
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
     # as "15s"), turning a slot that never comes back into a loud, attributable
-    # error. Disabled by default, and it must stay that way until Matrix I/O
+    # error. Disabled by default, and it must stay that way until provisioning
     # moves out of the RoomService transactions: `add_agents_to_room`,
-    # `remove_agents_from_room` and `delete_room` currently hold a transaction
-    # across invite/kick round trips, so enabling this today would trade a
-    # latency problem for a consistency one — Matrix membership changed, the
-    # rows that record it rolled back. Applies to the application engine only;
-    # Alembic builds its own engine from `db_connect_args`, so a migration is
-    # never killed mid-transaction.
+    # `remove_agents_from_room` and `delete_room` hold a transaction across
+    # invite/kick calls, so enabling this today would trade a latency problem
+    # for a consistency one — membership changed, the rows that record it
+    # rolled back. Provisioning is no longer a homeserver round trip (it is
+    # `PostgresProvisioning`, writing rows on its own session), which shortens
+    # the window without closing it: the two still commit separately.
+    # Applies to the application engine only; Alembic builds its own engine
+    # from `db_connect_args`, so a migration is never killed mid-transaction.
     db_idle_in_transaction_session_timeout: str | None = None
 
     # How long a migration waits for a lock before giving up (a Postgres

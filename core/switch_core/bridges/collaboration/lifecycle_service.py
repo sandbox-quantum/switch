@@ -1251,6 +1251,28 @@ class CollaborationBridgeLifecycleService:
                 running += 1
         return running
 
+    def running_by_platform(self) -> dict[str, int]:
+        """`running_count`, split by the platform each bridge talks to.
+
+        The total answers "how many bridges died" and never "which", and which
+        is the first thing anyone asks — a Slack outage and a misconfigured
+        Teams app look identical in a single number. Read off `_bridge_facts`,
+        which is written at start from the row, so a bridge whose `BridgeCore`
+        has already been discarded by a crash is still attributable.
+
+        Every started platform appears, zero included: a gauge that stops being
+        reported is indistinguishable on a dashboard from one nobody is looking
+        at, and "Slack went from one to zero" is the whole signal.
+        """
+        counts: dict[str, int] = {}
+        for bridge_id in self._started:
+            platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
+            name = normalise_platform(platform)
+            task = self._tasks.get(bridge_id)
+            alive = bridge_id in self._bridges and task is not None and not task.done()
+            counts[name] = counts.get(name, 0) + (1 if alive else 0)
+        return counts
+
     def bridges_for_tenant(self, tenant_id: str) -> list[BridgeCore]:
         """Running bridges belonging to `tenant_id`, and none other.
 
