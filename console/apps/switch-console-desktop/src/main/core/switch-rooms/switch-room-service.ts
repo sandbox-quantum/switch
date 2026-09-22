@@ -13,6 +13,11 @@ import {
 export type SessionRoomContext = {
   sessionId: string;
   providerId: string;
+  /**
+   * Not a PTY handle — the hook session id (`<provider>-session-<sessionId>`)
+   * from `makeHookSessionId`. The name is the connector hook's wire field and
+   * outlived the PTY it was named for.
+   */
   ptyId: string;
 };
 
@@ -31,9 +36,10 @@ type ConnectionState = SessionRoomConnection & {
  * subscribes to `sessionRoomChangedChannel` and can fetch the current set via
  * the `switchRooms` RPC controller.
  *
- * This service is also the home for notification injection (Part B): the poller
- * that pulls addressed room events and delivers them through the session's SDK adapter is
- * driven off the same connect/disconnect lifecycle.
+ * It also holds each session's intended room until the persistent SDK host is
+ * ready to claim it, off the same connect/disconnect lifecycle. Addressed room
+ * events are not delivered from here: the host submits them and the server
+ * turns them into session commands.
  */
 class SwitchRoomService implements IDisposable {
   private readonly connections = new Map<string, ConnectionState>();
