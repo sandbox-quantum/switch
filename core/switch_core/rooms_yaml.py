@@ -681,7 +681,7 @@ class RoomYamlService:
     @staticmethod
     def _group_spec(body: dict[str, Any]) -> GroupSpec:
         """Validate an interpolated group document: the meta, every room, and
-        links that name rooms the document actually has."""
+        links that name rooms the document has."""
         if "rooms" not in body:
             raise ValueError("Group document requires a 'rooms:' list")
         try:

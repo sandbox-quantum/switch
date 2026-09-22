@@ -224,7 +224,7 @@ class TestShapeAgnosticism:
         assert result.warnings == []
 
     def test_a_group_template_is_clean_too(self) -> None:
-        """No `room:` key at all — the shape CHOO-2657 introduces.
+        """No `room:` key at all: the group shape.
 
         The linter must not have learned that a template is a room, or it
         starts rejecting valid documents the moment a second shape exists.
