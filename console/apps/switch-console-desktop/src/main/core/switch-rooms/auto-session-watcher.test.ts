@@ -1,13 +1,26 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({
-  apply: vi.fn(),
-  configure: vi.fn(),
-  dispose: vi.fn(async () => {}),
-  agents: vi.fn(),
-  agentById: vi.fn(),
-  autoSessionIds: vi.fn(),
-  setAutoSessionAgent: vi.fn(),
-}));
+type Change = { current: { sshHost: string; status: string } };
+const mocks = vi.hoisted(() => {
+  const listeners: ((change: Change) => void)[] = [];
+  return {
+    apply: vi.fn(),
+    configure: vi.fn(),
+    dispose: vi.fn(async () => {}),
+    agents: vi.fn(),
+    agentById: vi.fn(),
+    autoSessionIds: vi.fn(),
+    setAutoSessionAgent: vi.fn(),
+    location: vi.fn(),
+    reachability: {
+      on(_event: string, listener: (change: Change) => void) {
+        listeners.push(listener);
+      },
+      announce(change: Change) {
+        for (const listener of listeners) listener(change);
+      },
+    },
+  };
+});
 vi.mock('@main/core/sdk-host/shared-watcher', () => ({
   applyControllerState: mocks.apply,
   configureSharedWatcher: mocks.configure,
@@ -15,6 +28,10 @@ vi.mock('@main/core/sdk-host/shared-watcher', () => ({
 vi.mock('@main/core/sdk-host/local-host', () => ({ disposeLocalHosts: mocks.dispose }));
 vi.mock('@main/core/agents/getAgents', () => ({ getAgents: mocks.agents }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agentById }));
+vi.mock('@main/core/agents/agent-location', () => ({ getAgentLocation: mocks.location }));
+vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
+  hostReachabilityService: mocks.reachability,
+}));
 vi.mock('./auto-session-store', () => ({
   listAutoSessionAgentIds: mocks.autoSessionIds,
   listAutoSessionSubagents: async () => [],
@@ -32,6 +49,7 @@ beforeEach(() => {
     { id: 'linked', switchAgentId: 'switch-1' },
     { id: 'unlinked', switchAgentId: null },
   ]);
+  mocks.location.mockResolvedValue({ sshHost: null });
 });
 
 it('gives every Switch-linked agent a controller at boot, and only those', async () => {
@@ -62,6 +80,52 @@ it('drops a deleted agent from the automatic-session mirror', async () => {
   mocks.agentById.mockResolvedValue(null);
   await autoSessionWatcher.initialize();
   expect(mocks.setAutoSessionAgent).toHaveBeenCalledWith('gone', false);
+});
+
+it('starts a controller whose host was unreachable at boot, once the host comes back', async () => {
+  // The boot sweep runs once. Without this the agent is off the air until
+  // Console is restarted, however long the host has been back.
+  mocks.agents.mockResolvedValue([{ id: 'remote', switchAgentId: 'switch-1' }]);
+  mocks.location.mockResolvedValue({ sshHost: 'host' });
+  mocks.apply.mockRejectedValueOnce(new Error('Host unreachable'));
+  await autoSessionWatcher.initialize();
+  expect(mocks.apply).toHaveBeenCalledTimes(1);
+
+  mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(2));
+  // Still a restore: the host returning is not somebody asking for a connection
+  // another client has since taken, nor for a controller stopped by hand.
+  expect(mocks.apply.mock.calls[1]).toEqual(['remote', 'restore']);
+});
+
+it('leaves agents on other hosts alone when one host comes back', async () => {
+  mocks.agents.mockResolvedValue([
+    { id: 'here', switchAgentId: 'switch-1' },
+    { id: 'elsewhere', switchAgentId: 'switch-2' },
+  ]);
+  mocks.location.mockImplementation(async (agent: { id: string }) => ({
+    sshHost: agent.id === 'here' ? 'host' : 'other-host',
+  }));
+  await autoSessionWatcher.initialize();
+  mocks.apply.mockClear();
+
+  mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(1));
+  expect(mocks.apply).toHaveBeenCalledWith('here', 'restore');
+});
+
+it('does nothing for a host that has only just gone away', async () => {
+  mocks.agents.mockResolvedValue([{ id: 'remote', switchAgentId: 'switch-1' }]);
+  mocks.location.mockResolvedValue({ sshHost: 'host' });
+  await autoSessionWatcher.initialize();
+  mocks.apply.mockClear();
+
+  mocks.reachability.announce({ current: { sshHost: 'host', status: 'unreachable' } });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(mocks.apply).not.toHaveBeenCalled();
 });
 
 it('applies the saved settings when asked to reconcile an agent', async () => {
