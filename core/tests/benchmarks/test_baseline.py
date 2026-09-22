@@ -36,6 +36,7 @@ from tests.benchmarks.host import (
     marked,
     minted_connection_id,
     new_marker,
+    successor_bundle,
 )
 from tests.benchmarks.server import BenchCore, BenchServer, RoomState
 from tests.benchmarks.trace import PROVIDER_DISPATCH, TraceCollector, correlation_for
@@ -813,6 +814,107 @@ async def test_baseline_upgrades_over_a_running_legacy_session(
         f"upgrade restarted {assigned[served_room]} without the rooms it held, so "
         f"the next message there was answered by {replacing}, which was started "
         "for that message and knows nothing of the conversation before it."
+    )
+    assert duplicated == {}, duplicated
+
+
+async def test_baseline_upgrades_over_its_own_running_session(
+    bench: BenchServer,
+    collector: TraceCollector,
+    bundle: Path,
+    tmp_path: Path,
+) -> None:
+    """One release of this topology replaced by the next, over a served room.
+
+    The separate half of the upgrade the legacy scenario measures. There the
+    session being inherited was started by a build that kept its room set in a
+    local file and claimed nothing on the server, so the room it served was
+    never the server's to hand on. Here the session being inherited is this
+    topology's own: it claimed its room against the server, and the claim is
+    durable state the controller restarting it has no part in.
+
+    So the room keeps its session, and that is asserted as equality. Saying it
+    separately is the point of the scenario — a single test spanning both
+    builds could not tell a topology that loses rooms on every upgrade apart
+    from one that loses them only when inheriting a build that never held them.
+
+    The two builds are the same bundle at two paths, because a build identity
+    is the path the daemon was started from. Identical code under two
+    identities is exactly the upgrade a release performs over the one before
+    it, and unlike the legacy case it needs no second checkout.
+    """
+    target = await bench.register_agent("bench-target-successor")
+    poster = await bench.register_agent("bench-poster-successor")
+    await bench.start_clients(timeout=60.0)
+    served_room = await bench.create_room(
+        "bench-successor-served", [target.agent_id, poster.agent_id]
+    )
+    later_room = await bench.create_room(
+        "bench-successor-later", [target.agent_id, poster.agent_id]
+    )
+    home = tmp_path / "home-successor"
+    home.mkdir(parents=True)
+    successor = successor_bundle(bundle)
+
+    async def send(room: str, marker: str) -> str:
+        return correlation_for(
+            room,
+            await bench.address(
+                sender=poster,
+                room_id=room,
+                target=target.name,
+                body=f"@{target.name} {marked(marker)}",
+            ),
+        )
+
+    markers: dict[str, str] = {}
+    connection = controller_connection_id(target.agent_id)
+    with bench_watcher(
+        bundle=bundle,
+        home=home,
+        base_url=bench.base_url,
+        agent_id=target.agent_id,
+        api_key=target.api_key,
+        connection_id=connection,
+    ) as watcher:
+        await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
+        before = new_marker()
+        markers[before] = await send(served_room, before)
+        assert not await dispatch_wait(
+            watcher, {before: markers[before]}, dispatch_timeout(1)
+        )
+        assigned = watcher.sessions_by_room()
+        assert served_room in assigned, assigned
+
+        watcher.stop_controller()
+        watcher.start_controller(successor, connection)
+        settled, current = await _await_connections(bench, target.agent_id, 1, 180.0)
+        assert current == (connection,), current
+
+        after = new_marker()
+        markers[after] = await send(served_room, after)
+        assert not await dispatch_wait(
+            watcher, {after: markers[after]}, dispatch_timeout(1)
+        )
+        serving = watcher.sessions_by_room()[served_room]
+        assert serving == assigned[served_room], (serving, assigned[served_room])
+
+        fresh = new_marker()
+        markers[fresh] = await send(later_room, fresh)
+        assert not await dispatch_wait(
+            watcher, {fresh: markers[fresh]}, dispatch_timeout(1)
+        )
+        assert watcher.failure() is None, watcher.failure()
+        collector.ingest_jsonl(watcher.trace_path, markers)
+
+    duplicated = collector.subset(set(markers.values())).repeats(PROVIDER_DISPATCH)
+    print(
+        "upgrade between two builds of this topology: the agent held one "
+        f"connection throughout and was settled on it {settled:.1f}s after the "
+        "successor controller started on the same state. The room kept the "
+        f"session that had been serving it, {serving}, so its next message was "
+        "answered with the conversation behind it. Every message was delivered "
+        "once, and a room first addressed after the upgrade was served normally."
     )
     assert duplicated == {}, duplicated
 

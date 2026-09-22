@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -134,6 +135,23 @@ def build_bench_bundle() -> Path:
     if not _BUNDLE.is_file():
         raise RuntimeError(f"the bundler reported success but {_BUNDLE} is not there")
     return _BUNDLE
+
+
+def successor_bundle(bundle: Path) -> Path:
+    """The same build again under a second identity, for an upgrade to it.
+
+    A bench host names the path it was started from as its build, so one bundle
+    at two paths is two builds running identical code — which is what an
+    upgrade between consecutive releases of one topology does to a machine, and
+    it needs no second checkout to stage.
+
+    The copy goes beside the original because the bundle resolves its
+    dependencies from the workspace it was built in; anywhere else it fails to
+    load rather than running as an older build would.
+    """
+    successor = bundle.with_name(f"{bundle.stem}-successor{bundle.suffix}")
+    shutil.copy2(bundle, successor)
+    return successor
 
 
 @dataclass(slots=True)
