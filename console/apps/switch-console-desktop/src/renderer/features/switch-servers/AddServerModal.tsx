@@ -2,6 +2,7 @@ import { CircleCheck, Cloud, Globe, Laptop, Server, TriangleAlert } from 'lucide
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -24,6 +25,7 @@ import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
+import { managedServiceOrigin } from '@shared/core/switch-servers/managed-service';
 import type {
   ServerApiUrlPropagation,
   SwitchServer,
@@ -77,7 +79,15 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
-type Step = 'managed' | 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
+type Step =
+  | 'managedReady'
+  | 'managed'
+  | 'choose'
+  | 'local'
+  | 'remoteHost'
+  | 'external'
+  | 'signIn'
+  | 'linkAccounts';
 
 /**
  * This wizard's steps and the shared list of step names say the same thing.
@@ -124,6 +134,7 @@ const CONNECT_STEPS = 4;
 const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   choose: 'none',
   managed: 'managed',
+  managedReady: 'managed',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
@@ -209,7 +220,16 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     );
   }
   if (step === 'managed') {
-    return <ManagedServerStep onBack={() => goToStep('choose')} onClose={props.onClose} />;
+    return (
+      <ManagedServerStep
+        onBack={() => goToStep('choose')}
+        onClose={props.onClose}
+        onConnected={(server) => {
+          setConnected(server);
+          goToStep(switchServersStore.isConnected(server.id) ? 'managedReady' : 'signIn');
+        }}
+      />
+    );
   }
   if (step === 'local') {
     return (
@@ -229,13 +249,36 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       />
     );
   }
+  if (step === 'managedReady' && connected) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>You're connected to Switch</DialogTitle>
+        </DialogHeader>
+        <DialogContentArea className="space-y-4 pt-0">
+          <p className="text-sm">Your account is signed in. No agent or worker has been started.</p>
+          <Alert>
+            <AlertTitle>Next: connect your providers and GitHub</AlertTitle>
+            <AlertDescription>
+              Connection setup is not available yet. You can open your server to see its rooms and
+              agents.
+            </AlertDescription>
+          </Alert>
+        </DialogContentArea>
+        <DialogFooter>
+          <Button onClick={() => finish(connected.id)}>Open server</Button>
+        </DialogFooter>
+      </>
+    );
+  }
   if (step === 'signIn' && connected) {
     return (
       <SignInStep
         server={connected}
-        onBack={() => goToStep('external')}
+        managed={choice === 'managed'}
+        onBack={() => goToStep(choice === 'managed' ? 'managed' : 'external')}
         onClose={props.onClose}
-        onSignedIn={() => goToStep('linkAccounts')}
+        onSignedIn={() => goToStep(choice === 'managed' ? 'managedReady' : 'linkAccounts')}
       />
     );
   }
@@ -323,7 +366,41 @@ function ChooseStep({
   );
 }
 
-function ManagedServerStep({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+function ManagedServerStep({
+  onBack,
+  onClose,
+  onConnected,
+}: {
+  onBack: () => void;
+  onClose: () => void;
+  onConnected: (server: SwitchServer) => void;
+}) {
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const connect = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const origin = managedServiceOrigin(import.meta.env.VITE_SWITCH_MANAGED_URL);
+      await switchServersStore.init();
+      const existing = switchServersStore.servers.find(
+        (server) =>
+          server.gatewayUrl.replace(/\/+$/, '') === origin &&
+          server.apiUrl.replace(/\/+$/, '') === origin
+      );
+      const server = existing ?? (await switchServersStore.addServer('Switch', origin, origin));
+      if (!server) {
+        setError(switchServersStore.errorText ?? 'Could not connect to Switch. Try again.');
+        return;
+      }
+      if (existing) await switchServersStore.refreshStatus(server.id);
+      onConnected(server);
+    } catch (cause) {
+      setError(failureText(cause, 'Could not connect to Switch. Try again.'));
+    } finally {
+      setConnecting(false);
+    }
+  };
   return (
     <>
       <DialogHeader>
@@ -359,21 +436,22 @@ function ManagedServerStep({ onBack, onClose }: { onBack: () => void; onClose: (
         <p className="text-xs text-foreground-muted">
           Signing in does not start an agent or allocate a worker. Agent setup comes next.
         </p>
-        <Alert>
-          <AlertTitle>Managed setup is not available yet</AlertTitle>
-          <AlertDescription>
-            Sign-in and provider connections are coming next. No server or agent has been created.
-          </AlertDescription>
-        </Alert>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
       </DialogContentArea>
       <DialogFooter>
-        <Button variant="outline" onClick={onBack}>
+        <Button variant="outline" onClick={onBack} disabled={connecting}>
           Back
         </Button>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="ghost" onClick={onClose} disabled={connecting}>
           Close
         </Button>
-        <Button disabled>Continue to sign in</Button>
+        <Button onClick={() => void connect()} disabled={connecting}>
+          {connecting ? 'Connecting…' : 'Continue to sign in'}
+        </Button>
       </DialogFooter>
     </>
   );
@@ -934,11 +1012,13 @@ const ExternalServerStep = observer(function ExternalServerStep({
  * broken rather than unauthenticated.
  */
 const SignInStep = observer(function SignInStep({
+  managed,
   server,
   onBack,
   onClose,
   onSignedIn,
 }: {
+  managed: boolean;
   server: SwitchServer;
   onBack: () => void;
   onClose: () => void;
@@ -954,8 +1034,22 @@ const SignInStep = observer(function SignInStep({
 
   return (
     <>
-      <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
+      {managed ? (
+        <DialogHeader>
+          <DialogTitle>Sign in to Switch</DialogTitle>
+        </DialogHeader>
+      ) : (
+        <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
+      )}
       <DialogContentArea className="pt-0">
+        {signIn.configCheckFailed && !signIn.configChecking && (
+          <Button
+            variant="outline"
+            onClick={() => void switchServersStore.refreshAuthConfig(server.id)}
+          >
+            Retry sign-in options
+          </Button>
+        )}
         <ServerSignInFields
           signIn={signIn}
           idPrefix="connect-server-sign-in"

@@ -8,6 +8,7 @@
 export const ADD_SERVER_STEPS = [
   'choose',
   'managed',
+  'managedReady',
   'local',
   'remoteHost',
   'external',
