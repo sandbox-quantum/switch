@@ -363,6 +363,23 @@ export async function fetchTenants(server: SwitchServer): Promise<RemoteTenant[]
 }
 
 /**
+ * Create a workspace on this server, owned by the signed-in user.
+ *
+ * The gateway derives the slug from the name and refuses a name whose slug is
+ * already taken, so the caller shows that refusal rather than retrying under a
+ * name the user did not choose.
+ */
+export async function createTenant(server: SwitchServer, name: string): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/tenants', {
+    authenticated: true,
+    method: 'POST',
+    body: { name },
+  });
+  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+}
+
+/**
  * Select a tenant for this server's session, persisting the re-minted cookie.
  *
  * One session holds one selected tenant, so this is what makes a call scoped to
