@@ -134,6 +134,15 @@ what makes one design work for several products.
 status only, for people who need to know that something is wrong and not how.
 Already exists; adopted, not created.
 
+**Which of the three the agent posts in is a rule worth stating once.** Its
+rights narrow as the audience widens: it posts freely in the war room, narrowly
+in the hub (the banner, and threaded under it the situation reports a human has
+approved, severity changes and the close line), and **never** in the stakeholder
+channel. That last one is absolute rather than a default — it is the widest
+audience and the one where a wrong word costs most, so the agent produces the
+text and a human sends it. It also happens to match the SOP, which assigns both
+posts to the on-call rather than to any tool.
+
 **The war room** — one per declared incident, built by the responder agent at
 declaration, dead after the postmortem. Public, per the SOP's own resolution of
 that question: a war room stakeholders cannot read generates a second, worse war
@@ -191,7 +200,7 @@ not a conversation. It belongs in the war room as an attached document.
 | Alert fires | Nothing. Datadog → PagerDuty → the hub channel, as context. |
 | Ack, triage | Nothing. On-call works in PagerDuty, Datadog and the runbooks. |
 | Routine alert, no customer impact | Nothing, ever. Most alerts end here and must cost zero Switch overhead. |
-| **Customer incident declared** | On-call addresses the responder agent in the hub. The agent looks up who is on call, **builds the war room**, and posts the incident banner in the hub. |
+| **Customer incident declared** | On-call addresses the responder agent in the hub. At sev0 — the SOP's threshold — the agent looks up who is on call, **builds the war room**, posts the incident banner in the hub, and asks for the video call the SOP pairs with it. Below sev0 it posts one line and stops. |
 | Responders assemble | Already done — the agent invited them when it built the room. Public channel, so anyone else can walk in. |
 | Investigation | Threads per hypothesis. The agent answers lookups, drafts SITREPs, keeps the timeline. |
 | Situation report due | The agent's poll notices the posted deadline has passed; it drafts from the room and a human sends it. The SITREP goes in the hub, under the incident's banner thread. |
