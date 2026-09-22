@@ -1,5 +1,5 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
-import type { CreateAgentParams, RenameAgentParams } from '@shared/core/agents/agents';
+import type { RenameAgentParams } from '@shared/core/agents/agents';
 import type { OnboardAgentParams } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
@@ -19,7 +19,6 @@ import {
   attachConfiguredAgents,
   type AttachConfiguredAgentsParams,
 } from './attach-configured-agents';
-import { createAgent } from './createAgent';
 import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
@@ -47,7 +46,6 @@ import { setAgentProviderConfig, type AgentProviderConfigParams } from './setAge
 import { updateAgent, type UpdateAgentParams } from './updateAgent';
 
 export const agentsController = createRPCController({
-  createAgent: (params: CreateAgentParams) => createAgent(params),
   addAgent: (params: AddAgentParams) => addAgent(params),
   definitionFields: (params: { providerId: AgentProviderId }) =>
     Promise.resolve(getAgentDefinitionFields(params.providerId)),
