@@ -19,7 +19,6 @@ import { getDependencyManager } from '../dependencies/dependency-managers';
 import { hostDependencyStore } from '../dependencies/host-dependency-store';
 import { providerOverrideSettings } from '../settings/provider-settings-service';
 import {
-  buildAgentMetadataList,
   buildAgentPayload,
   buildAgentPayloads,
   toAgentInstallationStatus,
@@ -81,17 +80,6 @@ export const providersController = createRPCController({
           : undefined;
         return toAgentInstallationStatus(state.id, connectionId, state, hostDep);
       });
-  },
-
-  getAgentInstallationStatus: async (id: string, connectionId?: string) => {
-    const mgr = await getDependencyManager(connectionId);
-    const state = mgr.get(id as DependencyId);
-    if (!state) return null;
-    const rawHostDep = mgr.getHostDependency(id as DependencyId);
-    const hostDep = rawHostDep
-      ? agentUpdateService.enrichHostDependency(id as DependencyId, rawHostDep)
-      : undefined;
-    return toAgentInstallationStatus(id, connectionId, state, hostDep);
   },
 
   // ── Install / update ─────────────────────────────────────────────────────────
@@ -157,11 +145,6 @@ export const providersController = createRPCController({
     await agentUpdateService.refreshLatestVersion(id, connectionId);
   },
 
-  probe: async (id: DependencyId, connectionId?: string) => {
-    const mgr = await getDependencyManager(connectionId);
-    return mgr.probe(id);
-  },
-
   probeOverride: async (
     id: DependencyId,
     selection: { path?: string; cli?: string },
@@ -174,9 +157,5 @@ export const providersController = createRPCController({
   probeAll: async (connectionId?: string, options?: DependencyProbeOptions) => {
     const mgr = await getDependencyManager(connectionId);
     return mgr.probeAll(options);
-  },
-
-  listMetadata: async () => {
-    return buildAgentMetadataList();
   },
 });
