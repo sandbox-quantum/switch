@@ -350,7 +350,11 @@ async def test_connecting_takes_the_rooms_unread_count(
         await definitions.connect_to_room("room-c", include_general_instructions=False)
 
     buffer.caught_up(
-        AGENT, Reader(id="session-b", is_session=True), "room-c", buffer.head(AGENT)
+        AGENT,
+        Reader(id="session-b", is_session=True),
+        "room-c",
+        buffer.head(AGENT),
+        CONNECTION,
     )
 
     assert buffer.unread(AGENT, "room-c", buffer.head(AGENT)).count == 2

@@ -481,7 +481,7 @@ class _NoHeartbeats:
 
 
 async def _status_in_room(
-    db: AsyncSession, connections: ConnectionRegistry
+    db: AsyncSession, connections: ConnectionRegistry, connection_model: str
 ) -> AgentStatus:
     """What the room reports about the agent — the reader everything else reads."""
     statuses = await compute_agent_statuses(
@@ -489,7 +489,7 @@ async def _status_in_room(
         [
             SimpleNamespace(
                 id=AGENT,
-                integration_profile={"connection_model": "session_addressable"},
+                integration_profile={"connection_model": connection_model},
             )
         ],
         ROOM,
@@ -518,12 +518,18 @@ async def test_the_room_stops_reporting_a_session_whose_host_stopped(
     await service.bind_room(AGENT, *FIRST, first, ROOM)
 
     async with session_factory() as db:
-        assert await _status_in_room(db, connections) == AgentStatus.LIVE
+        assert (
+            await _status_in_room(db, connections, "session_addressable")
+            == AgentStatus.LIVE
+        )
 
     await _stop_host(session_factory, FIRST[0])
 
     async with session_factory() as db:
-        assert await _status_in_room(db, connections) == AgentStatus.NO_SESSION
+        assert (
+            await _status_in_room(db, connections, "session_addressable")
+            == AgentStatus.NO_SESSION
+        )
     assert connections.claimant_of(AGENT, ROOM) is connection
 
 
@@ -542,8 +548,38 @@ async def test_the_room_still_reports_a_client_that_only_ever_claimed(
     _controller(connections, [ROOM])
 
     async with session_factory() as db:
-        assert await _status_in_room(db, connections) == AgentStatus.LIVE
+        assert (
+            await _status_in_room(db, connections, "session_addressable")
+            == AgentStatus.LIVE
+        )
         assert await rooms_occupied(db, AGENT, connections) == {ROOM}
+
+
+@pytest.mark.asyncio
+async def test_a_connected_agent_that_will_start_nothing_reports_no_session(
+    session_factory,
+) -> None:
+    """Reachable, with nothing here and nothing coming — not away.
+
+    An agent whose controller is up with automatic starts off is answerable:
+    address it and something will say there is no session. Reporting it
+    disconnected says the opposite, and the room believes the status until the
+    reply contradicts it.
+    """
+    await setup(session_factory)
+    connections = ConnectionRegistry()
+    _controller(connections, [])
+
+    async with session_factory() as db:
+        assert (
+            await _status_in_room(db, connections, "auto_session")
+            == AgentStatus.NO_SESSION
+        )
+        # And with nothing connected at all, the agent really is away.
+        assert (
+            await _status_in_room(db, ConnectionRegistry(), "auto_session")
+            == AgentStatus.DISCONNECTED
+        )
 
 
 @pytest.mark.asyncio

@@ -246,7 +246,8 @@ class TestPresenceIsAUnion:
         connected and will never spawn, and a controller whose auto-start is
         switched off has declared that it will not. Counting either as
         watching answers the room with "Starting a session…" when nothing is
-        coming.
+        coming. It is still connected, so the room hears NO_SESSION rather
+        than the absence DISCONNECTED would claim.
         """
         agents = [_agent("auto", "auto_session")]
         store = _FakeSessionStore(live_ids=set())
@@ -254,7 +255,7 @@ class TestPresenceIsAUnion:
 
         statuses = await compute_agent_statuses(db, agents, "room-1", store, registry)
 
-        assert statuses == {"auto": AgentStatus.DISCONNECTED}
+        assert statuses == {"auto": AgentStatus.NO_SESSION}
 
     async def test_the_watch_heartbeat_arm_still_makes_it_dormant(
         self, db: AsyncSession

@@ -675,7 +675,7 @@ async def read_context(
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
         # leaves every count alone, including this one.
-        buffer.caught_up(agent_id, reader, room_id, through)
+        buffer.caught_up(agent_id, reader, room_id, through, session_key())
 
     return context
 

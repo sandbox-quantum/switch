@@ -160,5 +160,45 @@ async def test_subscribing_takes_over_the_rooms_unread_count() -> None:
     buffer = protocol.event_buffer
     head = buffer.head(AGENT_ID)
     assert buffer.unread(AGENT_ID, ROOM_A, head).count == 3
-    buffer.caught_up(AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head)
+    buffer.caught_up(
+        AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head, "conn-b"
+    )
     assert buffer.unread(AGENT_ID, ROOM_A, head).count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_subscribe_takes_the_room_from_a_managed_session() -> None:
+    """The mixed takeover: a session holds the count, a bare connection takes the room.
+
+    A session outranking every connection is right while the connection is only
+    covering the room, and wrong the moment one of them actually takes it. The
+    registry has already moved the slot here, so the count has to move with it
+    — and the session that lost the room, whose read was in flight while it
+    happened, must not be able to take it back by finishing.
+    """
+    protocol = _Protocol()
+    managed = _open(protocol, "single", "conn-a")
+    await _subscribe(protocol, ROOM_A, managed.stream_generation, "conn-a", False)
+    session = Reader(id="managed-a", is_session=True)
+    buffer = protocol.event_buffer
+    buffer.hand_counting_to(AGENT_ID, session, ROOM_A)
+    for index in range(3):
+        _chatter(protocol, ROOM_A, index)
+
+    legacy = _open(protocol, "single", "conn-b")
+    await _subscribe(protocol, ROOM_A, legacy.stream_generation, "conn-b", True)
+
+    assert protocol.connections.claimant_of(AGENT_ID, ROOM_A) is legacy
+    head = buffer.head(AGENT_ID)
+    assert buffer.unread(AGENT_ID, ROOM_A, head).count == 3
+    buffer.caught_up(
+        AGENT_ID, Reader(id="conn-b", is_session=False), ROOM_A, head, "conn-b"
+    )
+    assert buffer.unread(AGENT_ID, ROOM_A, head).count == 0
+
+    for index in range(2):
+        _chatter(protocol, ROOM_A, 10 + index)
+    later = buffer.head(AGENT_ID)
+    buffer.caught_up(AGENT_ID, session, ROOM_A, later, "conn-a")
+
+    assert buffer.unread(AGENT_ID, ROOM_A, later).count == 2

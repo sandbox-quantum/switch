@@ -60,8 +60,8 @@ def _chatter(buffer: EventBuffer, room: str, times: int = 1) -> int:
 
 async def test_a_room_counts_only_its_own_chatter() -> None:
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
-    buffer.claim_counting(AGENT, READER, ROOM_B, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_B, 0)
 
     _chatter(buffer, ROOM_A, times=3)
     head = buffer.head(AGENT)
@@ -72,13 +72,13 @@ async def test_a_room_counts_only_its_own_chatter() -> None:
 
 async def test_catching_up_on_one_room_leaves_the_others_alone() -> None:
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
-    buffer.claim_counting(AGENT, READER, ROOM_B, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_B, 0)
     _chatter(buffer, ROOM_A, times=2)
     _chatter(buffer, ROOM_B, times=1)
 
     head = buffer.head(AGENT)
-    buffer.caught_up(AGENT, _connection(READER), ROOM_A, head)
+    buffer.caught_up(AGENT, _connection(READER), ROOM_A, head, READER)
 
     assert buffer.unread(AGENT, ROOM_A, head).count == 0
     assert buffer.unread(AGENT, ROOM_B, head).count == 1
@@ -87,9 +87,9 @@ async def test_catching_up_on_one_room_leaves_the_others_alone() -> None:
 async def test_a_second_connection_does_not_start_the_room_over() -> None:
     """A room has one count: the agent is behind by one amount there."""
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=2)
-    buffer.claim_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
+    buffer.ensure_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
 
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
 
@@ -103,29 +103,86 @@ async def test_the_connection_that_takes_a_room_over_can_clear_it() -> None:
     happened.
     """
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=3)
 
-    buffer.claim_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
-    buffer.caught_up(AGENT, _connection("connection-2"), ROOM_A, buffer.head(AGENT))
+    buffer.take_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
+    buffer.caught_up(
+        AGENT, _connection("connection-2"), ROOM_A, buffer.head(AGENT), "connection-2"
+    )
 
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
 
 
-async def test_a_connections_claim_does_not_take_a_room_from_a_session() -> None:
+async def test_delivering_a_room_does_not_take_it_from_a_session() -> None:
     """One connection carries every session, so it is not the caller in any room."""
     buffer = EventBuffer()
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=2)
 
-    buffer.claim_counting(AGENT, "connection-shared", ROOM_A, buffer.head(AGENT))
+    buffer.ensure_counting(AGENT, "connection-shared", ROOM_A, buffer.head(AGENT))
     buffer.caught_up(
-        AGENT, _connection("connection-shared"), ROOM_A, buffer.head(AGENT)
+        AGENT,
+        _connection("connection-shared"),
+        ROOM_A,
+        buffer.head(AGENT),
+        "connection-shared",
     )
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
 
-    buffer.caught_up(AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT))
+    buffer.caught_up(
+        AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT), "connection-shared"
+    )
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
+
+
+async def test_taking_a_room_does_take_it_from_a_session() -> None:
+    """A takeover is not coverage: the session it displaced is out of the room.
+
+    A legacy client taking the slot is told how far behind the room is, so its
+    reading has to clear it — being told 3 and reading all three and still
+    being told 3 is the count losing its meaning.
+    """
+    buffer = EventBuffer()
+    buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
+    _chatter(buffer, ROOM_A, times=3)
+
+    buffer.take_counting(AGENT, "connection-legacy", ROOM_A, buffer.head(AGENT))
+    buffer.caught_up(
+        AGENT,
+        _connection("connection-legacy"),
+        ROOM_A,
+        buffer.head(AGENT),
+        "connection-legacy",
+    )
+
+    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
+
+
+async def test_a_displaced_session_cannot_adopt_the_count_it_lost() -> None:
+    """The other half of a takeover: the session that was there keeps reading.
+
+    Its read was begun before it lost the room and lands afterwards. A session
+    outranking whatever connection holds the count would hand the room straight
+    back to it, and the client that actually holds the slot would be told it is
+    caught up on messages it has never been shown.
+    """
+    buffer = EventBuffer()
+    buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
+    _chatter(buffer, ROOM_A, times=3)
+    in_flight = buffer.head(AGENT)
+
+    buffer.take_counting(AGENT, "connection-legacy", ROOM_A, in_flight)
+    buffer.caught_up(
+        AGENT, _connection("connection-legacy"), ROOM_A, in_flight, "connection-legacy"
+    )
+    _chatter(buffer, ROOM_A, times=2)
+
+    buffer.caught_up(
+        AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT), "connection-a"
+    )
+
+    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
 
 
 async def test_a_session_adopts_a_count_opened_in_its_connections_name() -> None:
@@ -137,11 +194,12 @@ async def test_a_session_adopts_a_count_opened_in_its_connections_name() -> None
     for as long as the session lived.
     """
     buffer = EventBuffer()
-    buffer.mark_unknown(AGENT, READER, [ROOM_A])
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.mark_restarted(AGENT)
     _chatter(buffer, ROOM_A, times=2)
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).reason == RESTARTED
 
-    buffer.caught_up(AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT))
+    buffer.caught_up(AGENT, _session("session-a"), ROOM_A, buffer.head(AGENT), READER)
     _chatter(buffer, ROOM_A, times=1)
 
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)) == Unread(
@@ -159,14 +217,14 @@ async def test_a_read_by_the_session_that_lost_the_room_clears_nothing() -> None
     """
     buffer = EventBuffer()
     shared = "connection-shared"
-    buffer.claim_counting(AGENT, shared, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, shared, ROOM_A, 0)
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=3)
     in_flight = buffer.head(AGENT)
 
     buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_A)
     _chatter(buffer, ROOM_A, times=2)
-    buffer.caught_up(AGENT, _session("session-a"), ROOM_A, in_flight)
+    buffer.caught_up(AGENT, _session("session-a"), ROOM_A, in_flight, shared)
 
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 5
 
@@ -174,12 +232,12 @@ async def test_a_read_by_the_session_that_lost_the_room_clears_nothing() -> None
 async def test_the_session_that_took_the_room_still_clears_it() -> None:
     """The fence is about who is in the room, not about refusing reads."""
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     buffer.hand_counting_to(AGENT, _session("session-a"), ROOM_A)
     _chatter(buffer, ROOM_A, times=2)
 
     buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_A)
-    buffer.caught_up(AGENT, _session("session-b"), ROOM_A, buffer.head(AGENT))
+    buffer.caught_up(AGENT, _session("session-b"), ROOM_A, buffer.head(AGENT), READER)
 
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 0
 
@@ -215,20 +273,23 @@ async def test_a_room_nothing_recorded_a_baseline_for_has_no_count() -> None:
     assert unread.reason == NO_BASELINE
 
 
-async def test_a_baseline_survives_a_second_claim_of_the_same_room() -> None:
-    """Re-claiming must not quietly discard what the reader is behind by."""
+async def test_a_baseline_survives_the_room_being_covered_or_taken_again() -> None:
+    """Neither door may quietly discard what the reader is behind by."""
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=2)
-    buffer.claim_counting(AGENT, READER, ROOM_A, buffer.head(AGENT))
 
+    buffer.ensure_counting(AGENT, READER, ROOM_A, buffer.head(AGENT))
+    assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
+
+    buffer.take_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count == 2
 
 
-async def test_a_room_marked_unknown_says_so_rather_than_starting_at_zero() -> None:
+async def test_a_restart_leaves_a_room_unknown_rather_than_at_zero() -> None:
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
-    buffer.mark_unknown(AGENT, READER, [ROOM_A])
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.mark_restarted(AGENT)
     _chatter(buffer, ROOM_A, times=1)
 
     unread = buffer.unread(AGENT, ROOM_A, buffer.head(AGENT))
@@ -237,15 +298,38 @@ async def test_a_room_marked_unknown_says_so_rather_than_starting_at_zero() -> N
     assert unread.reason == RESTARTED
 
     # And it stays unknown until the reader actually catches up, rather than
-    # being repaired by the next room claim.
-    buffer.claim_counting(AGENT, READER, ROOM_A, buffer.head(AGENT))
+    # being repaired by the room changing hands.
+    buffer.take_counting(AGENT, "connection-2", ROOM_A, buffer.head(AGENT))
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).count is None
 
 
-async def test_reading_context_repairs_an_unknown_count() -> None:
+async def test_a_restart_covers_rooms_it_could_not_have_named() -> None:
+    """The loss is the whole buffer, not the rooms a connection had claimed.
+
+    A connection watching every room claims none of them, and the rooms its
+    sessions work in are claimed after it reconnects. Marking only what was
+    named at the time would answer those rooms with a fresh zero — the exact
+    confident zero the count exists not to hand out.
+    """
     buffer = EventBuffer()
-    buffer.mark_unknown(AGENT, READER, [ROOM_A])
-    buffer.caught_up(AGENT, _connection(READER), ROOM_A, buffer.head(AGENT))
+    buffer.mark_restarted(AGENT)
+    _chatter(buffer, ROOM_A, times=2)
+    _chatter(buffer, ROOM_B, times=1)
+
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.hand_counting_to(AGENT, _session("session-b"), ROOM_B)
+
+    for room in (ROOM_A, ROOM_B):
+        unread = buffer.unread(AGENT, room, buffer.head(AGENT))
+        assert unread.count is None
+        assert unread.reason == RESTARTED
+
+
+async def test_reading_a_room_after_a_restart_makes_it_countable_again() -> None:
+    buffer = EventBuffer()
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.mark_restarted(AGENT)
+    buffer.caught_up(AGENT, _connection(READER), ROOM_A, buffer.head(AGENT), READER)
 
     _chatter(buffer, ROOM_A, times=1)
     unread = buffer.unread(AGENT, ROOM_A, buffer.head(AGENT))
@@ -255,8 +339,8 @@ async def test_reading_context_repairs_an_unknown_count() -> None:
 
 async def test_a_count_that_lost_history_is_a_floor_in_that_room_only() -> None:
     buffer = EventBuffer(max_events_per_agent=2)
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
-    buffer.claim_counting(AGENT, READER, ROOM_B, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_B, 0)
 
     _chatter(buffer, ROOM_A, times=3)
     _chatter(buffer, ROOM_B, times=1)
@@ -273,10 +357,10 @@ async def test_a_count_that_lost_history_is_a_floor_in_that_room_only() -> None:
 
 async def test_catching_up_past_a_hole_makes_the_count_exact_again() -> None:
     buffer = EventBuffer(max_events_per_agent=2)
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=3)
 
-    buffer.caught_up(AGENT, _connection(READER), ROOM_A, buffer.head(AGENT))
+    buffer.caught_up(AGENT, _connection(READER), ROOM_A, buffer.head(AGENT), READER)
     _chatter(buffer, ROOM_A, times=1)
 
     assert buffer.unread(AGENT, ROOM_A, buffer.head(AGENT)).reason is None
@@ -294,7 +378,7 @@ async def test_a_drop_names_the_rooms_that_lost_events() -> None:
 async def test_only_unaddressed_messages_are_counted() -> None:
     """The count exists to say what the reader was not woken for."""
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
 
     buffer.enqueue(AGENT, ROOM_A, _message(ROOM_A, addressed=True))
     buffer.enqueue(
@@ -314,7 +398,7 @@ async def test_only_unaddressed_messages_are_counted() -> None:
 async def test_a_count_stops_at_the_event_it_is_reported_alongside() -> None:
     """Chatter that arrived after the woken-for event is not yet its business."""
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=2)
     addressed = buffer.enqueue(AGENT, ROOM_A, _message(ROOM_A, addressed=True))
     _chatter(buffer, ROOM_A, times=5)
@@ -325,7 +409,7 @@ async def test_a_count_stops_at_the_event_it_is_reported_alongside() -> None:
 async def test_dropping_a_reader_leaves_the_room_behind_by_what_it_was() -> None:
     """A reader going away is not the conversation it missed being read."""
     buffer = EventBuffer()
-    buffer.claim_counting(AGENT, READER, ROOM_A, 0)
+    buffer.ensure_counting(AGENT, READER, ROOM_A, 0)
     _chatter(buffer, ROOM_A, times=1)
 
     buffer.drop_reader(AGENT, READER)

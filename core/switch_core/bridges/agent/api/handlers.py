@@ -869,6 +869,9 @@ async def _open_event_stream(
             # share connections keeps the slot, and the supervisor's restored
             # stream 409s and retries forever.
             protocol.connections.claim_room(conn, room_id, takeover=True)
+            # The room's unread count follows the slot: whoever is told how far
+            # behind the room is has to be the one whose reading clears it.
+            protocol.event_buffer.take_counting(agent.id, conn.id, room_id, conn.cursor)
         except (ValueError, PermissionError) as exc:
             protocol.connections.close(
                 conn.id,
@@ -1016,7 +1019,7 @@ async def connection_subscribe(
     # A room slot changes hands here as much as it does on the stream URL or in
     # connect_to_room, and the room's unread count follows it: the holder being
     # told how far behind the room is has to be the one whose reading clears it.
-    protocol.event_buffer.claim_counting(agent.id, conn.id, req.room_id, conn.cursor)
+    protocol.event_buffer.take_counting(agent.id, conn.id, req.room_id, conn.cursor)
 
     if evicted is not None:
         logger.warning(

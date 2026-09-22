@@ -887,3 +887,48 @@ class TestAGapNamesTheRoomsThatLostEvents:
 
         assert frames[1][0] == "gap"
         assert frames[1][1]["rooms"] == [ROOM_A]
+        assert frames[1][1]["all_rooms"] is True
+
+    async def test_a_restart_says_the_loss_is_not_confined_to_them(self) -> None:
+        """A watcher of every room names none, and its rooms arrive afterwards.
+
+        Reporting only what the connection had claimed would leave every room
+        its sessions go on to claim answering with a fresh zero, which is the
+        restart made invisible in exactly the rooms the agent works in.
+        """
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+        conn = _open(registry, scope="all", cursor=4812)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 2)
+
+        assert frames[1][0] == "gap"
+        assert frames[1][1]["rooms"] == []
+        assert frames[1][1]["all_rooms"] is True
+
+        registry.claim_room(conn, ROOM_B)
+        buffer.enqueue(AGENT, ROOM_B, _message("chatter", room=ROOM_B))
+        buffer.enqueue(AGENT, ROOM_B, _message("for you", addressed=True, room=ROOM_B))
+        delivered = await _take(stream, 3)  # subscription_changed, then both
+        await stream.aclose()
+
+        assert delivered[-1][1]["missed"]["count"] is None
+        assert "restarted" in delivered[-1][1]["missed"]["reason"]
+
+    async def test_a_dropped_event_gap_is_confined_to_the_rooms_it_names(self) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer(max_events_per_agent=1)
+        buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
+        buffer.enqueue(AGENT, ROOM_A, _message("kept"))
+
+        conn = _open(registry, cursor=0)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "gap"
+        assert frames[1][1]["all_rooms"] is False

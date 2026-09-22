@@ -143,20 +143,24 @@ async def _event_stream(
                 head,
             )
             conn.cursor = head
-            # Every room this connection covers loses its baseline with the
-            # buffer that held it. Starting a fresh one here would answer the
-            # next "how far behind am I in this room" with a zero the agent
-            # has no reason to doubt.
-            buffer.mark_unknown(agent_id, conn.id, conn.rooms)
+            # Every room of this agent loses its baseline with the buffer that
+            # held it, not only the rooms this connection has named — it may
+            # have named none, and its sessions claim theirs later. Starting a
+            # fresh baseline for any of them would answer the next "how far
+            # behind am I in this room" with a zero the agent has no reason to
+            # doubt.
+            buffer.mark_restarted(agent_id)
             yield _frame(
                 "gap",
                 {
                     "from_sequence": head,
                     "resumed_at": head,
                     "rooms": sorted(conn.rooms),
+                    "all_rooms": True,
                     "reason": "the server restarted since your last connection; "
                     "sequence numbers have been reset and events from before "
-                    "the restart are gone — re-read room context",
+                    "the restart are gone in every room, including any this "
+                    "connection has yet to claim — re-read room context",
                 },
             )
 
@@ -182,6 +186,7 @@ async def _event_stream(
                     "from_sequence": conn.cursor,
                     "resumed_at": resumed_at,
                     "rooms": list(lost),
+                    "all_rooms": False,
                     "reason": "events older than the retention window were "
                     "dropped; re-read room context",
                 },
@@ -239,13 +244,14 @@ async def _event_stream(
                     yield b": keepalive\n\n"
                 continue
 
-            # Where counting starts for a room this connection has just begun
-            # to cover. It is the cursor rather than head because the backlog
-            # this connection is about to work through is backlog it genuinely
-            # has not seen; a room claimed later starts from wherever the
-            # cursor has reached by then, which is the same rule.
+            # Where counting starts for a room nothing is counting yet. It is
+            # the cursor rather than head because the backlog this connection
+            # is about to work through is backlog it genuinely has not seen; a
+            # room covered later starts from wherever the cursor has reached by
+            # then, which is the same rule. Covering is not taking: the room
+            # slot changes hands at the doors, not on every pass of this loop.
             for room_id in conn.rooms:
-                buffer.claim_counting(agent_id, conn.id, room_id, conn.cursor)
+                buffer.ensure_counting(agent_id, conn.id, room_id, conn.cursor)
 
             try:
                 pending = buffer.read_from(
@@ -261,6 +267,7 @@ async def _event_stream(
                         "from_sequence": exc.requested,
                         "resumed_at": max(exc.oldest - 1, 0),
                         "rooms": list(exc.rooms),
+                        "all_rooms": False,
                         "reason": str(exc),
                     },
                 )

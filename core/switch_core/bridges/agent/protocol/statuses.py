@@ -45,7 +45,8 @@ async def compute_agent_statuses(
     - ``always_on``: LIVE if reachable at all, else DISCONNECTED.
     - ``session_addressable``: LIVE if reachable in this room, else NO_SESSION.
     - ``auto_session``: LIVE if reachable in this room; else DORMANT if a
-      connector is watching and will spawn on demand; else DISCONNECTED.
+      connector is watching and will spawn on demand; else NO_SESSION if the
+      agent is connected but nothing will start one; else DISCONNECTED.
     - ``session_passive``: always AWAITING_MANUAL_POLL (no heartbeat).
 
     Shared by ProtocolService (room detail / participants) and the in-room
@@ -111,6 +112,12 @@ async def compute_agent_statuses(
     # will ever join. The heartbeat rows keep their own arm: a client still on
     # /watch/heartbeat declares nothing, and that loop meant willingness.
     watching_auto |= connections.agents_that_can_spawn_for(auto_session_ids, room_id)
+    # An agent whose client is connected but will start nothing is not
+    # disconnected. It is reachable and has no session here, which is what
+    # NO_SESSION says and what the room needs to hear: DISCONNECTED over a live
+    # controller with automatic starts off tells a user the agent is away, and
+    # the reply they get if they address it anyway contradicts that.
+    connected_auto = connections.live_agents(auto_session_ids)
     # A spawn-capable connection covering the room will start a session on
     # demand, whatever the agent was configured as. DORMANT rather than
     # NO_SESSION is the honest report: nothing is attending yet, but something
@@ -142,6 +149,8 @@ async def compute_agent_statuses(
                 statuses[agent.id] = AgentStatus.LIVE
             elif agent.id in watching_auto:
                 statuses[agent.id] = AgentStatus.DORMANT
+            elif agent.id in connected_auto:
+                statuses[agent.id] = AgentStatus.NO_SESSION
             else:
                 statuses[agent.id] = AgentStatus.DISCONNECTED
         else:

@@ -1337,7 +1337,9 @@ async function handleFrame(frame: SseFrame): Promise<void> {
       // out on the next notification, in the unread count for the room it
       // applies to — the server knows which rooms lost events and this
       // process does not.
-      const rooms = Array.isArray(frame.data.rooms) ? frame.data.rooms.join(', ') : 'unnamed rooms';
+      const named = Array.isArray(frame.data.rooms) ? frame.data.rooms.join(', ') : '';
+      const rooms =
+        frame.data.all_rooms === true ? 'every room' : named === '' ? 'unnamed rooms' : named;
       process.stderr.write(
         `switch: GAP in ${rooms} — missed events before sequence ${frame.data.from_sequence}\n`
       );

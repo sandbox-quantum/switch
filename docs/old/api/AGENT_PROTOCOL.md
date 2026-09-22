@@ -284,6 +284,15 @@ own connection was sent, so a gap it holds cannot say which room lost what, and
 a count it keeps answers a different question from "how far behind is this
 agent in this room". Both are derived from the buffer instead.
 
+A restart is the one loss that no room escapes. The buffer is in memory, so
+every room of that agent loses what it was caught up through — not only the
+rooms the reconnecting connection names, which for a connection watching all
+rooms is none of them, and whose sessions claim theirs afterwards. The gap
+frame says so with `all_rooms`, and the server holds the agent to it: a room
+counted for the first time after a restart starts unknown as well, and is
+answered with "cannot be said" rather than a count of what is left, until
+somebody reads it and a baseline can be established again.
+
 ### 4.3 Confirmation
 
 Two mechanisms, both free:
@@ -545,7 +554,7 @@ New, carried on the same stream:
 |---|---|---|
 | `connection_state` | `connection_id`, `agent_id`, `scope`, `filter`, `spawn_capable`, `rooms`, `cursor`, `protocol`, `heartbeat_interval_seconds`, `server`, `client` | first event on every stream |
 | `subscription_changed` | `rooms`, `reason` | scope changed — including a room going dark because another connection claimed it |
-| `gap` | `from_sequence`, `resumed_at`, `rooms`, `reason` | events were dropped; re-read context. `rooms` names which rooms lost them, so a client with a dozen has something to act on. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
+| `gap` | `from_sequence`, `resumed_at`, `rooms`, `all_rooms`, `reason` | events were dropped; re-read context. `rooms` names which rooms lost them, so a client with a dozen has something to act on. `all_rooms` is true when the loss is not confined to the named rooms — a server restart takes every room's history with it, including rooms this connection has yet to claim, and a connection watching all rooms names none of its own. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
 | `evicted` | `reason` | this connection lost its slot or was taken over; it must stop acting |
 
 `gap` and `evicted` exist so that degradation is always visible. A client that

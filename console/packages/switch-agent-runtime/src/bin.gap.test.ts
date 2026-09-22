@@ -34,6 +34,14 @@ describe('gap handling in the connector channel', () => {
     expect(gapBranch()).toContain('process.stderr.write');
     expect(gapBranch()).toContain('frame.data.rooms');
   });
+
+  it('says every room when the loss is not confined to the ones named', () => {
+    // A restart empties rooms this connection has not claimed yet, so the
+    // named list is a subset. Printing it alone would tell the agent the
+    // rooms missing from it are intact.
+    expect(gapBranch()).toContain('frame.data.all_rooms === true');
+    expect(gapBranch()).toContain("'every room'");
+  });
 });
 
 describe('the unread count on a notification', () => {
