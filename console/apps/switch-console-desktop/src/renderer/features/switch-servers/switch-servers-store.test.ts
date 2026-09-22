@@ -4,6 +4,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 const getAuthConfig = vi.hoisted(() => vi.fn());
 const getConnectionStatus = vi.hoisted(() => vi.fn());
 const listServers = vi.hoisted(() => vi.fn());
+const installIsEmpty = vi.hoisted(() => vi.fn());
 const setActiveServer = vi.hoisted(() => vi.fn());
 /** The workspace selection as the main process holds it, by the server it is on. */
 const selection = vi.hoisted(() => ({ serverId: null as string | null }));
@@ -23,6 +24,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       removeServer,
       addServer,
     },
+    onboarding: { installIsEmpty },
   },
 }));
 /**
@@ -126,6 +128,7 @@ beforeEach(() => {
   }));
   getAuthConfig.mockResolvedValue(authConfig);
   listServers.mockResolvedValue([]);
+  installIsEmpty.mockResolvedValue(true);
   selectServer(null);
   setActiveServer.mockImplementation(async (serverId: string) => selectServer(serverId));
 });
@@ -241,6 +244,129 @@ describe('recovering when connectivity returns', () => {
     await store.recoverStale();
 
     expect(getAuthConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('reading the server list', () => {
+  it('serves callers arriving together one read', async () => {
+    // The shell asks on the first frame and so does the sidebar. Two reads of
+    // the same list race each other into the same fields for no gain.
+    listServers.mockResolvedValue([server('srv-a')]);
+    selectServer('srv-a');
+    const store = new SwitchServersStore();
+
+    await Promise.all([store.init(), store.init(), store.init()]);
+
+    expect(revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads again for a caller arriving after the last read settled', async () => {
+    // Sharing only the read in flight: the paths that change something and then
+    // ask for the list back must not be handed the answer from before it.
+    const store = new SwitchServersStore();
+    await store.init();
+    listServers.mockResolvedValue([server('srv-a')]);
+
+    await store.init();
+
+    expect(store.servers.map((s) => s.id)).toEqual(['srv-a']);
+  });
+
+  it('keeps the failure on screen for as long as the retry runs', async () => {
+    // The window draws its failure page — message, detail and the button that
+    // starts the retry — from `listError`. Clearing it as the retry begins
+    // unmounts the page and the button with it, leaving a blank window until
+    // the retry lands.
+    listServers.mockRejectedValueOnce(new Error('gateway unreachable'));
+    const store = new SwitchServersStore();
+    await store.init();
+    expect(store.listError).not.toBeNull();
+
+    const retryRead = deferred<SwitchServer[]>();
+    listServers.mockReturnValueOnce(retryRead.promise);
+    const retrying = store.init();
+    await flush();
+
+    expect(store.listError).not.toBeNull();
+    expect(store.loadingServers).toBe(true);
+
+    retryRead.resolve([server('srv-a')]);
+    await retrying;
+
+    expect(store.listError).toBeNull();
+    expect(store.listErrorDetail).toBeNull();
+  });
+
+  it('reads what the install holds rather than inferring it from the list', async () => {
+    // An install whose server was removed keeps its agents — the confirmation
+    // says so — and the sessions in them are still running. An empty list is
+    // therefore not the fresh-install answer, and the shell needs that answer
+    // to decide whether to replace the window with a first-run page.
+    listServers.mockResolvedValue([]);
+    installIsEmpty.mockResolvedValue(false);
+    const store = new SwitchServersStore();
+
+    await store.init();
+
+    expect(store.servers).toEqual([]);
+    expect(store.installIsEmpty).toBe(false);
+  });
+
+  it('says a read is not coming back rather than leaving the window blank', async () => {
+    // Nothing is drawn until the first read lands, so a handler that never
+    // settles is a blank, inert window with no message and no way to ask again.
+    vi.useFakeTimers();
+    try {
+      listServers.mockReturnValueOnce(deferred<SwitchServer[]>().promise);
+      const store = new SwitchServersStore();
+      void store.init();
+
+      // Well past any deadline worth having: what is asserted is that one
+      // exists, not the exact number of seconds.
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(store.loaded).toBe(false);
+      expect(store.listError).not.toBeNull();
+      expect(store.loadingServers).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores a given-up read that lands after the retry has answered', async () => {
+    // The read cannot be cancelled, only abandoned — so the stale one is still
+    // out there, and letting it write would replace a good list with the one
+    // the user already gave up on.
+    vi.useFakeTimers();
+    try {
+      const stuck = deferred<SwitchServer[]>();
+      listServers.mockReturnValueOnce(stuck.promise);
+      const store = new SwitchServersStore();
+      void store.init();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      listServers.mockResolvedValue([server('srv-a')]);
+      await store.init();
+      stuck.resolve([server('srv-stale')]);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(store.servers.map((s) => s.id)).toEqual(['srv-a']);
+      expect(store.listError).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a failure from elsewhere out of the slot the window reads', async () => {
+    // `error` is the banner, written by every action here — a rename, a sign-out,
+    // adding a server. None of those is a reason to take the window away.
+    const store = newStore([server('srv-a')]);
+    removeServer.mockRejectedValue(new Error('still in use'));
+
+    await store.removeServer('srv-a');
+
+    expect(store.error).not.toBeNull();
+    expect(store.listError).toBeNull();
   });
 });
 
