@@ -42,7 +42,7 @@ export function CopyButton({ command }: { command: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="shrink-0 rounded p-1 text-foreground-passive opacity-0 transition-opacity group-hover:opacity-100 hover:bg-background-2 hover:text-foreground"
+      className="focus-visible:outline-ring shrink-0 rounded p-1 text-foreground-passive hover:bg-background-2 hover:text-foreground focus-visible:outline-2"
       aria-label="Copy command"
     >
       {copied ? (

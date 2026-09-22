@@ -1,4 +1,9 @@
+import { ExternalLink } from 'lucide-react';
 import { useState } from 'react';
+import {
+  CommandRow,
+  CommandActionButton,
+} from '@renderer/features/settings/agents-page/install-command-row';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
@@ -8,7 +13,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
+import {
+  Field,
+  FieldLabel,
+  FieldContent,
+  FieldTitle,
+  FieldDescription,
+} from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
 import type { ClaudeCredentialKind } from '@shared/core/switch-servers/claude-credential';
@@ -58,93 +69,153 @@ export function ManagedClaudeStep({
           }}
           className="grid grid-cols-2 gap-3"
         >
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3">
-            <RadioGroupItem value="api-key" />
-            <span className="text-sm">
-              <strong>API key</strong>
-              <span className="mt-1 block text-xs text-foreground-muted">
-                Pay for API usage separately.
-              </span>
-            </span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3">
-            <RadioGroupItem value="setup-token" />
-            <span className="text-sm">
-              <strong>Subscription</strong>
-              <span className="mt-1 block text-xs text-foreground-muted">
-                Use your Claude plan.
-              </span>
-            </span>
-          </label>
+          <FieldLabel>
+            <Field orientation="horizontal">
+              <RadioGroupItem value="api-key" />
+              <FieldContent>
+                <FieldTitle>API key</FieldTitle>
+                <FieldDescription>Pay for API usage.</FieldDescription>
+              </FieldContent>
+            </Field>
+          </FieldLabel>
+          <FieldLabel>
+            <Field orientation="horizontal">
+              <RadioGroupItem value="setup-token" />
+              <FieldContent>
+                <FieldTitle>Subscription</FieldTitle>
+                <FieldDescription>Use your Claude plan.</FieldDescription>
+              </FieldContent>
+            </Field>
+          </FieldLabel>
         </RadioGroup>
-        <div className="space-y-3 rounded-lg border border-border bg-background-tertiary-2 p-4 text-sm">
-          <h3 className="font-medium">{subscription ? 'Get a setup token' : 'Get an API key'}</h3>
+        <section
+          aria-label={subscription ? 'Get a setup token' : 'Get an API key'}
+          className="space-y-4"
+        >
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">
+              {subscription ? 'Get a setup token' : 'Get an API key'}
+            </h3>
+            <p className="text-xs text-foreground-muted">
+              {subscription
+                ? 'Use a Pro, Max, Team, or Enterprise plan with Claude Code access.'
+                : 'API billing is separate from your Claude subscription.'}
+            </p>
+          </div>
           {subscription ? (
-            <>
-              <ol className="list-decimal space-y-2 pl-5">
-                <li>Install Claude Code on your computer if you have not already.</li>
-                <li>
-                  Run{' '}
-                  <code className="rounded border px-1 py-0.5 select-all">claude setup-token</code>{' '}
-                  in your terminal.
-                </li>
-                <li>Sign in with your Claude subscription in the browser and approve access.</li>
-                <li>Copy the token printed in your terminal and paste it below.</li>
-              </ol>
-              <p className="text-xs text-foreground-muted">
-                Requires a Pro, Max, Team, or Enterprise plan with Claude Code access. Your plan’s
-                usage limits apply.
-              </p>
-              <Button
-                variant="link"
-                className="h-auto p-0"
-                onClick={() =>
-                  void openExternalUrl(
-                    'https://code.claude.com/docs/en/setup',
-                    'Could not open Claude Code installation instructions.'
-                  )
-                }
-              >
-                Install Claude Code
-              </Button>
-              <Button
-                variant="link"
-                className="ml-4 h-auto p-0"
-                onClick={() =>
-                  void openExternalUrl(
-                    'https://code.claude.com/docs/en/authentication#generate-a-long-lived-token',
-                    'Could not open setup token instructions.'
-                  )
-                }
-              >
-                Token instructions
-              </Button>
-            </>
+            <ol className="space-y-4 text-sm">
+              <li className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full border text-xs text-foreground-muted"
+                >
+                  1
+                </span>
+                <div className="space-y-2">
+                  <p>Install Claude Code on your computer.</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void openExternalUrl(
+                        'https://code.claude.com/docs/en/setup',
+                        'Could not open Claude Code installation instructions.'
+                      )
+                    }
+                  >
+                    Installation guide <ExternalLink className="size-3.5" />
+                  </Button>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full border text-xs text-foreground-muted"
+                >
+                  2
+                </span>
+                <div className="min-w-0 flex-1 space-y-2">
+                  <p>Run this command in your terminal.</p>
+                  <CommandRow
+                    command="claude setup-token"
+                    action={
+                      <CommandActionButton
+                        aria-label="Open setup token documentation"
+                        onClick={() =>
+                          void openExternalUrl(
+                            'https://code.claude.com/docs/en/authentication#generate-a-long-lived-token',
+                            'Could not open setup token instructions.'
+                          )
+                        }
+                      >
+                        Help <ExternalLink className="size-3.5" />
+                      </CommandActionButton>
+                    }
+                  />
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full border text-xs text-foreground-muted"
+                >
+                  3
+                </span>
+                <div className="space-y-1">
+                  <p>Approve access in your browser.</p>
+                  <p className="text-xs leading-relaxed text-foreground-muted">
+                    Sign in with your Claude subscription, then paste the token printed in your
+                    terminal below. Your plan’s usage limits apply.
+                  </p>
+                </div>
+              </li>
+            </ol>
           ) : (
-            <>
-              <ol className="list-decimal space-y-2 pl-5">
-                <li>Sign in to the Claude Console and set up API billing.</li>
-                <li>Open Settings → API keys and choose Create key.</li>
-                <li>Copy your new API key and paste it below.</li>
-              </ol>
-              <p className="text-xs text-foreground-muted">
-                API usage is billed separately from a Claude subscription.
-              </p>
-              <Button
-                variant="link"
-                className="h-auto p-0"
-                onClick={() =>
-                  void openExternalUrl(
-                    'https://platform.claude.com/settings/keys',
-                    'Could not open Claude Console.'
-                  )
-                }
-              >
-                Open Claude Console
-              </Button>
-            </>
+            <ol className="space-y-4 text-sm">
+              <li className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full border text-xs text-foreground-muted"
+                >
+                  1
+                </span>
+                <div className="space-y-2">
+                  <p>Sign in and set up API billing.</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void openExternalUrl(
+                        'https://platform.claude.com/settings/keys',
+                        'Could not open Claude Console.'
+                      )
+                    }
+                  >
+                    Open Claude Console <ExternalLink className="size-3.5" />
+                  </Button>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span
+                  aria-hidden="true"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full border text-xs text-foreground-muted"
+                >
+                  2
+                </span>
+                <div className="space-y-1">
+                  <p>Create an API key.</p>
+                  <p className="text-xs leading-relaxed text-foreground-muted">
+                    Go to{' '}
+                    <span className="font-medium text-foreground">
+                      Settings → API keys → Create key
+                    </span>
+                    , then copy the new key and paste it below.
+                  </p>
+                </div>
+              </li>
+            </ol>
           )}
-        </div>
+        </section>
         <Field>
           <FieldLabel htmlFor="managed-claude-credential">
             {subscription ? 'Setup token' : 'API key'}
