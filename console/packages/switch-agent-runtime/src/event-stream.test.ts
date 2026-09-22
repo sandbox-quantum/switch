@@ -1096,6 +1096,114 @@ describe('the permission to start a session', () => {
     abort.abort();
   });
 
+  /**
+   * A server that fences reattaches the way the real one does: every accepted
+   * open makes a new incarnation, and an open claiming an older one is refused.
+   * `holdStateOn` withholds the frame naming the incarnation for one open, so a
+   * test can act in the window where the client has not been told yet.
+   */
+  function fencingServer(holdStateOn: number) {
+    let generation = 0;
+    let opens = 0;
+    const announce: Array<() => void> = [];
+    const fetchMock = vi.fn(async (url: string, init: { signal: AbortSignal }) => {
+      if (!String(url).includes('/events'))
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      const claimed = new URL(String(url)).searchParams.get('expected_generation');
+      if (claimed !== null && Number(claimed) !== generation)
+        return {
+          ok: false,
+          status: 409,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: { code: EVICTION_TAKEN_OVER } }),
+        };
+      opens += 1;
+      generation += 1;
+      const held = opens === holdStateOn;
+      const named = generation;
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            let closed = false;
+            const send = () => {
+              if (!closed) controller.enqueue(connected(named));
+            };
+            if (held) announce.push(send);
+            else send();
+            init.signal.addEventListener(
+              'abort',
+              () => {
+                closed = true;
+                controller.close();
+              },
+              { once: true }
+            );
+          },
+        }),
+        text: async (): Promise<string> => '',
+      };
+    });
+    return { fetchMock, announce };
+  }
+
+  it('holds a second change until the server has answered the first', async () => {
+    // Redeclaring reattaches, which claims the incarnation this client believes
+    // it holds. A second change sent before the first open was answered claims
+    // the one before it — which the server has moved past, and refuses as a
+    // takeover. That would take the agent's only connection off the air over
+    // two clicks in a row.
+    const onEvicted = vi.fn();
+    const { fetchMock, announce } = fencingServer(2);
+    const { stream, abort } = makeStream(fetchMock, { rooms: [], spawnCapable: true, onEvicted });
+    try {
+      await flush();
+      stream.setSpawnCapable(false);
+      await flush();
+      expect(urlsFor(fetchMock, '/events')).toHaveLength(2);
+
+      // The reopen is out but unanswered, so this one has nothing safe to claim.
+      stream.setSpawnCapable(true);
+      await flush();
+      expect(urlsFor(fetchMock, '/events')).toHaveLength(2);
+
+      announce[0]();
+      await flush();
+
+      // Without the hold, this is where the connection has already gone: the
+      // third open claims the incarnation the second one replaced.
+      expect(onEvicted).not.toHaveBeenCalled();
+      const opens = urlsFor(fetchMock, '/events');
+      expect(opens).toHaveLength(3);
+      expect(opens[2]).toContain('spawn_capable=true');
+      expect(opens[2]).toContain('expected_generation=2');
+    } finally {
+      abort.abort();
+    }
+  });
+
+  it('carries nothing when a change made in that window is taken back', async () => {
+    const { fetchMock, announce } = fencingServer(2);
+    const { stream, abort } = makeStream(fetchMock, { rooms: [], spawnCapable: true });
+    try {
+      await flush();
+      stream.setSpawnCapable(false);
+      await flush();
+      stream.setSpawnCapable(true);
+      stream.setSpawnCapable(false);
+      await flush();
+
+      announce[0]();
+      await flush();
+
+      // The held open already declares what the setting settled back to.
+      expect(urlsFor(fetchMock, '/events')).toHaveLength(2);
+    } finally {
+      abort.abort();
+    }
+  });
+
   it('does not reopen the socket when it is set to what it already is', async () => {
     const fetchMock = reopenable();
     const { stream, abort } = makeStream(fetchMock, { rooms: [], spawnCapable: true });

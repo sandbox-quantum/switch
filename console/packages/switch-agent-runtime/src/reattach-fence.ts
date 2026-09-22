@@ -43,6 +43,11 @@ export class ReattachFence {
     return this.gate;
   }
 
+  /** Whether the current socket's incarnation has been named yet. */
+  get admitting(): boolean {
+    return this.live;
+  }
+
   /** The server has said which incarnation this socket is. */
   attached(): void {
     this.live = true;

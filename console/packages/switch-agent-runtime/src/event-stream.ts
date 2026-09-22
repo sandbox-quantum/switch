@@ -226,6 +226,9 @@ export class SwitchEventStream {
    * off while it is connected, and the server only hears it here.
    */
   private spawnCapable: boolean;
+  /** What the socket currently being opened actually declared, which is only
+   * the value above while no change is waiting to be carried. */
+  private declaredSpawnCapable: boolean;
   /**
    * Which incarnation of the connection id the server last told us we are.
    *
@@ -262,6 +265,7 @@ export class SwitchEventStream {
     this.rooms = [...deps.rooms];
     this.cursor = deps.startCursor ?? 0;
     this.spawnCapable = deps.spawnCapable === true;
+    this.declaredSpawnCapable = this.spawnCapable;
   }
 
   get position(): number {
@@ -297,6 +301,29 @@ export class SwitchEventStream {
   setSpawnCapable(capable: boolean): void {
     if (capable === this.spawnCapable) return;
     this.spawnCapable = capable;
+    this.redeclare();
+  }
+
+  /**
+   * Reopen to carry the current declaration — but only from a socket the server
+   * has already named an incarnation for.
+   *
+   * A reattach claims the incarnation this client believes it holds, and the
+   * open that makes the next one is answered asynchronously. Reopening again
+   * before that answer arrives claims the incarnation before it, which the
+   * server has already moved past and refuses as a takeover — so two changes in
+   * quick succession would permanently stand down the agent's only connection.
+   * The confirmation carries whatever the declaration has settled on by then
+   * instead, and a change that cancels itself out carries nothing. This is the
+   * same hazard the heartbeat's fence exists for, from the other side.
+   *
+   * Nothing to fence before the first `connection_state`, or against a server
+   * too old to send one: with no incarnation to claim the reopen is a plain
+   * attach, which cannot be refused for being stale.
+   */
+  private redeclare(): void {
+    if (this.declaredSpawnCapable === this.spawnCapable) return;
+    if (this.generation !== null && !this.fence.admitting) return;
     this.reopen();
   }
 
@@ -496,7 +523,8 @@ export class SwitchEventStream {
           client: RUNTIME_ARTIFACT,
           client_version: RUNTIME_VERSION,
         });
-        if (this.spawnCapable) params.set('spawn_capable', 'true');
+        this.declaredSpawnCapable = this.spawnCapable;
+        if (this.declaredSpawnCapable) params.set('spawn_capable', 'true');
         if (this.rooms.length) params.set('rooms', this.rooms.join(','));
         // Reattaching, so say which incarnation we believe we still are and
         // let the server refuse us if we are wrong. An attach is a takeover,
@@ -603,6 +631,7 @@ export class SwitchEventStream {
         });
         this.reportRooms(frame.data.rooms);
         this.fence.attached();
+        this.redeclare();
         return;
       case 'subscription_changed':
         log.debug('SwitchEventStream: subscription changed', {
