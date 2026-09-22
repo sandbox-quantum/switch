@@ -1,7 +1,7 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Client, require_tenant_id
+from switch_core.db.models import Client, ClientRoom, require_tenant_id
 
 
 class ClientStore:
@@ -45,7 +45,20 @@ class ClientStore:
         return client
 
     async def delete(self, session: AsyncSession, client_id: str) -> None:
+        """Delete a client and the room memberships that point at it.
+
+        `client_rooms` carries a composite foreign key on
+        `(tenant_id, client_id)` with no `ON DELETE` rule, so a client that has
+        ever joined a room cannot be deleted while its membership rows stand —
+        Postgres refuses the delete. Clearing them is part of removing a
+        client rather than something each caller remembers: the rows describe
+        where the client was, and once it is gone they describe nothing.
+        """
         client = await session.get(Client, client_id)
-        if client:
-            await session.delete(client)
-            await session.flush()
+        if client is None:
+            return
+        await session.execute(
+            delete(ClientRoom).where(ClientRoom.client_id == client_id)
+        )
+        await session.delete(client)
+        await session.flush()

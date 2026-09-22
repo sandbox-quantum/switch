@@ -4,9 +4,10 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, Tenant
+from switch_core.db.models import Client, Room, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.room_store import RoomStore
 
 
 async def _make_client(session: AsyncSession, matrix_user_id: str) -> Client:
@@ -18,6 +19,92 @@ async def _make_client(session: AsyncSession, matrix_user_id: str) -> Client:
     session.add(client)
     await session.flush()
     return client
+
+
+async def _make_room(session: AsyncSession) -> str:
+    room = Room(
+        matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+        name="a room",
+        description="somewhere a client can be a member of",
+    )
+    session.add(room)
+    await session.flush()
+    return room.id
+
+
+class TestDeleteClearsMemberships:
+    """A client that has joined a room must still be deletable.
+
+    `client_rooms` references `clients` with no `ON DELETE` rule, so the
+    membership rows held the client row hostage: every caller that deletes a
+    client — bridge removal above all, where each puppet has been in every
+    room the person it stands for spoke in — hit a raw foreign key violation
+    and left the client behind.
+    """
+
+    async def test_a_client_that_is_in_a_room_can_be_deleted(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = ClientStore()
+        async with session_factory() as session:
+            client_id = (
+                await _make_client(session, f"@member-{uuid.uuid4().hex[:8]}:test")
+            ).id
+            room_id = await _make_room(session)
+            await RoomStore().add_client(session, client_id, room_id)
+            await session.commit()
+
+        async with session_factory() as session:
+            await store.delete(session, client_id)
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await store.get(session, client_id) is None
+            assert await RoomStore().get_client_ids(session, room_id) == []
+
+    async def test_other_clients_keep_their_memberships(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = ClientStore()
+        async with session_factory() as session:
+            going = (
+                await _make_client(session, f"@going-{uuid.uuid4().hex[:8]}:test")
+            ).id
+            staying = (
+                await _make_client(session, f"@staying-{uuid.uuid4().hex[:8]}:test")
+            ).id
+            room_id = await _make_room(session)
+            await RoomStore().add_client(session, going, room_id)
+            await RoomStore().add_client(session, staying, room_id)
+            await session.commit()
+
+        async with session_factory() as session:
+            await store.delete(session, going)
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await RoomStore().get_client_ids(session, room_id) == [staying]
+
+    async def test_the_room_itself_survives(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Only the membership goes. Deleting a client is not a reason to lose
+        the room it was in — the other participants are still there."""
+        store = ClientStore()
+        async with session_factory() as session:
+            client_id = (
+                await _make_client(session, f"@lonely-{uuid.uuid4().hex[:8]}:test")
+            ).id
+            room_id = await _make_room(session)
+            await RoomStore().add_client(session, client_id, room_id)
+            await session.commit()
+
+        async with session_factory() as session:
+            await store.delete(session, client_id)
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await RoomStore().get(session, room_id) is not None
 
 
 class TestGetByMatrixUserIdMultiTenant:

@@ -190,6 +190,40 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
 
 
 @pytest.mark.asyncio
+async def test_identities_that_were_in_rooms_go_too(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The case that actually happens, and the one that used to fail.
+
+    Both of these clients have been in a room — the bridge because it carries
+    the channel, the puppet because the person it stands for spoke there — and
+    `client_rooms` references `clients` with no `ON DELETE` rule. So the
+    deletes above raised a foreign key violation instead, after the bridge row
+    had already been committed, and the client rows were left behind for good.
+    """
+    service = _service(session_factory)
+    async with session_factory() as session:
+        bridge_id, bridge_client_id = await _make_bridge(session)
+        room_id = await _make_bridged_room(session, bridge_id=bridge_id)
+        _external_user_id, puppet_client_id = await _make_external_user(
+            session, bridge_id=bridge_id
+        )
+        await RoomStore().add_client(session, bridge_client_id, room_id)
+        await RoomStore().add_client(session, puppet_client_id, room_id)
+        await session.commit()
+
+    await service.remove(bridge_id)
+
+    async with session_factory() as session:
+        assert await ClientStore().get(session, bridge_client_id) is None
+        assert await ClientStore().get(session, puppet_client_id) is None
+        # The room outlives the connection as an internal-only room, with
+        # nobody left claiming to be a member on the platform's behalf.
+        assert await RoomStore().get(session, room_id) is not None
+        assert await RoomStore().get_client_ids(session, room_id) == []
+
+
+@pytest.mark.asyncio
 async def test_an_app_with_nobody_on_it_still_loses_its_own_client(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
