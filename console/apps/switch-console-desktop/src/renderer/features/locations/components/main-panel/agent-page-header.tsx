@@ -11,7 +11,6 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -111,7 +110,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
             }
           >
-            New Session <BoundShortcut settingsKey="newSession" />
+            New Session
           </Button>
           {roomable && (
             <Button

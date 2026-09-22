@@ -103,9 +103,12 @@ const GROUP_CLASS = cn(
 
 // Ordered allowlists for the "Suggested Actions" empty-state group. Defined at
 // module scope so the arrays keep stable references across renders.
-const SESSION_SUGGESTED = ['session.sidebarChanges', 'session.sidebarFiles', 'resource-monitor'];
-const LOCATION_SUGGESTED = ['app.newSession', 'app.settings', 'resource-monitor'];
-const APP_SUGGESTED = ['app.newLocation', 'app.settings', 'resource-monitor'];
+//
+// Every id here must be one a CommandProvider actually produces, or the
+// resource monitor: the list is filtered against the live registry, so an id
+// nothing implements silently shortens the group rather than failing.
+const SESSION_SUGGESTED = ['session.pin', 'app.settings', 'resource-monitor'];
+const DEFAULT_SUGGESTED = ['app.newLocation', 'app.addServer', 'app.settings', 'resource-monitor'];
 
 function PaletteItem({
   value,
@@ -254,16 +257,12 @@ export function CommandPaletteModal({
 
   const actions = useMemo(() => {
     // Empty state: show the ordered context-specific suggested actions only.
-    const suggestedIds = sessionId
-      ? SESSION_SUGGESTED
-      : locationId
-        ? LOCATION_SUGGESTED
-        : APP_SUGGESTED;
+    const suggestedIds = sessionId ? SESSION_SUGGESTED : DEFAULT_SUGGESTED;
     return [...registryActions, resourceMonitorAction]
       .filter((a) => suggestedIds.includes(a.id))
       .sort((a, b) => suggestedIds.indexOf(a.id) - suggestedIds.indexOf(b.id))
       .slice(0, 7);
-  }, [registryActions, resourceMonitorAction, locationId, sessionId]);
+  }, [registryActions, resourceMonitorAction, sessionId]);
 
   const rankedDb = applyContextAffinity(searchResult.items, { locationId });
   const actionResults = actions;
