@@ -36,8 +36,20 @@ async function applyLocalAutoSessionState(agent: Agent, enabled: boolean): Promi
 /**
  * Toggle an agent's auto_session capability. Single write path: flips the
  * gateway profile (`connection_model` ⇄ `auto_session`) via the known-agent
- * options, mirrors the flag locally, and starts/stops the watcher. The local
- * agent must be linked to a Switch server and have a Switch agent id.
+ * options, mirrors the flag locally, and tells the controller whether it may
+ * spawn. The local agent must be linked to a Switch server and have a Switch
+ * agent id.
+ *
+ * The two writes are ordered by which half-applied state is honest, because
+ * either one can fail and leave the other standing. `auto_session` is the
+ * profile on which the server answers an addressed agent with "starting a
+ * session", and it grants that on the strength of the profile rather than on
+ * what the controller declared — so a profile that says `auto_session` while
+ * the controller cannot spawn is a promise nothing will keep. Enabling
+ * therefore makes the controller spawn-capable first and claims the profile
+ * second; disabling gives the promise up first and stands the controller down
+ * second. A failure at either step lands on `session_addressable`, where the
+ * server asks the connection instead of the profile.
  */
 export async function setAgentAutoSession(params: AgentAutoSessionParams): Promise<void> {
   const agent = await getAgentById(params.agentId);
@@ -48,8 +60,13 @@ export async function setAgentAutoSession(params: AgentAutoSessionParams): Promi
   const server = await getServer(agent.serverId);
   if (!server) throw new Error(`No Switch server with id ${agent.serverId}`);
 
-  await setAutoSession(server, agent.switchAgentId, params.enabled);
-  await applyLocalAutoSessionState(agent, params.enabled);
+  if (params.enabled) {
+    await applyLocalAutoSessionState(agent, true);
+    await setAutoSession(server, agent.switchAgentId, true);
+    return;
+  }
+  await setAutoSession(server, agent.switchAgentId, false);
+  await applyLocalAutoSessionState(agent, false);
 }
 
 /**
