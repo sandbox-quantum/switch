@@ -116,6 +116,32 @@ it('leaves agents on other hosts alone when one host comes back', async () => {
   expect(mocks.apply).toHaveBeenCalledWith('here', 'restore');
 });
 
+it('sweeps again for a host that flaps while its recovery is still running', async () => {
+  // The controller this sweep failed to start is exactly the one the second
+  // recovery is for. Discarding the overlapping signal leaves it down until the
+  // host happens to flap again.
+  mocks.agents.mockResolvedValue([{ id: 'remote', switchAgentId: 'switch-1' }]);
+  mocks.location.mockResolvedValue({ sshHost: 'host' });
+  let arrive: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  mocks.apply.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+    await held;
+    throw new Error('Host unreachable');
+  });
+  await autoSessionWatcher.initialize();
+
+  mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(2));
+  mocks.reachability.announce({ current: { sshHost: 'host', status: 'unreachable' } });
+  mocks.reachability.announce({ current: { sshHost: 'host', status: 'reachable' } });
+  arrive();
+
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(3));
+  expect(mocks.apply.mock.calls[2]).toEqual(['remote', 'restore']);
+});
+
 it('does nothing for a host that has only just gone away', async () => {
   mocks.agents.mockResolvedValue([{ id: 'remote', switchAgentId: 'switch-1' }]);
   mocks.location.mockResolvedValue({ sshHost: 'host' });

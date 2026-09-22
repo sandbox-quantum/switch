@@ -15,7 +15,7 @@ import {
 
 class AutoSessionWatcher {
   private watchingHosts = false;
-  private readonly recovering = new Set<string>();
+  private readonly recovering = new Map<string, { again: boolean }>();
 
   /**
    * Brings up a controller for every agent linked to Switch, whether or not it
@@ -74,27 +74,44 @@ class AutoSessionWatcher {
   }
 
   private async restoreHost(sshHost: string): Promise<void> {
-    if (this.recovering.has(sshHost)) return;
-    this.recovering.add(sshHost);
+    const running = this.recovering.get(sshHost);
+    // A host that goes away and returns while its sweep is still running has
+    // invalidated that sweep: whatever it started may have gone down with the
+    // host again, and whatever failed while the host was away is the reason
+    // this recovery matters. Dropping the second signal loses the agents in
+    // both sets until the next flap, so the sweep is run again instead.
+    if (running) {
+      running.again = true;
+      return;
+    }
+    const run = { again: false };
+    this.recovering.set(sshHost, run);
     try {
-      for (const agent of await getAgents()) {
-        if (!agent.switchAgentId) continue;
-        const location = await getAgentLocation(agent).catch(() => null);
-        if (location?.sshHost !== sshHost) continue;
-        try {
-          // A host coming back is not somebody asking for a connection back, so
-          // a controller that stood down after a takeover stays down and one
-          // stopped by hand stays stopped.
-          await applyControllerState(agent.id, 'restore');
-        } catch (error) {
-          log.error('Shared SDK watcher could not start after its host returned', {
-            agentId: agent.id,
-            error: String(error),
-          });
-        }
-      }
+      do {
+        run.again = false;
+        await this.startHostControllers(sshHost);
+      } while (run.again);
     } finally {
       this.recovering.delete(sshHost);
+    }
+  }
+
+  private async startHostControllers(sshHost: string): Promise<void> {
+    for (const agent of await getAgents()) {
+      if (!agent.switchAgentId) continue;
+      const location = await getAgentLocation(agent).catch(() => null);
+      if (location?.sshHost !== sshHost) continue;
+      try {
+        // A host coming back is not somebody asking for a connection back, so
+        // a controller that stood down after a takeover stays down and one
+        // stopped by hand stays stopped.
+        await applyControllerState(agent.id, 'restore');
+      } catch (error) {
+        log.error('Shared SDK watcher could not start after its host returned', {
+          agentId: agent.id,
+          error: String(error),
+        });
+      }
     }
   }
 
