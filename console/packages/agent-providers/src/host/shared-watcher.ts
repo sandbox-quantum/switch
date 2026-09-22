@@ -131,8 +131,12 @@ async function stopped(sessionId: string): Promise<boolean> {
 
 /** What the sessions on disk say about who holds a room. */
 type Ownership = {
-  /** The running session the server has confirmed serving the room, if any. */
-  owner: SharedHostConfig | null;
+  /**
+   * Running sessions whose binding names the room. More than one is a
+   * disagreement: both were told they serve it, and only the server knows
+   * which answer it has since replaced.
+   */
+  owners: SharedHostConfig[];
   /** The room was given to a session of this agent and is no longer its. */
   taken: boolean;
   /**
@@ -157,7 +161,7 @@ type Ownership = {
  * that bound it, whether or not that sibling has written anything yet.
  */
 async function roomOwnership(agentId: string, roomId: string): Promise<Ownership> {
-  const ownership: Ownership = { owner: null, taken: false, candidates: 0 };
+  const ownership: Ownership = { owners: [], taken: false, candidates: 0 };
   const base = sharedSessionsBase();
   let names: string[];
   try {
@@ -181,7 +185,7 @@ async function roomOwnership(agentId: string, roomId: string): Promise<Ownership
     const saved = await SharedRoomInbox.savedRooms(root);
     const running = !(await stopped(config.session.sessionId));
     if (saved?.rooms.includes(roomId)) {
-      if (running) ownership.owner = config;
+      if (running) ownership.owners.push(config);
     } else if (saved?.everHeld.includes(roomId)) ownership.taken = true;
     else if (running) ownership.candidates += 1;
   }
@@ -396,10 +400,13 @@ export class SharedWatchAssignments {
    *
    * What the server says outranks what this watcher remembers: a session is
    * serving the room if the rooms it was told when it bound say so, whoever
-   * started it. Failing that, the last session this watcher started for the
-   * room still counts while the server has never given it a room — the room
-   * becomes the session's when the agent in it connects to the room, and it
-   * cannot have done that before the message that started it arrives.
+   * started it. Two running sessions saying that is a disagreement no local
+   * file settles — the one the server has replaced only finds out when it next
+   * binds — so the room is undecided until one of them stops saying it. Failing
+   * any claim, the last session this watcher started for the room still counts
+   * while the server has never given it a room: the room becomes the session's
+   * when the agent in it connects, and it cannot have done that before the
+   * message that started it arrives.
    *
    * A room taken from a session was taken by a sibling that bound it, and that
    * sibling may not have written down what it holds yet. Nothing local can name
@@ -415,10 +422,16 @@ export class SharedWatchAssignments {
     const saved = mine
       ? await SharedRoomInbox.savedRooms(sharedSessionRoot(mine.session.sessionId))
       : null;
-    if (mine && (saved === null || saved.rooms.includes(roomId))) return mine;
-    const { owner, taken, candidates } = await roomOwnership(agentId, roomId);
+    const { owners, taken, candidates } = await roomOwnership(agentId, roomId);
+    // A session this watcher started is counted here too. It is not on the
+    // scan's terms until it has been launched and written its config down, and
+    // a claim it has already made outranks that.
+    const claiming = new Map(owners.map((config) => [config.session.sessionId, config]));
+    if (mine && saved?.rooms.includes(roomId)) claiming.set(mine.session.sessionId, mine);
+    if (claiming.size > 1) return 'undecided';
+    const [owner] = claiming.values();
     if (owner) return owner;
-    if (mine && saved && saved.everHeld.length === 0) return mine;
+    if (mine && (saved === null || saved.everHeld.length === 0)) return mine;
     const lost = saved !== null && saved.everHeld.includes(roomId);
     return (taken || lost) && candidates > 0 ? 'undecided' : null;
   }

@@ -943,6 +943,34 @@ async function answering(
   return sessionRoot;
 }
 
+it('holds a room two running sessions both say they serve', async () => {
+  // The server moved the room to the sibling and told it so. The session that
+  // lost it finds out when it next binds, and until then both files claim the
+  // room: nothing local says which of the two answers the server has replaced.
+  // The watcher's own memory of the room is not a tie-breaker — it is the older
+  // of the two claims, and routing to it talks over the session that has it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-conflict-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const started = await decided(assignments, config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  const evicted = await SharedRoomInbox.open(join(root, started.session.sessionId));
+  await evicted.serves(['room']);
+  const taker = await answering(root, config, [['room']]);
+
+  expect(await assignments.serving(config.session.agentId, 'room')).toBe('undecided');
+
+  // It stops being a disagreement the moment the evicted session is answered.
+  await evicted.serves([]);
+  const owner = await assignments.serving(config.session.agentId, 'room');
+  expect(owner && owner !== 'undecided' && owner.session.sessionId).toBe(basename(taker));
+});
+
 it('holds a room whose owner is undecided instead of starting a second session', async () => {
   // The session that took the room binds it before it writes anything down, so
   // for a moment nothing local names an owner. Treating that as an empty room
