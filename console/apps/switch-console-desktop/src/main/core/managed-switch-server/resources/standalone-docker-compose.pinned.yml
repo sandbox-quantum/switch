@@ -227,6 +227,12 @@ services:
       SLACK_APP_CLIENT_ID: ${SLACK_APP_CLIENT_ID:-}
       SLACK_APP_CLIENT_SECRET: ${SLACK_APP_CLIENT_SECRET:-}
       SLACK_APP_SIGNING_SECRET: ${SLACK_APP_SIGNING_SECRET:-}
+      DISCORD_APP_CLIENT_ID: ${DISCORD_APP_CLIENT_ID:-}
+      DISCORD_APP_CLIENT_SECRET: ${DISCORD_APP_CLIENT_SECRET:-}
+      DISCORD_APP_BOT_TOKEN: ${DISCORD_APP_BOT_TOKEN:-}
+      DISCORD_APP_APPLICATION_ID: ${DISCORD_APP_APPLICATION_ID:-}
+      DISCORD_APP_MESSAGE_CONTENT: ${DISCORD_APP_MESSAGE_CONTENT:-}
+      DISCORD_APP_MEMBERS: ${DISCORD_APP_MEMBERS:-}
       # Observability and log format. Forwarded because this service names
       # every variable it passes, so without them here, setting any of these
       # in `.env` does nothing and the Helm chart is the only way to turn
