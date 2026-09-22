@@ -2,6 +2,7 @@ import { sessionSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
 import { stopSharedSession } from '@main/core/sdk-host/shared-agent-runtime';
 import { configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
+import { manageAgentSidecar } from '@main/core/sdk-host/sidecar-management';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
@@ -15,7 +16,7 @@ import { log } from '@main/lib/logger';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 import { remoteSessionReconciler } from './remote-session-reconciler';
-import { ensureRemoteWatcher, startRemoteDiscovery } from './remote-watcher';
+import { startRemoteDiscovery } from './remote-watcher';
 
 export async function resetRemoteAgent(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
@@ -35,7 +36,11 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
     .from(sessions)
     .where(eq(sessions.agentId, agentId));
   for (const session of local) await removeLocalSession(session.id);
-  await ensureRemoteWatcher(agentId);
+  // Someone asked for this agent back, so it ends on the same transition as
+  // Start: a controller stopped by hand is started, rather than held down by
+  // the record of that stop, which is durable and outlasts the reset. Auto-start
+  // is a separate setting and is carried through untouched.
+  await manageAgentSidecar(agentId, 'start');
   await startRemoteDiscovery(agentId);
 }
 
