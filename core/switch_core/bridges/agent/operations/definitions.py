@@ -16,12 +16,14 @@ from typing import Any
 
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
+    bound_rooms,
     caller_session,
     connected_room,
     get_agent_id,
     get_protocol,
     require_connected_room,
     session_key,
+    sole_connected_room,
 )
 from switch_core.bridges.agent.operations.registry import operation
 from switch_core.bridges.agent.protocol.connections import (
@@ -640,16 +642,33 @@ async def read_context(
             connected to, and does not clear that room's unread count.
     """
     agent_id = get_agent_id()
+    connected = await bound_rooms()
     if room_id is None:
-        room_id = await require_connected_room()
+        room_id = sole_connected_room(connected)
 
     protocol = get_protocol()
     since_ms = parse_timestamp_ms(since) if since else None
     before_ms = parse_timestamp_ms(before) if before else None
 
-    return await protocol.read_context(
+    buffer = protocol.event_buffer
+    # Sampled before the read, because anything enqueued while the history
+    # response is in flight is not in that response. Clearing through the
+    # later head would report a zero for a message the agent never saw;
+    # clearing through this one can only leave something counted twice.
+    through = buffer.head(agent_id)
+
+    context = await protocol.read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
     )
+
+    reader = session_key()
+    if reader is not None and room_id in connected:
+        # Catching up is the whole point of the unread count, so doing it
+        # clears this room — and only this room. A read of somewhere else
+        # leaves every count alone, including this one.
+        buffer.caught_up(agent_id, reader, room_id, through)
+
+    return context
 
 
 @operation

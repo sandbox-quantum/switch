@@ -112,11 +112,14 @@ selects *events within them*.
 | `all` | every event in subscribed rooms, each carrying `addressed` |
 | `addressed` | only addressed messages, task events, and opted-in room joins |
 
-A session uses `single` + `all` — it needs unaddressed traffic for context and
-for missed-message counts. A daemon uses `all` + `addressed` — it is watching
-for a reason to start a session, not following conversations. This is what
-makes the separate `/notifications` endpoint and the second notification builder
-(CHOO-1810) removable — neither has actually been removed yet.
+A session uses `single` + `all` — it needs unaddressed traffic for context. The
+count of what it missed no longer depends on that: it is derived from the
+buffer per room, so a connection under `addressed` is counted the same way and
+its filtered-out traffic is not lost to the tally. A daemon uses `all` +
+`addressed` — it is watching for a reason to start a session, not following
+conversations. This is what makes the separate `/notifications` endpoint and
+the second notification builder (CHOO-1810) removable — neither has actually
+been removed yet.
 
 ### 2.4 Room slots
 
@@ -270,10 +273,16 @@ Never silent is not the same as immediate. A gap is reported to the *client*
 the moment it is detected, but a client must not wake its agent for one on its
 own: the only available response is to re-read context, and the agent cannot
 know whether anything it cared about was dropped, so an interrupt per hiccup
-buys a turn spent on a maybe. Clients hold the reason and attach it to the next
-event they surface — still ahead of any reply that stale context could skew,
-at no cost of its own. A gap that is never followed by a surfaced event is one
-the agent had no turn to misuse anyway; it stays in the client's log.
+buys a turn spent on a maybe. What the agent is eventually told rides out on
+the next event it is woken for, in the unread count for the room the gap
+applies to (§6.1) — still ahead of any reply that stale context could skew, at
+no cost of its own. A gap that is never followed by a surfaced event is one the
+agent had no turn to misuse anyway; it stays in the client's log.
+
+The server does the attaching, not the client. A client only ever sees what its
+own connection was sent, so a gap it holds cannot say which room lost what, and
+a count it keeps answers a different question from "how far behind is this
+agent in this room". Both are derived from the buffer instead.
 
 ### 4.3 Confirmation
 
@@ -470,6 +479,7 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
 | `bridge_id` | string \| null | collaboration bridge, if any |
 | `channel_type` | string \| null | `channel_public`, `channel_private`, `direct` |
 | `payload` | object | per type |
+| `missed` | `{count, reason}` \| absent | how far behind the reader is on unaddressed chatter in this event's room, as of this event. Only on events the agent is woken for. `count` is null when nothing can be stated and `reason` says why; a `reason` beside a number means the number is a floor, because history was dropped |
 
 ### 6.2 `message`
 
@@ -535,7 +545,7 @@ New, carried on the same stream:
 |---|---|---|
 | `connection_state` | `connection_id`, `agent_id`, `scope`, `filter`, `spawn_capable`, `rooms`, `cursor`, `protocol`, `heartbeat_interval_seconds`, `server`, `client` | first event on every stream |
 | `subscription_changed` | `rooms`, `reason` | scope changed — including a room going dark because another connection claimed it |
-| `gap` | `from_sequence`, `resumed_at`, `reason` | events were dropped; re-read context. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
+| `gap` | `from_sequence`, `resumed_at`, `rooms`, `reason` | events were dropped; re-read context. `rooms` names which rooms lost them, so a client with a dozen has something to act on. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
 | `evicted` | `reason` | this connection lost its slot or was taken over; it must stop acting |
 
 `gap` and `evicted` exist so that degradation is always visible. A client that

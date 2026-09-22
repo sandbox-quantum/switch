@@ -105,47 +105,49 @@ it('restores room bindings and outstanding deliveries without repeating acknowle
   ).rejects.toThrow('unknown room event');
 });
 
-it('carries the unaddressed tally on the next delivery and starts counting again', async () => {
+it('journals only the deliveries the session has to answer', async () => {
+  // How far behind the agent is on the rest is Switch's answer to give: it
+  // counts per room, and this inbox only ever saw one room's worth.
   const { inbox, stream } = await connected();
   await stream.onEvent(message(1, false));
   await stream.onEvent(message(2, false));
   await stream.onEvent(roomJoin(3));
   await stream.onEvent(message(4, true));
-  expect(inbox.pending()).toMatchObject([{ sequence: 4, missed: 2, gap: null }]);
   await stream.onEvent(message(5, false));
   await stream.onEvent(message(6, true));
-  expect(inbox.pending()).toMatchObject([
-    { sequence: 4, missed: 2 },
-    { sequence: 6, missed: 1 },
+  expect(inbox.pending()).toEqual([
+    { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-4' },
+    { type: 'received', sequence: 6, roomId: 'room', messageId: 'message-6' },
   ]);
 });
 
-it('keeps streaming after a gap and warns on the next delivery instead', async () => {
+it('keeps streaming after a gap rather than failing the connection', async () => {
   const { inbox, failures, stream } = await connected();
-  await stream.onGap({ fromSequence: 7, reason: 'events aged out of the buffer' });
+  await stream.onGap({
+    fromSequence: 7,
+    reason: 'events aged out of the buffer',
+    rooms: ['room'],
+  });
   await stream.onEvent(message(9, true));
   expect(failures).toEqual([]);
-  expect(inbox.pending()).toMatchObject([
-    { sequence: 9, missed: 0, gap: { fromSequence: 7, reason: 'events aged out of the buffer' } },
-  ]);
-  await stream.onEvent(message(10, true));
-  expect(inbox.pending()[1]).toMatchObject({ sequence: 10, gap: null });
+  expect(inbox.pending()).toMatchObject([{ sequence: 9 }]);
 });
 
-it('reloads deliveries journaled before a tally was recorded', async () => {
-  const { root, inbox, stream } = await connected();
-  await stream.onEvent(message(1, false));
-  await stream.onEvent(message(2, true));
+it('opens a journal whose deliveries carry a tally nothing reads any more', async () => {
+  const { root } = await connected();
   await writeFile(
     join(root, 'room-inbox.jsonl'),
-    JSON.stringify({ type: 'received', sequence: 3, roomId: 'room', messageId: 'old' }) + '\n',
+    JSON.stringify({
+      type: 'received',
+      sequence: 3,
+      roomId: 'room',
+      messageId: 'old',
+      missed: 2,
+      gap: null,
+    }) + '\n',
     { flag: 'a' }
   );
-  expect(inbox.pending()).toMatchObject([{ sequence: 2, missed: 1 }]);
-  expect((await SharedRoomInbox.open(root)).pending()).toMatchObject([
-    { sequence: 2, missed: 1, gap: null },
-    { sequence: 3, missed: 0, gap: null },
-  ]);
+  expect((await SharedRoomInbox.open(root)).pending()).toMatchObject([{ sequence: 3 }]);
 });
 
 async function reconnect(root: string) {
@@ -210,13 +212,13 @@ it('restores legacy restart evidence carried on a lower sequence delivery', asyn
   expect(inbox.pending()).toEqual([]);
 });
 
-it('retains a zero checkpoint and gap before the next message arrives', async () => {
+it('retains a zero checkpoint before the next message arrives', async () => {
   const { root, stream } = await connected();
   await stream.onGap({ fromSequence: 0, resumedAt: 0, cursorReset: true, reason: 'buffer reset' });
   const next = await reconnect(root);
   expect(next.stream.startCursor).toBe(0);
   await next.stream.onEvent(message(1, true));
-  expect(next.inbox.pending()[0].gap?.reason).toBe('buffer reset');
+  expect(next.inbox.pending()).toMatchObject([{ sequence: 1 }]);
 });
 
 it('keeps the session alive during recoverable eviction, whatever the wording', async () => {

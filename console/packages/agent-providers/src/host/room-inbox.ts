@@ -39,23 +39,27 @@ export const roomConnectionSchema = z.strictObject({
   rooms: z.array(z.string().min(1)),
   startCursor: z.number().int().nonnegative().optional(),
 });
+const gapSchema = z
+  .strictObject({
+    fromSequence: z.number().int().nonnegative(),
+    reason: z.string().min(1),
+  })
+  .nullable();
 const receivedSchema = z.strictObject({
   type: z.literal('received'),
   sequence: z.number().int().positive(),
   roomId: z.string().min(1),
   messageId: z.string().min(1),
-  missed: z.number().int().nonnegative(),
-  gap: z
-    .strictObject({
-      fromSequence: z.number().int().nonnegative(),
-      reason: z.string().min(1),
-    })
-    .nullable(),
 });
-/** Deliveries journaled before a tally was recorded carry neither field. */
+/**
+ * Deliveries journaled before the server counted chatter per room carry a
+ * tally and a gap note the host worked out for itself. Read and ignored:
+ * neither decides anything now, and refusing them would leave an inbox an
+ * older app wrote unopenable.
+ */
 const storedReceivedSchema = receivedSchema.extend({
-  missed: receivedSchema.shape.missed.default(0),
-  gap: receivedSchema.shape.gap.default(null),
+  missed: z.number().int().nonnegative().optional(),
+  gap: gapSchema.optional(),
 });
 const recordSchema = z.discriminatedUnion('type', [
   storedReceivedSchema,
@@ -68,7 +72,7 @@ const recordSchema = z.discriminatedUnion('type', [
     type: z.literal('cursor'),
     sequence: z.number().int().nonnegative(),
     reset: z.boolean(),
-    gap: receivedSchema.shape.gap,
+    gap: gapSchema,
   }),
   z.strictObject({ type: z.literal('rooms'), rooms: z.array(z.string()) }),
 ]);
@@ -82,8 +86,6 @@ export class SharedRoomInbox {
   private readonly sequences = new Map<number, string>();
   private rooms: string[] | null = null;
   private cursor: number | null = null;
-  private missed = 0;
-  private gap: Received['gap'] = null;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
     for (const record of journal.records) {
       if (record.type === 'received') {
@@ -95,7 +97,6 @@ export class SharedRoomInbox {
         this.outstanding.set(key, record);
         this.sequences.set(record.sequence, key);
         this.cursor = record.sequence;
-        this.gap = null;
       } else if (record.type === 'ack') {
         const key = record.identity ?? this.sequences.get(record.sequence);
         if (!key) throw new Error('Room inbox acknowledges an unknown delivery.');
@@ -103,7 +104,6 @@ export class SharedRoomInbox {
       } else if (record.type === 'cursor') {
         if (record.reset) this.sequences.clear();
         this.cursor = record.sequence;
-        this.gap = record.gap;
       } else this.rooms = record.rooms;
     }
   }
@@ -154,17 +154,12 @@ export class SharedRoomInbox {
         log: console,
         onEvent: async (event) => {
           const messageId = roomInputId(event);
-          if (!messageId) {
-            if (event.type === 'message') this.missed += 1;
-            return;
-          }
+          if (!messageId) return;
           const received = receivedSchema.parse({
             type: 'received',
             sequence: event.sequence,
             roomId: event.room_id,
             messageId,
-            missed: this.missed,
-            gap: this.gap,
           });
           const key = identity(received);
           const previous = this.sequences.get(received.sequence);
@@ -176,8 +171,6 @@ export class SharedRoomInbox {
           this.outstanding.set(key, received);
           this.sequences.set(received.sequence, key);
           this.cursor = received.sequence;
-          this.missed = 0;
-          this.gap = null;
         },
         onRooms: (next) => {
           void (async () => {
@@ -194,25 +187,23 @@ export class SharedRoomInbox {
           });
         },
         // A gap costs the agent context, not the connection: the stream keeps
-        // serving from wherever it resumed, and the warning rides on the next
-        // delivery so the agent reads the room before it answers.
+        // serving from wherever it resumed. What the agent is told about it
+        // comes back from the server on the next room message, which knows
+        // which rooms actually lost events; recording it here is evidence for
+        // a reader of the journal.
         onGap: async (gap) => {
-          console.warn(`Room delivery gap: ${gap.reason}. Read room context before continuing.`);
-          const detail = { fromSequence: gap.fromSequence, reason: gap.reason };
-          if (gap.resumedAt !== undefined) {
-            await this.journal.append({
-              type: 'cursor',
-              sequence: gap.resumedAt,
-              reset: gap.cursorReset === true,
-              gap: detail,
-            });
-            this.cursor = gap.resumedAt;
-            if (gap.cursorReset) {
-              this.sequences.clear();
-              this.missed = 0;
-            }
-          }
-          this.gap = detail;
+          console.warn(
+            `Room delivery gap in ${gap.rooms?.join(', ') ?? 'unnamed rooms'}: ${gap.reason}.`
+          );
+          if (gap.resumedAt === undefined) return;
+          await this.journal.append({
+            type: 'cursor',
+            sequence: gap.resumedAt,
+            reset: gap.cursorReset === true,
+            gap: { fromSequence: gap.fromSequence, reason: gap.reason },
+          });
+          this.cursor = gap.resumedAt;
+          if (gap.cursorReset) this.sequences.clear();
         },
         onEvicted: ({ code, reason }) => {
           if (code === EVICTION_HEARTBEAT_LAPSED)

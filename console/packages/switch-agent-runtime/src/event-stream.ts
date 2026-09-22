@@ -193,6 +193,8 @@ export interface SwitchEventStreamDeps {
   onGap(info: {
     fromSequence: number;
     reason: string;
+    /** The rooms that lost events. Absent from a server that predates naming them. */
+    rooms?: string[];
     resumedAt?: number;
     cursorReset?: boolean;
   }): void | Promise<void>;
@@ -588,10 +590,12 @@ export class SwitchEventStream {
         this.reportRooms(frame.data.rooms);
         return;
       case 'gap': {
+        const rooms = Array.isArray(frame.data.rooms) ? frame.data.rooms.map(String) : undefined;
         log.warn('SwitchEventStream: gap — events missed', {
           event: 'switch_stream_gap',
           fromSequence: frame.data.from_sequence,
           reason: frame.data.reason,
+          rooms: rooms ?? null,
         });
         const resumedAt = frame.data.resumed_at;
         if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
@@ -599,6 +603,7 @@ export class SwitchEventStream {
         await onGap({
           fromSequence: Number(frame.data.from_sequence ?? 0),
           reason: String(frame.data.reason ?? 'events were missed'),
+          ...(rooms === undefined ? {} : { rooms }),
           ...(resumedAt === undefined
             ? {}
             : { resumedAt: Number(resumedAt), cursorReset: Number(resumedAt) < this.cursor }),

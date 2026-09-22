@@ -108,7 +108,15 @@ async def bound_rooms() -> set[str]:
 
 async def require_connected_room() -> str:
     """The room this caller is bound to, or a clear error saying it is not."""
-    rooms = await bound_rooms()
+    return sole_connected_room(await bound_rooms())
+
+
+def sole_connected_room(rooms: set[str]) -> str:
+    """The one room in `rooms`, or a clear error saying why there is not one.
+
+    Split from `require_connected_room` for callers that need the whole bound
+    set as well and must not pay for reading it twice.
+    """
     if not rooms:
         raise ValueError("Not connected to a room. Call connect_to_room first.")
     if len(rooms) > 1:

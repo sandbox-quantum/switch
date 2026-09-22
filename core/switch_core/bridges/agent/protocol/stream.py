@@ -143,11 +143,17 @@ async def _event_stream(
                 head,
             )
             conn.cursor = head
+            # Every room this connection covers loses its baseline with the
+            # buffer that held it. Starting a fresh one here would answer the
+            # next "how far behind am I in this room" with a zero the agent
+            # has no reason to doubt.
+            buffer.mark_unknown(agent_id, conn.id, conn.rooms)
             yield _frame(
                 "gap",
                 {
                     "from_sequence": head,
                     "resumed_at": head,
+                    "rooms": sorted(conn.rooms),
                     "reason": "the server restarted since your last connection; "
                     "sequence numbers have been reset and events from before "
                     "the restart are gone — re-read room context",
@@ -156,15 +162,17 @@ async def _event_stream(
 
         # A cursor the buffer can no longer serve is reported, not silently
         # moved to head. The client re-reads room context to recover.
-        if buffer.has_gap_before(agent_id, conn.cursor):
+        lost = buffer.rooms_dropped_after(agent_id, conn.cursor)
+        if lost:
             oldest = buffer.oldest_retained(agent_id)
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from expired cursor %s "
-                "(oldest retained %s)",
+                "(oldest retained %s, rooms %s)",
                 agent_id,
                 conn.id,
                 conn.cursor,
                 oldest,
+                ", ".join(lost),
             )
             resumed_at = max(oldest - 1, 0)
             conn.cursor = resumed_at
@@ -173,6 +181,7 @@ async def _event_stream(
                 {
                     "from_sequence": conn.cursor,
                     "resumed_at": resumed_at,
+                    "rooms": list(lost),
                     "reason": "events older than the retention window were "
                     "dropped; re-read room context",
                 },
@@ -230,6 +239,14 @@ async def _event_stream(
                     yield b": keepalive\n\n"
                 continue
 
+            # Where counting starts for a room this connection has just begun
+            # to cover. It is the cursor rather than head because the backlog
+            # this connection is about to work through is backlog it genuinely
+            # has not seen; a room claimed later starts from wherever the
+            # cursor has reached by then, which is the same rule.
+            for room_id in conn.rooms:
+                buffer.start_counting(agent_id, conn.id, room_id, conn.cursor)
+
             try:
                 pending = buffer.read_from(
                     agent_id,
@@ -243,6 +260,7 @@ async def _event_stream(
                     {
                         "from_sequence": exc.requested,
                         "resumed_at": max(exc.oldest - 1, 0),
+                        "rooms": list(exc.rooms),
                         "reason": str(exc),
                     },
                 )
@@ -261,6 +279,11 @@ async def _event_stream(
                 # event loop, so no heartbeat is processed, so every connection
                 # in the process is declared dead and reconnects, forever.
                 #
+                # Nothing is lost by moving past them: the cursor records what
+                # has been written out, not what the agent has caught up on.
+                # The events stay in the buffer and each room's watermark stays
+                # where it was, so what was skipped here is still countable.
+                #
                 # An empty result means the scan reached the end without hitting
                 # the batch limit, so head is exactly how far we have looked.
                 head = buffer.head(agent_id)
@@ -277,6 +300,16 @@ async def _event_stream(
                     continue
                 payload = item.event.model_dump(mode="json")
                 payload["sequence"] = item.seq
+                if item.notifiable:
+                    # Told on the way past, on the one event the agent is being
+                    # woken for anyway. A count of its own would be a wake
+                    # spent on "you may have missed something you may not care
+                    # about".
+                    unread = buffer.unread(agent_id, conn.id, item.room_id, item.seq)
+                    payload["missed"] = {
+                        "count": unread.count,
+                        "reason": unread.reason,
+                    }
                 # Advance before yielding: the cursor tracks what the server has
                 # written out. What the client has actually processed comes back
                 # on its heartbeat, which is the value that governs resume.

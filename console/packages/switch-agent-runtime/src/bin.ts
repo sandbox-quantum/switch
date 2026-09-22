@@ -455,6 +455,15 @@ type AgentEvent = {
   room_id: string;
   bridge_id: string | null;
   channel_type: string | null;
+  /**
+   * How far behind the agent is on unaddressed chatter in this event's room,
+   * as of this event. Carried only on events the agent is woken for, and only
+   * by a server that counts it.
+   *
+   * `count` is null when nothing can be said and `reason` is why; a reason
+   * beside a number means the number is a floor.
+   */
+  missed?: { count: number | null; reason: string | null };
   payload:
     | MessagePayload
     | CommandPayload
@@ -545,25 +554,6 @@ const streamFence = new ReattachFence();
 // Whether the currently open stream declared a room when it opened.
 let streamHasRoom = false;
 
-// Unaddressed room messages are filtered out (never surfaced as a
-// notification), so the agent silently falls behind on room chatter. We tally
-// how many we've dropped since the agent last read context and surface that
-// count on every notification we DO emit, so the agent knows when to call
-// read_context to catch up. Reset to 0 when the agent reads context (signalled
-// by the /read-context hook) and when polling switches rooms.
-let missedSinceRead = 0;
-
-// Reason from the most recent `gap` frame, held until it can ride out on a
-// notification the agent was going to receive anyway.
-//
-// A gap says events were dropped and cannot be replayed. That must never be
-// silent, but it does not warrant a wake of its own: the only available
-// response is to re-read context, and the agent cannot know whether anything
-// it cared about was in the hole. Waking for it spends a turn on a maybe.
-// Deferring costs nothing — the warning still arrives before the agent's next
-// reply, which is the point at which stale context would actually mislead it.
-let pendingGapReason: string | null = null;
-
 // -- MCP server --------------------------------------------------------------
 
 const mcp = new Server(
@@ -581,14 +571,14 @@ const mcp = new Server(
       '',
       'A room_join event fires when a user or agent joins a room — but you are only notified for rooms where you are configured to receive join events (per-room, per-agent; off by default, set via the join_event_listeners option on create_room / update_room or the gateway). The meta carries member (their matrix id) and member_name (their display name). React if it is relevant — e.g. a welcome agent greets the new arrival and explains the room via post_message, or send_targeted_message to address them directly. Your own join does not produce a room_join event.',
       '',
-      'Every notification carries a `missed_count` in its meta: the number of unaddressed room messages filtered out since you last called read_context. When it is above 0 the one-line body is annotated with it. A growing count means the room is active around you and you have fallen behind — call read_context (widen `since` to cover the gap) to catch up on what you missed. The count resets to 0 when you call read_context.',
+      'A notification carries a `missed_count` in its meta: how far behind you are on unaddressed chatter in that event\'s room. Switch counts it per room, so reading one room\'s context clears that room\'s count and leaves every other room standing at its own. A count above 0 means the room is active around you — call read_context (widen `since` to cover the gap) to catch up. It reads `unknown` when Switch cannot vouch for a number; read rather than assuming zero. A `missed_reason` beside it says why a count is unknown, or why a number is only a floor. The one-line body is annotated whenever there is something to act on, and a count is absent entirely from a server that does not count.',
       '',
       'Delivery is automatic: when you call connect_to_room on the switch MCP server, a PostToolUse hook pushes the room id to this channel over a localhost port. The channel claims that room on its connection and events are pushed to you as they happen. No separate tool call is needed.',
       '',
-      'If a notification carries a gap warning (a `gap` entry in its meta, and a line saying earlier events were dropped), some room events could not be replayed — call read_context before responding rather than assuming you have the full picture. A gap never arrives as a notification of its own; it is attached to the next event you receive.',
+      'Lost history reaches you through that same count rather than as a warning of its own: when the server restarted or events aged out, the affected room\'s `missed_count` reads `unknown`, or stays a number with a `missed_reason` marking it a floor. It never arrives as a notification of its own — it rides on the next event you are woken for in that room. Call read_context before responding rather than assuming you have the full picture.',
       '',
       'When you receive a message event:',
-      '1. Call read_context ONLY if you are missing context: missed_count is above 0, a gap warning arrived, the message joins a thread or discussion you have not been following, or a long time has passed since your last read. Set since to a few minutes before the event timestamp. When missed_count is 0 and you have been following the room, the event itself is enough — skip the read and answer.',
+      '1. Call read_context ONLY if you are missing context: missed_count is above 0 or unknown, a missed_reason came with it, the message joins a thread or discussion you have not been following, or a long time has passed since your last read. Set since to a few minutes before the event timestamp. When missed_count is 0 and you have been following the room, the event itself is enough — skip the read and answer.',
       '2. Understand what is being asked or discussed.',
       '3. Respond by calling post_message (or send_targeted_message if addressing a specific agent).',
       '',
@@ -1342,15 +1332,17 @@ async function handleFrame(frame: SseFrame): Promise<void> {
       process.stderr.write(`switch: subscription now ${JSON.stringify(frame.data.rooms)}\n`);
       return;
 
-    case 'gap':
-      // Never silent, but never a wake either: logged here and held for the
-      // next notification, rather than spending a turn to say "you may have
-      // missed something you may not care about".
+    case 'gap': {
+      // Never silent, but never a wake either. What the agent is told rides
+      // out on the next notification, in the unread count for the room it
+      // applies to — the server knows which rooms lost events and this
+      // process does not.
+      const rooms = Array.isArray(frame.data.rooms) ? frame.data.rooms.join(', ') : 'unnamed rooms';
       process.stderr.write(
-        `switch: GAP — missed events before sequence ${frame.data.from_sequence}\n`
+        `switch: GAP in ${rooms} — missed events before sequence ${frame.data.from_sequence}\n`
       );
-      pendingGapReason = String(frame.data.reason ?? 'events were dropped and cannot be replayed');
       return;
+    }
 
     case 'evicted':
       process.stderr.write(`switch: evicted — ${frame.data.reason}\n`);
@@ -1410,8 +1402,6 @@ function setConnectedRoom(target: string | null) {
 
   if (target) {
     pollingRoomId = target;
-    missedSinceRead = 0;
-
     process.stderr.write(
       `switch: joining room ${target}` +
         (OWNS_CONNECTION ? '' : ' (connection shared with the supervisor)') +
@@ -1702,12 +1692,10 @@ async function handleHookRequest(req: Request): Promise<Response> {
   }
 
   if (url.pathname === '/read-context') {
-    // The agent called read_context, so it has caught up on room history —
-    // clear the missed-message backlog we've been tallying, and any deferred
-    // gap warning: re-reading context is exactly the recovery that warning
-    // would have asked for, so repeating it later would be noise.
-    missedSinceRead = 0;
-    pendingGapReason = null;
+    // Nothing to do: catching up is recorded by Switch when the read reaches
+    // it, per room. The route stays because the connector's hook still calls
+    // it, and a 404 here is printed to the session's stderr on every read —
+    // it goes when the connector stops calling it.
     return new Response('ok');
   }
 
@@ -1767,15 +1755,16 @@ function startHookListener() {
 
 async function handleEvent(event: AgentEvent) {
   const { type, room_id, payload } = event;
+  // Every notification this event produces reports what Switch says the agent
+  // is behind by in this event's room.
+  const notify = (content: string, meta: Record<string, string>) =>
+    emitNotification(content, meta, event.missed);
 
   if (type === 'message') {
     const msg = payload as MessagePayload;
-    if (!msg.addressed) {
-      // Unaddressed chatter: filtered out, no notification. Tally it so the
-      // next notification can tell the agent how far behind it has fallen.
-      missedSinceRead++;
-      return;
-    }
+    // Unaddressed chatter is filtered out rather than surfaced; how much of it
+    // went past is counted by Switch and reported on the next notification.
+    if (!msg.addressed) return;
 
     // Surface receipt feedback: tell the room's bridged channel that this
     // agent is "typing" so the human knows the message landed and we're
@@ -1805,7 +1794,7 @@ async function handleEvent(event: AgentEvent) {
     }
 
     const ts = new Date(msg.timestamp).toISOString();
-    await emitNotification(`[${msg.sender_name}]: ${msg.body}`, {
+    await notify(`[${msg.sender_name}]: ${msg.body}`, {
       room_id,
       event_type: type,
       sender: msg.sender,
@@ -1823,7 +1812,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'command') {
     const cmd = payload as CommandPayload;
-    await emitNotification(`Command: ${cmd.command}${cmd.target ? ` target=${cmd.target}` : ''}`, {
+    await notify(`Command: ${cmd.command}${cmd.target ? ` target=${cmd.target}` : ''}`, {
       room_id,
       event_type: type,
       user_id: cmd.user_id,
@@ -1838,7 +1827,7 @@ async function handleEvent(event: AgentEvent) {
     if (!join.listening) {
       return;
     }
-    await emitNotification(`${join.member_name} joined the room`, {
+    await notify(`${join.member_name} joined the room`, {
       room_id,
       event_type: type,
       member: join.member,
@@ -1850,7 +1839,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_delegate') {
     const task = payload as TaskDelegatePayload;
-    await emitNotification(`Task delegated: ${task.summary} — ${task.description}`, {
+    await notify(`Task delegated: ${task.summary} — ${task.description}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1863,7 +1852,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_accept') {
     const task = payload as TaskAcceptPayload;
-    await emitNotification(`Task accepted by ${task.performer_agent_id}`, {
+    await notify(`Task accepted by ${task.performer_agent_id}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1875,7 +1864,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_update') {
     const task = payload as TaskUpdatePayload;
-    await emitNotification(`Task update: ${task.update}`, {
+    await notify(`Task update: ${task.update}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1887,7 +1876,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_finalise') {
     const task = payload as TaskFinalisePayload;
-    await emitNotification(`Task finalised: ${task.outcome ?? '(no outcome provided)'}`, {
+    await notify(`Task finalised: ${task.outcome ?? '(no outcome provided)'}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1899,7 +1888,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_cancel') {
     const task = payload as TaskCancelPayload;
-    await emitNotification(`Task cancelled${task.reason ? `: ${task.reason}` : ''}`, {
+    await notify(`Task cancelled${task.reason ? `: ${task.reason}` : ''}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1978,25 +1967,42 @@ async function setTyping(roomId: string, isTyping: boolean) {
   }
 }
 
-async function emitNotification(content: string, meta: Record<string, string>) {
-  // Surface the unaddressed-message backlog on every notification. meta values
-  // are strings; missed_count is always present (0 when caught up). When it's
-  // non-zero, annotate the one-line body so the agent sees it without having
-  // to inspect meta, and knows to widen read_context's `since` to catch up.
-  const missed = missedSinceRead;
-  const enriched: Record<string, string> = { ...meta, missed_count: String(missed) };
-  let body =
-    missed > 0
-      ? `${content}\n⚠️ ${missed} unread room message${missed === 1 ? '' : 's'} since your last read_context — call read_context (widen \`since\`) to catch up on what you missed.`
-      : content;
+/**
+ * What to append about chatter the agent has not caught up on in this room.
+ *
+ * A known zero says nothing: the point of the line is to move the agent to
+ * read context, and a reassurance it did not ask for costs a line of every
+ * notification. Everything else does say something, including — especially —
+ * not being able to give a number.
+ */
+function unreadNote(unread: NonNullable<AgentEvent['missed']>): string | null {
+  if (unread.count === null)
+    return `⚠️ How far behind you are on unaddressed messages in this room is not known (${unread.reason}) — call read_context before responding.`;
+  const plural = unread.count === 1 ? '' : 's';
+  if (unread.reason)
+    return `⚠️ At least ${unread.count} unaddressed room message${plural} arrived since you last read this room's context, and there may have been more (${unread.reason}) — call read_context (widen \`since\`) before responding.`;
+  if (unread.count > 0)
+    return `⚠️ ${unread.count} unaddressed room message${plural} arrived since you last read this room's context — call read_context (widen \`since\`) to catch up.`;
+  return null;
+}
 
-  // Deliver any deferred gap on the way past. This is the turn the agent was
-  // already being woken for, so the warning is free here, and it lands before
-  // the reply it would otherwise have skewed.
-  if (pendingGapReason !== null) {
-    enriched.gap = pendingGapReason;
-    body = `${body}\n⚠️ Some earlier room events were dropped and cannot be replayed (${pendingGapReason}) — call read_context before responding.`;
-    pendingGapReason = null;
+async function emitNotification(
+  content: string,
+  meta: Record<string, string>,
+  unread: AgentEvent['missed']
+) {
+  // Switch counts this per room from the events it holds, and says so on the
+  // event the agent is being woken for anyway. A count kept here could only
+  // ever describe what this process was sent, which is not the same question.
+  // Absent means the server did not say, so neither do we — a zero invented
+  // here is the one answer an agent would act on without doubting it.
+  const enriched: Record<string, string> = { ...meta };
+  let body = content;
+  if (unread !== undefined) {
+    enriched.missed_count = unread.count === null ? 'unknown' : String(unread.count);
+    if (unread.reason !== null) enriched.missed_reason = unread.reason;
+    const note = unreadNote(unread);
+    if (note) body = `${content}\n${note}`;
   }
   await mcp
     .notification({

@@ -65,8 +65,6 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         "room-demo",
         "message",
         sequence,
-        0,
-        None,
         False,
     )
     receipt = await service.submit_room_message(*args, buffer)
@@ -80,9 +78,7 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         await service.submit_room_message(*args, EventBuffer())
     ).command_id == receipt.command_id
     with pytest.raises(SessionError, match="verified addressed"):
-        await service.submit_room_message(
-            *args[:5], "forged", sequence, 0, None, False, buffer
-        )
+        await service.submit_room_message(*args[:5], "forged", sequence, False, buffer)
     with pytest.raises(SessionError, match="does not own"):
         await service.submit_room_message(
             "agent-demo", "session-demo", "other", *args[3:], buffer
@@ -91,6 +87,29 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         await db.delete(await db.get(ClientRoom, ("agent-client", "room-demo")))
     with pytest.raises(SessionError, match="not a member"):
         await service.submit_room_message(*args, buffer)
+
+
+def _reader(connections, connection_id="connection-demo"):
+    connection = connections.open(
+        agent_id="agent-demo",
+        connection_id=connection_id,
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(),
+        expected_generation=None,
+    )
+    connections.claim_room(connection, "room-demo")
+    return connection
+
+
+def _chatter(buffer, room_id="room-demo", times=1):
+    for index in range(times):
+        message = event(f"chatter-{room_id}-{index}")
+        message.payload.addressed = False
+        message.room_id = room_id
+        buffer.enqueue("agent-demo", room_id, message)
 
 
 @pytest.mark.asyncio
@@ -120,8 +139,7 @@ async def test_a_hostile_body_cannot_forge_the_switch_frame(session_factory):
         "room-demo",
         "message",
         sequence,
-        0,
-        None,
+        False,
         buffer,
     )
     text = (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[
@@ -142,11 +160,20 @@ async def test_a_hostile_body_cannot_forge_the_switch_frame(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_factory):
+async def test_the_prompt_counts_the_chatter_this_room_went_past(session_factory):
+    """Worked out here from the events, rather than taken from the host.
+
+    A host counted this for itself with one tally for every room it watched, so
+    a session in a quiet room was told about a busy one's traffic and reading
+    either cleared both. The buffer holds every event with its room on it, so
+    the number is a scan and belongs to one room by construction.
+    """
     service, epoch = await setup(session_factory)
     buffer = EventBuffer()
+    connections = ConnectionRegistry()
+    connection = _reader(connections)
 
-    async def deliver(message_id, missed_count, gap_reason):
+    async def deliver(message_id):
         message = event()
         message.payload.message_id = message_id
         sequence = buffer.enqueue("agent-demo", "room-demo", message)
@@ -158,8 +185,6 @@ async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_fac
             "room-demo",
             message_id,
             sequence,
-            missed_count,
-            gap_reason,
             False,
             buffer,
         )
@@ -168,17 +193,70 @@ async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_fac
         )
         return pending[-1].body.text
 
-    assert "\nRun the check\n" in await deliver("quiet", 0, None)
-    assert (await deliver("one", 1, None)).endswith(
-        "\n(1 unaddressed room message arrived since the previous message you were sent — call read_context to catch up.)"
+    # No connection bound yet, so nothing has been counting for this session.
+    # Said out loud rather than reported as nothing having happened.
+    assert (await deliver("unbound")).endswith(
+        "\n⚠️ How far behind you are on unaddressed chatter in this room is not "
+        "known (nothing recorded what you had already seen in this room) — call "
+        "read_context before responding."
     )
-    assert (await deliver("many", 2, None)).endswith(
-        "\n(2 unaddressed room messages arrived since the previous message you were sent — call read_context to catch up.)"
+
+    await service.bind_connection(
+        "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
     )
-    text = await deliver("gapped", 2, "events aged out of the buffer")
-    assert "2 unaddressed room messages arrived" in text
-    assert text.endswith(
-        "\n⚠️ Some earlier room events were dropped and cannot be replayed (events aged out of the buffer) — call read_context before responding."
+    buffer.start_counting(
+        "agent-demo", connection.id, "room-demo", buffer.head("agent-demo")
+    )
+
+    assert "\nRun the check\n" in await deliver("quiet")
+    _chatter(buffer)
+    assert (await deliver("one")).endswith(
+        "\n(1 unaddressed room message arrived since you last read this room's "
+        "context — call read_context to catch up.)"
+    )
+    # Being handed a message is not catching up on the room it arrived in, so
+    # the earlier one is still counted.
+    _chatter(buffer)
+    assert (await deliver("many")).endswith(
+        "\n(2 unaddressed room messages arrived since you last read this room's "
+        "context — call read_context to catch up.)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_count_that_lost_history_is_given_as_a_floor(session_factory):
+    """Because the alternative is a number that quietly understates itself."""
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer(max_events_per_agent=2)
+    connections = ConnectionRegistry()
+    connection = _reader(connections)
+    await service.bind_connection(
+        "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
+    )
+    buffer.start_counting("agent-demo", connection.id, "room-demo", 0)
+
+    _chatter(buffer, times=3)
+    message = event()
+    message.payload.message_id = "gapped"
+    sequence = buffer.enqueue("agent-demo", "room-demo", message)
+    await service.submit_room_message(
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        epoch,
+        "room-demo",
+        "gapped",
+        sequence,
+        False,
+        buffer,
+    )
+
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert pending[-1].body.text.endswith(
+        "\n⚠️ At least 1 unaddressed room message arrived since you last read "
+        "this room's context, and there may have been more (older events in "
+        "this room were dropped before anything counted them, so this is a "
+        "floor rather than a total) — call read_context before responding."
     )
 
 
@@ -201,8 +279,6 @@ async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factor
                 "room-demo",
                 "message",
                 sequence,
-                0,
-                None,
                 False,
                 buffer,
             )
@@ -236,8 +312,6 @@ async def test_internal_room_admission_preserves_thread_context(session_factory)
         "room-demo",
         "message",
         sequence,
-        0,
-        None,
         False,
         buffer,
     )
@@ -262,14 +336,12 @@ async def test_admission_hands_back_the_command_it_created_without_settling_it(
         "room-demo",
         "message",
         sequence,
-        0,
-        None,
     )
     receipt = await service.submit_room_message(*args, True, buffer)
     assert receipt.status == "accepted"
     assert receipt.command is not None
     assert receipt.command.command_id == receipt.command_id
-    assert receipt.command.body.text.endswith("Run the check")
+    assert "\nRun the check" in receipt.command.body.text
 
     # Handing the command over is not delivering it: the endpoint still serves
     # it until a result is reported, which is how a host that never saw this
@@ -309,8 +381,6 @@ async def test_admission_withholds_the_command_when_older_work_is_already_queued
         "room-demo",
         "message",
         sequence,
-        0,
-        None,
         True,
         buffer,
     )
@@ -343,8 +413,6 @@ async def test_only_the_first_of_a_backlog_is_handed_straight_to_the_host(
                 "room-demo",
                 message_id,
                 sequence,
-                0,
-                None,
                 True,
                 buffer,
             )
@@ -408,8 +476,6 @@ async def test_room_attachment_is_copied_durably_with_caption_and_missing_file_n
         "room-demo",
         "message",
         sequence,
-        0,
-        None,
         False,
         buffer,
     )
@@ -579,8 +645,6 @@ async def test_room_join_requires_opt_in_and_deduplicates(session_factory, liste
         "room-demo",
         message_id,
         sequence,
-        0,
-        None,
         False,
         buffer,
     )

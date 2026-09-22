@@ -16,8 +16,15 @@ single-process by construction, so an in-process structure is authoritative.
 It sits behind a narrow surface (`enqueue`, `read_from`, `wait`, `confirm`)
 so it can be moved to Postgres later without touching its callers.
 
-Overflow is never silent: when the cap forces events out, the agent is flagged
-as having a gap and the next reader to ask is told it missed events.
+Overflow is never silent: when the cap forces events out, the rooms that lost
+events are flagged and the next reader to ask is told it missed events there.
+
+How far behind a reader is in a room is derived here rather than tallied: every
+event is retained with its room and whether it was addressed, so "unaddressed
+traffic in this room since you last caught up" is a scan between two sequence
+numbers at the moment somebody asks. The only thing recorded is where each
+reader last caught up in each room, which is one number and cannot drift out of
+step with the events it describes.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from switch_core.bridges.agent.protocol.types import AgentEvent
@@ -44,6 +52,17 @@ DEFAULT_MAX_EVENTS_PER_AGENT = 2000
 # later is told it has a gap rather than handed a partial stream.
 DEFAULT_RETENTION_SECONDS = 15 * 60
 
+# Why an unread count is absent or incomplete. Never a bare zero: a reader that
+# is told nothing went by must be able to trust it.
+NO_BASELINE = "nothing recorded what you had already seen in this room"
+RESTARTED = (
+    "the server restarted, so what you had already seen in this room is no longer known"
+)
+COUNTED_FROM_A_HOLE = (
+    "older events in this room were dropped before anything counted them, so "
+    "this is a floor rather than a total"
+)
+
 
 class CursorExpiredError(Exception):
     """A reader asked to resume from a point the buffer no longer retains.
@@ -52,14 +71,18 @@ class CursorExpiredError(Exception):
     must be told, never handed a stream that looks complete.
     """
 
-    def __init__(self, agent_id: str, requested: int, oldest: int) -> None:
+    def __init__(
+        self, agent_id: str, requested: int, oldest: int, rooms: tuple[str, ...]
+    ) -> None:
         super().__init__(
             f"cursor {requested} for agent {agent_id} is older than the retained "
-            f"buffer (oldest retained: {oldest}); missed events, re-read context"
+            f"buffer (oldest retained: {oldest}); missed events in "
+            f"{', '.join(rooms)}, re-read context"
         )
         self.agent_id = agent_id
         self.requested = requested
         self.oldest = oldest
+        self.rooms = rooms
 
 
 def is_notifiable(event: AgentEvent) -> bool:
@@ -92,6 +115,20 @@ class BufferedEvent:
     appended_at: float
 
 
+@dataclass(frozen=True)
+class Unread:
+    """Unaddressed messages a reader has yet to catch up on, in one room.
+
+    `count` is None when nothing about it can be stated — better than a zero
+    the reader would believe. `reason` says why a count is absent, or why one
+    that is present is only a floor; it is None exactly when the count is
+    complete.
+    """
+
+    count: int | None
+    reason: str | None
+
+
 class EventBuffer:
     def __init__(
         self,
@@ -109,9 +146,18 @@ class EventBuffer:
         # that connects after an event was already consumed by someone else
         # still sees it.
         self._cursors: dict[str, dict[str, int]] = {}
-        # Highest sequence number dropped by overflow, per agent. Any reader
-        # resuming from at or below this has missed events.
-        self._dropped_through: dict[str, int] = {}
+        # agent -> room -> highest sequence number dropped from that room. Any
+        # reader resuming from at or below it has missed events there, and
+        # knowing which room is what lets the warning name one.
+        self._dropped_through: dict[str, dict[str, int]] = {}
+        # agent -> reader -> room -> where that reader last caught up in that
+        # room, or None for "cannot be said". Distinct from the delivery
+        # cursor, which records what the server has written out: the two are
+        # allowed to diverge, and that divergence is what makes a count
+        # per-room rather than per-connection. At most one session of an agent
+        # may be in a room, so a reader and a room together name one caller
+        # without anything else having to identify it.
+        self._watermarks: dict[str, dict[str, dict[str, int | None]]] = {}
 
     # ------------------------------------------------------------------
     # Producing
@@ -211,12 +257,84 @@ class EventBuffer:
 
     def has_gap_before(self, agent_id: str, after_seq: int) -> bool:
         """Whether resuming from `after_seq` would skip dropped events."""
-        dropped = self._dropped_through.get(agent_id)
-        return dropped is not None and after_seq < dropped
+        return bool(self.rooms_dropped_after(agent_id, after_seq))
+
+    def rooms_dropped_after(self, agent_id: str, after_seq: int) -> tuple[str, ...]:
+        """The rooms that lost events a reader at `after_seq` would have seen."""
+        markers = self._dropped_through.get(agent_id, {})
+        return tuple(sorted(room for room, seq in markers.items() if seq > after_seq))
 
     # ------------------------------------------------------------------
     # Reader bookkeeping
     # ------------------------------------------------------------------
+
+    def start_counting(
+        self, agent_id: str, reader_id: str, room_id: str, from_seq: int
+    ) -> None:
+        """Give a reader a baseline in a room, unless it already has one.
+
+        Having no baseline is reported as an unknown count, so this is what
+        turns unknown into a number. It never overwrites: what is already
+        there is either progress or a deliberate unknown, and discarding
+        either would invent a zero.
+        """
+        rooms = self._watermarks.setdefault(agent_id, {}).setdefault(reader_id, {})
+        rooms.setdefault(room_id, from_seq)
+
+    def mark_unknown(self, agent_id: str, reader_id: str, rooms: Iterable[str]) -> None:
+        """Record that how far behind a reader is in these rooms cannot be said.
+
+        Sticky, so a reader that reclaims the room afterwards is not quietly
+        given a fresh baseline and told nothing went by. The next time it
+        catches up it gets a real one again.
+        """
+        held = self._watermarks.setdefault(agent_id, {}).setdefault(reader_id, {})
+        for room_id in rooms:
+            held[room_id] = None
+
+    def caught_up(
+        self, agent_id: str, reader_id: str, room_id: str, through_seq: int
+    ) -> None:
+        """Record that a reader has caught up on a room through `through_seq`.
+
+        Forward only, and only for the room named: catching up on one room
+        says nothing about any other, which is the whole point of counting
+        per room.
+        """
+        held = self._watermarks.setdefault(agent_id, {}).setdefault(reader_id, {})
+        current = held.get(room_id)
+        if current is None or through_seq > current:
+            held[room_id] = through_seq
+
+    def unread(
+        self, agent_id: str, reader_id: str, room_id: str, through_seq: int
+    ) -> Unread:
+        """Unaddressed messages in one room a reader has not caught up on.
+
+        Counted on demand from the retained events rather than tallied as they
+        arrive, so it cannot disagree with what the buffer holds. Only
+        messages: an agent is told how much conversation went past it, not how
+        many admin events did.
+        """
+        held = self._watermarks.get(agent_id, {}).get(reader_id, {})
+        if room_id not in held:
+            return Unread(count=None, reason=NO_BASELINE)
+        baseline = held[room_id]
+        if baseline is None:
+            return Unread(count=None, reason=RESTARTED)
+
+        count = sum(
+            1
+            for item in self._events.get(agent_id, ())
+            if item.room_id == room_id
+            and baseline < item.seq <= through_seq
+            and item.event.type == "message"
+            and not item.notifiable
+        )
+        dropped = self._dropped_through.get(agent_id, {}).get(room_id, 0)
+        if dropped > baseline:
+            return Unread(count=count, reason=COUNTED_FROM_A_HOLE)
+        return Unread(count=count, reason=None)
 
     def register_reader(self, agent_id: str, reader_id: str, cursor: int) -> None:
         self._cursors.setdefault(agent_id, {})[reader_id] = cursor
@@ -235,6 +353,9 @@ class EventBuffer:
         readers = self._cursors.get(agent_id)
         if readers:
             readers.pop(reader_id, None)
+        watermarks = self._watermarks.get(agent_id)
+        if watermarks:
+            watermarks.pop(reader_id, None)
 
     def remove(self, agent_id: str) -> None:
         self._events.pop(agent_id, None)
@@ -242,6 +363,7 @@ class EventBuffer:
         self._notify.pop(agent_id, None)
         self._cursors.pop(agent_id, None)
         self._dropped_through.pop(agent_id, None)
+        self._watermarks.pop(agent_id, None)
 
     def drop_room(self, agent_id: str, room_id: str) -> None:
         """Forget everything retained for this agent in one room.
@@ -452,10 +574,11 @@ class EventBuffer:
             notify.set()
 
     def _check_cursor(self, agent_id: str, after_seq: int) -> None:
-        if self.has_gap_before(agent_id, after_seq):
-            raise CursorExpiredError(
-                agent_id, after_seq, self._dropped_through[agent_id] + 1
-            )
+        rooms = self.rooms_dropped_after(agent_id, after_seq)
+        if not rooms:
+            return
+        markers = self._dropped_through[agent_id]
+        raise CursorExpiredError(agent_id, after_seq, max(markers.values()) + 1, rooms)
 
     def _trim(self, agent_id: str) -> None:
         """Enforce the retention window and the cap.
@@ -470,11 +593,12 @@ class EventBuffer:
         if not events:
             return
 
-        dropped_seq = 0
+        dropped: dict[str, int] = {}
         expired = 0
         cutoff = time.monotonic() - self._retention_seconds
         while events and events[0].appended_at < cutoff:
-            dropped_seq = events.popleft().seq
+            item = events.popleft()
+            dropped[item.room_id] = item.seq
             expired += 1
         if expired:
             metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "retention"}, expired)
@@ -482,18 +606,20 @@ class EventBuffer:
         overflow = len(events) - self._max_events
         if overflow > 0:
             for _ in range(overflow):
-                dropped_seq = events.popleft().seq
+                item = events.popleft()
+                dropped[item.room_id] = item.seq
             metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "overflow"}, overflow)
             logger.warning(
                 "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
-                "through seq=%s — readers resuming from before this will be "
-                "told they missed events",
+                "through seq=%s in rooms %s — readers resuming from before "
+                "this will be told they missed events",
                 agent_id,
                 self._max_events,
-                dropped_seq,
+                max(dropped.values()),
+                ", ".join(sorted(dropped)),
             )
 
-        if dropped_seq:
-            self._dropped_through[agent_id] = max(
-                dropped_seq, self._dropped_through.get(agent_id, 0)
-            )
+        if dropped:
+            markers = self._dropped_through.setdefault(agent_id, {})
+            for room_id, seq in dropped.items():
+                markers[room_id] = max(seq, markers.get(room_id, 0))

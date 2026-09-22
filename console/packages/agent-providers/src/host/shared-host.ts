@@ -445,8 +445,6 @@ export async function runSharedHost(
                 room_id: event.roomId,
                 message_id: event.messageId,
                 sequence: event.sequence,
-                missed_count: event.missed,
-                gap_reason: event.gap?.reason ?? null,
               })
             );
             if (receipt.command) admitted.push(receipt.command);

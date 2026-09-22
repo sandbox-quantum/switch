@@ -164,6 +164,10 @@ class RoomMessage(HostLease):
     room_id: str = Field(min_length=1)
     message_id: str = Field(min_length=1)
     sequence: int = Field(ge=1)
+    # Accepted and ignored. A host counted this for itself before the server
+    # could, and the body is strict on both ends: rejecting the field would
+    # break every such host on its first room message, for a number the server
+    # now works out per room from events it already holds.
     missed_count: int = Field(default=0, ge=0)
     gap_reason: str | None = None
 
@@ -196,8 +200,6 @@ async def room_message(
         body.room_id,
         body.message_id,
         body.sequence,
-        body.missed_count,
-        body.gap_reason,
         include_command,
         buffer,
     )

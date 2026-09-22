@@ -82,7 +82,7 @@ artifacts:
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.4.4
+    version: 0.4.5
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -160,9 +160,17 @@ contracts:
     # a takeover. All of it is additive and `accepts` stays at 1: a revision-1
     # client sends no incarnation and is recorded as unfenceable rather than
     # refused.
+    #
+    # Revision 3 moves unread accounting onto the wire. A delivered frame may
+    # carry `missed` — how far behind the reader is on unaddressed chatter in
+    # that frame's room, as a count that may be null with a reason — and a gap
+    # frame may carry `rooms`, naming which rooms lost events. Both are
+    # additive and `accepts` stays at 1: a client that reads neither behaves as
+    # it did, and a server that sends neither leaves the client with no count
+    # to render rather than a wrong one.
     artifacts:
-      switch-core: { speaks: 2, accepts: 1 }
-      agent-runtime: { speaks: 2, accepts: 1 }
+      switch-core: { speaks: 3, accepts: 1 }
+      agent-runtime: { speaks: 3, accepts: 1 }
 
   gateway-api:
     description: >-
