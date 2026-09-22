@@ -19,7 +19,7 @@ import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock'
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { readTakenOver, recordTakenOver } from './taken-over';
-import { awaitWatchDisabled, readWatchFlags } from './watch-flags';
+import { awaitWatchChange, readWatchFlags } from './watch-flags';
 
 const assignmentSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -243,9 +243,12 @@ export async function runSharedWatcher(
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
     const connectionId = template.roomConnection.connectionId;
-    const flags = await readWatchFlags(root);
+    let flags = await readWatchFlags(root);
     if (!flags.enabled) return;
-    const spawn = flags.spawn;
+    // Not captured once: somebody can turn automatic sessions off while this
+    // controller is connected, and the answer it gave on opening has to change
+    // with them rather than wait for a restart nobody knows to perform.
+    let spawn = flags.spawn;
     // Stood down after a takeover, and staying down. Starting would reopen the
     // connection, which is itself a takeover — the watcher would win it back
     // from whoever displaced it, and the two would trade the agent's one
@@ -272,7 +275,10 @@ export async function runSharedWatcher(
       });
     };
     await replaceSupersededSessions(template.session.agentId, supervision);
-    if (spawn) for (const config of assignments.sessions()) await launch(config);
+    const launchAssigned = async () => {
+      for (const config of assignments.sessions()) await launch(config);
+    };
+    if (spawn) await launchAssigned();
     const stream = new SwitchEventStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -357,7 +363,17 @@ export async function runSharedWatcher(
       },
     });
     stream.start();
-    await awaitWatchDisabled(root, stop.signal);
+    while (!stop.signal.aborted) {
+      const changed = await awaitWatchChange(root, flags, stop.signal);
+      if (!changed || !changed.enabled) break;
+      flags = changed;
+      spawn = flags.spawn;
+      stream.setSpawnCapable(spawn);
+      // The rooms addressed while spawning was off were never journalled, so
+      // there is nothing to catch up on — but a session this controller was
+      // already assigned and could not start is started now.
+      if (spawn) await launchAssigned();
+    }
   } catch (error) {
     if (!stop.signal.aborted) throw error;
   } finally {

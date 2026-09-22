@@ -26,39 +26,49 @@ export async function readWatchFlags(root: string): Promise<WatchFlags> {
 }
 
 /**
- * Resolves once the flags say this controller should stand down, or once the
- * signal fires. Both writers replace the file by rename, so the directory is
- * watched rather than the path, and the watch is in place before the first read
- * so a write landing between the two is still seen. A read that fails is the
- * caller's problem, not something to sit through: it rejects.
+ * Resolves with the flags on disk once they differ from `current`, or with null
+ * once the signal fires. Both flags are watched, not just `enabled`: a
+ * controller declares whether it may spawn when it opens its connection, so a
+ * change to that answer is something the running controller has to act on
+ * rather than pick up at its next start.
+ *
+ * Both writers replace the file by rename, so the directory is watched rather
+ * than the path, and the watch is in place before the first read so a write
+ * landing between the two is still seen. A read that fails is the caller's
+ * problem, not something to sit through: it rejects.
  */
-export function awaitWatchDisabled(root: string, signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) return resolve();
+export function awaitWatchChange(
+  root: string,
+  current: WatchFlags,
+  signal: AbortSignal
+): Promise<WatchFlags | null> {
+  return new Promise<WatchFlags | null>((resolve, reject) => {
+    if (signal.aborted) return resolve(null);
     let settled = false;
     let reading: Promise<void> = Promise.resolve();
-    const finish = (error?: Error) => {
+    const finish = (flags: WatchFlags | null, error?: Error) => {
       if (settled) return;
       settled = true;
       watcher.close();
       signal.removeEventListener('abort', onAbort);
       if (error) reject(error);
-      else resolve();
+      else resolve(flags);
     };
-    const onAbort = () => finish();
+    const onAbort = () => finish(null);
     const check = () => {
       reading = reading
         .then(async () => {
-          if (!(await readWatchFlags(root)).enabled) finish();
+          const flags = await readWatchFlags(root);
+          if (flags.enabled !== current.enabled || flags.spawn !== current.spawn) finish(flags);
         })
-        .catch((error: Error) => finish(error));
+        .catch((error: Error) => finish(null, error));
     };
     const watcher = watch(root, (_event, filename) => {
       // A null filename is the platform declining to say what changed, so the
       // flags are re-read rather than assumed unchanged.
       if (filename === null || filename === WATCH_FLAGS_FILE) check();
     });
-    watcher.on('error', (error: Error) => finish(error));
+    watcher.on('error', (error: Error) => finish(null, error));
     signal.addEventListener('abort', onAbort, { once: true });
     check();
   });

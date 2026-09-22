@@ -1060,3 +1060,51 @@ it('does not advance or deliver when persisting the reset checkpoint fails', asy
     abort.abort();
   }
 });
+
+describe('the permission to start a session', () => {
+  function reopenable() {
+    return vi.fn(async (url: string, init: { signal: AbortSignal }) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: openUntilAborted(init),
+            text: async (): Promise<string> => '',
+          }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+  }
+
+  it('is redeclared on the wire when it changes under a live connection', async () => {
+    // Turning automatic sessions off while the controller is connected has to
+    // reach the server, or it goes on promising a session nothing will start.
+    const fetchMock = reopenable();
+    const { stream, abort } = makeStream(fetchMock, { rooms: [], spawnCapable: true });
+    await flush();
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(urlsFor(fetchMock, '/events')[0]).toContain('spawn_capable=true');
+
+    stream.setSpawnCapable(false);
+    await flush();
+
+    const opens = urlsFor(fetchMock, '/events');
+    expect(opens).toHaveLength(2);
+    expect(opens[1]).not.toContain('spawn_capable');
+    // A reattach, not a takeover: the incarnation goes with it, so the server
+    // recognises the same client rather than evicting it in favour of itself.
+    expect(opens[1]).toContain('expected_generation=0');
+    abort.abort();
+  });
+
+  it('does not reopen the socket when it is set to what it already is', async () => {
+    const fetchMock = reopenable();
+    const { stream, abort } = makeStream(fetchMock, { rooms: [], spawnCapable: true });
+    await flush();
+
+    stream.setSpawnCapable(true);
+    await flush();
+
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    abort.abort();
+  });
+});

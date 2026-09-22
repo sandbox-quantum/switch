@@ -221,6 +221,12 @@ export class SwitchEventStream {
   private readonly halt = new AbortController();
   private rooms: string[];
   /**
+   * Declared on every open, so it can be changed by reopening the socket. What
+   * a connection may do on the agent's behalf is a setting a person can turn
+   * off while it is connected, and the server only hears it here.
+   */
+  private spawnCapable: boolean;
+  /**
    * Which incarnation of the connection id the server last told us we are.
    *
    * Sent on every beat so the server can refuse a tick from a client that has
@@ -255,6 +261,7 @@ export class SwitchEventStream {
     this.deps = deps;
     this.rooms = [...deps.rooms];
     this.cursor = deps.startCursor ?? 0;
+    this.spawnCapable = deps.spawnCapable === true;
   }
 
   get position(): number {
@@ -275,6 +282,21 @@ export class SwitchEventStream {
     // Not if the claim revealed we no longer hold the connection: reopening is
     // a takeover, and standing down only to reattach would undo it.
     if (this.halt.signal.aborted) return;
+    this.reopen();
+  }
+
+  /**
+   * Redeclare whether this connection will start a session on demand.
+   *
+   * The declaration only travels on an open, so the socket is reopened to carry
+   * it. That is a reattach rather than a takeover — the incarnation goes with
+   * it — so the connection itself survives and nothing else about it changes.
+   * Without this a person turning automatic sessions off would leave the server
+   * still promising a session this connection is no longer going to start.
+   */
+  setSpawnCapable(capable: boolean): void {
+    if (capable === this.spawnCapable) return;
+    this.spawnCapable = capable;
     this.reopen();
   }
 
@@ -474,7 +496,7 @@ export class SwitchEventStream {
           client: RUNTIME_ARTIFACT,
           client_version: RUNTIME_VERSION,
         });
-        if (this.deps.spawnCapable) params.set('spawn_capable', 'true');
+        if (this.spawnCapable) params.set('spawn_capable', 'true');
         if (this.rooms.length) params.set('rooms', this.rooms.join(','));
         // Reattaching, so say which incarnation we believe we still are and
         // let the server refuse us if we are wrong. An attach is a takeover,
