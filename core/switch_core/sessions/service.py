@@ -123,6 +123,35 @@ def _stored_snapshot(row: SdkSession) -> Snapshot:
         ) from error
 
 
+def _claims_room(row: SdkSession, room_id: str) -> bool:
+    """Does this session claim `room_id`, for picking one of an agent's many.
+
+    A connection's rooms are the union of every session it carries, so once
+    one connection serves several sessions it cannot answer this: it matches
+    all of them for any room it covers. The session's own bound rooms can.
+
+    A session that has bound none has not said where it is — a caller that
+    identified itself only by its connection never reaches `bind_room`. For
+    those the connection is still the best available answer, which leaves
+    today's single-session hosts working exactly as they do now, and leaves
+    two such sessions behind one connection genuinely indistinguishable.
+    """
+    rooms = _stored_snapshot(row).session.room_ids
+    return room_id in rooms if rooms else True
+
+
+def _host_holds(row: SdkSession, now: datetime) -> bool:
+    """Is a host still running this session, by the database clock?
+
+    A `connection_id` used to be enough on its own, because only one session
+    could name a connection and a crashed host's connection died with it. A
+    controller connection outlives its sessions: it is kept up by the siblings
+    that are still running, so a session whose host is gone would go on
+    claiming its room over a connection that is very much alive.
+    """
+    return not row.recovery.get("quiesced") and row.lease_expires_at > now
+
+
 class SessionAuthority:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
@@ -1195,14 +1224,17 @@ class SessionAuthority:
                     )
                 ).all()
             )
+            now = await self._now(db)
             live = [
                 row
                 for row in candidates
                 if row.connection_id is not None
+                and _host_holds(row, now)
                 and (connection := connections.get(row.connection_id)) is not None
                 and connection.agent_id == agent_id
                 and connection.is_alive(time.monotonic())
                 and room_id in connection.rooms
+                and _claims_room(row, room_id)
             ]
             if not live:
                 if candidates:
@@ -1382,6 +1414,13 @@ class SessionAuthority:
         connection_id: str,
         connections: ConnectionRegistry,
     ) -> list[str]:
+        """Route this session's events over `connection_id`. Returns its rooms.
+
+        Several sessions of one agent may name the same connection: that is
+        what an agent having a single inbound connection means. The connection
+        is the route, not the identity — a caller is identified by its session
+        behind the host and epoch fence, never by the connection it arrived on.
+        """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
@@ -1402,28 +1441,19 @@ class SessionAuthority:
                     "NOT_AUTHORIZED",
                     "The SDK room connection is not live or belongs to another agent.",
                 )
-            previous = await db.scalar(
-                select(SdkSession.id).where(
-                    SdkSession.tenant_id == require_tenant_id(),
-                    SdkSession.connection_id == connection_id,
-                    SdkSession.id != session_id,
-                )
-            )
-            if previous is not None:
-                raise SessionError(
-                    "FENCING_REQUIRED", "Another SDK session owns this room connection."
-                )
-            for room_id in sorted(connection.rooms):
+            # The session's rooms, not the connection's, in both what is
+            # checked and what is returned. A connection may carry several
+            # sessions' rooms and a reattached one carries none, so the
+            # connection would have this session vouch for its siblings'
+            # membership on the first and forget its own rooms on the second.
+            rooms = list(_stored_snapshot(row).session.room_ids)
+            for room_id in sorted(rooms):
                 if await db.get(ClientRoom, (agent.client_id, room_id)) is None:
                     raise SessionError(
                         "NOT_AUTHORIZED", "The agent is no longer a room member."
                     )
             row.connection_id = connection_id
-            # The session's rooms, not the connection's. A connection may carry
-            # several sessions' rooms and a reattached one carries none, so
-            # deriving the session's from it would hand this session its
-            # siblings' rooms on the first and forget its own on the second.
-            return list(_stored_snapshot(row).session.room_ids)
+            return rooms
 
     async def session_binding(
         self, agent_id: str, session_id: str, host_id: str, epoch: str
@@ -1460,8 +1490,8 @@ class SessionAuthority:
 
     async def bind_room(
         self, agent_id: str, session_id: str, host_id: str, epoch: str, room_id: str
-    ) -> None:
-        """Record which room this session is working in.
+    ) -> str | None:
+        """Record which room this session is working in. Returns who it displaced.
 
         A session's room, not its connection's. Several sessions of one agent
         may share a controller connection, so the connection holds the union of
@@ -1473,11 +1503,31 @@ class SessionAuthority:
         so a session that reattaches to a new connection is still in the room
         it was in, and a supervisor watching the session's stream learns the
         room from Switch rather than from the agent's tool result.
+
+        At most one session of an agent may be in a room, so a sibling already
+        there is put out of it and named in the return. Enforcing that on the
+        connection alone stopped being enough once siblings can share one: it
+        would see the room already claimed by the connection they are both on
+        and let the two of them sit in it, receiving the same events with
+        nothing to say which of them is meant to answer.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
+            # Every session of the agent, in one order, before the caller's own
+            # row is locked: two siblings binding into the same room at once
+            # each want the other's row, and taking them in id order is what
+            # stops the two of them waiting on each other.
+            await db.execute(
+                select(SdkSession.id)
+                .where(
+                    SdkSession.tenant_id == require_tenant_id(),
+                    SdkSession.agent_id == agent_id,
+                )
+                .order_by(SdkSession.id)
+                .with_for_update()
+            )
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             if (
                 await db.get(ClientRoom, (await self._client_id(db, agent_id), room_id))
@@ -1486,17 +1536,60 @@ class SessionAuthority:
                 raise SessionError(
                     "NOT_AUTHORIZED", "The agent is not a member of that room."
                 )
+            displaced = await self._evict_siblings(db, agent_id, session_id, room_id)
             snapshot = _stored_snapshot(row)
-            if snapshot.session.room_ids == [room_id]:
-                return
+            if snapshot.session.room_ids != [room_id]:
+                await self._append(
+                    db,
+                    row,
+                    SessionUpsert(
+                        type="session.upsert",
+                        session=snapshot.session.model_copy(
+                            update={"room_ids": [room_id]}
+                        ),
+                    ),
+                )
+            return displaced
+
+    async def _evict_siblings(
+        self, db: AsyncSession, agent_id: str, session_id: str, room_id: str
+    ) -> str | None:
+        """Take `room_id` off every running session of `agent_id` but this one.
+
+        Written through the event log like any other change to a session, so
+        the displaced session's host hears about it on its own stream rather
+        than discovering it by receiving nothing.
+
+        A session whose host has stopped is left alone: nothing routes to it,
+        and rewriting the log of every session an agent has ever run in this
+        room — announcing an eviction to each — would be a great deal of noise
+        for no change in where the events go.
+        """
+        displaced: str | None = None
+        now = await self._now(db)
+        siblings = await db.scalars(
+            select(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id == agent_id,
+                SdkSession.id != session_id,
+            )
+        )
+        for sibling in siblings:
+            state = _stored_snapshot(sibling).session
+            if room_id not in state.room_ids or not _host_holds(sibling, now):
+                continue
+            displaced = sibling.id
             await self._append(
                 db,
-                row,
+                sibling,
                 SessionUpsert(
                     type="session.upsert",
-                    session=snapshot.session.model_copy(update={"room_ids": [room_id]}),
+                    session=state.model_copy(
+                        update={"room_ids": [r for r in state.room_ids if r != room_id]}
+                    ),
                 ),
             )
+        return displaced
 
     async def _client_id(self, db: AsyncSession, agent_id: str) -> str:
         client_id = await db.scalar(select(Agent.client_id).where(Agent.id == agent_id))

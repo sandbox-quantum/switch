@@ -158,6 +158,17 @@ room and nothing says why. A **dead** incumbent is not an eviction and is not
 reported: `claimant_of` filters on liveness, so a restart meeting its own stale
 connection displaces nobody.
 
+**The slot is also enforced between sessions sharing a connection.** The rule
+above is about connections, and the registry can only evict by connection: two
+sessions of one agent arriving over the same controller connection look to it
+like the incumbent re-claiming its own room, so nothing is evicted and both sit
+in the room receiving the same events. `bind_room` therefore takes the room off
+any other *running* session of the agent and returns the one it displaced,
+which `connect_to_room` reports in the same `warning`, naming the session
+rather than a connection. A session whose host lease has lapsed is left alone —
+nothing routes to it, and announcing an eviction to a host that stopped days
+ago is noise.
+
 ### 2.5 Sessions are not a server concept
 
 Switch models connections, not sessions. Whether a client runs one PTY or ten
@@ -169,8 +180,19 @@ stays structural (each session's stream and MCP live in one process), failure
 is isolated (the daemon dying does not disconnect running sessions), and a bare
 terminal session with no daemon works identically.
 
-A client may later multiplex sessions behind one connection. Switch does not
-need to change for that.
+**A client may multiplex sessions behind one connection, and this did need
+changing.** Switch still models no session of its own, but it does now hold the
+SDK sessions a supervisor runs, and those were identified by their connection:
+one unique index said a connection named at most one session, and every
+room-scoped question was answered from the connection. Both had to go. A
+connection's rooms are the union of its sessions' rooms, so it answers "which
+room did this caller mean" for all of them at once and for none of them
+correctly. What identifies a caller is its session id behind the host-and-epoch
+fence; the connection is the route its events take. Where a caller names no
+session — every client predating the selector — the connection is still the
+answer, and two such callers behind one connection are genuinely
+indistinguishable: a room command that matches both is refused with
+`FENCING_REQUIRED` rather than delivered to a guess.
 
 ---
 

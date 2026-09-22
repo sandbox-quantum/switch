@@ -161,6 +161,21 @@ async def test_a_caller_with_no_session_still_reads_its_connection(registry) -> 
 # ── moving a session between rooms ───────────────────────────────────────────
 
 
+def _authority(bound: list[tuple[str, str]], displaces: str | None) -> Any:
+    """A `SessionAuthority` that records binds and reports a displaced session."""
+
+    class _Authority:
+        def __init__(self, _factory: Any) -> None: ...
+
+        async def bind_room(
+            self, _agent: str, session_id: str, _host: str, _epoch: str, room_id: str
+        ) -> str | None:
+            bound.append((session_id, room_id))
+            return displaces
+
+    return _Authority
+
+
 @pytest.mark.asyncio
 async def test_connecting_vacates_only_the_callers_own_room(
     registry, monkeypatch: pytest.MonkeyPatch
@@ -178,15 +193,7 @@ async def test_connecting_vacates_only_the_callers_own_room(
 
     bound: list[tuple[str, str]] = []
 
-    class _Authority:
-        def __init__(self, _factory: Any) -> None: ...
-
-        async def bind_room(
-            self, _agent: str, session_id: str, _host: str, _epoch: str, room_id: str
-        ) -> None:
-            bound.append((session_id, room_id))
-
-    monkeypatch.setattr(definitions, "SessionAuthority", _Authority)
+    monkeypatch.setattr(definitions, "SessionAuthority", _authority(bound, None))
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -197,6 +204,119 @@ async def test_connecting_vacates_only_the_callers_own_room(
     # ROOM_A vacated because this caller was in it; ROOM_B untouched because
     # its session did not move.
     assert connection.rooms == {ROOM_B, "room-c"}
+
+
+@pytest.mark.asyncio
+async def test_displacing_a_sibling_names_it_in_the_warning(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The eviction the connection registry can no longer see.
+
+    Both sessions are on the one connection, so claiming the room looks to the
+    registry like its existing holder re-claiming it and nothing is evicted.
+    Saying nothing would leave the displaced session's operator watching it go
+    quiet with no explanation.
+    """
+    connection = _open(registry)
+    registry.claim_room(connection, "room-c")
+    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], "session-b"))
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", None)):
+        result = await definitions.connect_to_room(
+            "room-c", include_general_instructions=False
+        )
+
+    assert "session session-b" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_displacing_nobody_warns_about_nothing(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary connect is not dressed up as a takeover."""
+    _open(registry)
+    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], None))
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", None)):
+        result = await definitions.connect_to_room(
+            "room-c", include_general_instructions=False
+        )
+
+    assert result["warning"] is None
+
+
+@pytest.mark.asyncio
+async def test_one_eviction_is_reported_once_and_names_the_session(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both doors fire on the same takeover, and the session is the better name.
+
+    Displacing a sibling that is on its own connection evicts that connection
+    too, so the registry and the session authority each report the eviction they
+    saw. They are one event, and `session-b` tells the caller what it
+    interrupted where a connection id only tells it which socket carried it.
+    """
+    incumbent = registry.open(
+        agent_id=AGENT,
+        connection_id="connection-old",
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
+    )
+    registry.claim_room(incumbent, "room-c")
+    _open(registry)
+    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], "session-b"))
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", None)):
+        result = await definitions.connect_to_room(
+            "room-c", include_general_instructions=False
+        )
+
+    assert "session session-b" in result["warning"]
+    assert "connection-old" not in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_evicting_another_connection_still_names_the_connection(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The older eviction, for a holder that is not identified as a session.
+
+    A client that predates the selector has no session to name, so the
+    connection its events were travelling over is the only thing the warning
+    can point the reader at.
+    """
+    incumbent = registry.open(
+        agent_id=AGENT,
+        connection_id="connection-old",
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
+    )
+    registry.claim_room(incumbent, "room-c")
+    _open(registry)
+    monkeypatch.setattr(definitions, "SessionAuthority", _authority([], None))
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with call_context(_caller("session-a", None)):
+        result = await definitions.connect_to_room(
+            "room-c", include_general_instructions=False
+        )
+
+    assert "connection connection-old" in result["warning"]
 
 
 def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:

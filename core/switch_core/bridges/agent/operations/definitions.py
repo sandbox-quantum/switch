@@ -306,10 +306,11 @@ async def connect_to_room(
     for departed in previous - {room.id}:
         release_room_on_caller_connection(protocol, agent_id, key, departed)
 
+    displaced_session_id = None
     if caller is not None:
-        await SessionAuthority(protocol.session_factory).bind_room(
-            agent_id, caller.id, caller.host_id, caller.epoch, room.id
-        )
+        displaced_session_id = await SessionAuthority(
+            protocol.session_factory
+        ).bind_room(agent_id, caller.id, caller.host_id, caller.epoch, room.id)
 
     await bind_room_for_connectionless_caller(
         protocol,
@@ -345,12 +346,27 @@ async def connect_to_room(
         "packages": resources["packages"],
         "linked_rooms": linked_rooms,
         "roles": roles,
-        "warning": (
-            evicted_session_warning(room.id, evicted_connection_id)
-            if evicted_connection_id
-            else None
+        "warning": _eviction_warning(
+            room.id, displaced_session_id, evicted_connection_id
         ),
     }
+
+
+def _eviction_warning(
+    room_id: str, displaced_session_id: str | None, evicted_connection_id: str | None
+) -> str | None:
+    """Name whoever lost the room, preferring the session that lost it.
+
+    The two doors overlap: displacing a sibling that shares this connection
+    evicts no connection at all, and evicting a connection whose session
+    predates the selector displaces no session that can be named. Where both
+    fire they are the same eviction seen twice, so it is reported once.
+    """
+    if displaced_session_id is not None:
+        return evicted_session_warning(room_id, f"session {displaced_session_id}")
+    if evicted_connection_id is not None:
+        return evicted_session_warning(room_id, f"connection {evicted_connection_id}")
+    return None
 
 
 async def _decorate_linked_rooms(

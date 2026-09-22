@@ -1016,7 +1016,7 @@ async def connection_subscribe(
         "rooms": sorted(conn.rooms),
         "evicted_connection_id": evicted.id if evicted else None,
         "warning": (
-            evicted_session_warning(req.room_id, evicted.id)
+            evicted_session_warning(req.room_id, f"connection {evicted.id}")
             if evicted is not None
             else None
         ),

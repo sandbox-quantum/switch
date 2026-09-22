@@ -2162,9 +2162,6 @@ class SdkSession(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "id"),
         UniqueConstraint("id", "tenant_id", name="uq_sdk_sessions_id_tenant"),
-        UniqueConstraint(
-            "tenant_id", "connection_id", name="uq_sdk_sessions_connection_id"
-        ),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],

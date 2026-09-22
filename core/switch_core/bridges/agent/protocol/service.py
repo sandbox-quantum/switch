@@ -2788,32 +2788,46 @@ class ProtocolService:
         # Locate each holder's assuming session (cache room id → name).
         room_name_cache: dict[str, str] = {}
 
-        async def _locate(lease: RoleLease) -> tuple[bool, str | None]:
-            """Return (present_here, session_room_name) for a lease."""
+        async def _holder_room(lease: RoleLease) -> str | None:
+            """The room the lease's holder is attending, if it can be told.
+
+            Asked of the holder in the same order liveness is: the SDK session
+            that took the seat knows its own room, and is the only thing that
+            does once one connection carries several sessions — the
+            connection's rooms are then the union of theirs, and naming one
+            would be a guess. A seat taken without a session falls back to its
+            connection, and to the binding row for callers predating
+            connections.
+            """
+            if lease.session_id is not None:
+                return await self.agent_session_store.get_sdk_session_room(
+                    session, lease.session_id
+                )
             if lease.transport_session_id is None:
-                return False, None
-            # A live connection knows its own rooms and has no binding row; the
-            # row is only there for callers that predate connections.
+                return None
             connection = self.connections.get(lease.transport_session_id)
             if connection is not None:
-                if len(connection.rooms) != 1:
-                    return False, None
-                conn_room_id = next(iter(connection.rooms))
-            else:
-                conn = await self.agent_session_store.get_connected_room(
-                    session, lease.transport_session_id
+                return (
+                    next(iter(connection.rooms)) if len(connection.rooms) == 1 else None
                 )
-                if conn is None:
-                    return False, None
-                conn_room_id = conn[1]
-            if conn_room_id == room_id:
+            conn = await self.agent_session_store.get_connected_room(
+                session, lease.transport_session_id
+            )
+            return conn[1] if conn is not None else None
+
+        async def _locate(lease: RoleLease) -> tuple[bool, str | None]:
+            """Return (present_here, session_room_name) for a lease."""
+            holder_room_id = await _holder_room(lease)
+            if holder_room_id is None:
+                return False, None
+            if holder_room_id == room_id:
                 return True, None
-            if conn_room_id not in room_name_cache:
-                room = await self.room_store.get(session, conn_room_id)
-                room_name_cache[conn_room_id] = (
-                    room.name if room is not None else conn_room_id
+            if holder_room_id not in room_name_cache:
+                room = await self.room_store.get(session, holder_room_id)
+                room_name_cache[holder_room_id] = (
+                    room.name if room is not None else holder_room_id
                 )
-            return False, room_name_cache[conn_room_id]
+            return False, room_name_cache[holder_room_id]
 
         holders_by_role: dict[str, list[dict[str, Any]]] = {}
         for role_id, lease_list in leases.items():

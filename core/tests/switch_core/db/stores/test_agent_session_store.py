@@ -8,8 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.server_connectors.core import (
     CONNECTOR_POLL_TIMEOUT_SECONDS,
 )
-from switch_core.db.models import Agent, AgentSession, ApiKey, Client, Room, User
+from switch_core.db.models import (
+    Agent,
+    AgentSession,
+    ApiKey,
+    Client,
+    Room,
+    SdkSession,
+    User,
+)
 from switch_core.db.stores.agent_session_store import AgentSessionStore
+from switch_core.sessions.contract import Capability, Session, Snapshot
 
 
 async def _make_agent(session: AsyncSession, name: str) -> Agent:
@@ -368,3 +377,109 @@ class TestGetSessionsForAgent:
 
             rows = await store.get_sessions_for_agent(session, agent.id)
             assert [r.agent_id for r in rows] == [agent.id]
+
+
+def _snapshot(session_id: str, agent_id: str, room_ids: list[str]) -> dict:
+    session = Session(
+        sessionId=session_id,
+        agentId=agent_id,
+        provider="claude-code",
+        hostId=f"host-{session_id}",
+        epoch="e1",
+        status="ready",
+        connectivity="online",
+        pendingRequestIds=[],
+        roomIds=room_ids,
+        capabilities=Capability(
+            input="queue",
+            approvals=False,
+            questions=False,
+            interrupt=True,
+            reset=True,
+            compact=True,
+            modelChange=False,
+            attachmentMimeTypes=[],
+        ),
+    )
+    return Snapshot(
+        contractVersion=1,
+        throughSequence=0,
+        session=session,
+        turns=[],
+        items=[],
+        requests=[],
+        commandStatuses=[],
+        nextPageToken=None,
+    ).model_dump(by_alias=True)
+
+
+async def _make_sdk_session(
+    session: AsyncSession, agent_id: str, session_id: str, room_ids: list[str]
+) -> None:
+    session.add(
+        SdkSession(
+            id=session_id,
+            agent_id=agent_id,
+            connection_id=None,
+            host_id=f"host-{session_id}",
+            epoch="e1",
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            snapshot=_snapshot(session_id, agent_id, room_ids),
+            host_sequence=0,
+            recovery={},
+        )
+    )
+    await session.flush()
+
+
+class TestSdkSessionRoom:
+    """Where an SDK session is, asked of the session rather than its route.
+
+    Several sessions of one agent share an inbound connection, so the
+    connection's rooms are the union of theirs and answer for none of them in
+    particular. Callers that need to place a single session — presence on a
+    role seat, above all — ask here.
+    """
+
+    async def test_reports_the_single_room_the_session_is_in(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = AgentSessionStore()
+        async with session_factory() as session:
+            agent = await _make_agent(session, "a1")
+            room = await _make_room(session, "r1")
+            await _make_sdk_session(session, agent.id, "sdk-1", [room.id])
+            await session.commit()
+
+            assert await store.get_sdk_session_room(session, "sdk-1") == room.id
+
+    async def test_a_session_in_no_room_or_several_names_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Both are "it has not said which", and neither is guessed at.
+
+        A session reaches `bind_room` only when its caller identified itself as
+        a session, so an empty list is the ordinary state of a client that has
+        not adopted the selector — answering with some room would put every one
+        of those in a room it never named.
+        """
+        store = AgentSessionStore()
+        async with session_factory() as session:
+            agent = await _make_agent(session, "a1")
+            first = await _make_room(session, "r1")
+            second = await _make_room(session, "r2")
+            await _make_sdk_session(session, agent.id, "sdk-none", [])
+            await _make_sdk_session(
+                session, agent.id, "sdk-both", [first.id, second.id]
+            )
+            await session.commit()
+
+            assert await store.get_sdk_session_room(session, "sdk-none") is None
+            assert await store.get_sdk_session_room(session, "sdk-both") is None
+
+    async def test_an_unknown_session_names_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = AgentSessionStore()
+        async with session_factory() as session:
+            assert await store.get_sdk_session_room(session, "sdk-missing") is None
