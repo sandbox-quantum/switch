@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
@@ -22,6 +22,11 @@ export const sharedConfigSchema = z.strictObject({
       shellSetup: z.string().optional(),
       binaryPath: z.string().min(1).optional(),
       mcpRuntime: z.string().min(1),
+      mcpRuntimePath: z
+        .string()
+        .min(1)
+        .refine((value) => isAbsolute(value), 'must be an absolute path')
+        .optional(),
       codexConfig: z.string(),
       skill: z.string(),
       context: z.string(),
@@ -67,10 +72,11 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
     if (!switchEnv.SWITCH_CONNECTION_ID)
       throw new Error('Shared SDK execution requires a persistent room connection.');
     input.env = { ...inherited, ...input.env, ...switchEnv };
+    const mcpRuntime = mcpRuntimeCommand(execution);
     input.mcpServers.switch = {
       transport: 'stdio',
-      command: 'npx',
-      args: ['-y', execution.mcpRuntime],
+      command: mcpRuntime.command,
+      args: mcpRuntime.args,
       envVars: Object.keys(switchEnv),
     };
     if (config.start.provider === 'codex')
@@ -86,6 +92,14 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };
+}
+
+export function mcpRuntimeCommand(
+  execution: Pick<NonNullable<SharedHostConfig['execution']>, 'mcpRuntime' | 'mcpRuntimePath'>
+): { command: string; args: string[] } {
+  return execution.mcpRuntimePath
+    ? { command: process.execPath, args: [execution.mcpRuntimePath] }
+    : { command: 'npx', args: ['-y', execution.mcpRuntime] };
 }
 
 export async function readSharedCredentials(config: SharedHostConfig) {

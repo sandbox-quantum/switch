@@ -25,7 +25,7 @@ import re
 import sys
 package = chr(64) + "sandboxaq/switch-agent-runtime" + chr(64)
 if not re.fullmatch(re.escape(package) + r"[0-9]+[.][0-9]+[.][0-9]+", sys.argv[1]):
-    raise SystemExit("MCP runtime must be an exact stable published version")
+    raise SystemExit("MCP runtime must be an exact stable package version")
 PY
 
 for command in python3 setpriv lsblk wipefs mkfs.ext4 mount findmnt sha256sum git gh; do
@@ -51,7 +51,12 @@ if (
     set(manifest) != {"version", "nodeMajor", "files"}
     or manifest["version"] != 1
     or manifest["nodeMajor"] != 24
-    or set(manifest["files"]) != {"hosted-bootstrap.mjs", "shared-host-daemon.mjs"}
+    or set(manifest["files"])
+    != {
+        "hosted-bootstrap.mjs",
+        "shared-host-daemon.mjs",
+        "switch-agent-runtime.mjs",
+    }
 ):
     raise SystemExit("hosted runtime manifest is invalid")
 for name, expected in manifest["files"].items():
@@ -77,6 +82,7 @@ install -d -o root -g root -m 0755 /opt/switch/agent-providers
 install -d -o root -g root -m 0755 /data
 install -o root -g root -m 0755 "$runtime_build/hosted-bootstrap.mjs" /opt/switch/agent-providers/hosted-bootstrap.mjs
 install -o root -g root -m 0755 "$runtime_build/shared-host-daemon.mjs" /opt/switch/agent-providers/shared-host-daemon.mjs
+install -o root -g root -m 0755 "$runtime_build/switch-agent-runtime.mjs" /opt/switch/agent-providers/switch-agent-runtime.mjs
 install -o root -g root -m 0444 "$runtime_build/manifest.json" /opt/switch/agent-providers/manifest.json
 
 node_path=/opt/switch/node/bin/node
@@ -98,17 +104,18 @@ actual_provider_sha=$(sha256sum "$provider_path" | cut -d ' ' -f 1)
 }
 bootstrap_sha=$(sha256sum /opt/switch/agent-providers/hosted-bootstrap.mjs | cut -d ' ' -f 1)
 shared_sha=$(sha256sum /opt/switch/agent-providers/shared-host-daemon.mjs | cut -d ' ' -f 1)
+mcp_runtime_sha=$(sha256sum /opt/switch/agent-providers/switch-agent-runtime.mjs | cut -d ' ' -f 1)
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install -o root -g root -m 0755 "$source_dir/switch_hosted_worker.py" /usr/local/libexec/switch-hosted-worker
 install -o root -g root -m 0644 "$source_dir/switch-hosted-worker.service" /etc/systemd/system/switch-hosted-worker.service
-python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$actual_provider_sha" "$pinned_mcp_runtime" <<'PY'
+python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$actual_provider_sha" "$pinned_mcp_runtime" "$mcp_runtime_sha" <<'PY'
 import json
 import os
 import sys
 import tempfile
 
-node_sha, bootstrap_sha, shared_sha, provider_sha, mcp_runtime = sys.argv[1:]
+node_sha, bootstrap_sha, shared_sha, provider_sha, mcp_runtime, mcp_runtime_sha = sys.argv[1:]
 value = {
     "version": 1,
     "nodePath": "/opt/switch/node/bin/node",
@@ -119,12 +126,14 @@ value = {
     "agentGroup": "switch-agent",
     "path": "/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin",
     "mcpRuntime": mcp_runtime,
+    "mcpRuntimePath": "/opt/switch/agent-providers/switch-agent-runtime.mjs",
     "allowInitialFormat": True,
     "artifactSha256": {
         "node": node_sha,
         "bootstrap": bootstrap_sha,
         "sharedHostDaemon": shared_sha,
         "provider": provider_sha,
+        "mcpRuntime": mcp_runtime_sha,
     },
 }
 directory = "/etc/switch-hosted"

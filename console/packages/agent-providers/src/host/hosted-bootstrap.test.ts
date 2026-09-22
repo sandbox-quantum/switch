@@ -149,6 +149,44 @@ it('does not fall back to ambient provider, cloud, Node, or home credentials', a
   );
 });
 
+it('selects only the fixed baked MCP runtime without forwarding its selector', async () => {
+  const input = await fixture();
+  vi.stubEnv(
+    'SWITCH_HOSTED_MCP_RUNTIME_PATH',
+    '/opt/switch/agent-providers/switch-agent-runtime.mjs'
+  );
+
+  const prepared = await prepareHostedDeployment(input.state, input.spec);
+
+  expect(prepared.config.execution?.mcpRuntimePath).toBe(
+    '/opt/switch/agent-providers/switch-agent-runtime.mjs'
+  );
+  expect(prepared.providerEnvironment.SWITCH_HOSTED_MCP_RUNTIME_PATH).toBeUndefined();
+});
+
+it('refuses to remove the baked MCP selection from a persisted deployment', async () => {
+  const input = await fixture();
+  vi.stubEnv(
+    'SWITCH_HOSTED_MCP_RUNTIME_PATH',
+    '/opt/switch/agent-providers/switch-agent-runtime.mjs'
+  );
+  await prepareHostedDeployment(input.state, input.spec);
+  vi.unstubAllEnvs();
+
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    'does not match its deployment specification'
+  );
+});
+
+it('rejects an ambient hosted MCP runtime override', async () => {
+  const input = await fixture();
+  vi.stubEnv('SWITCH_HOSTED_MCP_RUNTIME_PATH', '/tmp/ambient-runtime.mjs');
+
+  await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
+    'MCP runtime path is not the pinned executable'
+  );
+});
+
 it('forwards the complete trusted machine identity without persisting it', async () => {
   const input = await fixture();
   vi.stubEnv('SWITCH_HOST_INSTANCE_ID', 'i-0123456789abcdef0');

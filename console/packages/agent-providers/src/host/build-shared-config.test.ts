@@ -44,6 +44,7 @@ function inputFor(
       shellSetup: 'export CUSTOM_ENV=configured',
       binaryPath: '/tools/provider',
       mcpRuntime: '@sandboxaq/switch-agent-runtime@1.0.0',
+      mcpRuntimePath: '/opt/switch/agent-providers/switch-agent-runtime.mjs',
       codexConfig: 'model = "selected-model"',
       skill: 'Switch skill',
       context: 'System context',

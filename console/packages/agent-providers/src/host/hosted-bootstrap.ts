@@ -72,6 +72,8 @@ const INHERITED_ENV = ['PATH', 'USER', 'SHELL', 'LANG', 'LC_ALL', 'TERM'] as con
 const MAX_CREDENTIAL_BYTES = 16 * 1024;
 const PLAN_FILE = 'hosted-deployment.json';
 const CONFIG_FILE = 'config.json';
+const BAKED_MCP_RUNTIME_PATH = '/opt/switch/agent-providers/switch-agent-runtime.mjs';
+const BAKED_MCP_RUNTIME_ENV = 'SWITCH_HOSTED_MCP_RUNTIME_PATH';
 
 function credentialVariable(kind: HostedDeploymentSpec['provider']['credential']['kind']): string {
   return kind === 'api-key' ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
@@ -217,6 +219,14 @@ function controlledEnvironment(root: string): Record<string, string> {
   };
 }
 
+function bakedMcpRuntimePath(): string | undefined {
+  const value = process.env[BAKED_MCP_RUNTIME_ENV];
+  if (value === undefined) return undefined;
+  if (value !== BAKED_MCP_RUNTIME_PATH)
+    throw new Error('Hosted MCP runtime path is not the pinned executable.');
+  return value;
+}
+
 async function createControlledDirectories(environment: Record<string, string>): Promise<void> {
   await Promise.all(
     Object.values(environment).map((path) => mkdir(path, { recursive: true, mode: 0o700 }))
@@ -328,6 +338,7 @@ export async function prepareHostedDeployment(
     ...controlled,
     ...(githubCredential ? githubLaunchEnvironment() : {}),
   };
+  const mcpRuntimePath = bakedMcpRuntimePath();
   const variable = credentialVariable(spec.provider.credential.kind);
   const candidate = hostedDeploymentPlanSchema.parse(
     JSON.parse(
@@ -359,6 +370,7 @@ export async function prepareHostedDeployment(
             inheritEnv: [...INHERITED_ENV, variable, ...(githubCredential ? ['GH_TOKEN'] : [])],
             binaryPath,
             mcpRuntime: spec.mcpRuntime,
+            ...(mcpRuntimePath ? { mcpRuntimePath } : {}),
             codexConfig: '',
             skill: '',
             context: spec.provider.context,

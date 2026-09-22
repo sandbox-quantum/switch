@@ -32,6 +32,10 @@ MARKER_PATH = MARKER_DIRECTORY / "machine.json"
 RUNTIME_DIRECTORY = Path("/run/switch-hosted")
 LOCK_PATH = Path("/run/lock/switch-hosted-worker.lock")
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+BAKED_MCP_RUNTIME_PATH = Path(
+    "/opt/switch/agent-providers/switch-agent-runtime.mjs"
+)
+BAKED_MCP_RUNTIME_ENV = "SWITCH_HOSTED_MCP_RUNTIME_PATH"
 IMDS_BASE = "http://169.254.169.254/latest"
 MAX_SECRET_BYTES = 128 * 1024
 ROOT_UID = 0
@@ -87,6 +91,7 @@ class RuntimeConfig:
     agent_group: str
     path: str
     mcp_runtime: str
+    mcp_runtime_path: str | None
     allow_initial_format: bool
     artifact_sha256: dict[str, str]
 
@@ -179,13 +184,23 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
             "allowInitialFormat",
             "artifactSha256",
         },
-        set(),
+        {"mcpRuntimePath"},
         "worker runtime",
     )
     if runtime_value["version"] != 1:
         raise WorkerError("Pinned AMI runtime version is unsupported.")
     if not isinstance(runtime_value["allowInitialFormat"], bool):
         raise WorkerError("Worker initial-format policy is invalid.")
+    artifact_sha256 = _artifact_hashes(runtime_value["artifactSha256"])
+    mcp_runtime_path = (
+        _absolute_path(runtime_value["mcpRuntimePath"], "baked MCP runtime")
+        if "mcpRuntimePath" in runtime_value
+        else None
+    )
+    if mcp_runtime_path is not None and mcp_runtime_path != str(BAKED_MCP_RUNTIME_PATH):
+        raise WorkerError("Baked MCP runtime path is not fixed.")
+    if (mcp_runtime_path is None) != ("mcpRuntime" not in artifact_sha256):
+        raise WorkerError("Baked MCP runtime path and hash must be configured together.")
     runtime = RuntimeConfig(
         node_path=_absolute_path(runtime_value["nodePath"], "Node executable"),
         bootstrap_path=_absolute_path(runtime_value["bootstrapPath"], "bootstrap entrypoint"),
@@ -199,8 +214,9 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         agent_group=_identifier(runtime_value["agentGroup"], "agent group"),
         path=_text(runtime_value["path"], "runtime PATH"),
         mcp_runtime=_text(runtime_value["mcpRuntime"], "pinned MCP runtime"),
+        mcp_runtime_path=mcp_runtime_path,
         allow_initial_format=runtime_value["allowInitialFormat"],
-        artifact_sha256=_artifact_hashes(runtime_value["artifactSha256"]),
+        artifact_sha256=artifact_sha256,
     )
     secret_id = _text(value["assignmentSecretId"], "worker secret ID")
     secret_region = _secret_arn_region(secret_id)
@@ -234,7 +250,7 @@ def _artifact_hashes(value: Any) -> dict[str, str]:
     value = _strict(
         value,
         {"node", "bootstrap", "sharedHostDaemon", "provider"},
-        set(),
+        {"mcpRuntime"},
         "runtime artifact hashes",
     )
     for name, digest in value.items():
@@ -1091,6 +1107,8 @@ def build_launch(
         "SWITCH_HOST_BOOT_ID": identity.boot_id,
         "SWITCH_HOST_ASSIGNMENT_GENERATION": str(identity.assignment_generation),
     }
+    if config.runtime.mcp_runtime_path is not None:
+        environment[BAKED_MCP_RUNTIME_ENV] = config.runtime.mcp_runtime_path
     return arguments, environment
 
 
@@ -1137,6 +1155,8 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
         "sharedHostDaemon": config.runtime.shared_host_daemon_path,
         "provider": config.runtime.provider_binary_path,
     }
+    if config.runtime.mcp_runtime_path is not None:
+        artifacts["mcpRuntime"] = config.runtime.mcp_runtime_path
     for name, path in artifacts.items():
         try:
             details = os.stat(path, follow_symlinks=False)
