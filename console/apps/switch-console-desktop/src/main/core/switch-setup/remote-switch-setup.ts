@@ -1,5 +1,6 @@
 import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
+import { TransportError } from '@switch-console/core/exec';
 import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { createRemoteHomePluginFs } from '@main/core/agent-runtime/impl/remote-home-plugin-fs';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
@@ -164,6 +165,19 @@ export class RemoteSwitchSetupService {
       const { stdout, stderr } = await this.ctx.exec(bin, args, { timeout: EXEC_TIMEOUT_MS });
       return { code: 0, stdout, stderr, notFound: false };
     } catch (err: unknown) {
+      // A broken pipe is not an answer about the connector. Everything below
+      // turns a failure into a `ConnectorRunResult`, and a status read then
+      // parses the empty stdout as "no plugin installed" — so a dead channel
+      // renders as "its Switch connector is not installed on <host>", which is
+      // a confident statement about the one thing the read failed to
+      // establish. `TransportError` exists to draw exactly this line
+      // ("probe-style callers can distinguish it from 'the command ran and
+      // failed'"), so it is re-raised: `listAgentTypeStatuses` catches it and
+      // the row says it could not be read.
+      //
+      // Only the transport. A shell exiting 127 IS an answer — a host without
+      // Codex is a normal host — and still comes back as a result below.
+      if (err instanceof TransportError) throw err;
       const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
       const code = e.code ?? 1;
       const result = {

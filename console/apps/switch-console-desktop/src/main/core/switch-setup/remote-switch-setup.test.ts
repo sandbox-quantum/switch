@@ -35,6 +35,7 @@ vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
+import { TransportError } from '@switch-console/core/exec';
 import { aDurationMs } from '@tooling/utils/telemetry-duration';
 import { getRemoteSwitchSetupService } from './remote-switch-setup';
 
@@ -733,5 +734,61 @@ describe('RemoteSwitchSetupService.checkForUpdates', () => {
     expect(status.refreshError).toBeNull();
     expect(calls()).toContain('plugin marketplace remove switch-plugins');
     expect(calls()).toContain('plugin marketplace add sandbox-quantum/switch');
+  });
+});
+
+/**
+ * A broken pipe is not an answer about the connector.
+ *
+ * Verified against a real dead SSH socket before it was written: every other
+ * failure in this driver folds into a `ConnectorRunResult`, and a status read
+ * then parses the empty stdout as "no plugin installed" — so a channel that
+ * died mid-fan-out rendered in the picker as "Its Switch connector is not
+ * installed on <host>", with an Install button, for a read that never
+ * happened. That is the review finding this closes, and the half that survived
+ * the first fix: reporting `refreshError` only helps if the driver raises
+ * rather than inventing an empty plugin list.
+ */
+describe('RemoteSwitchSetupService when the transport dies', () => {
+  function transportFailure() {
+    return () => Promise.reject(new TransportError('SSH transport failure: not available'));
+  }
+
+  it('does not report a dead channel as a connector that is not installed', async () => {
+    mocks.getPlugin.mockReturnValue(CLAUDE_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/claude');
+    mocks.exec.mockImplementation(transportFailure());
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+
+    await expect(service.getStatus('claude')).rejects.toBeInstanceOf(TransportError);
+  });
+
+  it('still reads a shell that answered 127 as the connector being absent', async () => {
+    // The distinction the re-raise has to preserve: a host without Codex is a
+    // normal host, and exit 127 is that host answering — not the pipe failing.
+    mocks.getPlugin.mockReturnValue(CODEX_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/codex');
+    mocks.exec.mockImplementation(() =>
+      Promise.reject(Object.assign(new Error('codex: command not found'), { code: 127 }))
+    );
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const status = await service.getStatus('codex');
+
+    expect(status).toMatchObject({ supported: true, installed: false, refreshError: null });
+  });
+
+  it('turns the raise into a row that says why, rather than dropping it', async () => {
+    mocks.listPlugins.mockReturnValue([CLAUDE_AGENT]);
+    mocks.getPlugin.mockReturnValue(CLAUDE_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/claude');
+    mocks.exec.mockImplementation(transportFailure());
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const [status] = await service.listAgentTypeStatuses();
+
+    expect(status).toMatchObject({ agentId: 'claude', supported: true, installed: false });
+    expect(status!.refreshError).toMatch(/transport failure/i);
   });
 });
