@@ -37,7 +37,6 @@ def upgrade() -> None:
         ),
     )
     op.execute("ALTER TABLE provider_connections ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE provider_connections FORCE ROW LEVEL SECURITY")
     op.execute(
         "CREATE POLICY tenant_isolation ON provider_connections FOR ALL USING (tenant_id = (SELECT require_tenant_id())) WITH CHECK (tenant_id = (SELECT require_tenant_id()))"
     )

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
 from switch_core.db.base import Base
+from switch_core.db.runtime_role import _refuse_forced_row_level_security
 
 _CORE = Path(__file__).resolve().parents[2]
 _PARITY_DB = "migration_parity"
@@ -95,6 +96,7 @@ async def test_migrations_match_the_models(migrated_url: str) -> None:
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to_head)
         async with engine.connect() as connection:
+            await _refuse_forced_row_level_security(connection)
             diff = await connection.run_sync(_diff)
             # New publication storage must be protected in an upgraded database,
             # not only in the metadata.create_all schema used by most tests.
