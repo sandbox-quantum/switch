@@ -1,22 +1,22 @@
-"""The baseline measurement for the per-agent-connection work.
+"""The measurement for the per-agent-connection work.
 
-These are not pass/fail tests in the usual sense. Nothing here asserts a
+These are not pass/fail tests in the usual sense. Almost nothing here asserts a
 threshold, because there is no agreed one to assert: the deliverable is a set
-of figures for the topology as it stands today, so that the same harness run
-against the changed topology has something to be compared with. What *is*
-asserted is that the run happened — every span has both its ends, and every
-message arrived exactly once wherever the topology is capable of delivering it
-— because a benchmark that quietly measured half its workload, or measured the
-first of two executions of the same work, would report a flattering number
-rather than a failure. Where the topology is *not* capable, the messages
-it drops are counted and printed rather than asserted away: today one agent is
-refused more than `MAX_CONNECTIONS_PER_AGENT` inbound connections, so a session
-count above that is a ceiling the baseline exists to record.
+of figures for the topology, to be read beside the same harness run against the
+topology it replaced. What *is* asserted is that the run happened — every span
+has both its ends, and every message arrived exactly once — because a benchmark
+that quietly measured half its workload, or measured the first of two
+executions of the same work, would report a flattering number rather than a
+failure.
 
 The headline figure is the peak number of agent protocol connections one agent
-holds. Today that is N session streams plus the watcher's, so it is expected to
-track the session count here. That is the thing being changed, and this is the
-before.
+holds, and it is the one thing asserted outright: one, whatever the session
+count. The topology this replaced opened a stream per session on top of the
+watcher's, which put a ceiling on an agent at `MAX_CONNECTIONS_PER_AGENT`
+inbound connections and cost it every message addressed past that. Nothing is
+refused for want of a connection now, so a message that does not arrive is a
+defect rather than the shape of the topology, and is asserted against at every
+scale.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from pathlib import Path
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import MAX_CONNECTIONS_PER_AGENT
 from tests.benchmarks.host import bench_watcher, build_bench_bundle, marked, new_marker
 from tests.benchmarks.server import BenchServer, RoomState
 from tests.benchmarks.trace import TraceCollector, correlation_for
@@ -135,25 +134,17 @@ async def test_baseline_scales_with_session_count(
     for result in results:
         assert result.unmeasured == (), result.unmeasured
         assert result.messages == result.rooms * MESSAGES_PER_ROOM
-        # One agent protocol stream per session plus the watcher's, capped by
-        # what the server will admit. Asserted on the registry count rather
-        # than the socket count because that is the thing the topology change
-        # is about; the socket count is reported beside it but also carries
-        # pooled HTTP traffic. A floor rather than an equality: a session whose
-        # host has already exited has given its stream back, so the peak is
-        # what has to hold.
-        wanted = result.rooms + 1
-        assert result.resources.peak_streams >= min(wanted, MAX_CONNECTIONS_PER_AGENT)
-        # Below the cap every message must arrive exactly once. A loss there is
-        # a defect rather than a measurement, and so is a repeat: a message
-        # dispatched twice had its work done twice. At or above the cap the
-        # loss is the ceiling itself and is reported rather than asserted away,
-        # and a repeat is left unasserted with it — hosts refused a connection
-        # retry for the rest of the run, so a redelivery there would be a
-        # finding to investigate rather than a gate this run can hold.
-        if wanted <= MAX_CONNECTIONS_PER_AGENT:
-            assert result.undelivered == (), result.undelivered
-            assert result.duplicated == (), result.duplicated
+        # The one connection the agent's controller holds, whatever the session
+        # count — the deliverable, so an equality rather than a bound. Asserted
+        # on the registry count rather than the socket count because that is
+        # the thing the topology change is about; the socket count is reported
+        # beside it but also carries pooled HTTP traffic.
+        assert result.resources.peak_streams == 1, result.resources
+        # Every message arrives exactly once at every scale. There is no
+        # connection ceiling left to excuse a loss, and a repeat is a message
+        # whose work was done twice.
+        assert result.undelivered == (), result.undelivered
+        assert result.duplicated == (), result.duplicated
 
 
 async def test_baseline_concurrent_delivery(
@@ -173,8 +164,8 @@ async def test_baseline_concurrent_delivery(
     )
     print("\n" + publish([result], tmp_path / "baseline-concurrent.md"))
     assert result.unmeasured == ()
-    # Ten sessions plus the watcher is well inside what the server admits, so
-    # arriving together must neither cost a message nor serve one twice. The
+    assert result.resources.peak_streams == 1, result.resources
+    # Arriving together must neither cost a message nor serve one twice. The
     # second is the likelier failure of the two here: messages arriving
     # together is the case where two hosts can race for the same room.
     assert result.undelivered == (), result.undelivered
@@ -279,6 +270,8 @@ async def test_baseline_recovers_from_a_lost_host(
         "and it was serving its room by the next message"
     )
     assert result.unmeasured == ()
+    # Starting the session again must not leave a second stream behind it.
+    assert result.resources.peak_streams == 1, result.resources
     # The case likeliest to execute a message twice, and the reason the figure
     # is collected at all: the host is killed at a point where it may already
     # have dispatched, and a replacement then takes the room over. Recovering
