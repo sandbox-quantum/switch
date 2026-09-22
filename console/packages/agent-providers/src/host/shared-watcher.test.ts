@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
+import { declareHandoffCapability, HANDOFF_FILE } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
 import {
@@ -336,6 +337,104 @@ it('leaves an event queued behind earlier work unstarted once spawning is turned
   const sessions = journal.sessions().map((assigned) => assigned.session.sessionId);
   expect(sessions).toHaveLength(2);
   expect(started).toEqual([sessions[0]]);
+});
+
+it('gives one room one session however close together its first messages arrive', async () => {
+  // Two people addressing a quiet room at once must not each get a session of
+  // their own: the second would answer from a context the first never had.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-concurrent-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const started: string[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ config: launched }) => {
+    started.push(launched.session.sessionId);
+    return { created: true };
+  });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await Promise.all([
+      streams[0]!.onEvent!(addressed(1, 'room')),
+      streams[0]!.onEvent!(addressed(2, 'room')),
+    ]);
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect((await SharedWatchAssignments.open(root)).sessions()).toHaveLength(1);
+  expect(new Set(started).size).toBe(1);
+});
+
+it('routes to the worker that reads handoffs and leaves the older one to its own connection', async () => {
+  // One agent, two sessions, one of them on a bundle from before handoffs. The
+  // older worker must keep serving itself: nothing else would admit an event
+  // written to an inbox it never reads, and an event nobody admits is lost in
+  // silence rather than refused.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-handoff-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const capable = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'reads-handoffs',
+    messageId: 'first',
+  });
+  const legacy = await assignments.assign(config, {
+    sequence: 2,
+    roomId: 'older-bundle',
+    messageId: 'first',
+  });
+  const sessionRoot = (assigned: typeof capable) => join(root, assigned.session.sessionId);
+  await mkdir(sessionRoot(capable), { recursive: true });
+  await mkdir(sessionRoot(legacy), { recursive: true });
+  await declareHandoffCapability(sessionRoot(capable));
+
+  // What each session was handed at the moment it was started, so the order of
+  // the two is asserted rather than only the outcome: a controller that starts
+  // the worker first can die before the event it decided on is anywhere.
+  const started: { sessionId: string; handedOver: string }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ config: launched }) => {
+    started.push({
+      sessionId: launched.session.sessionId,
+      handedOver: await readFile(
+        join(root, launched.session.sessionId, HANDOFF_FILE),
+        'utf8'
+      ).catch(() => ''),
+    });
+    return { created: true };
+  });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(3, 'reads-handoffs'));
+    await streams[0]!.onEvent!(addressed(4, 'older-bundle'));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const handoffs = async (assigned: typeof capable) =>
+    await readFile(join(sessionRoot(assigned), HANDOFF_FILE), 'utf8').catch(() => null);
+  expect(await handoffs(capable)).toBe(
+    JSON.stringify({ sequence: 3, roomId: 'reads-handoffs', messageId: 'message-3' }) + '\n'
+  );
+  expect(await handoffs(legacy)).toBeNull();
+  // Neither is starved: both keep the session their room already had, and both
+  // are started for the event addressed to them.
+  expect(started.map((entry) => entry.sessionId)).toEqual([
+    capable.session.sessionId,
+    legacy.session.sessionId,
+    capable.session.sessionId,
+    legacy.session.sessionId,
+  ]);
+  expect(started.at(-2)?.handedOver).toContain('message-3');
 });
 
 it('leaves the rest of a restore unstarted once spawning is turned off midway', async () => {

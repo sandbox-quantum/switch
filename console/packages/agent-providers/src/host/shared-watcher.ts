@@ -7,6 +7,7 @@ import {
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
+import { handOff, readsHandoffs, type Handoff } from './handoff';
 import { Journal } from './journal';
 import {
   ensureSharedProcess,
@@ -279,6 +280,20 @@ export async function runSharedWatcher(
         supervision,
       });
     };
+    /**
+     * Puts the event in the inbox of the session that serves its room, for a
+     * worker that has said it reads one.
+     *
+     * A worker that has not said so keeps serving itself from its own
+     * connection and must not be routed to: nothing else would admit the event
+     * for it, and an event nobody admits is never committed, so it would be
+     * lost in silence rather than refused. Written before the worker is started
+     * or woken, so the decision is on disk before anything acts on it.
+     */
+    const route = async (config: SharedHostConfig, event: Handoff) => {
+      const sessionRoot = sharedSessionRoot(config.session.sessionId);
+      if (await readsHandoffs(sessionRoot)) await handOff(sessionRoot, event);
+    };
     await replaceSupersededSessions(template.session.agentId, supervision);
     const launchAssigned = async () => {
       for (const config of assignments.sessions()) await launch(config);
@@ -307,14 +322,16 @@ export async function runSharedWatcher(
         pending = pending.then(async () => {
           const messageId = roomInputId(event);
           if (!messageId) return;
+          const assignment = {
+            sequence: z.number().int().positive().parse(event.sequence),
+            roomId: event.room_id,
+            messageId,
+          };
           const config = await assignments.assign(
             sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
-            {
-              sequence: z.number().int().positive().parse(event.sequence),
-              roomId: event.room_id,
-              messageId,
-            }
+            assignment
           );
+          await route(config, assignment);
           await launch(config);
         });
         return pending.catch((error: Error) => {
