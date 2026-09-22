@@ -53,7 +53,10 @@ describe('the session selector', () => {
       JSON.stringify({ session_id: 'session-a', host_id: 'host-a', epoch: 'epoch-1' })
     );
     expect(sessionSelector(file)['X-Switch-Session-Epoch']).toBe('epoch-1');
-    writeFileSync(file, JSON.stringify({ session_id: 'session-a', host_id: 'host-a', epoch: 'epoch-2' }));
+    writeFileSync(
+      file,
+      JSON.stringify({ session_id: 'session-a', host_id: 'host-a', epoch: 'epoch-2' })
+    );
     expect(sessionSelector(file)['X-Switch-Session-Epoch']).toBe('epoch-2');
   });
 
