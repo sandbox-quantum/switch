@@ -45,6 +45,7 @@ vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin }));
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
+vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
 vi.mock('./create-room', () => ({ createRoomOnServer }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
 vi.mock('./gateway-client', () => ({
