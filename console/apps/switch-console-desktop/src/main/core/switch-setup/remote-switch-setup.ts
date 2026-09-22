@@ -575,6 +575,14 @@ export class RemoteSwitchSetupService {
       // One agent type whose status cannot be read must not empty the panel.
       // `refreshError` is how a status says it is not known to be current, so a
       // row that could not be read at all says so there rather than vanishing.
+      //
+      // That only holds while something reads the field. It did not, at first:
+      // the row came back with every other field at its empty value and the
+      // only consumer branched on `installed`, so a dead SSH channel rendered
+      // as "the connector is not installed" — a confident statement about the
+      // one thing the read failed to establish. `switchSetupController`'s
+      // `listAgentTypeAvailabilityRemote` checks `refreshError` first; a new
+      // consumer of this method has to do the same, or it inherits the bug.
       try {
         statuses.push(await this.getStatus(agentId));
       } catch (err) {

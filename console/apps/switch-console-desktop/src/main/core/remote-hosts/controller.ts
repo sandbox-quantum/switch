@@ -12,7 +12,6 @@ import {
   getRemoteDependencyManager,
   remoteDependencyDescriptor,
 } from '@main/core/dependencies/remote-dependency-manager';
-import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
 import { reportedCliAction } from '@main/core/telemetry/cli-action';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
@@ -239,26 +238,5 @@ export const remoteHostsController = createRPCController({
     return reportedCliAction('uninstall', TARGET, params.id, undefined, () =>
       manager.uninstall(params.id)
     );
-  },
-
-  /** Switch connector plugin status for every Switch-supported agent type on the host. */
-  listAgentTypePlugins: async (sshHost: string) => {
-    const service = await getRemoteSwitchSetupService(sshHost);
-    return service.listAgentTypeStatuses();
-  },
-
-  checkAgentPluginUpdates: async (params: { sshHost: string; agentId: string }) => {
-    const service = await getRemoteSwitchSetupService(params.sshHost);
-    return service.checkForUpdates(params.agentId);
-  },
-
-  installAgentPlugin: async (params: { sshHost: string; agentId: string }) => {
-    const service = await getRemoteSwitchSetupService(params.sshHost);
-    return service.install(params.agentId);
-  },
-
-  updateAgentPlugin: async (params: { sshHost: string; agentId: string }) => {
-    const service = await getRemoteSwitchSetupService(params.sshHost);
-    return service.update(params.agentId, 'user');
   },
 });
