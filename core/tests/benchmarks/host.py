@@ -249,14 +249,34 @@ class BenchWatcher:
             )
         return released
 
+    def session_root(self, session_id: str) -> Path:
+        """Where a session of this watcher keeps its state on disk."""
+        digest = hashlib.sha256(session_id.encode()).hexdigest()
+        return self.home / ".local" / "state" / "switch" / "sdk-sessions" / digest
+
+    def provider_conversations(self, session_id: str) -> list[str]:
+        """The provider conversations this session has run, in order.
+
+        One entry per provider start: the native identity the provider
+        answered with. A host that recovered a session resumes the identity it
+        had, so a second entry differing from the first is a session that came
+        back as a new conversation rather than the one it was.
+        """
+        inbox = self.session_root(session_id) / "inbox.jsonl"
+        if not inbox.exists():
+            raise RuntimeError(f"session {session_id} has no inbox at {inbox}")
+        native: list[str] = []
+        for line in inbox.read_text().splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("type") == "native":
+                native.append(record["nativeSessionId"])
+        return native
+
     def session_tree(self, session_id: str) -> list[int]:
         """The processes serving one session, supervisor first."""
-        digest = hashlib.sha256(session_id.encode()).hexdigest()
-        owner = (
-            (self.home / ".local" / "state" / "switch" / "sdk-sessions" / digest)
-            / "supervisor"
-            / "owner.json"
-        )
+        owner = self.session_root(session_id) / "supervisor" / "owner.json"
         if not owner.exists():
             raise RuntimeError(f"session {session_id} has no supervisor at {owner}")
         return descendants(int(json.loads(owner.read_text())["pid"]))

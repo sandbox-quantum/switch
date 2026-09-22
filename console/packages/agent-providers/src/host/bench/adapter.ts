@@ -59,7 +59,12 @@ export function createBenchAdapter(): ProviderAdapter {
       // native identity, and resuming one is how a host recovers a session it
       // did not start. Minting a different id in the event and the return value
       // would leave the benchmark unable to exercise that path faithfully.
-      const nativeSessionId = randomUUID();
+      //
+      // A resume keeps the id it was handed, for the same reason: a provider
+      // that answered a resume with a new conversation would be a different
+      // conversation, and a benchmark that minted one here could not tell a
+      // host that recovered a session from one that quietly replaced it.
+      const nativeSessionId = input.resume?.nativeSessionId ?? randomUUID();
       emit(input.sessionId, { type: 'session.started', nativeSessionId });
       emit(input.sessionId, { type: 'session.state.changed', status: 'ready' });
       return { provider: 'claude', sessionId: input.sessionId, nativeSessionId };

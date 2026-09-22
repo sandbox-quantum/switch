@@ -898,6 +898,17 @@ async def test_baseline_upgrades_over_its_own_running_session(
         )
         serving = watcher.sessions_by_room()[served_room]
         assert serving == assigned[served_room], (serving, assigned[served_room])
+        # Continuity has two halves and the delivery above proves neither. The
+        # server's session identity is the claim that survived the upgrade;
+        # the provider conversation is what the room is actually talking to. A
+        # host that restarted the session but began a new conversation would
+        # satisfy the first and fail the room, so both are asserted.
+        conversations = watcher.provider_conversations(serving)
+        assert len(set(conversations)) == 1, conversations
+        # More than one start, so the identity above is a conversation that was
+        # resumed rather than one that was never interrupted. How many is not
+        # asserted: that is the host's business and would make this brittle.
+        assert len(conversations) > 1, conversations
 
         fresh = new_marker()
         markers[fresh] = await send(later_room, fresh)
@@ -912,9 +923,11 @@ async def test_baseline_upgrades_over_its_own_running_session(
         "upgrade between two builds of this topology: the agent held one "
         f"connection throughout and was settled on it {settled:.1f}s after the "
         "successor controller started on the same state. The room kept the "
-        f"session that had been serving it, {serving}, so its next message was "
-        "answered with the conversation behind it. Every message was delivered "
-        "once, and a room first addressed after the upgrade was served normally."
+        f"session that had been serving it, {serving}, and that session resumed "
+        f"the provider conversation it already had ({conversations[0]}) rather "
+        "than beginning another, so its next message was answered with the "
+        "conversation behind it. Every message was delivered once, and a room "
+        "first addressed after the upgrade was served normally."
     )
     assert duplicated == {}, duplicated
 
