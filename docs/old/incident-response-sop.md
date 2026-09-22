@@ -339,8 +339,10 @@ Its `instructions` carry three things:
 **PagerDuty** (MCP)
 - Service ids: <one per service in the severity table>
 - Escalation policy id: <...>
-- Severity map: sev0 → P0, sev1 → P1, sev2 → P2 (confirm against the
-  priority scheme actually configured in PagerDuty)
+- Severity map: **sev0 → P1, sev1 → P2, sev2 → P3** — PagerDuty's scale
+  starts at P1, so there is no P0 to map sev0 onto. Note the SOP says "set
+  priority P0 / P1 / P2 in PagerDuty", which cannot be done as written; see
+  the vocabulary rule in the agent's definition.
 - On-call lookup: the schedule attached to the escalation policy above
 
 **Rooms / bridge**
