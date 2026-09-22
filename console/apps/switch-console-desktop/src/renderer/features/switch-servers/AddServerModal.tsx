@@ -1,4 +1,4 @@
-import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Cloud, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -77,7 +77,7 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
-type Step = 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
+type Step = 'managed' | 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
 
 /**
  * This wizard's steps and the shared list of step names say the same thing.
@@ -123,6 +123,7 @@ const CONNECT_STEPS = 4;
  */
 const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   choose: 'none',
+  managed: 'managed',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
@@ -199,12 +200,16 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'choose') {
     return (
       <ChooseStep
+        onManaged={() => goToStep('managed')}
         onLocal={() => goToStep('local')}
         onRemoteHost={() => goToStep('remoteHost')}
         onExternal={() => goToStep('external')}
         onClose={props.onClose}
       />
     );
+  }
+  if (step === 'managed') {
+    return <ManagedServerStep onBack={() => goToStep('choose')} onClose={props.onClose} />;
   }
   if (step === 'local') {
     return (
@@ -264,11 +269,13 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
 // ---------------------------------------------------------------------------
 
 function ChooseStep({
+  onManaged,
   onLocal,
   onRemoteHost,
   onExternal,
   onClose,
 }: {
+  onManaged: () => void;
   onLocal: () => void;
   onRemoteHost: () => void;
   onExternal: () => void;
@@ -281,6 +288,12 @@ function ChooseStep({
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <div className="grid gap-3">
+          <ChoiceCard
+            icon={<Cloud className="size-5" />}
+            title="Switch-managed"
+            description="Sign in and let Switch run your server. Set up cloud agents next—no server or SSH configuration."
+            onClick={onManaged}
+          />
           <ChoiceCard
             icon={<Laptop className="size-5" />}
             title="Run a server on this computer"
@@ -305,6 +318,62 @@ function ChooseStep({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+function ManagedServerStep({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Let Switch run the server</DialogTitle>
+      </DialogHeader>
+      <DialogContentArea className="space-y-5 pt-0">
+        <p className="text-sm text-foreground-muted">
+          Connect your account, then create your first cloud agent.
+        </p>
+        <ol className="space-y-4">
+          {[
+            ['Sign in to Switch', 'Access your server, rooms and agents.'],
+            [
+              'Connect your providers and GitHub',
+              'Add your provider credentials and choose repository access.',
+            ],
+            [
+              'Create your cloud agent',
+              'Choose its repository and settings. Review before starting it.',
+            ],
+          ].map(([title, description], index) => (
+            <li key={title} className="flex items-start gap-3">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-border text-xs text-foreground-muted">
+                {index + 1}
+              </span>
+              <div>
+                <p className="text-sm font-medium">{title}</p>
+                <p className="text-xs text-foreground-muted">{description}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <p className="text-xs text-foreground-muted">
+          Signing in does not start an agent or allocate a worker. Agent setup comes next.
+        </p>
+        <Alert>
+          <AlertTitle>Managed setup is not available yet</AlertTitle>
+          <AlertDescription>
+            Sign-in and provider connections are coming next. No server or agent has been created.
+          </AlertDescription>
+        </Alert>
+      </DialogContentArea>
+      <DialogFooter>
+        <Button variant="outline" onClick={onBack}>
+          Back
+        </Button>
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+        <Button disabled>Continue to sign in</Button>
       </DialogFooter>
     </>
   );
