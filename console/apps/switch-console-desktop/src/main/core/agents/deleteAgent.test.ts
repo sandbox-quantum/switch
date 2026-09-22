@@ -194,7 +194,7 @@ describe('deleteAgent', () => {
     expect(await fs.exists(agentSettingsRelativePath('cc-sibling'))).toBe(true);
   });
 
-  it('discards the controller state the agent would otherwise leave behind', async () => {
+  it('discards the controller state a local agent would otherwise leave behind', async () => {
     await deleteAgent('agent-1', {
       deleteInSwitch: false,
       removeProvisionedFiles: false,
@@ -225,17 +225,47 @@ describe('deleteAgent', () => {
     );
   });
 
-  it('keeps a remote agent whose controller could not be stopped, even on a Console-only removal', async () => {
-    // Nothing on the host is being torn down here, but the controller is this
-    // app's own process holding the agent's credentials — leaving it connected
-    // while the row goes is the leak, not a file left in a directory.
+  it('leaves a remote controller alone on a plain remove', async () => {
+    // Controller identity is deterministic, so the one on the host may have been
+    // started by another install and won the connection. A plain remove is this
+    // Console forgetting the agent, which the confirmation says in as many words.
     h.state.sshHost = 'host';
-    h.stopRemoteWatcher.mockRejectedValueOnce(new Error('Host unreachable'));
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.stopRemoteWatcher).not.toHaveBeenCalled();
+    expect(h.discardControllerState).not.toHaveBeenCalled();
+    expect(h.deleteRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a remote controller and discards its state on a full cleanup', async () => {
+    h.state.sshHost = 'host';
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: true,
+      trigger: 'user',
+    });
+
+    expect(h.stopRemoteWatcher).toHaveBeenCalledWith('agent-1');
+    expect(h.discardControllerState).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('keeps a remote agent whose controller could not be stopped during a full cleanup', async () => {
+    // Asked for the host to be cleaned up and it was not: the controller is
+    // still connected as an agent the row would say is gone, and deleting the
+    // row loses the only id that could stop it later.
+    h.state.sshHost = 'host';
+    h.stopRemoteWatcher.mockRejectedValue(new Error('Host unreachable'));
 
     await expect(
       deleteAgent('agent-1', {
         deleteInSwitch: false,
-        removeProvisionedFiles: false,
+        removeProvisionedFiles: true,
         trigger: 'user',
       })
     ).rejects.toThrow('Host unreachable');
