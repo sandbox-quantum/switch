@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
@@ -183,7 +183,7 @@ it('stays down while a takeover marker says another client holds the connection'
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-taken-over-'));
   roots.push(root);
   paths.root = root;
-  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
+  await writeFlags(root, { enabled: true, spawn: true });
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
   await recordTakenOver(root, {
@@ -242,9 +242,16 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
   ]);
 });
 
+/** The rename both Console and the SSH inline script use to replace the file. */
+async function writeFlags(root: string, flags: { enabled: boolean; spawn: boolean }) {
+  const temporary = join(root, 'watch.json.tmp');
+  await writeFile(temporary, JSON.stringify(flags));
+  await rename(temporary, join(root, 'watch.json'));
+}
+
 async function spawning(root: string) {
   const config = watchable(root);
-  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
+  await writeFlags(root, { enabled: true, spawn: true });
   await writeFile(join(root, 'config.json'), JSON.stringify(config));
   await writeFile(
     join(root, 'credentials.json'),
@@ -260,7 +267,7 @@ async function spawning(root: string) {
 }
 
 async function stopSpawning(root: string) {
-  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: false }));
+  await writeFlags(root, { enabled: true, spawn: false });
 }
 
 /** Polls: what is waited on crosses a file watch or a queue, not a call. */
@@ -304,20 +311,26 @@ it('leaves an event queued behind earlier work unstarted once spawning is turned
 
   const abort = new AbortController();
   const run = runSharedWatcher(root, config, abort.signal, supervision);
-  await eventually(() => streams.length === 1);
-  const stream = streams[0]!;
-  void stream.onEvent!(addressed(1, 'room'));
-  await eventually(() => started.length >= 1);
+  try {
+    await eventually(() => streams.length === 1);
+    const stream = streams[0]!;
+    void stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => started.length >= 1);
 
-  // Admitted while spawning was on, and still waiting on the session before it
-  // when the setting changes.
-  const queued = stream.onEvent!(addressed(2, 'other'));
-  await stopSpawning(root);
-  await eventually(() => declarations.includes(false));
-  admit();
-  await queued;
-  abort.abort();
-  await run;
+    // Admitted while spawning was on, and still waiting on the session before
+    // it when the setting changes.
+    const queued = stream.onEvent!(addressed(2, 'other'));
+    await stopSpawning(root);
+    await eventually(() => declarations.includes(false));
+    admit();
+    await queued;
+  } finally {
+    // A failed assertion must not leave the directory watch open behind it: the
+    // next test then opens its own and the file handles run out.
+    admit();
+    abort.abort();
+    await run;
+  }
 
   const journal = await SharedWatchAssignments.open(root);
   const sessions = journal.sessions().map((assigned) => assigned.session.sessionId);
@@ -348,9 +361,12 @@ it('leaves the rest of a restore unstarted once spawning is turned off midway', 
 
   const abort = new AbortController();
   const run = runSharedWatcher(root, config, abort.signal, supervision);
-  await eventually(() => started.length >= 1);
-  abort.abort();
-  await run;
+  try {
+    await eventually(() => started.length >= 1);
+  } finally {
+    abort.abort();
+    await run;
+  }
 
   expect(started).toEqual([first.session.sessionId]);
 });
