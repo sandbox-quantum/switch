@@ -5,7 +5,7 @@ import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -624,7 +624,7 @@ class DiscordAdapter(CollaborationAdapter):
         conn = self._require_connection()
         conn.register_message_handler(self._guild_id, self._handle_message)
         conn.set_dm_handler(self._handle_message)
-        conn.set_interaction_handler(self._handle_interaction)
+        conn.set_interaction_handler(self._make_on_interaction())
         await conn.connect(
             commands=build_app_commands(self._handle_slash_command),
         )
@@ -643,6 +643,17 @@ class DiscordAdapter(CollaborationAdapter):
         intents.message_content = True
         intents.members = True
         return intents
+
+    def _make_on_interaction(
+        self,
+    ) -> Callable[[discord.Interaction], Coroutine[Any, Any, None]]:
+        async def on_interaction(interaction: discord.Interaction) -> None:
+            try:
+                await self._handle_interaction(interaction)
+            except Exception:
+                logger.exception("Failed to handle a press on a Discord card")
+
+        return on_interaction
 
     async def stop(self) -> None:
         # A shared-delivery bridge has no connection of its own to close;
@@ -3419,9 +3430,7 @@ class DiscordAdapter(CollaborationAdapter):
         """
         creator = getattr(webhook, "user", None)
         bot_user_id = self._require_connection().bot_user_id
-        return creator is not None and bool(
-            bot_user_id and creator.id == bot_user_id
-        )
+        return creator is not None and bool(bot_user_id and creator.id == bot_user_id)
 
     def _offers_buttons(self, channel_id: int) -> bool:
         """Whether a card published in this guild channel may have buttons.
