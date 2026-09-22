@@ -61,8 +61,15 @@ const storedReceivedSchema = receivedSchema.extend({
   missed: z.number().int().nonnegative().optional(),
   gap: gapSchema.optional(),
 });
+/**
+ * An event this session's controller routed here, rather than one its own
+ * connection served. Kept apart from a delivery because it says nothing about
+ * where that connection has reached.
+ */
+const handedOverSchema = receivedSchema.extend({ type: z.literal('handoff') });
 const recordSchema = z.discriminatedUnion('type', [
   storedReceivedSchema,
+  handedOverSchema,
   z.strictObject({
     type: z.literal('ack'),
     sequence: z.number().int().positive(),
@@ -97,6 +104,8 @@ export class SharedRoomInbox {
         this.outstanding.set(key, record);
         this.sequences.set(record.sequence, key);
         this.cursor = record.sequence;
+      } else if (record.type === 'handoff') {
+        this.hold({ ...record, type: 'received' });
       } else if (record.type === 'ack') {
         const key = record.identity ?? this.sequences.get(record.sequence);
         if (!key) throw new Error('Room inbox acknowledges an unknown delivery.');
@@ -217,12 +226,42 @@ export class SharedRoomInbox {
     });
   }
 
+  /**
+   * Takes an event this session's controller routed here and holds it for
+   * admission exactly as a delivery of its own would be.
+   *
+   * Both can see the same event while a session still has a connection of its
+   * own, so whichever arrives second is dropped on the room and message it
+   * names — the identity admission is keyed on — rather than on which path
+   * carried it.
+   *
+   * Its position is deliberately not taken as this connection's own: the
+   * controller reached it on a different connection, and reading it as
+   * progress here would resume this session's stream past events it never
+   * saw. For the same reason the sequence is not registered as this
+   * connection's account of that position, which a server restart the
+   * controller has already seen and this session has not would contradict.
+   */
+  async accept(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<boolean> {
+    const received = receivedSchema.parse({ type: 'received', ...event });
+    if (this.received.has(identity(received))) return false;
+    await this.journal.append({ ...received, type: 'handoff' });
+    this.hold(received);
+    return true;
+  }
+
   currentRooms(): string[] {
     return [...(this.rooms ?? [])];
   }
 
   pending(): Received[] {
     return [...this.outstanding.values()];
+  }
+
+  private hold(received: Received): void {
+    const key = identity(received);
+    this.received.set(key, received);
+    this.outstanding.set(key, received);
   }
 
   async acknowledge(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<void> {

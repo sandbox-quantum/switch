@@ -161,6 +161,45 @@ async function reconnect(root: string) {
   return { inbox, stream: streams[streams.length - 1] };
 }
 
+it('admits an event its controller routed here exactly once, from either direction', async () => {
+  // Both paths can see the same event while a session still has a connection of
+  // its own. Admitting it twice is a second submission of the same message.
+  const { root, inbox, stream } = await connected();
+  expect(await inbox.accept({ sequence: 4, roomId: 'room', messageId: 'message-4' })).toBe(true);
+  await stream.onEvent(message(4, true));
+  await stream.onEvent(message(6, true));
+  expect(await inbox.accept({ sequence: 6, roomId: 'room', messageId: 'message-6' })).toBe(false);
+  expect(inbox.pending().map((event) => event.messageId)).toEqual(['message-4', 'message-6']);
+  await inbox.acknowledge({ sequence: 4, roomId: 'room', messageId: 'message-4' });
+  expect((await SharedRoomInbox.open(root)).pending().map((event) => event.messageId)).toEqual([
+    'message-6',
+  ]);
+});
+
+it('does not take the position a controller reached as its own', async () => {
+  // The controller reads the same numbering on a different connection. Resuming
+  // this session's stream from there would skip everything between.
+  const { root, inbox } = await connected();
+  await inbox.accept({ sequence: 9, roomId: 'room', messageId: 'routed' });
+  const reopened = await reconnect(root);
+  expect(reopened.stream.startCursor).toBe(4);
+  expect(reopened.inbox.pending().map((event) => event.messageId)).toEqual(['routed']);
+});
+
+it('does not read a routed event as this connection’s account of that position', async () => {
+  // The controller saw the server restart its numbering before this session
+  // did. Holding its sequence as what this stream served there would make the
+  // next delivery at that position look like the server contradicting itself.
+  const { inbox, stream, failures } = await connected();
+  await inbox.accept({ sequence: 1, roomId: 'room', messageId: 'routed-before-the-restart' });
+  await stream.onEvent(message(1, true));
+  expect(failures).toEqual([]);
+  expect(inbox.pending().map((event) => event.messageId)).toEqual([
+    'routed-before-the-restart',
+    'message-1',
+  ]);
+});
+
 it('preserves old pending identities across a server reset and host restart', async () => {
   const { root, inbox, stream } = await connected();
   for (const sequence of [1, 3, 4]) await stream.onEvent(message(sequence, true));
