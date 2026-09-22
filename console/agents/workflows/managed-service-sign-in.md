@@ -11,3 +11,16 @@ server entry and checks its session before asking the user to sign in again.
 
 This increment connects an account only. Provider/GitHub connections and worker
 provisioning are not implemented by this screen. No sidecar changes are required.
+
+## Claude Code credential draft
+
+The next screen offers an API key or a subscription setup token, with links to
+Claude's official setup instructions. It saves one draft per server through the
+existing OS-backed encrypted secret store. The renderer never reads a saved
+credential back. Switching credential type clears the input; a later save
+replaces the previous draft. Signing out or removing the server deletes it.
+
+This draft is local only: there is no hosted credential API, provider validation,
+or worker delivery in this increment. The UI states this before and after saving.
+No model call is made. The hosted bootstrap already accepts both credential kinds,
+but the draft is not yet connected to that bootstrap.

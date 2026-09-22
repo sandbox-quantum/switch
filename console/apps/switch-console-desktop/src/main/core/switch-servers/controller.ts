@@ -36,6 +36,7 @@ import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type { ClaudeCredentialKind } from '@shared/core/switch-servers/claude-credential';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -116,6 +117,10 @@ import {
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { claimIdentityOnServer, searchDirectoryOnServer } from './identities';
+import {
+  saveManagedClaudeCredential,
+  deleteManagedClaudeCredential,
+} from './managed-claude-credential';
 import {
   addServer,
   deleteSessionCookie,
@@ -283,6 +288,16 @@ function reportRoomCreated(
 }
 
 export const switchServersController = createRPCController({
+  saveManagedClaudeCredential: async (
+    serverId: string,
+    kind: ClaudeCredentialKind,
+    credential: string
+  ): Promise<void> => {
+    const server = await requireServer(serverId);
+    await fetchMe(server);
+    await saveManagedClaudeCredential(serverId, kind, credential);
+  },
+
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
   // Both outcomes are reported here rather than the success at the store's
@@ -370,6 +385,7 @@ export const switchServersController = createRPCController({
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
+    await deleteManagedClaudeCredential(serverId);
     await deleteSessionCookie(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },

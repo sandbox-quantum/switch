@@ -9,6 +9,8 @@ export const ADD_SERVER_STEPS = [
   'choose',
   'managed',
   'managedReady',
+  'managedClaude',
+  'managedClaudeSaved',
   'local',
   'remoteHost',
   'external',
