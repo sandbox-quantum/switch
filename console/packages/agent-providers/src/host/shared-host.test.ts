@@ -6,6 +6,7 @@ import type { Command, HostEvent, Session } from '@switch-console/shared/session
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { declareHandoffCapability, handOff, readsHandoffs } from './handoff';
 import { SharedRoomInbox } from './room-inbox';
 import { runSharedHost } from './shared-host';
 
@@ -380,6 +381,206 @@ it('runs a room message handed back by its admission, and not again when it is r
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(adapter.sendTurn).toHaveBeenCalledTimes(1);
     expect(admissions).toBe(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+function roomWorker() {
+  let listener: (event: ProviderRuntimeEvent) => void = () => {};
+  let live = false;
+  const ran: string[] = [];
+  const emit = (event: Record<string, unknown>) =>
+    listener({
+      ...event,
+      sessionId: 'session',
+      provider: 'claude',
+      eventId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    } as ProviderRuntimeEvent);
+  const adapter: ProviderAdapter = {
+    provider: 'claude',
+    capabilities: {
+      resume: true,
+      steering: false,
+      approvals: true,
+      userInput: true,
+      modelSwitchInSession: false,
+    },
+    startSession: vi.fn(async () => {
+      live = true;
+      emit({ type: 'session.state.changed', status: 'ready' });
+      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+    }),
+    sendTurn: vi.fn(async ({ turnId, text }) => {
+      ran.push(text);
+      emit({ type: 'turn.started', turnId });
+      emit({ type: 'turn.completed', turnId, outcome: 'completed' });
+      return { turnId };
+    }),
+    respondToRequest: vi.fn(async () => {}),
+    respondToUserInput: vi.fn(async () => {}),
+    interruptTurn: vi.fn(async () => {}),
+    stopSession: vi.fn(async () => {
+      live = false;
+    }),
+    stopAll: vi.fn(async () => {}),
+    hasSession: () => live,
+    subscribe: (fn) => {
+      listener = fn;
+      return () => {
+        listener = () => {};
+      };
+    },
+  };
+  return { adapter, ran };
+}
+
+const startingSession: Session = {
+  sessionId: 'session',
+  agentId: 'agent',
+  hostId: 'host',
+  epoch: 'proposed',
+  provider: 'claude',
+  status: 'starting',
+  connectivity: 'online',
+  pendingRequestIds: [],
+  capabilities: {
+    input: 'queue',
+    approvals: true,
+    questions: true,
+    interrupt: false,
+    reset: false,
+    compact: false,
+    modelChange: false,
+    attachmentMimeTypes: [],
+  },
+};
+
+/** Admits whatever it is given and hands the command back in the same response. */
+function admittingServer() {
+  const admitted: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim'))
+        return Response.json({
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...startingSession, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/room-message')) {
+        const { message_id: messageId } = JSON.parse(options.body as string) as {
+          message_id: string;
+        };
+        admitted.push(messageId);
+        return Response.json({
+          type: 'command.status',
+          commandId: `command-${messageId}`,
+          status: 'accepted',
+          code: null,
+          message: null,
+          command: {
+            contractVersion: 1,
+            commandId: `command-${messageId}`,
+            sessionId: 'session',
+            epoch: 'server-epoch',
+            origin: {
+              actorId: '@owner:example.test',
+              surface: 'slack',
+              roomId: 'room',
+              threadId: null,
+              messageId,
+            },
+            body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+          },
+        });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  return { admitted };
+}
+
+function startWorker(root: string, adapter: ProviderAdapter, signal: AbortSignal) {
+  return runSharedHost(
+    {
+      root,
+      agentApiUrl: 'http://127.0.0.1/agent',
+      token: randomUUID(),
+      session: startingSession,
+      input: {
+        sessionId: 'session',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+      },
+      roomConnection: { connectionId: 'connection', rooms: ['room'] },
+    },
+    adapter,
+    signal
+  ).then(
+    () => null,
+    (error: unknown) => error
+  );
+}
+
+it('runs what its controller routed to it, once however often it is handed over', async () => {
+  // The controller appends before it starts or wakes the worker, so a controller
+  // that dies in between hands the same event over again when it comes back.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-handoff-'));
+  roots.push(root);
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const { admitted } = admittingServer();
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    // Said before anything is routed here: a controller that finds no declaration
+    // takes the legacy path and the session never hears about the message.
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    const routed = { sequence: 5, roomId: 'room', messageId: 'routed' };
+    await handOff(root, routed);
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+    await handOff(root, routed);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(ran).toEqual(['routed']);
+    expect(admitted).toEqual(['routed']);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('runs what was routed to it while it was down', async () => {
+  // Where the controller survives and the worker does not, the event is already
+  // on disk and nothing else will ever admit it: reading the journal on the way
+  // up is the only thing standing between that message and silence.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-handoff-down-'));
+  roots.push(root);
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  await declareHandoffCapability(root);
+  await handOff(root, { sequence: 5, roomId: 'room', messageId: 'routed-while-down' });
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const { admitted } = admittingServer();
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(ran).toEqual(['routed-while-down']), { timeout: 3000 });
+    expect(admitted).toEqual(['routed-while-down']);
   } finally {
     stop.abort();
     expect(await outcome).toBeNull();

@@ -11,6 +11,7 @@ import type { Command, Session } from '@switch-console/shared/session-v1';
 import type { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { declareHandoffCapability, HandoffInbox } from './handoff';
 import { Journal } from './journal';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import { HostedSession } from './session-host';
@@ -296,8 +297,15 @@ export async function runSharedHost(
     })();
     await state.journal.append({ type: 'running' });
     let rooms: SharedRoomInbox | null = null;
+    let handoffs: HandoffInbox | null = null;
     if (options.roomConnection) {
       rooms = await SharedRoomInbox.open(options.root);
+      // Before the first read of it, so an event this agent's controller routes
+      // here while the session is still starting is waiting in the inbox rather
+      // than written to a worker that had not yet said it reads one.
+      await declareHandoffCapability(options.root);
+      handoffs = new HandoffInbox(options.root);
+      handoffs.listen(executionSignal);
       await rooms.connect(
         { agentId: session.agentId, apiEndpoint: options.agentApiUrl, token: options.token },
         options.roomConnection,
@@ -432,6 +440,8 @@ export async function runSharedHost(
         host.snapshot().session.status === 'ready' ||
         host.snapshot().session.status === 'running'
       ) {
+        if (rooms && handoffs)
+          for (const event of await handoffs.drain()) await rooms.accept(event);
         for (const event of rooms?.pending() ?? []) {
           try {
             const receipt = roomMessageReceiptSchema.parse(
@@ -505,7 +515,8 @@ export async function runSharedHost(
         }
         await flush();
       }
-      await delay(250, undefined, { signal: executionSignal });
+      if (handoffs) await handoffs.idle(250, executionSignal);
+      else await delay(250, undefined, { signal: executionSignal });
     }
   } catch (error) {
     if (!signal.aborted) failure ??= error;
