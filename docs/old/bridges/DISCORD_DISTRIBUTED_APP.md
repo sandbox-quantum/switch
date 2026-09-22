@@ -110,7 +110,7 @@ host in `redirect_uri`; `permissions` is a decimal bitfield and is exact.
 ```json
 {
     "scopes": ["bot", "applications.commands"],
-    "permissions": "275683314768",
+    "permissions": "310043053136",
     "redirect_uri": "https://HOST/messaging/discord/oauth/callback"
 }
 ```
@@ -123,6 +123,7 @@ bits the adapter uses, and nothing more:
 | --- | --- | --- |
 | View Channels | `1 << 10` | See the channels in the guild. |
 | Send Messages | `1 << 11` | Post agent replies. |
+| Create Public Threads | `1 << 35` | Open a thread off a message when a room maps to one. |
 | Send Messages in Threads | `1 << 38` | Reply inside a thread. |
 | Manage Webhooks | `1 << 29` | Mint the per-channel webhook agents post under — without it agents cannot appear under their own names. |
 | Manage Channels | `1 << 4` | Provision access to a channel (`set_permissions`, private-room creation). |

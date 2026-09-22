@@ -59,6 +59,7 @@ SCOPES: tuple[str, ...] = ("bot", "applications.commands")
 _PERMISSION_BITS: dict[str, int] = {
     "view_channel": 1 << 10,
     "send_messages": 1 << 11,
+    "create_public_threads": 1 << 35,  # open a thread off a message (_ensure_thread)
     "send_messages_in_threads": 1 << 38,
     "manage_webhooks": 1 << 29,  # mint the per-channel webhook agents post under
     "manage_channels": 1 << 4,  # provision channel access / private rooms
@@ -170,10 +171,17 @@ class DiscordAppInstaller(MessagingAppInstaller):
     # ── The webhook half the ABC declares and Discord does not have ───────────
     #
     # Discord delivers over the Gateway (DISCORD_DISTRIBUTED_APP.md, "the one
-    # public URL"), so none of these is reached: no `/messaging/discord/events`
-    # traffic is routed, and `disconnect` skips `revoke` for a tokenless install.
-    # They raise rather than return so a future caller that wired one up by
-    # mistake fails loudly instead of silently doing nothing.
+    # public URL"), so none of these carries real traffic: no
+    # `/messaging/discord/events` event is ours to read, and `disconnect` skips
+    # `revoke` for a tokenless install.
+    #
+    # `verify_webhook` is the one an unauthenticated stranger can reach — it runs
+    # first for any POST to `/messaging/discord/{events,interactive,commands}`.
+    # It raises `MessagingInstallError`, which the route turns into a 404 (the
+    # same answer as an unregistered platform), rather than an unhandled error
+    # that would be a repeatable 500 plus a traceback for anyone who found the
+    # URL. The rest raise loudly: they are only reachable from code that would
+    # have had to wire a Discord webhook up by mistake.
 
     async def revoke(self, *, bot_token: str) -> None:
         raise NotImplementedError(
@@ -182,7 +190,7 @@ class DiscordAppInstaller(MessagingAppInstaller):
         )
 
     def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
-        raise NotImplementedError(
+        raise MessagingInstallError(
             "the distributed Discord app has no webhook; events arrive over the Gateway"
         )
 

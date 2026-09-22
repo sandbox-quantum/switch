@@ -136,14 +136,21 @@ class TestConnectionConfig:
 
 class TestTheWebhookHalfIsStubbed:
     """Discord delivers over the Gateway; these raise so a mistaken caller sees
-    it rather than silently getting nothing."""
+    it rather than silently getting nothing.
+
+    `verify_webhook` is the exception: it is the one an unauthenticated stranger
+    can reach (it runs first for any POST to `/messaging/discord/*`), so it
+    raises `MessagingInstallError`, which the route turns into a 404 rather than
+    a repeatable 500."""
 
     async def test_revoke_raises(self, installer: DiscordAppInstaller) -> None:
         with pytest.raises(NotImplementedError):
             await installer.revoke(bot_token="whatever")
 
-    def test_verify_webhook_raises(self, installer: DiscordAppInstaller) -> None:
-        with pytest.raises(NotImplementedError):
+    def test_verify_webhook_raises_not_found(
+        self, installer: DiscordAppInstaller
+    ) -> None:
+        with pytest.raises(MessagingInstallError):
             installer.verify_webhook(headers={}, body=b"")
 
     def test_parse_webhook_raises(self, installer: DiscordAppInstaller) -> None:
