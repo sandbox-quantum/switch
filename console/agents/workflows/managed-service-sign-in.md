@@ -1,26 +1,31 @@
-# Managed service sign-in
+# Managed service onboarding
 
 Set `VITE_SWITCH_MANAGED_URL` to the HTTPS origin of the managed service when
 starting or building Console. The gateway and agent API must share that origin.
-The value is public build configuration, not a secret. Do not put credentials in it.
-A missing or invalid value produces a visible error before the sign-in form opens.
+The value is public build configuration, not a secret. A missing or invalid
+value produces a visible error before the sign-in form opens.
 
-The Add server → Switch-managed path reuses the existing server registration,
-password/SSO authentication, and encrypted session storage. It reuses a matching
-server entry and checks its session before asking the user to sign in again.
+Add server → Switch-managed reuses server registration, password/SSO sign-in,
+and encrypted session storage. A matching server entry and valid session are
+reused. The provider selector shows the registered providers; Claude Code is the
+only enabled provider in this increment.
 
-This increment connects an account only. Provider/GitHub connections and worker
-provisioning are not implemented by this screen. No sidecar changes are required.
+## Claude Code connection
 
-## Claude Code credential draft
+The screen offers an API key or subscription setup token with official setup
+instructions. Verify and connect sends the credential over the authenticated
+HTTPS gateway connection. The server runs a fixed, tool-free Claude Code request
+before storing the credential encrypted for the current tenant and user.
+Verification consumes a small amount of API credit or subscription allowance.
 
-The next screen offers an API key or a subscription setup token, with links to
-Claude's official setup instructions. It saves one draft per server through the
-existing OS-backed encrypted secret store. The renderer never reads a saved
-credential back. Switching credential type clears the input; a later save
-replaces the previous draft. Signing out or removing the server deletes it.
+The status endpoint returns only the credential kind and last successful check
+time. The UI can reopen a connection, replace it, or remove it. Failed verification
+does not overwrite an existing connection. Removal deletes the server-side
+credential; it does not revoke it at Anthropic. Signing out does not remove a
+cloud connection. Legacy local drafts are never uploaded automatically and are
+still cleared on sign-out or server removal.
 
-This draft is local only: there is no hosted credential API, provider validation,
-or worker delivery in this increment. The UI states this before and after saving.
-No model call is made. The hosted bootstrap already accepts both credential kinds,
-but the draft is not yet connected to that bootstrap.
+See `deploy/hosted/README.md` for the backend verifier image. A backend without
+verification enabled returns a visible unavailable error. GitHub connection,
+worker credential delivery and cloud agent creation are separate steps; connecting
+Claude does not provision a worker or start a room agent.

@@ -261,6 +261,25 @@ class ApiKey(TenantScoped, Base):
     )
 
 
+class ProviderConnection(TenantScoped, Base):
+    __tablename__ = "provider_connections"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "provider"),
+        CheckConstraint("provider = 'claude'", name="ck_provider_connections_provider"),
+        CheckConstraint(
+            "kind IN ('api-key', 'setup-token')", name="ck_provider_connections_kind"
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_credential: Mapped[str] = mapped_column(Text, nullable=False)
+    verified_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # ── Invitations ────────────────────────────────────────────────────────────────
 
 

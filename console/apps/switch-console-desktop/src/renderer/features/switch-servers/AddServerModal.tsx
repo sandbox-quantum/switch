@@ -34,7 +34,7 @@ import type {
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
-import { ManagedClaudeStep } from './managed-claude-step';
+import { ManagedClaudeConnectionStep } from './managed-claude-connection-step';
 import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
@@ -84,7 +84,6 @@ type Props = BaseModalProps<void> & {
 
 type Step =
   | 'managedClaude'
-  | 'managedClaudeSaved'
   | 'managedReady'
   | 'managed'
   | 'choose'
@@ -141,7 +140,6 @@ const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   managed: 'managed',
   managedReady: 'managed',
   managedClaude: 'managed',
-  managedClaudeSaved: 'managed',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
@@ -259,38 +257,11 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   }
   if (step === 'managedClaude' && connected) {
     return (
-      <ManagedClaudeStep
+      <ManagedClaudeConnectionStep
+        serverId={connected.id}
         onBack={() => goToStep('managedReady')}
-        onSave={async (kind, credential) => {
-          await rpc.switchServers.saveManagedClaudeCredential(connected.id, kind, credential);
-          goToStep('managedClaudeSaved');
-        }}
+        onDone={() => finish(connected.id)}
       />
-    );
-  }
-  if (step === 'managedClaudeSaved' && connected) {
-    return (
-      <>
-        <DialogHeader>
-          <DialogTitle>Claude credential saved</DialogTitle>
-        </DialogHeader>
-        <DialogContentArea className="space-y-4 pt-0">
-          <p className="text-sm">
-            Your credential is encrypted on this computer. It has not been sent to the managed
-            service or verified with Claude.
-          </p>
-          <p className="text-sm text-foreground-muted">
-            No agent has started. GitHub connection and cloud setup come next. Signing out or
-            removing this server clears the saved credential.
-          </p>
-        </DialogContentArea>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => goToStep('managedClaude')}>
-            Replace credential
-          </Button>
-          <Button onClick={() => finish(connected.id)}>Open server</Button>
-        </DialogFooter>
-      </>
     );
   }
   if (step === 'managedReady' && connected) {

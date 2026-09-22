@@ -19,3 +19,7 @@ export function validateClaudeCredential(kind: ClaudeCredentialKind, value: stri
   }
   return credential;
 }
+
+export type ClaudeConnection =
+  | { status: 'not_connected' }
+  | { status: 'connected'; kind: ClaudeCredentialKind; verified_at: string };

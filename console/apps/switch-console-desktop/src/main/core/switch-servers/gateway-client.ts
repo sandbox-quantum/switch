@@ -6,6 +6,10 @@ import {
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type {
+  ClaudeCredentialKind,
+  ClaudeConnection,
+} from '@shared/core/switch-servers/claude-credential';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import type {
   AddressingPolicy,
@@ -1418,4 +1422,52 @@ export async function retireSdkSession(
       body: { epoch },
     })
   ).json();
+}
+
+async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
+  const value: unknown = await response.json();
+  if (typeof value === 'object' && value !== null && 'status' in value) {
+    if (value.status === 'not_connected') return { status: 'not_connected' };
+    if (
+      value.status === 'connected' &&
+      'kind' in value &&
+      (value.kind === 'api-key' || value.kind === 'setup-token') &&
+      'verified_at' in value &&
+      typeof value.verified_at === 'string' &&
+      Number.isFinite(Date.parse(value.verified_at))
+    ) {
+      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
+    }
+  }
+  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
+}
+
+export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
+  const response = await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+  });
+  return readClaudeConnection(response);
+}
+
+export async function connectClaude(
+  server: SwitchServer,
+  kind: ClaudeCredentialKind,
+  credential: string
+): Promise<ClaudeConnection> {
+  if (new URL(server.gatewayUrl).protocol !== 'https:') {
+    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
+  }
+  const response = await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'PUT',
+    body: { kind, credential },
+  });
+  return readClaudeConnection(response);
+}
+
+export async function disconnectClaude(server: SwitchServer): Promise<void> {
+  await gatewayFetch(server, '/provider-connections/claude', {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }

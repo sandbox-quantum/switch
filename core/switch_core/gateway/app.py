@@ -41,6 +41,9 @@ from switch_core.gateway.messaging_installs import (
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.packages import router as packages_router
+from switch_core.gateway.provider_connections import (
+    router as provider_connections_router,
+)
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
@@ -48,6 +51,7 @@ from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.sessions import router as sessions_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.providers.claude_verifier import ClaudeVerifier
 from switch_core.room_service import RoomService
 from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionError
@@ -100,6 +104,16 @@ def create_gateway_app(
     )
 
     app = FastAPI(title="Switch Gateway API")
+    app.state.claude_verifier = (
+        ClaudeVerifier(config.hosted_claude_verifier_path)
+        if config.hosted_claude_verifier_path
+        else None
+    )
+    app.include_router(
+        provider_connections_router,
+        prefix="/provider-connections",
+        tags=["provider-connections"],
+    )
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie

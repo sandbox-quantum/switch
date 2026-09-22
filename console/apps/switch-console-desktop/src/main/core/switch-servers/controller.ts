@@ -36,7 +36,10 @@ import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
-import type { ClaudeCredentialKind } from '@shared/core/switch-servers/claude-credential';
+import {
+  validateClaudeCredential,
+  type ClaudeCredentialKind,
+} from '@shared/core/switch-servers/claude-credential';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -85,6 +88,9 @@ import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import { createBridgeOnServer } from './create-bridge';
 import { createRoomOnServer } from './create-room';
 import {
+  getClaudeConnection,
+  connectClaude,
+  disconnectClaude,
   addRoomAgents,
   agentExistsOnServer,
   deleteBridge,
@@ -117,10 +123,7 @@ import {
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { claimIdentityOnServer, searchDirectoryOnServer } from './identities';
-import {
-  saveManagedClaudeCredential,
-  deleteManagedClaudeCredential,
-} from './managed-claude-credential';
+import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import {
   addServer,
   deleteSessionCookie,
@@ -288,15 +291,13 @@ function reportRoomCreated(
 }
 
 export const switchServersController = createRPCController({
-  saveManagedClaudeCredential: async (
-    serverId: string,
-    kind: ClaudeCredentialKind,
-    credential: string
-  ): Promise<void> => {
-    const server = await requireServer(serverId);
-    await fetchMe(server);
-    await saveManagedClaudeCredential(serverId, kind, credential);
+  getClaudeConnection: async (serverId: string) =>
+    getClaudeConnection(await requireServer(serverId)),
+  connectClaude: async (serverId: string, kind: ClaudeCredentialKind, credential: string) => {
+    const value = validateClaudeCredential(kind, credential);
+    return connectClaude(await requireServer(serverId), kind, value);
   },
+  disconnectClaude: async (serverId: string) => disconnectClaude(await requireServer(serverId)),
 
   listServers: (): Promise<SwitchServer[]> => listServers(),
 

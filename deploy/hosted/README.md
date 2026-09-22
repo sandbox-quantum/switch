@@ -171,3 +171,45 @@ it in a workspace/config or passing it as a command argument. Bootstrap checks
 the token before starting the provider. Repository permission checks and actual
 clone/build/push/PR operations remain the coding task's responsibility; no live
 GitHub task or Console repository onboarding is implied by this implementation.
+
+## User-owned Claude connections
+
+The gateway exposes authenticated `GET`, `PUT`, and `DELETE` routes at
+`/gateway/provider-connections/claude`. The PUT body has `kind` (`api-key` or
+`setup-token`) and `credential`. GET returns connection status, kind and the last
+successful verification time, never the credential. Operations are scoped to the
+signed-in user's tenant and user ID; administrator status does not grant access
+to another user's connection. Concurrent changes to the same connection return
+409 so deletion and verification cannot race.
+
+The verifier is opt-in. Build the ordinary switch-core image from this checkout,
+then build the Linux amd64 hosted variant:
+
+```sh
+docker build --platform linux/amd64 -f deploy/hosted/Dockerfile.connections \
+  --build-arg SWITCH_CORE_IMAGE=your-built-core-image \
+  -t switch-core-with-claude .
+```
+
+Pin the base image by digest for deployment. The variant includes a checksum-pinned
+Claude Code executable and sets `HOSTED_CLAUDE_VERIFIER_PATH`. A non-container
+installation can set that variable to an absolute executable path. An invalid
+configured path fails startup; an unset path leaves connections unavailable.
+Run the normal database migration before rolling out the backend.
+
+Each check uses a temporary private home and a minimal environment with only the
+chosen credential. It runs one fixed Haiku request with tools, MCP servers, skills
+and session persistence disabled. It accepts only a successful Claude result.
+Checks time out after 25 seconds, process groups are killed on exit/cancellation,
+and temporary files are removed. There are at most two checks per gateway process.
+The verification process runs as the service user and accepts no user prompts,
+commands, repository paths or tool configuration; it is not a worker sandbox.
+
+Only verified credentials are written, using the existing server encryption key
+and the tenant-scoped `provider_connections` table. Failed replacement leaves the
+previous connection intact. Back up and rotate the server encryption key with the
+same care as other encrypted credentials. Removal deletes the database record;
+revocation at Anthropic and database-backup retention are separate concerns.
+
+This API does not yet deliver credentials into worker assignment bundles. Worker
+provisioning and GitHub setup remain separate from connecting a provider.

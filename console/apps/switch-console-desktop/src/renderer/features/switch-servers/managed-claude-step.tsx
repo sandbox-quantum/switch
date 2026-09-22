@@ -5,6 +5,7 @@ import {
   CommandActionButton,
 } from '@renderer/features/settings/agents-page/install-command-row';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -35,6 +36,7 @@ export function ManagedClaudeStep({
   const [credential, setCredential] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useCloseGuard(saving);
   const subscription = kind === 'setup-token';
   const save = async () => {
     setSaving(true);
@@ -43,14 +45,14 @@ export function ManagedClaudeStep({
       await onSave(kind, credential.trim());
       setCredential('');
     } catch (cause) {
-      setError(failureText(cause, 'Could not save your Claude credential. Try again.'));
+      setError(failureText(cause, 'Could not connect Claude Code. Try again.'));
     } finally {
       setSaving(false);
     }
   };
   return (
     <>
-      <DialogHeader>
+      <DialogHeader showCloseButton={!saving}>
         <DialogTitle>Connect Claude Code</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-5 pt-0">
@@ -232,8 +234,8 @@ export function ManagedClaudeStep({
           />
         </Field>
         <p className="text-xs text-foreground-muted">
-          Saved encrypted on this computer. It is not sent to the managed service or verified with
-          Claude yet.
+          Your credential is sent securely to Switch and stored encrypted after verification. The
+          check makes one small Claude request and uses your API credit or subscription allowance.
         </p>
         {error && (
           <p role="alert" className="text-sm text-destructive">
@@ -246,7 +248,7 @@ export function ManagedClaudeStep({
           Back
         </Button>
         <Button onClick={() => void save()} disabled={saving || !credential.trim()}>
-          {saving ? 'Saving…' : 'Save credential'}
+          {saving ? 'Verifying with Claude…' : 'Verify and connect'}
         </Button>
       </DialogFooter>
     </>
