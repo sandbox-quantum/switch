@@ -36,6 +36,8 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.sessions.service import RoomBinding, SessionError
 
 AGENT = "agent-1"
@@ -179,6 +181,21 @@ def _authority(
     return _Authority
 
 
+def _chatter(room_id: str, index: int) -> AgentEvent:
+    return AgentEvent(
+        type="message",
+        room_id=room_id,
+        payload=MessagePayload(
+            addressed=False,
+            sender="@u:s",
+            sender_name="u",
+            message_id=f"$m-{index}",
+            body="chatter",
+            timestamp=0,
+        ),
+    )
+
+
 def _refusing_authority() -> Any:
     """A `SessionAuthority` whose bind does not commit."""
 
@@ -306,6 +323,38 @@ async def test_displacing_a_sibling_names_it_in_the_warning(
 
 
 @pytest.mark.asyncio
+async def test_connecting_takes_the_rooms_unread_count(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whose reading clears a room follows who is in it.
+
+    Both sessions are on the one connection, so nothing underneath can tell
+    them apart. Unless connecting records who took the room, a read begun by
+    the session that left would clear a count the arrival has not read.
+    """
+    _open(registry)
+    monkeypatch.setattr(
+        definitions,
+        "SessionAuthority",
+        _authority([], vacated=(), displaces="session-b"),
+    )
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    protocol = _protocol_for(registry, "room-c")
+    init_operations_protocol(protocol)
+    buffer = protocol.event_buffer
+    buffer.hand_counting_to(AGENT, "session-b", "room-c")
+    for index in range(2):
+        buffer.enqueue(AGENT, "room-c", _chatter("room-c", index))
+
+    with call_context(_caller("session-a", None)):
+        await definitions.connect_to_room("room-c", include_general_instructions=False)
+
+    buffer.caught_up(AGENT, "session-b", "room-c", buffer.head(AGENT))
+
+    assert buffer.unread(AGENT, "room-c", buffer.head(AGENT)).count == 2
+
+
+@pytest.mark.asyncio
 async def test_displacing_nobody_warns_about_nothing(
     registry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -427,6 +476,7 @@ def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:
 
     return SimpleNamespace(
         connections=registry,
+        event_buffer=EventBuffer(),
         agent_session_store=_AbsentSessionStore(),
         session_factory=session_factory,
         agent_store=SimpleNamespace(

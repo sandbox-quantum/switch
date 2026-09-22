@@ -31,6 +31,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -97,6 +98,7 @@ def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> An
 
     return SimpleNamespace(
         connections=registry,
+        event_buffer=EventBuffer(),
         agent_session_store=store,
         session_factory=session_factory,
         agent_store=SimpleNamespace(get=_returning(agent)),

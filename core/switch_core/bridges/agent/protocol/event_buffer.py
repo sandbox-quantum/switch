@@ -22,9 +22,9 @@ events are flagged and the next reader to ask is told it missed events there.
 How far behind a reader is in a room is derived here rather than tallied: every
 event is retained with its room and whether it was addressed, so "unaddressed
 traffic in this room since you last caught up" is a scan between two sequence
-numbers at the moment somebody asks. The only thing recorded is where each
-reader last caught up in each room, which is one number and cannot drift out of
-step with the events it describes.
+numbers at the moment somebody asks. The only thing recorded is where each room
+was last caught up, which is one number and cannot drift out of step with the
+events it describes.
 """
 
 from __future__ import annotations
@@ -115,6 +115,19 @@ class BufferedEvent:
     appended_at: float
 
 
+@dataclass
+class _Counting:
+    """What one room is behind by for one agent, and who is entitled to clear it.
+
+    `baseline` is the sequence number the room was last caught up through, or
+    None for "cannot be said". `occupant` is the session or connection in the
+    room now: it decides whose `caught_up` counts, and nothing else.
+    """
+
+    occupant: str
+    baseline: int | None
+
+
 @dataclass(frozen=True)
 class Unread:
     """Unaddressed messages a reader has yet to catch up on, in one room.
@@ -150,14 +163,19 @@ class EventBuffer:
         # reader resuming from at or below it has missed events there, and
         # knowing which room is what lets the warning name one.
         self._dropped_through: dict[str, dict[str, int]] = {}
-        # agent -> reader -> room -> where that reader last caught up in that
-        # room, or None for "cannot be said". Distinct from the delivery
-        # cursor, which records what the server has written out: the two are
-        # allowed to diverge, and that divergence is what makes a count
-        # per-room rather than per-connection. At most one session of an agent
-        # may be in a room, so a reader and a room together name one caller
-        # without anything else having to identify it.
-        self._watermarks: dict[str, dict[str, dict[str, int | None]]] = {}
+        # agent -> room -> how far behind that room is, and who is in it.
+        # Distinct from the delivery cursor, which records what the server has
+        # written out: the two are allowed to diverge, and that divergence is
+        # what makes a count per-room rather than per-connection.
+        #
+        # Keyed by room rather than by reader because at most one session of an
+        # agent may be in a room, so the room names the count on its own — and
+        # the reader cannot name it once an agent has a single inbound
+        # connection, which every one of its sessions arrives on. What went
+        # past unread in a room belongs to the room: a session taking it over
+        # inherits what the agent has yet to catch up on there rather than
+        # starting at a zero nothing justifies.
+        self._counting: dict[str, dict[str, _Counting]] = {}
 
     # ------------------------------------------------------------------
     # Producing
@@ -271,55 +289,95 @@ class EventBuffer:
     def start_counting(
         self, agent_id: str, reader_id: str, room_id: str, from_seq: int
     ) -> None:
-        """Give a reader a baseline in a room, unless it already has one.
+        """Give a room a baseline and a reader, unless it already has one.
 
         Having no baseline is reported as an unknown count, so this is what
         turns unknown into a number. It never overwrites: what is already
         there is either progress or a deliberate unknown, and discarding
-        either would invent a zero.
+        either would invent a zero. Nor does it take the room from whoever is
+        in it — a connection covering a room is not the caller occupying it.
         """
-        rooms = self._watermarks.setdefault(agent_id, {}).setdefault(reader_id, {})
-        rooms.setdefault(room_id, from_seq)
+        rooms = self._counting.setdefault(agent_id, {})
+        rooms.setdefault(room_id, _Counting(occupant=reader_id, baseline=from_seq))
+
+    def hand_counting_to(self, agent_id: str, reader_id: str, room_id: str) -> None:
+        """Record that `reader_id` is the one in the room now.
+
+        Connecting to a room is taking it, so the newcomer becomes the only
+        caller whose reading clears the count there — which is what stops a
+        read begun by the session it displaced from clearing a count that is
+        no longer that session's to clear.
+
+        What the room is behind by survives the change of hands: the messages
+        went past unread whoever was there, and a successor told zero would be
+        told something nobody has established. A room nothing has counted yet
+        starts from the oldest event still retained, the most that can be said
+        about how far behind it is.
+        """
+        rooms = self._counting.setdefault(agent_id, {})
+        held = rooms.get(room_id)
+        if held is None:
+            rooms[room_id] = _Counting(occupant=reader_id, baseline=0)
+            return
+        held.occupant = reader_id
 
     def mark_unknown(self, agent_id: str, reader_id: str, rooms: Iterable[str]) -> None:
-        """Record that how far behind a reader is in these rooms cannot be said.
+        """Record that how far behind these rooms are cannot be said.
 
         Sticky, so a reader that reclaims the room afterwards is not quietly
         given a fresh baseline and told nothing went by. The next time it
-        catches up it gets a real one again.
+        catches up it gets a real one again. Whoever is in the room stays in
+        it: losing the buffer says nothing about who is where.
         """
-        held = self._watermarks.setdefault(agent_id, {}).setdefault(reader_id, {})
+        held = self._counting.setdefault(agent_id, {})
         for room_id in rooms:
-            held[room_id] = None
+            counting = held.get(room_id)
+            if counting is None:
+                held[room_id] = _Counting(occupant=reader_id, baseline=None)
+            else:
+                counting.baseline = None
 
     def caught_up(
         self, agent_id: str, reader_id: str, room_id: str, through_seq: int
     ) -> None:
-        """Record that a reader has caught up on a room through `through_seq`.
+        """Record that the room's occupant has caught up through `through_seq`.
 
         Forward only, and only for the room named: catching up on one room
         says nothing about any other, which is the whole point of counting
         per room.
-        """
-        held = self._watermarks.setdefault(agent_id, {}).setdefault(reader_id, {})
-        current = held.get(room_id)
-        if current is None or through_seq > current:
-            held[room_id] = through_seq
 
-    def unread(
-        self, agent_id: str, reader_id: str, room_id: str, through_seq: int
-    ) -> Unread:
-        """Unaddressed messages in one room a reader has not caught up on.
+        Ignored from anyone but the occupant. A read is begun before its
+        history arrives, so a session displaced from the room while its read
+        was in flight comes back holding an answer for a room it has left; the
+        session that took the room has not read a word of it, and must not be
+        told otherwise.
+        """
+        rooms = self._counting.setdefault(agent_id, {})
+        held = rooms.get(room_id)
+        if held is None:
+            rooms[room_id] = _Counting(occupant=reader_id, baseline=through_seq)
+            return
+        if held.occupant != reader_id:
+            return
+        if held.baseline is None or through_seq > held.baseline:
+            held.baseline = through_seq
+
+    def unread(self, agent_id: str, room_id: str, through_seq: int) -> Unread:
+        """Unaddressed messages in one room the agent has not caught up on.
 
         Counted on demand from the retained events rather than tallied as they
         arrive, so it cannot disagree with what the buffer holds. Only
         messages: an agent is told how much conversation went past it, not how
         many admin events did.
+
+        Asked by room alone, with no reader: a connection carrying every
+        session of an agent could not say which of them a room's count belongs
+        to, and only one of them can be in the room to be told.
         """
-        held = self._watermarks.get(agent_id, {}).get(reader_id, {})
-        if room_id not in held:
+        held = self._counting.get(agent_id, {}).get(room_id)
+        if held is None:
             return Unread(count=None, reason=NO_BASELINE)
-        baseline = held[room_id]
+        baseline = held.baseline
         if baseline is None:
             return Unread(count=None, reason=RESTARTED)
 
@@ -350,12 +408,14 @@ class EventBuffer:
             readers[reader_id] = cursor
 
     def drop_reader(self, agent_id: str, reader_id: str) -> None:
+        """Forget a reader's delivery cursor. What its rooms are behind by stays.
+
+        A reader going away does not mean the conversation it was not reading
+        was read. The next session in the room is told what went past.
+        """
         readers = self._cursors.get(agent_id)
         if readers:
             readers.pop(reader_id, None)
-        watermarks = self._watermarks.get(agent_id)
-        if watermarks:
-            watermarks.pop(reader_id, None)
 
     def remove(self, agent_id: str) -> None:
         self._events.pop(agent_id, None)
@@ -363,7 +423,7 @@ class EventBuffer:
         self._notify.pop(agent_id, None)
         self._cursors.pop(agent_id, None)
         self._dropped_through.pop(agent_id, None)
-        self._watermarks.pop(agent_id, None)
+        self._counting.pop(agent_id, None)
 
     def drop_room(self, agent_id: str, room_id: str) -> None:
         """Forget everything retained for this agent in one room.

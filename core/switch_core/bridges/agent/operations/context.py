@@ -71,6 +71,20 @@ def caller_session() -> CallerSession | None:
     return bound.session if bound is not None else None
 
 
+def counting_reader() -> str | None:
+    """Who a room's unread count belongs to while this caller is in it.
+
+    The session when the caller named one. A controller connection carries
+    every session of an agent, so asking which of them read a room would get
+    the same answer for all of them, and one session's reading would clear a
+    count another was owed. Otherwise the connection or transport session,
+    which for a caller with no session of its own is the only identity there
+    is — and the one thing in the room.
+    """
+    caller = caller_session()
+    return caller.id if caller is not None else session_key()
+
+
 async def bound_rooms() -> set[str]:
     """The rooms this caller is bound to, empty when it is bound to none.
 

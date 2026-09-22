@@ -21,6 +21,7 @@ import pytest
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
+    CallerSession,
     reset_call_context,
     set_call_context,
 )
@@ -197,7 +198,7 @@ def _chatter(protocol: _Protocol, room_id: str) -> None:
 
 def _unread(protocol: _Protocol, room_id: str) -> int | None:
     buffer = protocol.event_buffer
-    return buffer.unread(AGENT, CONN, room_id, buffer.head(AGENT)).count
+    return buffer.unread(AGENT, room_id, buffer.head(AGENT)).count
 
 
 @pytest.mark.asyncio
@@ -250,6 +251,44 @@ async def test_chatter_arriving_while_the_read_is_in_flight_stays_unread(
     await read_context()
 
     assert _unread(protocol, CONNECTED_ROOM) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_lands_after_losing_the_room_clears_nothing(
+    protocol: _Protocol, connected: None
+) -> None:
+    """Two sessions of one agent share a connection; only one is in the room.
+
+    The read is answered from a snapshot taken before the history call, so a
+    session displaced while it was in flight comes back with an answer about a
+    room that is now somebody else's. That somebody has read nothing.
+    """
+    buffer = protocol.event_buffer
+    buffer.hand_counting_to(AGENT, "session-a", CONNECTED_ROOM)
+    for _ in range(3):
+        _chatter(protocol, CONNECTED_ROOM)
+    protocol.while_in_flight.append(
+        lambda: buffer.hand_counting_to(AGENT, "session-b", CONNECTED_ROOM)
+    )
+
+    token = set_call_context(
+        CallContext(
+            agent_id=AGENT,
+            session_key=CONN,
+            session=CallerSession(
+                id="session-a",
+                host_id="host-1",
+                epoch="epoch-1",
+                room_id=CONNECTED_ROOM,
+            ),
+        )
+    )
+    try:
+        await read_context()
+    finally:
+        reset_call_context(token)
+
+    assert _unread(protocol, CONNECTED_ROOM) == 3
 
 
 @pytest.mark.asyncio

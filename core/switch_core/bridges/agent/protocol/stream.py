@@ -305,7 +305,7 @@ async def _event_stream(
                     # woken for anyway. A count of its own would be a wake
                     # spent on "you may have missed something you may not care
                     # about".
-                    unread = buffer.unread(agent_id, conn.id, item.room_id, item.seq)
+                    unread = buffer.unread(agent_id, item.room_id, item.seq)
                     payload["missed"] = {
                         "count": unread.count,
                         "reason": unread.reason,

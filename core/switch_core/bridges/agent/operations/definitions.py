@@ -19,6 +19,7 @@ from switch_core.bridges.agent.operations.context import (
     bound_rooms,
     caller_session,
     connected_room,
+    counting_reader,
     get_agent_id,
     get_protocol,
     require_connected_room,
@@ -314,6 +315,14 @@ async def connect_to_room(
     )
     for departed in previous - {room.id}:
         release_room_on_caller_connection(protocol, agent_id, key, departed)
+
+    # Connecting is how an agent's occupancy of a room changes hands, and the
+    # occupant is the one whose reading clears that room's unread count. The
+    # connection underneath cannot stand in for it: sessions of one agent share
+    # it, and each of them is in a room of its own.
+    reader = counting_reader()
+    if reader is not None:
+        protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
 
     await bind_room_for_connectionless_caller(
         protocol,
@@ -661,7 +670,7 @@ async def read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
     )
 
-    reader = session_key()
+    reader = counting_reader()
     if reader is not None and room_id in connected:
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
