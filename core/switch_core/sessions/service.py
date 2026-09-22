@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import get_args
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import can_address, parse_policy
@@ -1103,6 +1103,21 @@ class SessionAuthority:
             await db.execute(
                 select(Agent.id).where(Agent.id == agent_id).with_for_update()
             )
+            now = await _now(db)
+            # A delivery a session has taken is kept only until the promise on
+            # it would have run out anyway: past that the same message arriving
+            # again is verified from the buffer or refused, and the command it
+            # became is what stops it being answered twice. Cleared here rather
+            # than on a schedule, because this is the one call every room
+            # delivery of this agent passes through.
+            await db.execute(
+                delete(SdkRoomAdmission).where(
+                    SdkRoomAdmission.tenant_id == require_tenant_id(),
+                    SdkRoomAdmission.agent_id == agent_id,
+                    SdkRoomAdmission.consumed_at.is_not(None),
+                    SdkRoomAdmission.expires_at <= now,
+                )
+            )
             room = await self._room_member(db, agent_id, room_id)
             rows = list(
                 await db.scalars(
@@ -1115,7 +1130,6 @@ class SessionAuthority:
                     .with_for_update()
                 )
             )
-            now = await _now(db)
             reservation = await db.get(
                 SdkRoomAdmission, (require_tenant_id(), agent_id, room_id, message_id)
             )

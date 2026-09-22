@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
@@ -128,40 +127,6 @@ export class SharedRoomInbox {
     }
   }
 
-  /**
-   * What the server last told this session it serves, and every room it has
-   * been told it serves at any point in its life.
-   *
-   * The two together tell a room the session has yet to be given from a room
-   * taken away from it, which look alike in the latest answer alone and mean
-   * opposite things. A session newly started holds no room until the agent
-   * inside it connects to one, and the room it was started for is still its
-   * own. A room the session was once given and is no longer was taken by a
-   * sibling that bound it, and belongs to that sibling now. Null when the
-   * session has no binding record at all, which is different again from one
-   * that records none.
-   */
-  static async savedRooms(root: string): Promise<{ rooms: string[]; everHeld: string[] } | null> {
-    let text: string;
-    try {
-      text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    }
-    if (text && !text.endsWith('\n'))
-      throw new Error('Room inbox has an incomplete record; recovery review is required.');
-    let rooms: string[] | null = null;
-    const everHeld = new Set<string>();
-    for (const line of text.split('\n').slice(0, -1)) {
-      const record = recordSchema.parse(JSON.parse(line));
-      if (record.type !== 'rooms') continue;
-      rooms = record.rooms;
-      for (const room of record.rooms) everHeld.add(room);
-    }
-    return rooms && { rooms, everHeld: [...everHeld] };
-  }
-
   static async open(root: string): Promise<SharedRoomInbox> {
     return new SharedRoomInbox(
       await Journal.load(join(root, 'room-inbox.jsonl'), (value) => recordSchema.parse(value))
@@ -169,13 +134,8 @@ export class SharedRoomInbox {
   }
 
   /**
-   * Records the rooms the server says this session serves.
-   *
-   * Written down because the controller reads it to decide whether an already
-   * running session covers a room, and it must be able to do that while the
-   * session is stopped and nobody can be asked. Every answer is kept, not just
-   * the latest: a room that appears and then stops appearing was taken away,
-   * and nothing in the latest answer alone says so.
+   * Records the rooms the server says this session serves, so what the session
+   * was last told is readable after the fact rather than only while it runs.
    */
   async serves(rooms: string[]): Promise<void> {
     if (this.rooms !== null && JSON.stringify(this.rooms) === JSON.stringify(rooms)) return;

@@ -103,6 +103,7 @@ async function main(): Promise<void> {
           resumeOperationId: config.resumeOperationId,
           input,
           roomConnection: config.roomConnection,
+          grant: config.grant,
         },
         createBenchAdapter(),
         stop.signal

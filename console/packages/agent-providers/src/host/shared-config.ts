@@ -15,6 +15,17 @@ export const sharedConfigSchema = z.strictObject({
   resumeOperationId: z.string().uuid().optional(),
   start: startSchema,
   roomConnection: roomConnectionSchema.optional(),
+  /**
+   * The room delivery this session was started to answer, and the right the
+   * server issued to start it.
+   *
+   * Sent with the session's first claim, so the session is created already
+   * holding the room instead of created empty and then binding it: between
+   * those two writes the room is free, and the next delivery for it would be
+   * answered by starting a second session. Absent from a session nobody
+   * addressed a room message to.
+   */
+  grant: z.strictObject({ roomId: z.string().min(1), messageId: z.string().min(1) }).optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),

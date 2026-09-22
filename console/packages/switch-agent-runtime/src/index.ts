@@ -47,6 +47,13 @@ export {
   type ProcessRow,
   type ReapOutcome,
 } from './reap';
+export {
+  RoomAdmissionError,
+  SwitchRoomAdmissions,
+  type RoomAdmission,
+  type RoomDelivery,
+  type RoomReservation,
+} from './room-admission';
 export { readSse, type SseFrame } from './sse';
 export type {
   AgentBridgeEvent,

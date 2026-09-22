@@ -151,6 +151,7 @@ async function main(): Promise<void> {
           authenticate,
           input,
           roomConnection: config.roomConnection,
+          grant: config.grant,
         },
         adapterFor(config.start.provider, config.execution?.binaryPath),
         stop.signal

@@ -108,6 +108,20 @@ async def _age_admission(
             row.expires_at = past
 
 
+async def _reserved(session_factory) -> list[tuple[str, bool]]:
+    """Every row this agent has, delivered or not, oldest promise first."""
+    async with session_factory() as db:
+        rows = await db.scalars(
+            select(SdkRoomAdmission)
+            .where(
+                SdkRoomAdmission.tenant_id == require_tenant_id(),
+                SdkRoomAdmission.agent_id == AGENT,
+            )
+            .order_by(SdkRoomAdmission.sequence)
+        )
+        return [(row.message_id, row.consumed_at is not None) for row in rows]
+
+
 @pytest.mark.asyncio
 async def test_a_stopped_session_is_not_the_room_owner_but_a_crashed_host_still_is(
     session_factory,
@@ -346,3 +360,36 @@ async def test_an_expired_promise_is_reported_and_kept_until_it_is_given_up(
     with pytest.raises(SessionError) as gone:
         await service.discard_room_reservation(AGENT, ROOM, "first")
     assert gone.value.code == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_message_stops_being_kept_once_its_promise_is_over(
+    session_factory,
+) -> None:
+    """The table is written to on every addressed room message, so it is cleared here.
+
+    A row outlives the delivery it describes on purpose: while the promise
+    stands, the copy it holds is what a redelivery is built from. Past that it
+    is answering a question nobody can still ask — the same message arriving
+    again is verified afresh, and the command it became is what stops it being
+    answered twice. One that nothing has taken is left alone: it is the only
+    record that a message went undelivered, and the controller is told so and
+    gives it up by name.
+    """
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    first = buffer.enqueue(AGENT, ROOM, _event("first"))
+    second = buffer.enqueue(AGENT, ROOM, _event("second"))
+    third = buffer.enqueue(AGENT, ROOM, _event("third"))
+    await service.bind_room(AGENT, *FIRST, epoch, ROOM)
+    await service.admit_room(AGENT, ROOM, "first", first, True, buffer)
+    await service.submit_room_message(
+        AGENT, *FIRST, epoch, ROOM, "first", first, False, buffer
+    )
+    await service.admit_room(AGENT, ROOM, "second", second, True, buffer)
+    assert await _reserved(session_factory) == [("first", True), ("second", False)]
+
+    await _age_admission(session_factory, "first", grant=False, promise=True)
+    await _age_admission(session_factory, "second", grant=False, promise=True)
+    await service.admit_room(AGENT, ROOM, "third", third, True, buffer)
+    assert await _reserved(session_factory) == [("second", False), ("third", False)]

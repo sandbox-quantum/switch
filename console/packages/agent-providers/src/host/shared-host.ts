@@ -29,6 +29,7 @@ export type SharedHostOptions = {
   session: Session;
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
+  grant?: { roomId: string; messageId: string };
 };
 
 class TransportError extends Error {}
@@ -251,6 +252,14 @@ export async function runSharedHost(
         await request('/claim', {
           session: state.identity.session,
           operation_id: state.identity.operationId,
+          // The room this session was started to answer, so the server creates
+          // it already holding that room. Spent once: a grant the server has
+          // since given to another session, or let lapse, refuses the claim
+          // rather than producing a second session for one room.
+          grant: options.grant && {
+            room_id: options.grant.roomId,
+            message_id: options.grant.messageId,
+          },
         })
       );
       await state.journal.append({ type: 'lease', snapshot, sourceBase: 0 });
@@ -508,14 +517,20 @@ export async function runSharedHost(
                 `Room message ${event.messageId}: ${receipt.message ?? receipt.status}. It was not resent.`
               );
           } catch (error) {
-            if (
-              !(error instanceof RequestError) ||
-              !['UNSUPPORTED_CAPABILITY', 'ROOM_MESSAGE_RESERVED'].includes(error.code)
-            )
-              throw error;
-            await host.notice(
-              `Room message ${event.messageId} was not submitted: ${error.message}`
-            );
+            if (!(error instanceof RequestError)) throw error;
+            // The room moved to another session of this agent while the event
+            // was on its way here. Switch keeps the delivery and hands it to
+            // whoever holds the room now, so this session lets it go rather
+            // than retrying something it is no longer entitled to submit.
+            if (error.code === 'ROOM_MESSAGE_REASSIGNED')
+              await host.notice(
+                `Room message ${event.messageId} is no longer this session's to answer; the room moved to another session of this agent, and Switch is delivering the message there.`
+              );
+            else if (['UNSUPPORTED_CAPABILITY', 'ROOM_MESSAGE_RESERVED'].includes(error.code))
+              await host.notice(
+                `Room message ${event.messageId} was not submitted: ${error.message}`
+              );
+            else throw error;
           }
           await rooms!.acknowledge(event);
         }

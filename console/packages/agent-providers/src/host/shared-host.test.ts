@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, HostEvent, Session } from '@switch-console/shared/session-v1';
@@ -7,8 +7,18 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { declareHandoffCapability, handOff, readsHandoffs } from './handoff';
-import { SharedRoomInbox } from './room-inbox';
 import { runSharedHost } from './shared-host';
+
+/** Every answer Switch has given this session's room binding, in order. */
+async function boundRooms(root: string): Promise<string[][]> {
+  const text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8').catch(() => '');
+  return text
+    .split('\n')
+    .slice(0, -1)
+    .map((line) => JSON.parse(line) as { type: string; rooms?: string[] })
+    .filter((record) => record.type === 'rooms')
+    .map((record) => record.rooms!);
+}
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -753,8 +763,6 @@ it('fetches a room command the admission handed nothing back for', async () => {
 });
 
 it('records the rooms Switch answers its binding with', async () => {
-  // The controller reads them off disk to decide whether a session already
-  // covers a room, and it has to be able to while that session is stopped.
   const root = await mkdtemp(join(tmpdir(), 'shared-host-binding-'));
   roots.push(root);
   const stop = new AbortController();
@@ -762,16 +770,9 @@ it('records the rooms Switch answers its binding with', async () => {
   admittingServer();
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(
-      async () =>
-        expect(await SharedRoomInbox.savedRooms(root)).toEqual({
-          rooms: ['room'],
-          everHeld: ['room'],
-        }),
-      {
-        timeout: 3000,
-      }
-    );
+    await vi.waitFor(async () => expect(await boundRooms(root)).toEqual([['room']]), {
+      timeout: 3000,
+    });
   } finally {
     stop.abort();
     expect(await outcome).toBeNull();
@@ -828,10 +829,7 @@ it('starts, and says so, when its controller is not there yet to bind to', async
     await vi.waitFor(
       async () => {
         expect(notices).toEqual(['ROOM_DELIVERY_FAILED', 'ROOM_DELIVERY_RESUMED']);
-        expect(await SharedRoomInbox.savedRooms(root)).toEqual({
-          rooms: ['room'],
-          everHeld: ['room'],
-        });
+        expect(await boundRooms(root)).toEqual([['room']]);
       },
       { timeout: 12000 }
     );
