@@ -882,14 +882,18 @@ class RoomService:
         agent_clients = self._resolve_agent_clients(agent_ids)
 
         with tenant_scope(room.tenant_id):
-            for matrix_user_id in agent_clients.values():
-                await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
-
+            # Both records of the membership before the wake-up. `kick_user`
+            # takes `client_rooms`; `room_agents` is the one
+            # `get_rooms_for_agent` reads, so a client reacting to the kick by
+            # re-reading its rooms must not still find this one.
             async with self._session_factory() as session:
                 for client_id in agent_clients:
                     await self._room_store.remove_client(session, client_id, room_id)
                 await self._room_store.remove_agents(session, room_id, agent_ids)
                 await session.commit()
+
+            for matrix_user_id in agent_clients.values():
+                await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
 

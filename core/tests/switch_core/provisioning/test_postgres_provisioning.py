@@ -46,6 +46,15 @@ async def _room(session: AsyncSession) -> Room:
     return room
 
 
+async def _never(_room_id: str) -> None:
+    """The arm of a registration a test is not exercising.
+
+    `register` takes both arms together, so the one not under test has to be
+    something — and something that fails the test if it is rung.
+    """
+    raise AssertionError("the other half of the registration was rung")
+
+
 def _provisioning(
     session_factory: async_sessionmaker[AsyncSession],
     invites: InviteBus | None = None,
@@ -126,7 +135,7 @@ class TestMembership:
         # because `matrix_user_id` is unique per tenant and every tenant's
         # admin client carries the same one.
         invites = InviteBus()
-        invites.register(client_id, _handler)
+        invites.register(client_id, _handler, _never)
         await _provisioning(session_factory, invites).invite_to_room(
             transport_room_id, user_id
         )
@@ -184,6 +193,86 @@ class TestMembership:
             )
         assert membership is None
 
+    async def test_removing_a_running_member_tells_it_to_stop_reading(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Deleting the row is only half of a removal.
+
+        A running client holds its own subscription to the room, so the row
+        going away leaves it reading a room it is no longer in. The homeserver
+        used to end the delivery itself; here it has to be rung.
+
+        The handler reads the membership rather than only recording that it was
+        called, because the ordering is the other half of the promise: a client
+        that responds to the wake-up by re-reading its rooms must not still see
+        the one it was removed from. Asserting on the row after `kick_user` has
+        returned would pass whichever side of the commit the ring happened on.
+        """
+        async with session_factory() as session:
+            room = await _room(session)
+            client = await _client(session)
+            await session.commit()
+            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            room_id, client_id = room.id, client.id
+
+        told: list[str] = []
+        seen_when_told: list[object] = []
+
+        async def _handler(removed_from: str) -> None:
+            told.append(removed_from)
+            async with session_factory() as session:
+                seen_when_told.append(
+                    await session.get(
+                        ClientRoom, {"client_id": client_id, "room_id": room_id}
+                    )
+                )
+
+        invites = InviteBus()
+        provisioning = _provisioning(session_factory, invites)
+        await provisioning.invite_to_room(transport_room_id, user_id)
+        invites.register(client_id, _never, _handler)
+        await provisioning.kick_user(transport_room_id, user_id)
+
+        assert told == [transport_room_id]
+        # Rung after the row is gone, as seen from inside the handler itself.
+        assert seen_when_told == [None]
+
+    async def test_a_removal_names_the_client_row_not_the_handle(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`clients.matrix_user_id` is unique per tenant, not globally.
+
+        Every tenant's admin client carries the same handle, so a bus keyed on
+        it would tell whichever tenant's transport last claimed the slot to
+        stop reading a room it is still in — and leave the one actually removed
+        reading on. `invite_to_room` learned this; a removal is the same fact
+        in reverse, and getting it wrong here is the worse half because there
+        is no membership row for the caller to fall back to.
+        """
+        async with session_factory() as session:
+            room = await _room(session)
+            client = await _client(session)
+            await session.commit()
+            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            client_id = client.id
+
+        told: list[str] = []
+
+        async def _handler(removed_from: str) -> None:
+            told.append(removed_from)
+
+        invites = InviteBus()
+        provisioning = _provisioning(session_factory, invites)
+
+        # Registered under the handle, which is what the bus is *not* keyed on.
+        invites.register(user_id, _never, _handler)
+        await provisioning.kick_user(transport_room_id, user_id)
+        assert told == []
+
+        invites.register(client_id, _never, _handler)
+        await provisioning.kick_user(transport_room_id, user_id)
+        assert told == [transport_room_id]
+
     async def test_removing_a_member_who_is_already_out_is_success(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -234,7 +323,7 @@ class TestMembership:
         await provisioning.invite_to_room(transport_room_id, user_id)
 
         invites = InviteBus()
-        invites.register(client.id, _handler)
+        invites.register(client.id, _handler, _never)
         await _provisioning(session_factory, invites).invite_to_room(
             transport_room_id, user_id
         )
@@ -310,7 +399,7 @@ class TestTwoTenantsSharingAHandle:
 
         invites = InviteBus()
         for tenant_id in tenants:
-            invites.register(clients[tenant_id], _handler_for(tenant_id))
+            invites.register(clients[tenant_id], _handler_for(tenant_id), _never)
 
         provisioning = _provisioning(rls_harness.restricted, invites)
         for tenant_id in tenants:

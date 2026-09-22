@@ -647,3 +647,69 @@ async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
     assert replacement is not conn
     await old.aclose()
     assert registry.beat(AGENT, replacement.id, 0).stream_attached
+
+
+async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_from() -> (
+    None
+):
+    """The leak this stream had no way of its own to close.
+
+    Membership is checked when a room is claimed and never again, and an
+    `all`-scope connection covers every room no sibling has claimed, so the
+    stream cannot re-derive who is in what — it holds no session to ask with.
+    A supervisor reconnecting with a resumed cursor therefore replayed the
+    whole retained tail of a room the agent had been removed from.
+
+    What closes it is acting on the removal once, where it is known: the
+    room's events leave the buffer and its claim is released, so there is
+    nothing left for any reader to be handed. This asserts the property at the
+    reader that has no other defence.
+    """
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+
+    buffer.enqueue(AGENT, ROOM_A, _message("said before the removal"))
+    buffer.enqueue(AGENT, ROOM_B, _message("still a member here", room=ROOM_B))
+
+    # What a kick does, through the two calls `AgentClient.on_removed` makes.
+    buffer.drop_room(AGENT, ROOM_A)
+    registry.release_room_everywhere(AGENT, ROOM_A)
+
+    # The supervisor comes back and resumes from before both events.
+    conn = _open(registry, connection_id="c-resumed", scope="all", cursor=0)
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    frames = await _take(stream, 2)
+
+    assert frames[1][0] == "message"
+    assert frames[1][1]["payload"]["body"] == "still a member here"
+
+
+async def test_a_last_event_id_reconnect_does_not_replay_a_removed_room() -> None:
+    """The resume a real client actually performs.
+
+    An SSE client reconnects by sending back the `Last-Event-ID` it last saw;
+    `_resolve_start_cursor` prefers it over `start_from` and the stream resumes
+    from there. That is the path the removed room's retained tail would come
+    back down, and it is the one a browser or an agent runtime takes without
+    being asked — so it is worth pinning separately from an explicitly
+    requested `start_from`.
+    """
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+
+    seen = buffer.enqueue(AGENT, ROOM_A, _message("before the drop"))
+    buffer.enqueue(AGENT, ROOM_A, _message("while it was still a member"))
+    buffer.enqueue(AGENT, ROOM_B, _message("in the room it kept", room=ROOM_B))
+
+    buffer.drop_room(AGENT, ROOM_A)
+    registry.release_room_everywhere(AGENT, ROOM_A)
+
+    # `seen` is what the client would send back as Last-Event-ID: a cursor from
+    # while it was still in room A, resolved to exactly this by
+    # `_resolve_start_cursor`.
+    conn = _open(registry, connection_id="c-reconnect", scope="all", cursor=seen)
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    frames = await _take(stream, 2)
+
+    assert frames[1][0] == "message"
+    assert frames[1][1]["payload"]["body"] == "in the room it kept"

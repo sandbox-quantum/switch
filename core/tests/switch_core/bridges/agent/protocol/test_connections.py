@@ -311,6 +311,52 @@ def test_coverage_returns_to_the_daemon_when_the_session_goes() -> None:
     assert registry.holder_of(AGENT, ROOM_A) is daemon
 
 
+def test_a_removal_takes_the_room_off_every_connection_of_that_agent() -> None:
+    """A claim outlives the membership it was checked against.
+
+    `require_room_member` runs when a room is claimed and never again, so a
+    session that claimed a room the agent has since been removed from keeps
+    covering it for the life of its stream.
+    """
+    registry = ConnectionRegistry()
+    session = _open(registry, "session", scope="single")
+    other = _open(registry, "other", scope="single")
+    registry.claim_room(session, ROOM_A)
+    registry.claim_room(other, ROOM_B)
+
+    registry.release_room_everywhere(AGENT, ROOM_A)
+
+    assert session.rooms == set()
+    assert other.rooms == {ROOM_B}
+    assert registry.claimant_of(AGENT, ROOM_A) is None
+
+
+def test_a_removal_does_not_touch_another_agents_claim() -> None:
+    registry = ConnectionRegistry()
+    mine = _open(registry, "c1")
+    theirs = _open(registry, "c2", agent_id=OTHER_AGENT)
+    registry.claim_room(mine, ROOM_A)
+    registry.claim_room(theirs, ROOM_A)
+
+    registry.release_room_everywhere(AGENT, ROOM_A)
+
+    assert mine.rooms == set()
+    assert theirs.rooms == {ROOM_A}
+
+
+def test_a_removal_reaches_a_connection_whose_heartbeat_has_lapsed() -> None:
+    """A lapsed connection still holds its claim, and can be reconnected to."""
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    registry.claim_room(conn, ROOM_A)
+    conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+    assert registry.for_agent(AGENT) == []
+
+    registry.release_room_everywhere(AGENT, ROOM_A)
+
+    assert conn.rooms == set()
+
+
 def test_rooms_of_one_agent_do_not_block_another() -> None:
     registry = ConnectionRegistry()
     mine = _open(registry, "c1")
