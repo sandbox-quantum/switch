@@ -208,3 +208,24 @@ describe('decideArtifactSync', () => {
     ).toBe('adopt');
   });
 });
+
+describe('template origin', () => {
+  it('round-trips the template an agent was created from', () => {
+    const text = serialiseAgentConfigFile({
+      instructions: 'i',
+      template: { id: 'bundled:switch-expert', name: 'Switch expert', source: 'bundled' },
+    });
+    expect(parseAgentConfigFile(text).template).toEqual({
+      id: 'bundled:switch-expert',
+      name: 'Switch expert',
+      source: 'bundled',
+    });
+  });
+
+  it('drops an origin it cannot make sense of', () => {
+    expect(parseAgentConfigFile('{"template": {"id": 1}}').template).toBeUndefined();
+    expect(
+      parseAgentConfigFile('{"template": {"id": "x", "name": "y", "source": "elsewhere"}}').template
+    ).toBeUndefined();
+  });
+});

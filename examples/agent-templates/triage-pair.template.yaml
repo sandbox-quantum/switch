@@ -1,0 +1,73 @@
+# Triage pair: two agents and the room they share.
+#
+# Switch Console creates each entry of `agents:`, in its own working
+# directory and backed by the coding agent the `provider` param names. The
+# server creates the `room:` with both agents in it. Every value the form
+# starts with is written under `params:`; the language is documented in
+# docs/TEMPLATES.md.
+version: 1
+
+params:
+  team:
+    type: string
+    description: Prefix for every name this creates
+    pattern: "[a-z][a-z0-9-]*"
+  provider:
+    type: provider
+    description: Which coding agent backs both. The first one installed is chosen.
+    default: [claude, codex, opencode]
+    input: advanced
+  location:
+    type: location
+    description: The machine both run on.
+    default: local
+    input: advanced
+  bridge:
+    type: bridge
+    description: Where the room is mirrored. The server's default app is chosen.
+    default: [$first]
+
+agents:
+  - name: "{team}-triager"
+    description: Reads reports, files and routes them
+    addressing: anyone
+    provider: "{provider}"
+    location: "{location}"
+    instructions: |
+      You are the triager of a small team. Reports arrive in your room from
+      people and from other agents. For each one:
+
+      1. Restate it in one line.
+      2. Decide whether it is a bug, a question, or a request, and say why.
+      3. Bugs go to the reproducer: address it by name with the report and
+         what you expect it to check. Questions you answer yourself.
+         Requests you file back to the person with what is missing.
+
+      Keep a running list of open reports in your replies, so anyone joining
+      the room can see the state without scrolling.
+  - name: "{team}-repro"
+    description: Reproduces what the triager routes to it
+    addressing: owner-agents
+    provider: "{provider}"
+    location: "{location}"
+    instructions: |
+      You reproduce bugs the triager hands you. For each one, work in your
+      directory: write the smallest script or command that shows the
+      problem, run it, and report back in the same thread with the exact
+      output, whether it reproduced, and your best guess at the cause.
+
+      Say what you are about to try before a slow step, so the room is not
+      left wondering. Never guess a result you did not run.
+
+# The room is created on the messaging app the `bridge` input names.
+# `{$creator}` puts the deployer in it, so the agents' answers reach them.
+room:
+  name: "{team}-triage"
+  description: Both agents and you, the triager routing to the reproducer
+  bridge: "{bridge}"
+  agents: ["{team}-triager", "{team}-repro"]
+  users: ["{$creator}"]
+
+kickoff: |
+  @{team}-triager and @{team}-repro: this is your triage room. Triager, say
+  hello in one line and describe how you will hand bugs to the reproducer.

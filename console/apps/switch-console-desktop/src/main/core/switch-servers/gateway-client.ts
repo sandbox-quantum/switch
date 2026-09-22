@@ -1051,11 +1051,39 @@ export type TemplateProvisionResult = {
   failedAttachments: Array<{ kind: string; id: string; error: string }>;
 };
 
+/** The result of provisioning a room group from a YAML template. */
+export type GroupProvisionResult = {
+  groupId: string;
+  groupName: string;
+  rooms: TemplateProvisionResult[];
+  /** Rooms or links that could not be created. The others were. */
+  errors: Array<Record<string, unknown> & { error: string }>;
+};
+
+export type ProvisionFromTemplateResult =
+  | ({ kind: 'room' } & TemplateProvisionResult)
+  | ({ kind: 'group' } & GroupProvisionResult);
+
+type RoomJson = {
+  room_id: string;
+  room_name: string;
+  failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+};
+
+function toRoomResult(json: RoomJson): TemplateProvisionResult {
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
 /**
- * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
- * template as a JSON body with the YAML text and any user-supplied inputs.
- * The server parses the template, interpolates inputs, and provisions
- * everything in one call.
+ * Create a room, or a group of rooms, from a YAML template
+ * (`POST /rooms/from-yaml`). Sends the template as a JSON body with the YAML
+ * text and any user-supplied inputs. The server parses the template,
+ * interpolates inputs, and provisions everything in one call; the document's
+ * shape decides which result comes back.
  *
  * A 400 carries a `detail` naming the bad input; the caller maps it back to
  * the form field.
@@ -1064,22 +1092,111 @@ export async function createRoomFromTemplate(
   server: SwitchServer,
   yamlText: string,
   inputs: Record<string, string | number | boolean>
-): Promise<TemplateProvisionResult> {
+): Promise<ProvisionFromTemplateResult> {
   const res = await gatewayFetch(server, '/rooms/from-yaml', {
     authenticated: true,
     method: 'POST',
     body: { yaml: yamlText, inputs },
   });
-  const json = (await res.json()) as {
-    room_id: string;
-    room_name: string;
-    failed_attachments?: Array<{ kind: string; id: string; error: string }>;
-  };
+  const json = (await res.json()) as
+    | RoomJson
+    | {
+        group_id: string;
+        group_name: string;
+        rooms?: RoomJson[];
+        errors?: Array<Record<string, unknown> & { error: string }>;
+      };
+  if ('group_id' in json) {
+    return {
+      kind: 'group',
+      groupId: json.group_id,
+      groupName: json.group_name,
+      rooms: (json.rooms ?? []).map(toRoomResult),
+      errors: json.errors ?? [],
+    };
+  }
+  return { kind: 'room', ...toRoomResult(json) };
+}
+
+// ── Stored templates (template registry) ────────────────────────────────────
+
+export type StoredTemplateSummary = {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+  creator: string;
+  /** The owner's user id, so the Console can mark the signed-in user's own templates. */
+  ownerId: string | null;
+};
+
+export type StoredTemplateDetail = StoredTemplateSummary & {
+  definition: string;
+};
+
+type RegistryTemplateSummary = {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  name: string;
+  description: string;
+  kind: string;
+};
+
+function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
   return {
-    roomId: json.room_id,
-    roomName: json.room_name,
-    failedAttachments: json.failed_attachments ?? [],
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    creator: t.owner_name ?? t.owner_id,
+    ownerId: t.owner_id,
   };
+}
+
+export async function fetchTemplates(
+  server: SwitchServer,
+  kind?: string
+): Promise<StoredTemplateSummary[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await gatewayFetch(server, `/templates${qs}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as RegistryTemplateSummary[];
+  return json.map(toSummary);
+}
+
+/** Store a template document on the server's registry (`POST /templates`). */
+export async function createTemplate(
+  server: SwitchServer,
+  params: { name: string; description: string; kind: string; content: string }
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, '/templates', {
+    authenticated: true,
+    method: 'POST',
+    body: params,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
+/** Remove a template from the server's registry (`DELETE /templates/{id}`). */
+export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
+  await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+
+export async function fetchTemplateDetail(
+  server: SwitchServer,
+  templateId: string
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
 }
 
 /**

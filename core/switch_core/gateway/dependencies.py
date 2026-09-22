@@ -141,17 +141,7 @@ def get_session_factory() -> Any:
 
 def get_room_yaml_service() -> RoomYamlService:
     protocol: ProtocolService = _state["protocol"]
-    return RoomYamlService(
-        room_service=_state["room_service"],
-        resource_service=_state["resource_service"],
-        room_store=_state["room_store"],
-        agent_store=_state["agent_store"],
-        bridge_store=_state["bridge_store"],
-        external_user_store=_state["external_user_store"],
-        room_role_store=protocol.room_role_store,
-        session_factory=_state["session_factory"],
-        client_lifecycle=_state["client_lifecycle"],
-    )
+    return protocol.room_yaml_service()
 
 
 def get_agent_store() -> AgentStore:

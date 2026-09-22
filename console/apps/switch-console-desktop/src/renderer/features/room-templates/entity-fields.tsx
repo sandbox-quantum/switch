@@ -42,7 +42,7 @@ export type EntityLists = {
 const NOT_ON_SERVER = 'Not on this server';
 
 /** The grid every chosen tile sits in, so single picks and lists line up. */
-function TileGrid({ children }: { children: React.ReactNode }) {
+export function TileGrid({ children }: { children: React.ReactNode }) {
   return <div className="grid grid-cols-3 gap-2.5">{children}</div>;
 }
 

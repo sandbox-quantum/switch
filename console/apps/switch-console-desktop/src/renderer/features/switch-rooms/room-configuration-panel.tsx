@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -319,6 +319,7 @@ const ParticipantsSection = observer(function ParticipantsSection({
 }) {
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
+  const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
 
   // Names for agents belonging to other installs, which this computer has no
   // local record of. Shares its key with the rest of the app, so it is usually
@@ -340,15 +341,25 @@ const ParticipantsSection = observer(function ParticipantsSection({
             {membershipSummary(room.agentIds.length, room.connectedUserNames.length)}
           </span>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-expanded={adding}
-          onClick={() => setAdding((v) => !v)}
-        >
-          <Plus className="size-3.5" />
-          Add agent
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => showAddAgentsToRoomModal({ roomId: room.id })}
+          >
+            <FileText className="size-3.5" />
+            From a template
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-expanded={adding}
+            onClick={() => setAdding((v) => !v)}
+          >
+            <Plus className="size-3.5" />
+            Add agent
+          </Button>
+        </div>
       </div>
 
       {room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
