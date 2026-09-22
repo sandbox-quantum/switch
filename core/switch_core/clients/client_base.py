@@ -227,6 +227,7 @@ class ClientBase[ConfigT: ClientConfig]:
                 on_member_event=self._handle_member_event,
                 on_custom_event=self._handle_custom_event,
                 on_invite=self._handle_invite,
+                on_removed=self._handle_removed,
             )
         )
 
@@ -316,6 +317,17 @@ class ClientBase[ConfigT: ClientConfig]:
         except Exception:
             logger.exception(
                 "Error in on_invite for %s in %s", self.matrix_user_id, room.room_id
+            )
+
+    async def _handle_removed(self, room: RoomRef, event: InboundMembership) -> None:
+        # Departing ends the visit, the same way a leave delivered as a member
+        # event does: being added back is a fresh arrival.
+        self._self_join_dispatched.discard(room.room_id)
+        try:
+            await self.on_removed(room, event)
+        except Exception:
+            logger.exception(
+                "Error in on_removed for %s in %s", self.matrix_user_id, room.room_id
             )
 
     _EVENT_DISPATCH: dict[str, tuple[type[SwitchEvent], str]] = {
@@ -419,6 +431,14 @@ class ClientBase[ConfigT: ClientConfig]:
             "Client %s auto-accepting invite to %s", self.matrix_user_id, room.room_id
         )
         await self.join_room(room.room_id)
+
+    async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
+        """This client has been taken out of a room while it was running.
+
+        Nothing to do for a client that holds no events of its own — the
+        transport has already stopped reading the room. A client that hands
+        events to something with a memory overrides this and empties it.
+        """
 
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         pass

@@ -343,6 +343,21 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
         await self.send_message(room.room_id, greeting, format="markdown")
 
+    async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
+        """Forget the room's events, everywhere this agent could still read them.
+
+        Dropping the subscription only stops what has not been read yet. What
+        has is in the event buffer for the whole retention window, and is
+        served from there to a long poll, to the notification stream, and to an
+        SSE reader resuming from an old cursor — the last of which has no
+        membership of its own to apply.
+        """
+        meta = await self._resolve_room_meta(room.room_id)
+        if meta is None:
+            return
+        self._event_buffer.drop_room(self.agent.id, meta.room_id)
+        self._connections.release_room_everywhere(self.agent.id, meta.room_id)
+
     async def _member_name(
         self, session: AsyncSession, event: InboundMembership
     ) -> str:

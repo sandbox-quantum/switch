@@ -41,6 +41,10 @@ class TransportHandlers:
     on_member_event: Handler | None = None
     on_custom_event: Handler | None = None
     on_invite: Handler | None = None
+    # The other half of `on_invite`. The transport has already stopped reading
+    # the room by the time this fires; it is for whatever downstream still
+    # holds the room's events, which the transport knows nothing about.
+    on_removed: Handler | None = None
 
 
 @runtime_checkable

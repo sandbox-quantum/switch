@@ -496,6 +496,22 @@ class ConnectionRegistry:
         conn.rooms.discard(room_id)
         conn.wake.set()
 
+    def release_room_everywhere(self, agent_id: str, room_id: str) -> None:
+        """Take the room off every one of this agent's connections.
+
+        A claim outlives the membership it was checked against:
+        `require_room_member` runs when the room is claimed and never again.
+
+        Every connection, not only the live ones — a lapsed connection still
+        holds its claim, and a client reconnecting to it resumes covering the
+        room.
+        """
+        for cid in self._by_agent.get(agent_id, set()):
+            conn = self._by_id.get(cid)
+            if conn is not None and room_id in conn.rooms:
+                conn.rooms.discard(room_id)
+                conn.wake.set()
+
     def claimant_of(self, agent_id: str, room_id: str) -> Connection | None:
         """The connection that has explicitly claimed this room, if any.
 

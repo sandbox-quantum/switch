@@ -227,28 +227,33 @@ class PostgresTransport:
         was away is not delivered here. That is a delivery-cursor question,
         and delivery cursors are a layer above this one.
         """
-        rooms = await self.joined_rooms()
-        if not rooms:
-            logger.error(
-                "Client %s is receiving but is a member of no room: it will "
-                "hear nothing until something adds it to one. Under Matrix "
-                "membership lived on the homeserver; here it is the "
-                "client_rooms table, so a client whose rows were never "
-                "written is silent rather than broken",
-                self.user_id,
-            )
-        delivery = asyncio.create_task(self._deliver_forever())
-        for transport_room_id in rooms:
-            await self._watch(transport_room_id)
+        # Before the rooms are read, not after they are subscribed: reading
+        # them and watching each is several round trips, and a removal rung
+        # during those has no membership row for the caller to fall back to.
+        self._invites.register(self.client_id, self._on_invited, self._on_removed)
         self._receiving = True
-        self._invites.register(self.client_id, self._on_invited)
         try:
-            await self._closed.wait()
+            rooms = await self.joined_rooms()
+            if not rooms:
+                logger.error(
+                    "Client %s is receiving but is a member of no room: it will "
+                    "hear nothing until something adds it to one. Under Matrix "
+                    "membership lived on the homeserver; here it is the "
+                    "client_rooms table, so a client whose rows were never "
+                    "written is silent rather than broken",
+                    self.user_id,
+                )
+            delivery = asyncio.create_task(self._deliver_forever())
+            try:
+                for transport_room_id in rooms:
+                    await self._watch(transport_room_id)
+                await self._closed.wait()
+            finally:
+                delivery.cancel()
         finally:
             self._receiving = False
-            self._invites.unregister(self.client_id, self._on_invited)
+            self._invites.unregister(self.client_id, self._on_invited, self._on_removed)
             self._unwatch_all()
-            delivery.cancel()
 
     async def _deliver_forever(self) -> None:
         """This client's own delivery loop: its rooms, one at a time.
@@ -324,6 +329,39 @@ class PostgresTransport:
             ),
         )
 
+    async def _on_removed(self, transport_room_id: str) -> None:
+        """This client was taken out of a room while it was running.
+
+        The subscription is dropped here rather than left to the next restart.
+        Under Matrix a kick ended the room's delivery at the homeserver, so
+        nothing downstream had to check membership again; here the
+        subscription is this client's own and outlives the row unless it is
+        taken back.
+
+        The client is told as well, because dropping the subscription only
+        stops what has not been read yet. Anything already handed over is the
+        client's now — an agent's event buffer holds it for fifteen minutes and
+        will serve it to a poll or a resumed stream — so a removal has to reach
+        whoever is holding it, not just the reader that would have fetched
+        more.
+        """
+        self._unwatch(transport_room_id)
+        handler = self._handlers.on_removed
+        if handler is None:
+            return
+        await handler(
+            RoomRef(room_id=transport_room_id),
+            InboundMembership(
+                room_id=transport_room_id,
+                event_id=new_event_id(),
+                sender=self.user_id,
+                timestamp=_now_ms(),
+                state_key=self.user_id,
+                membership="leave",
+                display_name=self.display_name,
+            ),
+        )
+
     async def _watch(
         self, transport_room_id: str, *, from_seq: int | None = None
     ) -> None:
@@ -340,18 +378,43 @@ class PostgresTransport:
         Restoring the loop-back rather than dispatching the one handler that
         noticed keeps every guard downstream in play, and covers whatever else
         depended on hearing its own join.
+
+        The slot in `_watching` is claimed before the head is read, so a
+        removal landing on that await has something to take back; finding the
+        claim gone afterwards is the signal to subscribe to nothing.
         """
         room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
-        if room_id in self._cursors:
+        if room_id in self._watching:
             return
-        if from_seq is not None:
-            self._cursors[room_id] = from_seq
-        else:
-            async with tenant_session(self._session_factory, tenant_id) as session:
-                self._cursors[room_id] = await self._message_store.head_seq(
-                    session, room_id
-                )
         self._watching[room_id] = transport_room_id
+        if from_seq is not None:
+            # The caller wrote the membership row and committed it a moment
+            # ago, so there is nothing to confirm.
+            seq = from_seq
+        else:
+            try:
+                async with tenant_session(self._session_factory, tenant_id) as session:
+                    member = await session.get(
+                        ClientRoom,
+                        {"client_id": self.client_id, "room_id": room_id},
+                    )
+                    if member is None:
+                        # Removed between the room list this came from and
+                        # here. The wake-up for it found nothing to unwatch, so
+                        # the row is the only thing that still says so.
+                        self._release_claim(room_id, transport_room_id)
+                        return
+                    seq = await self._message_store.head_seq(session, room_id)
+            except Exception:
+                # A claim left behind would make every later `_watch` return
+                # early on a room nothing is subscribed to.
+                self._release_claim(room_id, transport_room_id)
+                raise
+        if self._watching.get(room_id) != transport_room_id:
+            # Removed while the row and head were being read. `_unwatch` has
+            # already undone the claim and there is nothing subscribed to undo.
+            return
+        self._cursors[room_id] = seq
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
         if from_seq is not None:
@@ -360,12 +423,37 @@ class PostgresTransport:
             self._pending.add(room_id)
             self._wake.set()
 
+    def _unwatch(self, transport_room_id: str) -> None:
+        """Stop delivering one room. Not watching it is success.
+
+        The cursor goes with the subscription. Keeping it would mean a client
+        added back to the room resumed from where it left off and was handed
+        everything said while it was out.
+        """
+        room_id = self._room_ids.get(transport_room_id)
+        if room_id is None or room_id not in self._watching:
+            return
+        self._release_claim(room_id, transport_room_id)
+
+    def _release_claim(self, room_id: str, transport_room_id: str) -> None:
+        """Undo everything `_watch` records for a room, subscribed or not.
+
+        Safe on a room `_watch` has claimed but not yet subscribed: both buses
+        treat unsubscribing something that never subscribed as success, which
+        is what lets `_watch` claim its slot before it awaits.
+        """
+        self._listener.unsubscribe(room_id, self._on_room_advanced)
+        self._ephemeral.unsubscribe(transport_room_id, self._on_ephemeral)
+        self._watching.pop(room_id, None)
+        self._cursors.pop(room_id, None)
+        # A wake-up already queued for this room would otherwise be drained
+        # after the subscription was dropped.
+        self._pending.discard(room_id)
+
     def _unwatch_all(self) -> None:
-        for room_id, transport_room_id in self._watching.items():
-            self._listener.unsubscribe(room_id, self._on_room_advanced)
-            self._ephemeral.unsubscribe(transport_room_id, self._on_ephemeral)
-        self._watching.clear()
-        self._cursors.clear()
+        """Drop every room, through the same path a single removal takes."""
+        for transport_room_id in list(self._watching.values()):
+            self._unwatch(transport_room_id)
 
     async def _on_ephemeral(self, event: InboundCustomEvent) -> None:
         """An unstored event in a room this client watches.
@@ -404,6 +492,10 @@ class PostgresTransport:
         raises does not cost the rows already delivered — the failure belongs
         to one event, and redelivering its neighbours would be worse than
         dropping it.
+
+        Every delivery is a suspension point, so the subscription is re-read
+        per row. A removal landing mid-page has to stop the rows it has not
+        reached, and must not be undone by a cursor write after it.
         """
         transport_room_id = self._watching.get(room_id)
         if transport_room_id is None:
@@ -422,11 +514,14 @@ class PostgresTransport:
         # share a session with the read.
         with tenant_scope(tenant_id):
             while True:
+                cursor = self._cursors.get(room_id)
+                if cursor is None or room_id not in self._watching:
+                    return
                 async with tenant_session(self._session_factory, tenant_id) as session:
                     rows = await self._message_store.list_for_room(
                         session,
                         room_id,
-                        after_seq=self._cursors[room_id],
+                        after_seq=cursor,
                         limit=_DELIVERY_PAGE,
                     )
                     attachments = await self._message_store.attachments_for(
@@ -435,6 +530,8 @@ class PostgresTransport:
                 if not rows:
                     return
                 for row in rows:
+                    if room_id not in self._watching:
+                        return
                     self._cursors[room_id] = row.seq
                     await self._deliver(
                         transport_room_id, row, attachments.get(row.id, [])

@@ -1,6 +1,8 @@
-"""Local dev setup — registers Mattermost bridge with Switch after both are ready.
+"""Deployment setup — registers Mattermost bridge with Switch after both are ready.
 
-Runs as a short-lived init container in docker-compose. Waits for Switch and
+Runs as a short-lived container: an init container under docker-compose, and a
+post-install/post-upgrade Helm hook on a cluster deployment, so it also runs
+against live installations on every upgrade. Waits for Switch and
 Mattermost to be healthy, bootstraps the Mattermost admin/team, then registers
 the Mattermost bridge via the authorized Switch gateway API — logging in as the
 seeded gateway admin first, since bridge administration is an admin action.
@@ -223,46 +225,55 @@ def gateway_login() -> httpx.Client:
 def register_bridge(client: httpx.Client) -> str:
     """Register Mattermost bridge with Switch via the authorized gateway API.
 
-    Returns the bridge id — the one already registered, or the new one. A
-    registration that fails raises, as it did before: without a bridge there is
-    no deployment to speak of, so it is not something to carry on past.
+    Returns the bridge id — the one already registered, or the new one. Every
+    call it makes raises on failure, the read included: without a bridge there
+    is no deployment to speak of, so none of it is something to carry on past.
     """
-    # Check if bridge already registered
+    # Check if bridge already registered. A read that answered with an error
+    # status is not an empty list: taken as one, a 401 or a 503 mid-rollout
+    # sends us on to registering a second Mattermost bridge and making it the
+    # default, taking that from whatever held it. Refuse instead — this job is
+    # retried, and a duplicated bridge cannot be undone by retrying. (A
+    # timeout already raised out of the request itself and never got here.)
     resp = client.get("/gateway/collaborations")
-    if resp.is_success:
-        bridges = resp.json()
-        for bridge in bridges:
-            if bridge.get("bridge_type") == "mattermost":
-                bridge_id = bridge["bridge_id"]
-                print(f"Mattermost bridge already registered: {bridge_id}")
-                # Adopt the default on an instance that predates it, so an
-                # existing deployment gains the invariant on its next setup run
-                # rather than only new ones.
-                if not any(b.get("is_default") for b in bridges):
-                    client.post(
-                        f"/gateway/collaborations/{bridge_id}/default"
-                    ).raise_for_status()
-                    print(f"Set Mattermost bridge as default: {bridge_id}")
-                # Same reason: a bridge registered before callbacks existed
-                # would otherwise keep drawing cards with no buttons on them,
-                # and the only cure would be editing a connection field by
-                # hand. Sent every run rather than only when it is missing,
-                # because the config a bridge holds is not readable back — it
-                # carries the admin password, so no endpoint returns it.
-                if MATTERMOST_CALLBACK_BASE_URL:
-                    client.patch(
-                        f"/gateway/collaborations/{bridge_id}",
-                        json={
-                            "connection_config": {
-                                "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
-                            }
-                        },
-                    ).raise_for_status()
-                    print(
-                        f"Set Mattermost callback address: "
-                        f"{MATTERMOST_CALLBACK_BASE_URL}"
-                    )
-                return bridge_id
+    if not resp.is_success:
+        print(
+            "ERROR: Could not read the registered collaboration bridges: "
+            f"{resp.status_code} {resp.text}"
+        )
+        resp.raise_for_status()
+    bridges = resp.json()
+    for bridge in bridges:
+        if bridge.get("bridge_type") == "mattermost":
+            bridge_id = bridge["bridge_id"]
+            print(f"Mattermost bridge already registered: {bridge_id}")
+            # Adopt the default on an instance that predates it, so an
+            # existing deployment gains the invariant on its next setup run
+            # rather than only new ones.
+            if not any(b.get("is_default") for b in bridges):
+                client.post(
+                    f"/gateway/collaborations/{bridge_id}/default"
+                ).raise_for_status()
+                print(f"Set Mattermost bridge as default: {bridge_id}")
+            # Same reason: a bridge registered before callbacks existed
+            # would otherwise keep drawing cards with no buttons on them,
+            # and the only cure would be editing a connection field by
+            # hand. Sent every run rather than only when it is missing,
+            # because the config a bridge holds is not readable back — it
+            # carries the admin password, so no endpoint returns it.
+            if MATTERMOST_CALLBACK_BASE_URL:
+                client.patch(
+                    f"/gateway/collaborations/{bridge_id}",
+                    json={
+                        "connection_config": {
+                            "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
+                        }
+                    },
+                ).raise_for_status()
+                print(
+                    f"Set Mattermost callback address: {MATTERMOST_CALLBACK_BASE_URL}"
+                )
+            return bridge_id
 
     # Register new bridge
     connection_config: dict[str, str] = {

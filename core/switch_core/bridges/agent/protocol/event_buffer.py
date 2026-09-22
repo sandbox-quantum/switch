@@ -243,6 +243,34 @@ class EventBuffer:
         self._cursors.pop(agent_id, None)
         self._dropped_through.pop(agent_id, None)
 
+    def drop_room(self, agent_id: str, room_id: str) -> None:
+        """Forget everything retained for this agent in one room.
+
+        Called when the agent is removed from it. The buffer is keyed by agent
+        and knows nothing about who is in what, so an event queued while it was
+        a member stays readable after it is not.
+
+        Sequence numbers are untouched and no gap is recorded: a reader that
+        skips these has missed nothing it was entitled to, and saying otherwise
+        would send it to re-read the context of a room it is not in.
+        """
+        events = self._events.get(agent_id)
+        if not events:
+            return
+        kept = [item for item in events if item.room_id != room_id]
+        dropped = len(events) - len(kept)
+        if not dropped:
+            return
+        events.clear()
+        events.extend(kept)
+        logger.info(
+            "[EVENT-BUF] dropped %s retained event(s) for agent=%s room=%s: "
+            "no longer a member",
+            dropped,
+            agent_id,
+            room_id,
+        )
+
     # ------------------------------------------------------------------
     # Legacy long-poll compatibility
     #
@@ -257,21 +285,53 @@ class EventBuffer:
     # Confirming clients get at-least-once instead.
     # ------------------------------------------------------------------
 
-    async def poll(self, agent_id: str, timeout: float = 30) -> list[AgentEvent]:
-        return await self._legacy_poll(agent_id, "legacy:all", timeout=timeout)
+    async def poll(
+        self, agent_id: str, *, rooms: set[str], timeout: float = 30
+    ) -> list[AgentEvent]:
+        """Everything queued for this agent in the rooms it is in.
+
+        `rooms` is how the caller applies membership, and it is required: the
+        buffer is keyed by agent and knows nothing about who is in what, so an
+        event queued while the agent was a member stays queued after it is
+        removed. A default would make the leak the thing a new caller gets for
+        free.
+
+        Read once, before the wait. A room the agent is added to while this is
+        parked has its first events held back to the next poll, which the
+        caller makes immediately; asking the caller to re-read membership
+        mid-poll would buy that one round trip at the cost of a callback
+        reaching back out of the buffer, and this stays behind the narrow
+        surface described at the top of the module.
+        """
+        return await self._legacy_poll(
+            agent_id, "legacy:all", timeout=timeout, rooms=rooms
+        )
 
     async def poll_room(
         self, agent_id: str, room_id: str, timeout: float = 30
     ) -> list[AgentEvent]:
         return await self._legacy_poll(
-            agent_id, f"legacy:room:{room_id}", timeout=timeout, rooms={room_id}
+            agent_id,
+            f"legacy:room:{room_id}",
+            timeout=timeout,
+            rooms={room_id},
+            rooms_are_membership=False,
         )
 
     async def poll_notifications(
-        self, agent_id: str, timeout: float = 30
+        self, agent_id: str, *, rooms: set[str], timeout: float = 30
     ) -> list[AgentEvent]:
+        """The notifiable half of `poll`, under the same membership rule.
+
+        This is the stream carrying messages addressed at the agent, so it is
+        the one a removal matters most on.
+        """
         return await self._legacy_poll(
-            agent_id, "legacy:notifications", timeout=timeout, notifiable_only=True
+            agent_id,
+            "legacy:notifications",
+            timeout=timeout,
+            rooms=rooms,
+            notifiable_only=True,
         )
 
     async def _legacy_poll(
@@ -280,20 +340,66 @@ class EventBuffer:
         reader_id: str,
         *,
         timeout: float,
-        rooms: set[str] | None = None,
+        rooms: set[str],
         notifiable_only: bool = False,
+        rooms_are_membership: bool = True,
     ) -> list[AgentEvent]:
-        cursor = self._legacy_cursor(agent_id, reader_id)
-
-        events = self._legacy_read(agent_id, reader_id, cursor, rooms, notifiable_only)
+        args = (agent_id, reader_id, rooms, notifiable_only, rooms_are_membership)
+        events = self._legacy_take(*args)
         if events:
-            return self._advance_legacy(agent_id, reader_id, events)
+            return events
 
         await self.wait(agent_id, timeout)
 
+        return self._legacy_take(*args)
+
+    def _legacy_take(
+        self,
+        agent_id: str,
+        reader_id: str,
+        rooms: set[str],
+        notifiable_only: bool,
+        rooms_are_membership: bool,
+    ) -> list[AgentEvent]:
+        """One read, moving the cursor past what this reader can never want.
+
+        Past what it can never want, and no further. A legacy read has no
+        limit, so it always reaches the end of the buffer, and leaving the
+        cursor behind an event the filter excluded parks it below the head
+        indefinitely — until retention trims it and the next read reports a
+        gap that never happened.
+
+        Which exclusions are permanent depends on the filter.
+        `notifiable_only` tests a property of the event, which is fixed, so
+        those can be skipped for good. A room set taken from membership is not
+        fixed: an agent added to a room the buffer already holds events for
+        would find the cursor already past them, and they would never be
+        delivered. `poll_room`'s filter is the reader's own scope rather than a
+        membership snapshot, so there the exclusions are permanent too — hence
+        `rooms_are_membership`.
+        """
         cursor = self._legacy_cursor(agent_id, reader_id)
         events = self._legacy_read(agent_id, reader_id, cursor, rooms, notifiable_only)
-        return self._advance_legacy(agent_id, reader_id, events)
+        if rooms_are_membership:
+            self.confirm(
+                agent_id, reader_id, self._last_seq_in_rooms(agent_id, cursor, rooms)
+            )
+        else:
+            self.confirm(agent_id, reader_id, self.head(agent_id))
+        return [item.event for item in events]
+
+    def _last_seq_in_rooms(self, agent_id: str, after_seq: int, rooms: set[str]) -> int:
+        """The newest retained event after `after_seq` in one of `rooms`.
+
+        `after_seq` itself when there is none, so a caller confirming this
+        never moves a cursor over an event held for a room the agent is not in
+        yet.
+        """
+        last = after_seq
+        for item in self._events.get(agent_id, ()):
+            if item.seq > after_seq and item.room_id in rooms:
+                last = item.seq
+        return last
 
     def _legacy_cursor(self, agent_id: str, reader_id: str) -> int:
         readers = self._cursors.setdefault(agent_id, {})
@@ -311,7 +417,7 @@ class EventBuffer:
         agent_id: str,
         reader_id: str,
         cursor: int,
-        rooms: set[str] | None,
+        rooms: set[str],
         notifiable_only: bool,
     ) -> list[BufferedEvent]:
         try:
@@ -335,13 +441,6 @@ class EventBuffer:
             return self.read_from(
                 agent_id, resumed, rooms=rooms, notifiable_only=notifiable_only
             )
-
-    def _advance_legacy(
-        self, agent_id: str, reader_id: str, events: list[BufferedEvent]
-    ) -> list[AgentEvent]:
-        if events:
-            self.confirm(agent_id, reader_id, events[-1].seq)
-        return [item.event for item in events]
 
     # ------------------------------------------------------------------
     # Internals
