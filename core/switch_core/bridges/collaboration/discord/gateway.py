@@ -19,13 +19,18 @@ once for the application. Removal / out-of-band-join handling lands after.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import discord
 
 from switch_core.bridges.agent.commands import Command as InRoomCommand
-from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
+from switch_core.bridges.collaboration.discord.adapter import (
+    ALLOWED_MESSAGE_TYPES,
+    DiscordAdapter,
+)
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.slash import build_app_commands
 from switch_core.bridges.collaboration.install_service import (
@@ -39,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 _PLATFORM = "discord"
 
+# Backoff for the initial connect: the socket is not up yet and nothing routes
+# until it is, so keep retrying rather than leaving Discord dark for the process
+# life. Transient drops after the first connect are discord.py's own to reconnect.
+_INITIAL_RETRY_DELAY = 5.0
+_MAX_RETRY_DELAY = 300.0
+
 
 class DiscordGatewayClient:
     def __init__(
@@ -48,10 +59,14 @@ class DiscordGatewayClient:
         message_content: bool,
         members: bool,
         install_service: MessagingInstallService,
+        on_connected: Callable[[DiscordConnection], Awaitable[None]],
     ) -> None:
         self._message_content = message_content
         self._members = members
         self._install_service = install_service
+        # Fired once, after the first successful connect: boot walks the running
+        # bridges and attaches the ones on a shared connection (see main.py).
+        self._on_connected = on_connected
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
@@ -106,6 +121,34 @@ class DiscordGatewayClient:
             self._message_content,
         )
 
+    async def start_with_retry(self) -> None:
+        """Connect, retrying the initial connect with backoff, then attach.
+
+        Run as a supervised background task so a configured-but-unreachable
+        Discord app never blocks or fails boot. Only the *initial* connect is
+        retried here — once it is up, discord.py reconnects transient drops on
+        its own (the same connection object, so attached bridges keep working).
+        On the first success `on_connected` fires, which walks the running
+        bridges and attaches the ones on a shared connection.
+        """
+        delay = _INITIAL_RETRY_DELAY
+        while True:
+            try:
+                await self.start()
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Discord shared Gateway connection failed to start; Discord "
+                    "installs are inert until it connects. Retrying in %.0fs",
+                    delay,
+                )
+                await self._connection.close()
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _MAX_RETRY_DELAY)
+        await self._on_connected(self._connection)
+
     async def stop(self) -> None:
         await self._connection.close()
 
@@ -124,6 +167,15 @@ class DiscordGatewayClient:
         if guild is None:
             # The connection only routes guild messages here, so this is
             # defensive; a DM would have gone to the (unset) DM handler.
+            return
+        # Drop the events that need no tenant and no DB before resolving one:
+        # the bot's own posts (loop prevention) and non-post message types
+        # (pins, joins, boosts, …). The adapter drops the same set again on its
+        # own path, plus the webhook-echo drop it alone can make; this only
+        # spares the shared, multi-tenant socket a resolution per skipped event.
+        if message.author.id == self._connection.bot_user_id:
+            return
+        if message.type not in ALLOWED_MESSAGE_TYPES:
             return
         with no_tenant():
             try:
@@ -147,7 +199,7 @@ class DiscordGatewayClient:
 
             # Inert until now: hand it the shared connection so its inbound
             # handling and outbound posting run against the one socket.
-            adapter.ensure_shared_connection(self._connection)
+            adapter.attach_shared_connection(self._connection)
             await adapter.dispatch_inbound(message)
 
     async def _on_slash(
@@ -198,7 +250,7 @@ class DiscordGatewayClient:
                 )
                 return
 
-            adapter.ensure_shared_connection(self._connection)
+            adapter.attach_shared_connection(self._connection)
             await adapter.dispatch_slash(interaction, command, values)
 
     @staticmethod

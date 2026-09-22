@@ -17,6 +17,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 from switch_core.bridges.collaboration.install_service import (
     WebhookBridgeUnavailable,
@@ -51,11 +52,17 @@ class _FakeInstallService:
 
 
 def _gateway(install_service: Any) -> DiscordGatewayClient:
+    async def _noop_on_connected(connection: DiscordConnection) -> None:
+        # These tests drive the event handlers directly; the connect/attach
+        # path is exercised in test_discord_gateway.
+        ...
+
     return DiscordGatewayClient(
         bot_token="bot-token",
         message_content=False,
         members=False,
         install_service=install_service,
+        on_connected=_noop_on_connected,
     )
 
 
@@ -67,7 +74,14 @@ def _shared_adapter() -> DiscordAdapter:
 
 def _message(guild_id: int | None) -> discord.Message:
     guild = None if guild_id is None else type("_G", (), {"id": guild_id})()
-    return type("_M", (), {"guild": guild})()  # type: ignore[return-value]
+    # A human author (id 1, not the unconnected gateway's bot id 0) and a plain
+    # post type, so the gateway's cheap pre-filter passes it through to routing.
+    author = type("_A", (), {"id": 1})()
+    return type(
+        "_M",
+        (),
+        {"guild": guild, "author": author, "type": discord.MessageType.default},
+    )()  # type: ignore[return-value]
 
 
 def _target(adapter: Any) -> WebhookTarget:
@@ -150,6 +164,30 @@ async def test_a_dm_shaped_event_is_ignored() -> None:
     gateway = _gateway(service)
 
     await gateway._on_guild_message(_message(None))
+
+    assert service.calls == []
+
+
+async def test_the_bots_own_post_is_dropped_before_any_resolution() -> None:
+    """Perf: an own post needs no tenant and no DB, so the shared socket spends
+    no resolution on it (it would be dropped again in the adapter regardless)."""
+    service = _FakeInstallService()
+    gateway = _gateway(service)  # unconnected → bot_user_id 0
+
+    message = _message(GUILD_ID)
+    message.author.id = gateway.connection.bot_user_id  # type: ignore[misc]
+    await gateway._on_guild_message(message)
+
+    assert service.calls == []
+
+
+async def test_a_non_post_message_type_is_dropped_before_any_resolution() -> None:
+    service = _FakeInstallService()
+    gateway = _gateway(service)
+
+    message = _message(GUILD_ID)
+    message.type = discord.MessageType.pins_add  # type: ignore[misc]
+    await gateway._on_guild_message(message)
 
     assert service.calls == []
 

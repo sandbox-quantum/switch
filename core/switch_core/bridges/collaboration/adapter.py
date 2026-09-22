@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -277,6 +277,27 @@ class ActivityMarkRefused(RuntimeError):
 #: thing to be told and is why it is a mark of its own rather than a second
 #: meaning for the first.
 ActivityMark = Literal["working", "queued"]
+
+
+@runtime_checkable
+class SupportsSharedConnection(Protocol):
+    """An adapter that runs on a shared, deployment-level connection it does not
+    own, attached after it starts rather than dialled at start.
+
+    A distributed bridge (currently only Discord) starts inert and is handed the
+    one shared connection once it is up — at boot for installs that already
+    exist, and lazily on first event for one added at runtime. Attaching also
+    re-runs whatever start-time work needed the connection (agent identities).
+
+    Structural on purpose: the lifecycle, the gateway and boot narrow to this
+    with `isinstance` and stay ignorant of the concrete adapter, and an adapter
+    with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
+    and is left alone.
+    """
+
+    def attach_shared_connection(self, connection: Any) -> None: ...
+
+    def set_on_attached(self, callback: Callable[[], None]) -> None: ...
 
 
 class CollaborationAdapter(ABC):

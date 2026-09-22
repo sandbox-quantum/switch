@@ -46,10 +46,12 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
+from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
@@ -745,32 +747,43 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
+    await collab_lifecycle.start_all()
 
-    # The one shared Discord Gateway connection, up before its inert bridges
-    # would attach to it. A configured-but-unreachable Discord app must not take
-    # down a pod that serves every other platform, so a failure here is logged
-    # and Discord installs stay inert until it recovers, rather than fatal.
+    # The one shared Discord Gateway connection. Started after the bridges so it
+    # can attach to the inert ones the moment it connects — a shared-delivery
+    # bridge opens no socket of its own, and attaching re-runs the agent-identity
+    # provisioning that could not run at start. Supervised in the background: a
+    # configured-but-unreachable Discord app must never block or fail a boot that
+    # serves every other platform, so its initial connect retries with backoff
+    # and Discord installs stay inert until it succeeds.
     discord_gateway: DiscordGatewayClient | None = None
+    discord_gateway_task: asyncio.Task[None] | None = None
     if config.discord_app_bot_token:
         # install_service is present whenever an installer is registered, and the
         # Discord bot token being set means the Discord installer is — so this is
         # not None here. Asserted rather than branched to say that out loud.
         assert install_service is not None
+
+        async def _attach_shared_discord_bridges(
+            connection: DiscordConnection,
+        ) -> None:
+            # Runs once the socket is up: hand it to every already-running bridge
+            # that rides a shared connection. Platform-agnostic — narrowed by
+            # capability, not by knowing which platform that is.
+            for adapter in collab_lifecycle.iter_adapters():
+                if isinstance(adapter, SupportsSharedConnection):
+                    adapter.attach_shared_connection(connection)
+
         discord_gateway = DiscordGatewayClient(
             bot_token=config.discord_app_bot_token,
             message_content=config.discord_app_message_content,
             members=config.discord_app_members,
             install_service=install_service,
+            on_connected=_attach_shared_discord_bridges,
         )
-        try:
-            await discord_gateway.start()
-        except Exception:
-            logger.exception(
-                "The shared Discord Gateway connection failed to start; Discord "
-                "installs will be inert until it is reconnected"
-            )
-
-    await collab_lifecycle.start_all()
+        discord_gateway_task = asyncio.create_task(
+            discord_gateway.start_with_retry(), name="discord-gateway-start"
+        )
 
     # Backfill room membership: system clients (e.g. the admin client) added
     # after a room was created, and any agent whose invite did not land. The
@@ -806,6 +819,7 @@ async def run(config: SwitchConfig) -> None:
                     connector_lifecycle,
                     matrix_admin,
                     discord_gateway,
+                    discord_gateway_task,
                 )
             ),
         )
@@ -1254,11 +1268,20 @@ async def _shutdown(
     connector_lifecycle: ServerSideConnectorLifecycleService,
     matrix_admin: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
+    discord_gateway_task: asyncio.Task[None] | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
+    # Cancel the supervised connect/retry loop before closing the socket, so a
+    # retry in flight cannot re-open what stop() just closed.
+    if discord_gateway_task is not None:
+        discord_gateway_task.cancel()
+        try:
+            await discord_gateway_task
+        except asyncio.CancelledError:
+            pass
     if discord_gateway is not None:
         await discord_gateway.stop()
     await client_lifecycle.stop_all()

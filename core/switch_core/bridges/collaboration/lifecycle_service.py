@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -206,6 +207,19 @@ class CollaborationBridgeLifecycleService:
         to know the platform specifics."""
         bridge = self._bridges.get(bridge_id)
         return bridge.adapter if bridge is not None else None
+
+    def iter_adapters(self) -> Iterator[CollaborationAdapter]:
+        """The live adapter of every running bridge, as a snapshot.
+
+        Platform-agnostic on purpose: a caller narrows with `isinstance` to the
+        capability it wants (e.g. `SupportsSharedConnection`) rather than this
+        exposing anything platform-specific.
+
+        Snapshotted so a caller may await between adapters — a runtime install
+        mutating `_bridges` mid-iteration would otherwise raise `dictionary
+        changed size during iteration`."""
+        for bridge in list(self._bridges.values()):
+            yield bridge.adapter
 
     def supports_channel_creation(self, bridge_type: str) -> bool:
         """Whether this platform can create a channel from Switch at all.

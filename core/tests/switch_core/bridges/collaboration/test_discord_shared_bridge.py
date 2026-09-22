@@ -79,3 +79,68 @@ async def test_an_outbound_path_fails_loud_while_inert() -> None:
     adapter = _shared_adapter()
     with pytest.raises(RuntimeError, match="shared delivery"):
         adapter._require_client()
+
+
+class _StubConnection:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_stopping_a_shared_bridge_detaches_but_does_not_close_the_socket() -> (
+    None
+):
+    """The shared socket is the deployment's, not this bridge's: closing it on a
+    disconnect would drop every other tenant's Discord traffic. stop() detaches
+    instead, and a restarted bridge re-attaches to the live socket on its next
+    event rather than holding a stale one."""
+    adapter = _shared_adapter()
+    await _start(adapter)
+    shared = _StubConnection()
+    adapter.attach_shared_connection(shared)  # type: ignore[arg-type]
+    assert adapter._connection is shared
+
+    await adapter.stop()
+
+    assert shared.closed is False
+    assert adapter._connection is None
+
+
+async def test_stopping_an_own_connection_bridge_closes_its_socket() -> None:
+    """An own-connection bridge does own its socket, so stopping it closes it."""
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(guild_id=GUILD_ID, bot_token="token")
+    )
+    stub = _StubConnection()
+    adapter._connection = stub  # type: ignore[assignment]
+
+    await adapter.stop()
+
+    assert stub.closed is True
+
+
+async def test_attach_sets_the_connection_and_fires_on_attached_once() -> None:
+    """Attaching wakes the inert bridge and re-runs the work that needed the
+    connection (via _on_attached). It is set-once: a second attach is a no-op and
+    does not fire again."""
+    adapter = _shared_adapter()
+    await _start(adapter)
+    fired: list[int] = []
+    adapter.set_on_attached(lambda: fired.append(1))
+
+    first = _StubConnection()
+    adapter.attach_shared_connection(first)  # type: ignore[arg-type]
+    adapter.attach_shared_connection(_StubConnection())  # type: ignore[arg-type]
+
+    assert adapter._connection is first
+    assert fired == [1]
+
+
+def test_a_shared_adapter_satisfies_the_shared_connection_protocol() -> None:
+    """The lifecycle/gateway/boot narrow to this Protocol; an own-connection or
+    non-Discord adapter is not meant to, so its capability is opt-in by shape."""
+    from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
+
+    assert isinstance(_shared_adapter(), SupportsSharedConnection)

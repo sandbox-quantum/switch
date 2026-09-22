@@ -85,6 +85,14 @@ _WEBHOOK_NAME = "Switch Bridge"
 # when the only record left to read is the channel history.
 _PUBLICATION_WEBHOOK_NAME = "Switch Sessions"
 
+# Message types we treat as real posts: plain messages and replies. Everything
+# else (pins, joins, boosts, thread starters, …) is skipped. Module-level so the
+# shared Gateway client can drop them before it spends a tenant resolution on
+# them, and the per-guild adapter drops the same set again on its own path.
+ALLOWED_MESSAGE_TYPES = frozenset(
+    {discord.MessageType.default, discord.MessageType.reply}
+)
+
 # Put on the message an agent is working on for as long as its turn lasts.
 _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
 
@@ -550,14 +558,24 @@ class DiscordAdapter(CollaborationAdapter):
         # until it is attached to the one deployment-level connection, which is
         # not built yet — so `_connection` stays None and every outbound path
         # fails loud through `_require_connection` rather than pretending.
+        #
+        # Ownership is recorded here, not inferred from `_connection` later: once
+        # a shared bridge is attached, `_connection` points at the deployment's
+        # one shared socket, and `stop()` must detach from it rather than close
+        # it — closing it would drop every other tenant's Discord traffic too.
+        self._owns_connection = config.event_delivery == "own_connection"
         self._connection: DiscordConnection | None = None
-        if config.event_delivery == "own_connection":
+        if self._owns_connection:
             assert config.bot_token is not None  # guaranteed by the validator
             self._connection = DiscordConnection(
                 bot_token=config.bot_token,
                 intents=self._build_intents(),
                 command_guild_id=self._guild_id,
             )
+        # Fired the moment a shared connection is attached, so the start-time
+        # work that needed it (agent-identity provisioning) can re-run. Set by
+        # BridgeCore; None on an own-connection bridge, which is never attached.
+        self._on_attached: Callable[[], None] | None = None
         # (channel id, webhook name) -> webhook the bridge posts through there.
         self._webhooks: dict[tuple[int, str], discord.Webhook] = {}
         # Ids of webhooks the bridge has minted/adopted, for echo dropping.
@@ -656,25 +674,40 @@ class DiscordAdapter(CollaborationAdapter):
         return on_interaction
 
     async def stop(self) -> None:
-        # A shared-delivery bridge has no connection of its own to close;
-        # stopping it is just dropping its per-guild state.
-        if self._connection is not None:
-            await self._connection.close()
+        # Only an own-connection bridge closes the socket, because only it owns
+        # one. A shared-delivery bridge detaches from the shared socket instead:
+        # closing it here would take down every other tenant's Discord traffic,
+        # and dropping the reference lets a restarted bridge re-attach to the
+        # live connection on its next event rather than hold a stale one.
+        if self._owns_connection:
+            if self._connection is not None:
+                await self._connection.close()
+        else:
+            self._connection = None
         self._webhooks.clear()
         self._owned_webhooks.clear()
         logger.info("Discord adapter stopped")
 
-    def ensure_shared_connection(self, connection: DiscordConnection) -> None:
-        """Attach the shared Gateway connection the first time this bridge is used.
+    def set_on_attached(self, callback: Callable[[], None]) -> None:
+        self._on_attached = callback
+
+    def attach_shared_connection(self, connection: DiscordConnection) -> None:
+        """Attach the shared Gateway connection to an inert shared bridge.
 
         A shared-delivery bridge is built inert (no connection of its own); the
         deployment-level Gateway client injects its connection here so the
-        adapter's inbound handling and its outbound posting both run against it.
-        Idempotent and set-once: an own-connection bridge already has one and is
-        left alone, and repeated calls after the first are no-ops.
+        adapter's inbound handling and its outbound posting both run against it —
+        at boot for installs that already exist, and lazily on first event for
+        one added at runtime. On the first attach it fires `_on_attached`, which
+        re-runs the start-time provisioning that needed the connection (agent
+        identities). Idempotent and set-once: an own-connection bridge already
+        has one and is left alone, and repeated calls after the first are no-ops.
         """
-        if self._connection is None:
-            self._connection = connection
+        if self._connection is not None:
+            return
+        self._connection = connection
+        if self._on_attached is not None:
+            self._on_attached()
 
     async def dispatch_inbound(self, message: discord.Message) -> None:
         """Handle one inbound Gateway message the shared client routed here.
@@ -2579,12 +2612,6 @@ class DiscordAdapter(CollaborationAdapter):
 
     # ── Gateway event handling ───────────────────────────────────────────────
 
-    # Message types we treat as real posts: plain messages and replies.
-    # Everything else (pins, joins, boosts, thread starters, …) is skipped.
-    _ALLOWED_MESSAGE_TYPES = frozenset(
-        {discord.MessageType.default, discord.MessageType.reply}
-    )
-
     async def _handle_message(self, message: Any) -> None:
         # The connection routes each message here by guild id (or as a DM), so
         # this handler only ever sees its own guild's messages and DMs — the
@@ -2598,7 +2625,7 @@ class DiscordAdapter(CollaborationAdapter):
         webhook_id = getattr(message, "webhook_id", None)
         if webhook_id and webhook_id in self._webhook_ids:
             return
-        if message.type not in self._ALLOWED_MESSAGE_TYPES:
+        if message.type not in ALLOWED_MESSAGE_TYPES:
             return
 
         if message.id in self._seen_ids:

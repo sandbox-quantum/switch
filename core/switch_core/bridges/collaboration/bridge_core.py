@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivitySnapshot,
     AgentPresentation,
     CollaborationAdapter,
+    SupportsSharedConnection,
 )
 from switch_core.bridges.collaboration.models import (
     ChannelType,
@@ -418,6 +419,11 @@ class BridgeCore:
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        # A bridge on a shared connection is attached after it starts (at boot,
+        # or lazily on its first event). Provisioning that ran at start against
+        # an unattached connection would have failed, so re-run it on attach.
+        if isinstance(self._adapter, SupportsSharedConnection):
+            self._adapter.set_on_attached(self._provision_identities_on_attach)
         if self._session_interactions is not None:
             self._adapter.set_interaction_handler(
                 self._traced("interaction", self._handle_inbound_interaction)
@@ -535,6 +541,28 @@ class BridgeCore:
 
             if client:
                 self._puppet_matrix_ids.add(client.matrix_user_id)
+
+    def _provision_identities_on_attach(self) -> None:
+        """Re-run identity provisioning when a shared connection attaches.
+
+        The start-time run failed for a shared bridge because it had no
+        connection yet. Attaching gives it one, so provision now — a fresh
+        background task, not awaited, for the same reason `start` gives.
+
+        Guarded against overwriting a still-running task. The start-time run
+        spends most of its life in the agent read (`_create_agent_identities`
+        awaits `get_all` before the per-agent loop), so an attach during that
+        window must not spawn a second provisioner: two concurrent
+        `create_agent_identity` calls can double a role through its
+        check-then-create window, and overwriting the handle would orphan the
+        task `stop` cancels. If the start-time task is still going it will reach
+        the per-agent loop against the now-attached connection and provision
+        itself; if it has finished — the usual case, since the per-agent loop
+        fails fast while unattached — this replaces the completed handle.
+        """
+        if self._identity_task is not None and not self._identity_task.done():
+            return
+        self._identity_task = asyncio.create_task(self._run_agent_identities())
 
     async def _run_agent_identities(self) -> None:
         """Wrapper for the background provisioning task.
