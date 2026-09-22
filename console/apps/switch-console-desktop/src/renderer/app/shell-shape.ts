@@ -18,6 +18,7 @@ export function shellShape({
   listError,
   serverCount,
   viewWorksWithoutServer,
+  onboardingInProgress,
 }: {
   loaded: boolean;
   /**
@@ -40,6 +41,8 @@ export function shellShape({
    * here, so the next one of the same kind is not missed.
    */
   viewWorksWithoutServer: boolean;
+  /** Whether the first-run flow has been started and not yet finished. */
+  onboardingInProgress: boolean;
 }): ShellShape {
   // A failed read that nevertheless loaded once keeps the workspace: the list
   // in hand is still the list, and a later refresh failing is not a reason to
@@ -49,5 +52,10 @@ export function shellShape({
   // draw it, and the onboarding page carries no chrome of its own — holding the
   // window on it would leave every one of them unreachable.
   if (viewWorksWithoutServer) return 'workspace';
+  // A flow in progress outranks the server count, because the flow is what
+  // changes it: the server is added several pages before the user has signed in
+  // to it, and going by the count alone would throw them out of the flow at the
+  // moment it half-succeeded.
+  if (onboardingInProgress) return 'onboarding';
   return serverCount === 0 ? 'onboarding' : 'workspace';
 }

@@ -9,14 +9,8 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { StepPager } from '@renderer/lib/ui/step-pager';
+import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { BridgeIdentitySearch } from './bridge-identity-search';
 import { connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
@@ -59,63 +53,57 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
 
   if (linking && workspaceId !== null) {
     return (
-      <>
-        <DialogHeader showCloseButton={false}>
-          <DialogTitle>Link your {bridgePlatformLabel(linking.type)} account</DialogTitle>
-        </DialogHeader>
-        <DialogContentArea className="pt-0">
-          <div className="flex w-full flex-col gap-4">
-            <p className="text-sm text-foreground-muted">
-              Find yourself in {linking.displayName} and tell Switch that account is you.
-            </p>
-            <BridgeIdentitySearch
-              workspaceId={workspaceId}
-              bridgeId={linking.id}
-              bridgeDisplayName={linking.displayName}
-              platform={bridgePlatformLabel(linking.type)}
-              directorySearchSupported={linking.directorySearchSupported}
-              autoFocus
-              onClaimed={() => setLinking(null)}
-            />
-          </div>
-        </DialogContentArea>
-        <DialogFooter>
+      <WizardFrame
+        title={`Link your ${bridgePlatformLabel(linking.type)} account`}
+        subtitle={null}
+        pager={{
+          pageName: `Link ${bridgePlatformLabel(linking.type)}`,
+          onBack: goBack,
+          onNext: null,
+        }}
+        footer={
           <Button variant="outline" onClick={goBack}>
             Back
           </Button>
-        </DialogFooter>
-        <StepPager
-          pageName={`Link ${bridgePlatformLabel(linking.type)}`}
-          onBack={goBack}
-          onNext={null}
-        />
-      </>
+        }
+      >
+        <div className="flex w-full flex-col gap-4">
+          <p className="text-sm text-foreground-muted">
+            Find yourself in {linking.displayName} and tell Switch that account is you.
+          </p>
+          <BridgeIdentitySearch
+            workspaceId={workspaceId}
+            bridgeId={linking.id}
+            bridgeDisplayName={linking.displayName}
+            platform={bridgePlatformLabel(linking.type)}
+            directorySearchSupported={linking.directorySearchSupported}
+            autoFocus
+            onClaimed={() => setLinking(null)}
+          />
+        </div>
+      </WizardFrame>
     );
   }
 
   return (
-    <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>Link your messaging accounts</DialogTitle>
-      </DialogHeader>
-      <DialogContentArea className="pt-0">
-        <BridgeList
-          serverName={serverName}
-          bridges={bridgesQuery.isSuccess ? orderBridges(bridgesQuery.data) : null}
-          identities={identities}
-          isPending={bridgesQuery.isPending}
-          error={bridgesQuery.isError ? bridgesQuery.error : null}
-          onRetry={() => void bridgesQuery.refetch()}
-          onLink={setLinking}
-        />
-      </DialogContentArea>
-      <DialogFooter>
-        <ConfirmButton onClick={onDone}>Done</ConfirmButton>
-      </DialogFooter>
-      {/* The last page of the flow, and signing in cannot be undone by walking
-          backwards, so there is nowhere for either arrow to go. */}
-      <StepPager pageName="Link accounts" onBack={null} onNext={null} />
-    </>
+    <WizardFrame
+      title="Link your messaging accounts"
+      subtitle={null}
+      /* The last page of the flow, and signing in cannot be undone by walking
+         backwards, so there is nowhere for either arrow to go. */
+      pager={{ pageName: 'Link accounts', onBack: null, onNext: null }}
+      footer={<ConfirmButton onClick={onDone}>Done</ConfirmButton>}
+    >
+      <BridgeList
+        serverName={serverName}
+        bridges={bridgesQuery.isSuccess ? orderBridges(bridgesQuery.data) : null}
+        identities={identities}
+        isPending={bridgesQuery.isPending}
+        error={bridgesQuery.isError ? bridgesQuery.error : null}
+        onRetry={() => void bridgesQuery.refetch()}
+        onLink={setLinking}
+      />
+    </WizardFrame>
   );
 });
 

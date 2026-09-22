@@ -656,7 +656,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   onboarding_step_started: ['step_id'],
   onboarding_checklist_dismissed: [],
   onboarding_completed: [],
-  add_server_step: ['step', 'choice'],
+  add_server_step: ['step', 'choice', 'first_run'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source'],
   session_attached: ['agent_type', 'outcome'],

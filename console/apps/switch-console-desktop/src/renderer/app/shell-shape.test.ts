@@ -18,6 +18,7 @@ function shape(differences: Partial<Parameters<typeof shellShape>[0]>) {
     listError: null,
     serverCount: 0,
     viewWorksWithoutServer: false,
+    onboardingInProgress: false,
     ...differences,
   });
 }
@@ -42,6 +43,17 @@ describe('what fills the window', () => {
     // them, and the onboarding page carries no chrome of its own. Holding the
     // window on it would leave ⌘, and the Preferences menu item doing nothing.
     expect(shape({ viewWorksWithoutServer: true })).toBe('workspace');
+  });
+
+  it('stays on the first-run pages once the flow has added the server', () => {
+    // The flow adds the server pages before it is done with it — signing in and
+    // linking accounts both come after. Going by the count alone would throw
+    // the user out of the flow at the moment it half-succeeded.
+    expect(shape({ serverCount: 1, onboardingInProgress: true })).toBe('onboarding');
+  });
+
+  it('still lets such a view out of a flow in progress', () => {
+    expect(shape({ onboardingInProgress: true, viewWorksWithoutServer: true })).toBe('workspace');
   });
 
   it('says a first read failed instead of staying blank', () => {
