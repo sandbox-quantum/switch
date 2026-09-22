@@ -39,11 +39,16 @@ const handledSchema = z.strictObject({ handled: z.number().int().positive() });
  * Marks a sequence held because the room's owner is undecided. Nothing has been
  * routed and nothing started; the event waits for the session that holds the
  * room to say so.
+ *
+ * It carries whether the event arrived while the agent was allowed to start a
+ * session, because that is the permission it is finally admitted under and the
+ * setting can be turned off — or on — while it waits.
  */
 const parkedSchema = z.strictObject({
   parked: z.number().int().positive(),
   roomId: z.string().min(1),
   messageId: z.string().min(1),
+  spawning: z.boolean(),
 });
 
 /**
@@ -346,9 +351,12 @@ export class SharedWatchAssignments {
    * outlives them: the point of writing it down is that the server's copy may
    * be gone by the time the room has an owner again.
    */
-  pending(): { sequence: number; roomId: string; messageId: string }[] {
+  pending(): { sequence: number; roomId: string; messageId: string; spawning: boolean }[] {
     const released = this.settled;
-    const waiting = new Map<string, { sequence: number; roomId: string; messageId: string }>();
+    const waiting = new Map<
+      string,
+      { sequence: number; roomId: string; messageId: string; spawning: boolean }
+    >();
     for (const record of this.journal.records) {
       if (!isParked(record)) continue;
       const identity = delivery(record);
@@ -357,6 +365,7 @@ export class SharedWatchAssignments {
         sequence: record.parked,
         roomId: record.roomId,
         messageId: record.messageId,
+        spawning: record.spawning,
       });
     }
     return [...waiting.values()];
@@ -375,11 +384,15 @@ export class SharedWatchAssignments {
   }
 
   /** Records that the event is waiting for its room's owner to be decided. */
-  async park(event: { sequence: number; roomId: string; messageId: string }): Promise<void> {
+  async park(
+    event: { sequence: number; roomId: string; messageId: string },
+    spawning: boolean
+  ): Promise<void> {
     await this.journal.append({
       parked: event.sequence,
       roomId: event.roomId,
       messageId: event.messageId,
+      spawning,
     });
   }
 
@@ -637,7 +650,7 @@ export async function runSharedWatcher(
           `Room ${event.roomId} was taken from a session of this agent and no running session has claimed it yet; holding its messages until one does.`
         );
       }
-      await assignments.park(event);
+      await assignments.park(event, spawning);
     };
     /** Re-asks who owns each held room, and answers the ones that now have one. */
     const resolveHeld = async () => {
@@ -663,12 +676,13 @@ export async function runSharedWatcher(
     // What was held when the last watcher stopped is picked up from the journal
     // rather than from the server. The stream reopens behind a held event, but
     // that buffer can be trimmed or renumbered while the event waits, and this
-    // is the copy that cannot be.
-    for (const event of assignments.pending()) {
+    // is the copy that cannot be. Each one keeps the permission it arrived
+    // under, not the one this controller started with.
+    for (const { spawning, ...event } of assignments.pending()) {
       const waiting = held.get(event.roomId);
-      if (waiting) waiting.events.push({ event, spawning: spawn });
+      if (waiting) waiting.events.push({ event, spawning });
       else {
-        held.set(event.roomId, { events: [{ event, spawning: spawn }], since: Date.now() });
+        held.set(event.roomId, { events: [{ event, spawning }], since: Date.now() });
         console.warn(
           `Room ${event.roomId} was still waiting for a session to claim it when this controller last stopped; its messages are held until one does.`
         );

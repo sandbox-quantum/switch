@@ -1048,7 +1048,7 @@ it('delivers what it was holding after a restart the server never replays', asyn
     await held;
   }
   expect((await SharedWatchAssignments.open(root)).pending()).toEqual([
-    { sequence: 5, roomId: 'room', messageId: 'message-5' },
+    { sequence: 5, roomId: 'room', messageId: 'message-5', spawning: true },
   ]);
 
   // The sibling claims the room while nothing is watching, and the controller
@@ -1072,6 +1072,51 @@ it('delivers what it was holding after a restart the server never replays', asyn
   const journal = await SharedWatchAssignments.open(root);
   expect(journal.pending()).toEqual([]);
   expect(journal.cursor).toBe(5);
+});
+
+it('starts the session a held event was promised after spawning is turned off', async () => {
+  // The room was addressed while the agent was allowed to start a session, and
+  // it waited only because nothing local could say who owned it. The permission
+  // belongs to the message, not to the controller that finally admits it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-held-permission-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await answering(root, config, [['room'], []]);
+  const candidate = await answering(root, config, []);
+  vi.mocked(ensureSharedProcess).mockResolvedValue({ created: true });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const first = new AbortController();
+  const parked = runSharedWatcher(root, config, first.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(5, 'room'));
+  } finally {
+    first.abort();
+    await parked;
+  }
+
+  // The session that might have claimed the room exits, leaving nobody who
+  // could own it, and automatic sessions are switched off in the meantime.
+  await writeFile(join(candidate, 'inbox.jsonl'), JSON.stringify({ type: 'stopped' }) + '\n');
+  await stopSpawning(root);
+  const second = new AbortController();
+  const resumed = runSharedWatcher(root, config, second.signal, supervision);
+  try {
+    await eventually(() => streams.length === 2);
+  } finally {
+    second.abort();
+    await resumed;
+  }
+
+  const journal = await SharedWatchAssignments.open(root);
+  expect(journal.pending()).toEqual([]);
+  const started = journal.sessions();
+  expect(started).toHaveLength(1);
+  expect(await readFile(join(root, started[0]!.session.sessionId, HANDOFF_FILE), 'utf8')).toBe(
+    JSON.stringify({ sequence: 5, roomId: 'room', messageId: 'message-5' }) + '\n'
+  );
 });
 
 it('takes a held event served again by a reopened stream as the one it already holds', async () => {
@@ -1123,16 +1168,16 @@ it('keeps held deliveries through a renumbering without letting their old positi
   paths.root = root;
   const config = template(root);
   const assignments = await SharedWatchAssignments.open(root);
-  await assignments.park({ sequence: 4, roomId: 'room', messageId: 'held-first' });
-  await assignments.park({ sequence: 900, roomId: 'room', messageId: 'held-second' });
+  await assignments.park({ sequence: 4, roomId: 'room', messageId: 'held-first' }, true);
+  await assignments.park({ sequence: 900, roomId: 'room', messageId: 'held-second' }, true);
   expect(assignments.cursor).toBe(0);
 
   await assignments.restart();
   const reloaded = await SharedWatchAssignments.open(root);
   expect(reloaded.cursor).toBe(0);
   expect(reloaded.pending()).toEqual([
-    { sequence: 4, roomId: 'room', messageId: 'held-first' },
-    { sequence: 900, roomId: 'room', messageId: 'held-second' },
+    { sequence: 4, roomId: 'room', messageId: 'held-first', spawning: true },
+    { sequence: 900, roomId: 'room', messageId: 'held-second', spawning: true },
   ]);
 
   const fresh = await decided(reloaded, config, {
