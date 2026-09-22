@@ -22,7 +22,7 @@ type CaptureStep = 'loading' | 'preview' | 'error';
 type Candidate = {
   /** Identity of the row. The key is what the user edits, so it cannot be the identity. */
   id: number;
-  /** Default param key — editable by the user. */
+  /** The param key, as suggested, until the user edits it. */
   key: string;
   /** Human label for the field, e.g. "Room name" */
   label: string;

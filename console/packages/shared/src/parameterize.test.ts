@@ -65,8 +65,8 @@ describe('parameterize', () => {
       { key: 'room_name', value: 'agent-alpha-room' },
       { key: 'agent', value: 'agent-alpha' },
     ]);
-    // The room name contains 'agent-alpha' as a substring — the longer value
-    // must be replaced first so the room name isn't partially mangled.
+    // The room name contains 'agent-alpha' as a substring, so the longer value
+    // is replaced first and the room name is not partially mangled.
     expect(result).toContain("name: '{room_name}'");
     expect(result).toContain("- '{agent}'");
   });

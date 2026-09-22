@@ -28,8 +28,8 @@ export function useTemplateValidation(
       return;
     }
 
-    // The old verdict is about a document that is gone. Holding it would keep
-    // Save disabled by findings nobody can see.
+    // A verdict belongs to the document it was given for. Once that document
+    // changes, holding it would keep Save disabled by findings nobody can see.
     setResult(null);
     setChecking(true);
     const timer = setTimeout(() => {

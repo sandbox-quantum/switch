@@ -2238,7 +2238,7 @@ async def test_provision_reports_a_kickoff_that_raises(env, monkeypatch):
     ]
 
 
-# ── capture export round trip (CHOO-2658) ────────────────────────────────
+# ── capture export round trip ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

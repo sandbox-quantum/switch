@@ -58,8 +58,8 @@ export default function TemplateDetailPage() {
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        // The reason, not a guess: a private template the caller may not see
-        // and a server that is down both used to read as "not found".
+        // The server's reason, shown as is: a private template the caller may
+        // not see and a server that is down are different problems.
         setFetchError(e instanceof Error ? e.message : "Could not load this template");
         setLoading(false);
       });

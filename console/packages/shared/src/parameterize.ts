@@ -1,14 +1,13 @@
 /**
- * Client-side transform that turns exported room YAML into a parameterized
- * template.  Replaces literal values with `{key}` placeholders and prepends a
- * `params:` block — the same grammar the server-side parser interpolates on
- * import (see `rooms_yaml.PLACEHOLDER_RE`).
+ * Turns exported room YAML into a parameterized template: literal values
+ * become `{key}` placeholders and a `params:` block is prepended, in the
+ * grammar the server interpolates on import (see `rooms_yaml.PLACEHOLDER_RE`).
  */
 
 const PARAM_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export type ParamSubstitution = {
-  /** Param name — must match `[A-Za-z_][A-Za-z0-9_]*`. */
+  /** The param name, matching `[A-Za-z_][A-Za-z0-9_]*`. */
   key: string;
   /** The literal value to replace with `{key}`. */
   value: string;
