@@ -45,7 +45,10 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
-import { type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
+import {
+  describeRemoteDirRefusal,
+  isAbsoluteRemoteDir,
+} from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
@@ -233,6 +236,10 @@ export const AddAgentModal = observer(function AddAgentModal({
   const canChooseAgentType = runHostReachable && !hostLevelBlocked;
   const canConfigureAgent = canChooseAgentType && runHostReady;
 
+  // A relative remote dir would resolve against whatever directory the SSH
+  // session starts in. Caught here so it greys the button out with a reason.
+  const remoteDirIsAbsolute = !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
+
   const canSubmit =
     form.isValid &&
     !nameTaken &&
@@ -240,6 +247,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     !!pickState.serverId &&
     !!pickState.providerId &&
     dir.trim().length > 0 &&
+    remoteDirIsAbsolute &&
     runHostReachable &&
     runHostReady &&
     submitState === 'idle';
@@ -270,9 +278,11 @@ export const AddAgentModal = observer(function AddAgentModal({
                           ? isRemoteRun
                             ? 'Enter the agent’s working directory on the host.'
                             : 'Choose the agent’s working directory.'
-                          : policyHasDeadRule(form.addressingPolicy)
-                            ? 'One addressing rule can never match — fix it under Settings.'
-                            : null;
+                          : !remoteDirIsAbsolute
+                            ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                            : policyHasDeadRule(form.addressingPolicy)
+                              ? 'One addressing rule can never match — fix it under Settings.'
+                              : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -284,7 +294,9 @@ export const AddAgentModal = observer(function AddAgentModal({
     navigate('location', { locationId: agent.locationId, agentName: agent.name });
   };
 
-  const reportProvisionError = (result: ProvisionAgentResult) => {
+  /** Typed off the RPC, not `ProvisionAgentResult`: an `addAgent` result is the
+   * only thing passed here, and the two unions do not have to agree. */
+  const reportProvisionError = (result: Awaited<ReturnType<typeof rpc.agents.addAgent>>) => {
     if (result.kind === 'unauthenticated' && pickState.serverId) {
       toast({
         title: 'Sign in to register the agent',
@@ -307,6 +319,14 @@ export const AddAgentModal = observer(function AddAgentModal({
       toast({
         title: 'That name belongs to another Switch server here',
         description: `This directory already holds credentials for an agent of that name on ${result.endpoint}. Overwriting them would destroy that agent's API token, so nothing was created — pick another name, or a different directory.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (result.kind === 'directory-unusable') {
+      toast({
+        title: 'That working directory cannot be used. Nothing was created.',
+        description: describeRemoteDirRefusal(result.inspection, runLocationLabel),
         variant: 'destructive',
       });
       return;
