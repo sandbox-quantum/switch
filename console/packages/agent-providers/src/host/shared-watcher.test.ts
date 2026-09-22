@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type * as runtime from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
@@ -22,8 +24,27 @@ vi.mock('./launch', () => ({
   liveSupervisor: (root: string) => Promise.resolve(supervisors.get(root) ?? null),
   ensureSharedProcess: vi.fn(),
 }));
+const streams = vi.hoisted(() => [] as SwitchEventStreamDeps[]);
+const declarations = vi.hoisted(() => [] as boolean[]);
+vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof runtime>()),
+  SwitchEventStream: class {
+    constructor(private readonly deps: SwitchEventStreamDeps) {
+      streams.push(deps);
+      declarations.push(deps.spawnCapable === true);
+    }
+    start(): void {}
+    setSpawnCapable(capable: boolean): void {
+      declarations.push(capable);
+    }
+  },
+}));
+
 const roots: string[] = [];
 afterEach(async () => {
+  streams.length = 0;
+  declarations.length = 0;
+  vi.mocked(ensureSharedProcess).mockReset();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -219,6 +240,119 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
     before.session.sessionId,
     after.session.sessionId,
   ]);
+});
+
+async function spawning(root: string) {
+  const config = watchable(root);
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: true }));
+  await writeFile(join(root, 'config.json'), JSON.stringify(config));
+  await writeFile(
+    join(root, 'credentials.json'),
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'http://127.0.0.1/agent',
+        SWITCH_API_TOKEN: 'placeholder-token',
+        SWITCH_AGENT_ID: config.session.agentId,
+      },
+    })
+  );
+  return config;
+}
+
+async function stopSpawning(root: string) {
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true, spawn: false }));
+}
+
+/** Polls: what is waited on crosses a file watch or a queue, not a call. */
+async function eventually(reached: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (reached()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('The watcher never reached the state this test was waiting for.');
+}
+
+const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
+  type: 'message',
+  room_id: roomId,
+  sequence,
+  payload: {
+    addressed: true,
+    sender: '@owner:example.test',
+    sender_name: 'Owner',
+    message_id: `message-${sequence}`,
+    body: 'Run the check',
+    timestamp: sequence,
+  },
+});
+
+it('leaves an event queued behind earlier work unstarted once spawning is turned off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-queued-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const started: string[] = [];
+  let admit: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ config: launched }) => {
+    started.push(launched.session.sessionId);
+    if (started.length === 1) await held;
+    return { created: true };
+  });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  await eventually(() => streams.length === 1);
+  const stream = streams[0]!;
+  void stream.onEvent!(addressed(1, 'room'));
+  await eventually(() => started.length >= 1);
+
+  // Admitted while spawning was on, and still waiting on the session before it
+  // when the setting changes.
+  const queued = stream.onEvent!(addressed(2, 'other'));
+  await stopSpawning(root);
+  await eventually(() => declarations.includes(false));
+  admit();
+  await queued;
+  abort.abort();
+  await run;
+
+  const journal = await SharedWatchAssignments.open(root);
+  const sessions = journal.sessions().map((assigned) => assigned.session.sessionId);
+  expect(sessions).toHaveLength(2);
+  expect(started).toEqual([sessions[0]]);
+});
+
+it('leaves the rest of a restore unstarted once spawning is turned off midway', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restore-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const first = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  await assignments.assign(config, { sequence: 2, roomId: 'other', messageId: 'second' });
+  const started: string[] = [];
+  // The restore starts its sessions one at a time, so the setting can change
+  // while it is part way through and the loop itself never sees it.
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ config: launched }) => {
+    started.push(launched.session.sessionId);
+    if (started.length === 1) await stopSpawning(root);
+    return { created: true };
+  });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  await eventually(() => started.length >= 1);
+  abort.abort();
+  await run;
+
+  expect(started).toEqual([first.session.sessionId]);
 });
 
 it('restarts only the live sessions of this agent left on a superseded build', async () => {

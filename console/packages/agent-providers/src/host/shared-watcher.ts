@@ -263,8 +263,13 @@ export async function runSharedWatcher(
     const credentials = await readSharedCredentials(template);
     const assignments = await SharedWatchAssignments.open(root);
     const launch = async (config: SharedHostConfig) => {
-      if (!(await readWatchFlags(root)).enabled || (await stopped(config.session.sessionId)))
-        return;
+      // Both flags are re-read here rather than taken from whoever asked for the
+      // launch. Everything that reaches this point was admitted earlier and may
+      // have waited behind other work since — a queued event, or an assignment
+      // later in the restore loop — and a session started after somebody turned
+      // spawning off cannot be taken back.
+      const now = await readWatchFlags(root);
+      if (!now.enabled || !now.spawn || (await stopped(config.session.sessionId))) return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
         config,
