@@ -335,6 +335,30 @@ def _stored_snapshot(row: SdkSession) -> Snapshot:
         ) from error
 
 
+@dataclass(frozen=True)
+class _SessionPresence:
+    """Read-only room/lease metadata; never enters the ORM identity map."""
+
+    id: str
+    agent_id: str
+    connection_id: str | None
+    lease_expires_at: datetime
+    recovery: dict
+    state: Session
+
+
+def _stored_session(row: SdkSession | _SessionPresence) -> Session:
+    if isinstance(row, _SessionPresence):
+        return row.state
+    try:
+        return Session.model_validate(row.snapshot.get("session"))
+    except ValidationError as error:
+        raise SessionError(
+            "INCOMPATIBLE_SESSION",
+            f"Session {row.id} contains unsupported or invalid stored data. Update the server or repair this session.",
+        ) from error
+
+
 async def _now(db: AsyncSession) -> datetime:
     """The database clock, which is the one every lease is measured against."""
     now = await db.scalar(select(func.clock_timestamp()))
@@ -343,7 +367,9 @@ async def _now(db: AsyncSession) -> datetime:
     return now
 
 
-def _claims_room(row: SdkSession, room_id: str, connection: Connection) -> bool:
+def _claims_room(
+    row: SdkSession | _SessionPresence, room_id: str, connection: Connection
+) -> bool:
     """Does this session claim `room_id`, for picking one of an agent's many.
 
     A connection's rooms are the union of every session it carries, so once
@@ -360,13 +386,13 @@ def _claims_room(row: SdkSession, room_id: str, connection: Connection) -> bool:
     named a room in every room its agent belongs to, including one a sibling
     took from it.
     """
-    rooms = _stored_snapshot(row).session.room_ids
+    rooms = _stored_session(row).room_ids
     if rooms:
         return room_id in rooms
     return connection.scope == "single"
 
 
-def _host_holds(row: SdkSession, now: datetime) -> bool:
+def _host_holds(row: SdkSession | _SessionPresence, now: datetime) -> bool:
     """Is a host still running this session, by the database clock?
 
     A `connection_id` used to be enough on its own, because only one session
@@ -378,7 +404,7 @@ def _host_holds(row: SdkSession, now: datetime) -> bool:
     return not row.recovery.get("quiesced") and row.lease_expires_at > now
 
 
-def _host_lapsed(row: SdkSession, now: datetime) -> bool:
+def _host_lapsed(row: SdkSession | _SessionPresence, now: datetime) -> bool:
     """Has this session's host stopped without standing the session down?
 
     A host that quiesced said it was going, and a session stood down that way
@@ -390,7 +416,10 @@ def _host_lapsed(row: SdkSession, now: datetime) -> bool:
 
 
 def _attends(
-    row: SdkSession, room_id: str, now: datetime, connections: ConnectionRegistry
+    row: SdkSession | _SessionPresence,
+    room_id: str,
+    now: datetime,
+    connections: ConnectionRegistry,
 ) -> bool:
     """Is this session working in `room_id`, with something able to reach it?
 
@@ -418,18 +447,21 @@ def _attends(
     return _claims_room(row, room_id, connection)
 
 
-def _session_is_over(row: SdkSession) -> bool:
+def _session_is_over(row: SdkSession | _SessionPresence) -> bool:
     """Has this session finished, whatever else is still holding it open?
 
     Its lease says a host is up, and under a shared connection that host is up
     for its siblings. Neither says this session is still working: a stopped one
     is not in the room it stopped in.
     """
-    return _stored_snapshot(row).session.status == "stopped"
+    return _stored_session(row).status == "stopped"
 
 
 def _occupies(
-    row: SdkSession, room_id: str, now: datetime, connections: ConnectionRegistry
+    row: SdkSession | _SessionPresence,
+    room_id: str,
+    now: datetime,
+    connections: ConnectionRegistry,
 ) -> bool:
     """Is this session in `room_id` — the presence question, not the routing one.
 
@@ -440,9 +472,9 @@ def _occupies(
     return _attends(row, room_id, now, connections) and not _session_is_over(row)
 
 
-def _room_claimants(
-    rows: Iterable[SdkSession], room_id: str, now: datetime
-) -> tuple[SdkSession | None, list[SdkSession]]:
+def _room_claimants[RoomRow: (SdkSession, _SessionPresence)](
+    rows: Iterable[RoomRow], room_id: str, now: datetime
+) -> tuple[RoomRow | None, list[RoomRow]]:
     """The session working in `room_id`, and every unfinished one claiming it.
 
     The two answers come apart exactly where a controller reading its own disk
@@ -451,10 +483,10 @@ def _room_claimants(
     has not finished still has the room: it is coming back to it, and handing
     the room to a session started in the meantime would take it away.
     """
-    owner: SdkSession | None = None
-    claimants: list[SdkSession] = []
+    owner: RoomRow | None = None
+    claimants: list[RoomRow] = []
     for row in rows:
-        state = _stored_snapshot(row).session
+        state = _stored_session(row)
         if room_id not in state.room_ids or state.retired or _session_is_over(row):
             continue
         claimants.append(row)
@@ -463,7 +495,9 @@ def _room_claimants(
     return owner, claimants
 
 
-def _spoken_for(rows: Iterable[SdkSession], claimant: Connection, room_id: str) -> bool:
+def _spoken_for(
+    rows: Iterable[SdkSession | _SessionPresence], claimant: Connection, room_id: str
+) -> bool:
     """Is this room slot a managed session's own, rather than a legacy caller's?
 
     A claim is the only presence a client Switch holds no session record for
@@ -479,17 +513,35 @@ def _spoken_for(rows: Iterable[SdkSession], claimant: Connection, room_id: str) 
     )
 
 
-async def _sessions_of(db: AsyncSession, agent_ids: list[str]) -> list[SdkSession]:
-    return list(
-        (
-            await db.scalars(
-                select(SdkSession).where(
-                    SdkSession.tenant_id == require_tenant_id(),
-                    SdkSession.agent_id.in_(agent_ids),
-                )
-            )
-        ).all()
+async def _sessions_of(
+    db: AsyncSession, agent_ids: list[str]
+) -> list[_SessionPresence]:
+    if not agent_ids:
+        return []
+    rows = await db.execute(
+        select(
+            SdkSession.id,
+            SdkSession.agent_id,
+            SdkSession.connection_id,
+            SdkSession.lease_expires_at,
+            SdkSession.recovery,
+            SdkSession.snapshot["session"].label("state"),
+        ).where(
+            SdkSession.tenant_id == require_tenant_id(),
+            SdkSession.agent_id.in_(agent_ids),
+        )
     )
+    return [
+        _SessionPresence(
+            id=row.id,
+            agent_id=row.agent_id,
+            connection_id=row.connection_id,
+            lease_expires_at=row.lease_expires_at,
+            recovery=row.recovery,
+            state=Session.model_validate(row.state),
+        )
+        for row in rows
+    ]
 
 
 async def agents_present_in(
@@ -542,7 +594,7 @@ async def rooms_occupied(
         occupied = {
             room_id
             for row in rows
-            for room_id in _stored_snapshot(row).session.room_ids
+            for room_id in _stored_session(row).room_ids
             if _occupies(row, room_id, now, connections)
         }
     for conn in connections.for_agent(agent_id):
@@ -552,9 +604,9 @@ async def rooms_occupied(
     return occupied
 
 
-def _recorded_holder(
-    rows: Iterable[SdkSession], room_id: str, now: datetime
-) -> SdkSession | None:
+def _recorded_holder[RoomRow: (SdkSession, _SessionPresence)](
+    rows: Iterable[RoomRow], room_id: str, now: datetime
+) -> RoomRow | None:
     """The unfinished session this room is recorded to, if one has it."""
     return next(iter(_room_claimants(rows, room_id, now)[1]), None)
 
@@ -3173,11 +3225,22 @@ class SessionAuthority:
         return blob
 
     async def list_sessions(self, user_id: str) -> list[Session | UnavailableSession]:
+        # Discovery needs metadata, not every tool result in every transcript.
+        # Return the connection before validating and building the response.
         async with tenant_session(self._sessions, require_tenant_id()) as db:
             rows = (
-                await db.scalars(
-                    select(SdkSession)
-                    .join(Agent, Agent.id == SdkSession.agent_id)
+                await db.execute(
+                    select(
+                        SdkSession.id,
+                        SdkSession.agent_id,
+                        SdkSession.lease_expires_at,
+                        SdkSession.snapshot["session"].label("state"),
+                    )
+                    .join(
+                        Agent,
+                        (Agent.id == SdkSession.agent_id)
+                        & (Agent.tenant_id == SdkSession.tenant_id),
+                    )
                     .where(
                         SdkSession.tenant_id == require_tenant_id(),
                         Agent.owner_id == user_id,
@@ -3186,29 +3249,29 @@ class SessionAuthority:
                 )
             ).all()
             now = await _now(db)
-            result: list[Session | UnavailableSession] = []
-            for row in rows:
-                try:
-                    snapshot = _stored_snapshot(row)
-                except SessionError as error:
-                    result.append(
-                        UnavailableSession(
-                            session_id=row.id,
-                            agent_id=row.agent_id,
-                            discovery_error=str(error),
-                        )
-                    )
-                    continue
+        result: list[Session | UnavailableSession] = []
+        for row in rows:
+            try:
+                state = Session.model_validate(row.state)
+            except ValidationError:
                 result.append(
-                    snapshot.session.model_copy(
-                        update={
-                            "connectivity": "online"
-                            if row.lease_expires_at > now
-                            else "offline"
-                        }
+                    UnavailableSession(
+                        session_id=row.id,
+                        agent_id=row.agent_id,
+                        discovery_error=f"Session {row.id} contains unsupported or invalid stored data. Update the server or repair this session.",
                     )
                 )
-            return result
+                continue
+            result.append(
+                state.model_copy(
+                    update={
+                        "connectivity": "online"
+                        if row.lease_expires_at > now
+                        else "offline"
+                    }
+                )
+            )
+        return result
 
     async def command_status(
         self, session_id: str, command_id: str, user_id: str

@@ -424,6 +424,10 @@ async def get_current_user(
         if user is None:
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
+        # Return the auth read's connection before an endpoint borrows another
+        # session or waits on external I/O. expire_on_commit=False keeps this
+        # User attached and readable; endpoint mutations still commit normally.
+        await session.commit()
         yield user
 
 
