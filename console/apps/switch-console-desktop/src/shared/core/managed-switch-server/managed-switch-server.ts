@@ -201,3 +201,39 @@ export type StartLocalServerResult =
   // and still on `deployed`; retrying is safe and resumes where it stopped.
   | { kind: 'matrix-migration-failed'; deployed: string; expected: string; detail: string }
   | { kind: 'error'; message: string };
+
+/**
+ * Outcome of joining a remote stack another Console started (CHOO-2893).
+ * Everything short of `connected` leaves the host exactly as it was.
+ */
+export type ConnectRemoteServerResult =
+  | {
+      kind: 'connected';
+      serverId: string;
+      /** The switch-core version the stack's settings name, when they do. */
+      deployedVersion: string | null;
+    }
+  /** The stack is set up but stopped: Start it, which keeps its data. */
+  | { kind: 'not-running' }
+  /** Nothing is set up on the host: Start sets one up. */
+  | { kind: 'absent' }
+  /** Another account's stack whose settings were never shared. `message` says
+   * so and what fixes it. */
+  | { kind: 'unshared'; ownerDir: string | null; message: string }
+  | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * What a remote host has of a stack, for the renderer to decide what to offer
+ * — Connect, Start, or neither. The main process's reading of the host with
+ * every secret left out.
+ */
+export type RemoteStackProbe =
+  | { kind: 'absent' }
+  /** A stack whose settings this account can read. `shared` is false for one
+   * this account started before settings were shared; connecting shares it. */
+  | { kind: 'present'; running: boolean; deployedVersion: string | null; shared: boolean }
+  | { kind: 'unshared'; running: boolean; ownerDir: string | null; message: string }
+  | { kind: 'incomplete'; running: boolean; missing: string[] }
+  | { kind: 'unreadable'; reason: string }
+  | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string };

@@ -49,6 +49,13 @@ export function readPersistedPorts(host: HostStateDir): Promise<LocalServerPorts
   return loadPersisted(host);
 }
 
+/** Keep `ports` as this desktop's record of the ports a host's stack publishes
+ * — the numbers read off the host itself when a remote stack's settings are
+ * adopted from there (CHOO-2893). */
+export async function rememberPorts(host: ServerHost, ports: LocalServerPorts): Promise<void> {
+  await persist(host, ports);
+}
+
 /** Drop the persisted choice so the next start picks fresh ports (reset path). */
 export async function clearPorts(host: ServerHost): Promise<void> {
   try {

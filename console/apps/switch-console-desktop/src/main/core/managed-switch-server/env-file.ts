@@ -131,7 +131,7 @@ export function readEnvValue(env: string, key: string): string | null {
  * `dbRuntimePassword` is null for a `.env` written before switch-core split its
  * database roles (CHOO-2623): that file named the schema owner as `DB_USER`
  * and had no runtime role at all. The caller fills it in rather than refusing —
- * see `withRuntimePassword` in `secrets.ts` for why that is safe.
+ * see `withRuntimePassword` in `secret-values.ts` for why that is safe.
  */
 export type StackEnv = {
   ports: LocalServerPorts;

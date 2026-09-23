@@ -325,6 +325,21 @@ export type StackOnHost =
    * empty host. */
   | { kind: 'unreadable'; reason: string };
 
+/**
+ * Why this account may neither start nor join a stack another account set up
+ * and never shared — and what fixes it, which is not something this account
+ * can do.
+ */
+export function unsharedStackMessage(hostLabel: string, ownerDir: string | null): string {
+  const where = ownerDir ? ` (from ${ownerDir})` : '';
+  return (
+    `The Switch server on ${hostLabel} was set up from another account${where} and its settings ` +
+    `have not been shared, so this account cannot read them. Starting it from here would ` +
+    `replace its credentials and take it down, so nothing was changed. It is shared the next ` +
+    `time Switch Console starts or connects to it from the account that set it up.`
+  );
+}
+
 function isRunning(resources: ProjectResources): boolean {
   return resources.containers.some(
     (container) => container.service === CORE_SERVICE && container.state === 'running'

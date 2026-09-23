@@ -13,6 +13,7 @@ import type { DockerAvailability } from '@shared/core/managed-switch-server/mana
 import { REMOTE_SERVER_PROJECT_NAME } from '../constants';
 import type { LocalServerPorts } from '../free-port';
 import { remoteServerStateDir } from '../paths';
+import type { StackStateHost } from '../stack-state';
 import { PortForwarder } from './port-forward';
 import { pickRemoteFreePorts } from './remote-free-port';
 import { hostSlug, remoteSecretsKey } from './remote-identity';
@@ -48,6 +49,7 @@ export class RemoteServerHost implements ServerHost {
   readonly secretsKey: string;
   readonly label: string;
   readonly ctx: IExecutionContext;
+  readonly sharedState: StackStateHost = this;
 
   private readonly sshHost: string;
   private readonly proxy: SshClientProxy;

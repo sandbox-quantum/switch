@@ -5,6 +5,7 @@ import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
+  type ConnectRemoteServerResult,
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
@@ -20,12 +21,20 @@ import {
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
 import { buildEnvFile } from './env-file';
-import { apiUrlFor, gatewayUrlFor } from './free-port';
+import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
-import { clearPorts, resolvePorts } from './ports';
-import { clearSecrets, loadOrCreateSecrets } from './secrets';
+import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
+import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
+import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
+import {
+  inspectStack,
+  publishEnv,
+  type StackOnHost,
+  unsharedStackMessage,
+  withdrawPublishedEnv,
+} from './stack-state';
 import { telemetryConsent } from './telemetry-consent';
 
 /**
@@ -119,22 +128,6 @@ async function refuseDowngrade(
 }
 
 /**
- * Full start pipeline: detect Docker → refuse a downgrade → GHCR login →
- * materialise compose + `.env` → `compose up` → establish networking →
- * health-gate → register + activate → silent admin sign-in → reconcile agent
- * servers. Returns without registering anything if Docker is unavailable, the
- * stack is newer than this build, or it never turns healthy.
- *
- * Doubles as the update path: the `.env` and compose file are re-materialised
- * from this build every time, so `compose up -d` on an already-running stack
- * re-pulls the newly pinned tags and recreates only the changed containers,
- * leaving the data volumes in place for switch-core to migrate forward.
- *
- * With `checkoutRoot` set (dev only) the images are built from that working
- * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
- * so nothing downstream mistakes them for a release.
- */
-/**
  * Move a stack past the last version that can read a Matrix homeserver, copying
  * its history first.
  *
@@ -181,12 +174,170 @@ async function migrateOffMatrix(
   };
 }
 
+type StackSettings = { secrets: LocalServerSecrets; ports: LocalServerPorts };
+
+/**
+ * Where a start's ports and credentials come from (CHOO-2893).
+ *
+ * A remote stack is shared, so its settings are read off the host and a
+ * desktop's own copy is only a cache of them. New credentials are made in
+ * exactly one case — nothing of the stack on the host at all — because making
+ * them anywhere else locks the stack out of the Postgres volume its first
+ * credentials created, and takes down a server someone else is using.
+ */
+type StartPlan =
+  /** The host's own settings. Every remote start that finds a stack. */
+  | { kind: 'adopt'; stack: Extract<StackOnHost, { kind: 'present' }> }
+  /** Nothing on the host, or the local stack, which nobody else shares: this
+   * desktop's copy, or new credentials when it has none. */
+  | { kind: 'fresh' }
+  /** The host could not say, and this desktop holds a copy of what the stack
+   * last ran with. The copy is used — refusing would make a stack its own
+   * starter can no longer start — and the degradation is logged. */
+  | { kind: 'cached'; reason: string }
+  /** Starting here could replace the credentials of a stack that is already
+   * there. Nothing may be written. */
+  | { kind: 'refused'; message: string };
+
+async function planStart(host: ServerHost): Promise<StartPlan> {
+  if (host.sharedState === null) return { kind: 'fresh' };
+  const stack = await inspectStack(host.sharedState);
+  switch (stack.kind) {
+    case 'present':
+      return { kind: 'adopt', stack };
+    case 'absent':
+      return { kind: 'fresh' };
+    case 'unshared':
+      return { kind: 'refused', message: unsharedStackMessage(host.label, stack.ownerDir) };
+    case 'incomplete':
+    case 'unreadable': {
+      const reason =
+        stack.kind === 'incomplete'
+          ? `its settings are missing ${stack.missing.join(', ')}`
+          : stack.reason;
+      if ((await readSecrets(host)) !== null && (await readPersistedPorts(host)) !== null) {
+        log.warn(
+          `managed-switch-server: could not read the stack's settings on ${host.label}; ` +
+            `starting from this desktop's copy of them`,
+          { reason }
+        );
+        return { kind: 'cached', reason };
+      }
+      return {
+        kind: 'refused',
+        message:
+          `Could not read the Switch server's settings on ${host.label} (${reason}). ` +
+          `Starting without them could replace the credentials of a server that is already ` +
+          `there, so nothing was changed.`,
+      };
+    }
+  }
+}
+
+/** The host's settings as a full bundle, kept as this desktop's copy. */
+async function adoptSettings(
+  host: ServerHost,
+  stack: Extract<StackOnHost, { kind: 'present' }>
+): Promise<StackSettings> {
+  const { secrets } = withRuntimePassword({
+    ...stack.env.secrets,
+    dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
+  });
+  await storeSecrets(host, secrets);
+  await rememberPorts(host, stack.env.ports);
+  return { secrets, ports: stack.env.ports };
+}
+
+async function settingsFor(
+  host: ServerHost,
+  plan: Exclude<StartPlan, { kind: 'refused' }>
+): Promise<StackSettings> {
+  if (plan.kind === 'adopt') return adoptSettings(host, plan.stack);
+  // `cached` was only chosen because a copy exists, so neither call mints.
+  return { secrets: await loadOrCreateSecrets(host), ports: await resolvePorts(host) };
+}
+
+/**
+ * Register the running stack, make it the active server, and sign in as its
+ * admin. Switch Console generated that password, so it signs in on the user's
+ * behalf rather than showing a login wall for a secret they never saw. A
+ * failed sign-in does not fail the caller — the stack is healthy, and the
+ * server view falls back to its sign-in panel.
+ */
+async function registerAndSignIn(
+  ref: ManagedServerRef,
+  serverName: string,
+  settings: StackSettings,
+  onMessage: (message: string) => void
+): Promise<string> {
+  const server = await ensureManagedServer(
+    {
+      name: serverName,
+      gatewayUrl: gatewayUrlFor(settings.ports),
+      apiUrl: apiUrlFor(settings.ports),
+    },
+    ref
+  );
+  await setActiveServerId(server.id);
+
+  onMessage('Signing in…');
+  const login = await passwordLogin(
+    server,
+    LOCAL_SERVER_ADMIN_EMAIL,
+    settings.secrets.gatewayAdminPassword
+  );
+  if (!login.success) {
+    log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
+      error: login.error,
+    });
+  }
+
+  await resolveAgentServers();
+  return server.id;
+}
+
+/**
+ * Full start pipeline: detect Docker → plan where the settings come from →
+ * refuse a downgrade → materialise compose + `.env` → publish the `.env` →
+ * `compose up` → establish networking → health-gate → register + activate →
+ * silent admin sign-in → reconcile agent servers. Returns without registering
+ * anything if Docker is unavailable, the host's stack cannot safely be started
+ * from here, the stack is newer than this build, or it never turns healthy.
+ *
+ * Doubles as the update path: the `.env` and compose file are re-materialised
+ * from this build every time, so `compose up -d` on an already-running stack
+ * re-pulls the newly pinned tags and recreates only the changed containers,
+ * leaving the data volumes in place for switch-core to migrate forward. On a
+ * shared host that is an update for everyone using the stack, which is why the
+ * settings it writes are the host's own rather than this desktop's.
+ *
+ * With `checkoutRoot` set (dev only) the images are built from that working
+ * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
+ * so nothing downstream mistakes them for a release.
+ */
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
   const { host, ref, serverName, onMessage, onLog, signal, checkoutRoot } = opts;
 
   const docker = await host.detectDocker();
   if (!docker.available) {
     return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
+  }
+
+  if (host.sharedState !== null) onMessage('Reading the server’s settings on the host…');
+  const plan = await planStart(host);
+  if (plan.kind === 'refused') {
+    log.error(`managed-switch-server: refusing to start the stack on ${host.label}`, {
+      reason: plan.message,
+    });
+    return { kind: 'error', message: plan.message };
+  }
+
+  // Bring this account's working dir in step with the stack before anything
+  // reads it. Another account may have started, updated or reset the stack
+  // since this one last did, and the version check below reads the `.env`
+  // compose would use — which has to be the stack's, not a stale copy.
+  if (plan.kind === 'adopt' && plan.stack.source === 'published') {
+    await host.writeFile(ENV_FILE_NAME, plan.stack.raw, 0o600);
   }
 
   onMessage('Checking the deployed version…');
@@ -205,26 +356,30 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   if (checkoutRoot !== null) {
     await host.writeFile(BUILD_OVERRIDE_FILE_NAME, checkoutBuildOverrideYaml(checkoutRoot));
   }
-  const secrets = await loadOrCreateSecrets(host);
-  const ports = await resolvePorts(host);
-  const gatewayUrl = gatewayUrlFor(ports);
-  const apiUrl = apiUrlFor(ports);
+  const settings = await settingsFor(host, plan);
   // Read here rather than taken from the caller: a start is the moment the
   // user's answer reaches the server, and no supervisor can forget to carry it.
   const telemetryEnabled = await telemetryConsent();
-  await host.writeFile(
-    ENV_FILE_NAME,
-    buildEnvFile({
-      version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
-      registry: GHCR_REGISTRY,
-      namespace: RELEASE_REPO_OWNER,
-      ports,
-      secrets,
-      sessionDemo: checkoutRoot !== null,
-      telemetryEnabled,
-    }),
-    0o600
-  );
+  const env = buildEnvFile({
+    version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
+    registry: GHCR_REGISTRY,
+    namespace: RELEASE_REPO_OWNER,
+    ports: settings.ports,
+    secrets: settings.secrets,
+    sessionDemo: checkoutRoot !== null,
+    telemetryEnabled,
+  });
+  await host.writeFile(ENV_FILE_NAME, env, 0o600);
+
+  // Published before compose reads it, so the shared copy always names what
+  // the stack was last asked to run with — including when `up` then fails
+  // halfway. A start whose settings nobody else can read is the state that
+  // led the next person's Console to overwrite them, so this failing fails
+  // the start rather than being logged past.
+  if (host.sharedState !== null) {
+    onMessage('Sharing the server’s settings on the host…');
+    await publishEnv(host.sharedState, env);
+  }
 
   onMessage(
     checkoutRoot !== null
@@ -236,31 +391,105 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // Make the published ports reachable from the desktop (no-op locally; a
   // mirrored SSH forward remotely) BEFORE the health probe, so the probe takes
   // the same path clients will.
-  await host.establishNetworking(ports);
+  await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to become healthy…');
-  const healthy = await waitForHealth(gatewayUrl, { signal });
+  const healthy = await waitForHealth(gatewayUrlFor(settings.ports), { signal });
   if (!healthy) {
     return { kind: 'error', message: 'The server did not become healthy in time.' };
   }
 
-  const server = await ensureManagedServer({ name: serverName, gatewayUrl, apiUrl }, ref);
-  await setActiveServerId(server.id);
+  const serverId = await registerAndSignIn(ref, serverName, settings, onMessage);
+  return { kind: 'started', serverId, telemetryEnabled };
+}
 
-  // Switch Console generated the admin password, so sign in on the user's behalf
-  // rather than showing a login wall for a secret they never saw. A failure here
-  // does not fail the start — the stack is healthy; the server view falls back
-  // to its sign-in panel.
-  onMessage('Signing in…');
-  const login = await passwordLogin(server, LOCAL_SERVER_ADMIN_EMAIL, secrets.gatewayAdminPassword);
-  if (!login.success) {
-    log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
-      error: login.error,
-    });
+export type ConnectStackOptions = {
+  host: ServerHost;
+  ref: ManagedServerRef;
+  serverName: string;
+  onMessage: (message: string) => void;
+  /** Aborts an in-flight health wait (cancel/quit). */
+  signal: AbortSignal;
+};
+
+/**
+ * Join a stack that is already running on a shared host, from a Console that
+ * did not start it (CHOO-2893): read its settings off the host, forward its
+ * ports, register it and sign in — without writing its `.env` differently or
+ * running compose, so nobody else using it notices.
+ *
+ * This account's working dir is brought in step with the stack on the way, so
+ * Stop and Restart work from here afterwards. A stack this account started
+ * before settings were shared is published, so the next person can join too.
+ *
+ * Anything short of a running stack whose settings this account can read is
+ * reported rather than worked around: a stopped stack is for Start, and
+ * nothing here ever makes new credentials.
+ */
+export async function connectStack(opts: ConnectStackOptions): Promise<ConnectRemoteServerResult> {
+  const { host, ref, serverName, onMessage, signal } = opts;
+  const shared = host.sharedState;
+  if (shared === null) {
+    throw new Error(`The stack on ${host.label} is not shared, so there is nothing to connect to.`);
   }
 
-  await resolveAgentServers();
-  return { kind: 'started', serverId: server.id, telemetryEnabled };
+  const docker = await host.detectDocker();
+  if (!docker.available) {
+    return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
+  }
+
+  onMessage('Reading the server’s settings on the host…');
+  const stack = await inspectStack(shared);
+  switch (stack.kind) {
+    case 'absent':
+      return { kind: 'absent' };
+    case 'unshared':
+      return {
+        kind: 'unshared',
+        ownerDir: stack.ownerDir,
+        message: unsharedStackMessage(host.label, stack.ownerDir),
+      };
+    case 'incomplete':
+      return {
+        kind: 'error',
+        message:
+          `The Switch server on ${host.label} is set up, but its settings are missing ` +
+          `${stack.missing.join(', ')}, so this Console cannot join it.`,
+      };
+    case 'unreadable':
+      return {
+        kind: 'error',
+        message: `Could not read the Switch server's settings on ${host.label}: ${stack.reason}`,
+      };
+    case 'present':
+      break;
+  }
+  if (!stack.running) return { kind: 'not-running' };
+
+  const settings = await adoptSettings(host, stack);
+
+  onMessage('Preparing this account’s copy of the server’s settings…');
+  await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
+  if (stack.source === 'published') {
+    await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
+  } else if (!stack.published) {
+    onMessage('Sharing the server’s settings on the host…');
+    await publishEnv(shared, stack.raw);
+  }
+
+  await host.establishNetworking(settings.ports);
+
+  onMessage('Waiting for the server to answer…');
+  const gatewayUrl = gatewayUrlFor(settings.ports);
+  if (!(await waitForHealth(gatewayUrl, { signal }))) {
+    return {
+      kind: 'error',
+      message: `The Switch server on ${host.label} is running, but did not answer at ${gatewayUrl}.`,
+    };
+  }
+
+  const serverId = await registerAndSignIn(ref, serverName, settings, onMessage);
+  return { kind: 'connected', serverId, deployedVersion: stack.env.version };
 }
 
 /** Stop the stack's containers and tear down networking (leaves data + config). */
@@ -270,10 +499,13 @@ export async function stopStack(host: ServerHost): Promise<void> {
 }
 
 /** Destroy the stack, its data volumes, stored secrets, and port choice — the
- * irreversible clean-slate reset. */
+ * irreversible clean-slate reset. On a shared host the published settings go
+ * too, since the credentials in them now open nothing; the record of who did
+ * this is kept. */
 export async function resetStack(host: ServerHost): Promise<void> {
   await composeDown(host, true);
   await host.teardownNetworking();
+  if (host.sharedState !== null) await withdrawPublishedEnv(host.sharedState);
   await clearSecrets(host);
   await clearPorts(host);
 }
