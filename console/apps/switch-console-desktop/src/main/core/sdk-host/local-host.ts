@@ -9,6 +9,7 @@ import {
   type SharedHostConfig,
   sharedSessionRoot,
   superviseSharedHost,
+  fenceDeadOwner,
   type Supervision,
 } from '@switch-console/agent-providers';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
@@ -150,6 +151,11 @@ export const consoleSupervision: Supervision = {
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           signal,
           build: bundle,
+          existingWorker: 'adopt',
+          fenceDeadWorker: fenceDeadOwner,
+          logRedactions: [],
+          shutdownTimeoutMs: null,
+          clearFailureOnStart: false,
         }),
       'Local SDK host supervisor stopped',
       // The supervisor records a worker's own failure under this root already.
