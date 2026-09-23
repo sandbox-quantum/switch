@@ -122,6 +122,7 @@ class ActingAgent(NamedTuple):
     name: str
     depth: int
 
+
 ParamType = Literal[
     "string",
     "number",
