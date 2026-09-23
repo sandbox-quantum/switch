@@ -142,6 +142,63 @@ export class RemoteServerHost implements ServerHost {
     });
   }
 
+  /**
+   * Run a command on the host with `input` as its stdin, rooted at
+   * {@link workingDir}. Rejects on non-zero exit or timeout.
+   *
+   * For handing a command a secret: stdin never appears in the host's process
+   * table, where anything passed as an argument is readable by every account
+   * on the machine. Its output is discarded — the login shell may print to
+   * stdout before the command does, and nothing that writes needs to read.
+   */
+  writeCommandInput(
+    command: string,
+    args: string[],
+    input: string,
+    opts: { timeoutMs: number }
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.proxy
+        .getRemoteShellProfile()
+        .then((profile) => {
+          const full = buildSshCommand(this.workingDir, command, args, profile);
+          this.proxy.exec(full, (execErr, stream) => {
+            if (execErr) {
+              reject(execErr);
+              return;
+            }
+            let stderrTail = '';
+            let settled = false;
+            const settle = (fn: () => void) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              fn();
+            };
+            const timer = setTimeout(() => {
+              settle(() => {
+                stream.destroy();
+                reject(new Error(`${command} timed out after ${opts.timeoutMs}ms`));
+              });
+            }, opts.timeoutMs);
+            stream.on('data', () => {});
+            stream.stderr.on('data', (buf: Buffer) => {
+              stderrTail = (stderrTail + buf.toString('utf8')).slice(-4000);
+            });
+            stream.on('close', (code: number | null) => {
+              settle(() => {
+                if ((code ?? 0) === 0) resolve();
+                else reject(new Error(`${command} failed (exit ${code}): ${stderrTail.trim()}`));
+              });
+            });
+            stream.on('error', (err: Error) => settle(() => reject(err)));
+            stream.end(input);
+          });
+        })
+        .catch(reject);
+    });
+  }
+
   async detectDocker(): Promise<DockerAvailability> {
     try {
       const { stdout } = await this.ctx.exec(

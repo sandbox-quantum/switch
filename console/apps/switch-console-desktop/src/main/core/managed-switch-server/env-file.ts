@@ -122,3 +122,125 @@ export function readEnvValue(env: string, key: string): string | null {
   }
   return null;
 }
+
+/**
+ * Everything a stack's `.env` pins that another Console needs to run the same
+ * stack: the ports it publishes, the credentials its volumes were created with,
+ * and the switch-core version it last asked for.
+ *
+ * `dbRuntimePassword` is null for a `.env` written before switch-core split its
+ * database roles (CHOO-2623): that file named the schema owner as `DB_USER`
+ * and had no runtime role at all. The caller fills it in rather than refusing —
+ * see `withRuntimePassword` in `secrets.ts` for why that is safe.
+ */
+export type StackEnv = {
+  ports: LocalServerPorts;
+  secrets: Omit<LocalServerSecrets, 'dbRuntimePassword'> & { dbRuntimePassword: string | null };
+  version: string | null;
+};
+
+export type StackEnvReading =
+  | { kind: 'complete'; env: StackEnv }
+  /** The file is there but does not carry everything a stack needs. Named
+   * rather than guessed: minting a replacement for any of these would lock the
+   * stack out of a volume the original created, so the caller must refuse or
+   * fall back to a copy it trusts — and say which keys were missing. */
+  | { kind: 'incomplete'; missing: string[] };
+
+const PORT_KEYS: [keyof LocalServerPorts, string][] = [
+  ['gateway', 'GATEWAY_HOST_PORT'],
+  ['api', 'API_HOST_PORT'],
+  ['mattermost', 'MATTERMOST_HOST_PORT'],
+  ['postgres', 'POSTGRES_HOST_PORT'],
+];
+
+type PlainSecret =
+  | 'agentRegistrationToken'
+  | 'jwtSecretKey'
+  | 'gatewayAdminPassword'
+  | 'mattermostAdminPassword'
+  | 'mattermostUserPassword';
+
+const SECRET_KEYS: [PlainSecret, string][] = [
+  ['agentRegistrationToken', 'AGENT_REGISTRATION_TOKEN'],
+  ['jwtSecretKey', 'JWT_SECRET_KEY'],
+  ['gatewayAdminPassword', 'GATEWAY_ADMIN_PASSWORD'],
+  ['mattermostAdminPassword', 'MATTERMOST_ADMIN_PASSWORD'],
+  ['mattermostUserPassword', 'MATTERMOST_USER_PASSWORD'],
+];
+
+function readPort(env: string, key: string): number | null {
+  const raw = readEnvValue(env, key);
+  if (raw === null || !/^\d{1,5}$/.test(raw)) return null;
+  const port = Number.parseInt(raw, 10);
+  return port > 0 && port < 65536 ? port : null;
+}
+
+/** The two database passwords, from whichever layout wrote the file. */
+function readDatabasePasswords(
+  env: string,
+  missing: string[]
+): { dbPassword: string; dbRuntimePassword: string | null } | null {
+  const ownerPassword = readEnvValue(env, 'DB_OWNER_PASSWORD');
+  if (ownerPassword !== null) {
+    const runtimePassword = readEnvValue(env, 'DB_PASSWORD');
+    if (runtimePassword === null) {
+      missing.push('DB_PASSWORD');
+      return null;
+    }
+    return { dbPassword: ownerPassword, dbRuntimePassword: runtimePassword };
+  }
+  if (readEnvValue(env, 'DB_USER') === 'postgres') {
+    const legacyOwnerPassword = readEnvValue(env, 'DB_PASSWORD');
+    if (legacyOwnerPassword === null) {
+      missing.push('DB_PASSWORD');
+      return null;
+    }
+    return { dbPassword: legacyOwnerPassword, dbRuntimePassword: null };
+  }
+  missing.push('DB_OWNER_PASSWORD');
+  return null;
+}
+
+/**
+ * Read a stack's generated `.env` back into the values {@link buildEnvFile}
+ * wrote it from — the inverse of that function, kept beside it so the two
+ * cannot drift.
+ *
+ * Two layouts are accepted, because a stack keeps whatever file its last start
+ * wrote and another Console may be the first to read it after an upgrade:
+ *
+ * - current: `DB_OWNER_PASSWORD` is the schema owner's (`dbPassword`) and
+ *   `DB_PASSWORD` the runtime role's (`dbRuntimePassword`);
+ * - before the role split: no `DB_OWNER_PASSWORD`, `DB_USER=postgres`, and
+ *   `DB_PASSWORD` the owner's. The runtime password is then null.
+ */
+export function readStackEnv(env: string): StackEnvReading {
+  const missing: string[] = [];
+
+  const ports: Partial<LocalServerPorts> = {};
+  for (const [field, key] of PORT_KEYS) {
+    const port = readPort(env, key);
+    if (port === null) missing.push(key);
+    else ports[field] = port;
+  }
+
+  const plain: Partial<Record<PlainSecret, string>> = {};
+  for (const [field, key] of SECRET_KEYS) {
+    const value = readEnvValue(env, key);
+    if (value === null) missing.push(key);
+    else plain[field] = value;
+  }
+
+  const database = readDatabasePasswords(env, missing);
+
+  if (missing.length > 0 || database === null) return { kind: 'incomplete', missing };
+  return {
+    kind: 'complete',
+    env: {
+      ports: ports as LocalServerPorts,
+      secrets: { ...(plain as Record<PlainSecret, string>), ...database },
+      version: readEnvValue(env, 'SWITCH_VERSION'),
+    },
+  };
+}

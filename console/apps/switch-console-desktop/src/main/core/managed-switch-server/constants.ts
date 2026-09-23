@@ -29,6 +29,36 @@ export const LOCAL_SERVER_PROJECT_NAME =
 export const REMOTE_SERVER_PROJECT_NAME =
   USER_DATA_DIR_NAME === 'switchdash' ? 'switchdash-remote' : `${USER_DATA_DIR_NAME}-remote`;
 
+/**
+ * The Docker volume, beside a remote stack's own, that holds what every Console
+ * sharing the stack needs to agree on (CHOO-2893): the `.env` the stack was
+ * last started with, the register of Consoles that use it, and its activity.
+ *
+ * A remote host is shared by everyone with access to it, often each under
+ * their own account, and the working dir holding the `.env` is under whichever
+ * account started the stack first — unreadable to the rest. Every account that
+ * can run the stack can reach the Docker daemon, though, so the daemon is where
+ * the shared copy lives.
+ *
+ * Named `<project>_…` so it sits with the stack in `docker volume ls`, but
+ * labelled with {@link STACK_STATE_LABEL} rather than compose's project label:
+ * compose neither creates nor removes it, which lets a reset keep the record of
+ * who reset the stack.
+ */
+export const STACK_STATE_VOLUME_SUFFIX = 'console-state';
+export const STACK_STATE_LABEL = 'com.switch-console.stack-state';
+
+/**
+ * Image of the throwaway container that reads and writes
+ * {@link STACK_STATE_VOLUME_SUFFIX}. The volume's files are the daemon's, not
+ * any account's, so they are only reachable through a container.
+ *
+ * The stack's own Postgres image, so it is already on any host that has run
+ * the stack and nothing new is pulled there. `stack-state.test.ts` holds it to
+ * the bundled compose file.
+ */
+export const STACK_HELPER_IMAGE = 'postgres:16-alpine';
+
 /** File names of the compose file and generated `.env` inside the host working
  * dir. Kept relative so `docker compose -f <name>` resolves against the working
  * dir on either host, independent of its absolute path. */

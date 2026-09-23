@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile } from './env-file';
+import { buildEnvFile, readStackEnv } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -172,5 +172,93 @@ describe('buildEnvFile', () => {
     // the gateway's own URL here would produce links that 404.
     expect(vars.GATEWAY_PUBLIC_URL).toBe('http://localhost:51001');
     expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
+  });
+});
+
+describe('readStackEnv', () => {
+  const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+  const written = buildEnvFile({
+    version: '1.2.3',
+    registry: 'ghcr.io',
+    namespace: 'sandbox-quantum',
+    ports,
+    secrets,
+    sessionDemo: false,
+    telemetryEnabled: true,
+  });
+
+  it('reads back exactly what buildEnvFile wrote', () => {
+    // The inverse has to be exact: another Console starts the stack from these
+    // values, and one that differs recreates the containers or locks them out.
+    expect(readStackEnv(written)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets, version: '1.2.3' },
+    });
+  });
+
+  it('reads a file written before the database role split', () => {
+    // Then DB_USER was the schema owner and DB_PASSWORD its password; there was
+    // no runtime role, so that password is reported absent rather than guessed.
+    const legacy = written
+      .replace('DB_USER=switch_app', 'DB_USER=postgres')
+      .replace(`DB_PASSWORD=${secrets.dbRuntimePassword}`, `DB_PASSWORD=${secrets.dbPassword}`)
+      .replace(/^DB_OWNER_USER=.*$/m, '')
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: {
+        ports,
+        secrets: { ...secrets, dbRuntimePassword: null },
+        version: '1.2.3',
+      },
+    });
+  });
+
+  it('names every key it could not find instead of inventing a value', () => {
+    const partial = written
+      .replace(/^JWT_SECRET_KEY=.*$/m, '')
+      .replace(/^API_HOST_PORT=.*$/m, 'API_HOST_PORT=')
+      .replace(/^MATTERMOST_USER_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(partial)).toEqual({
+      kind: 'incomplete',
+      missing: ['API_HOST_PORT', 'JWT_SECRET_KEY', 'MATTERMOST_USER_PASSWORD'],
+    });
+  });
+
+  it('does not read a port that is not one', () => {
+    const garbled = written
+      .replace('GATEWAY_HOST_PORT=51000', 'GATEWAY_HOST_PORT=http://localhost:51000')
+      .replace('POSTGRES_HOST_PORT=51003', 'POSTGRES_HOST_PORT=70000');
+
+    expect(readStackEnv(garbled)).toEqual({
+      kind: 'incomplete',
+      missing: ['GATEWAY_HOST_PORT', 'POSTGRES_HOST_PORT'],
+    });
+  });
+
+  it('refuses a current-layout file whose runtime password is gone', () => {
+    const noRuntime = written.replace(/^DB_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(noRuntime)).toEqual({ kind: 'incomplete', missing: ['DB_PASSWORD'] });
+  });
+
+  it('refuses a file that names no schema owner at all', () => {
+    const noOwner = written
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '')
+      .replace(/^DB_OWNER_USER=.*$/m, '');
+
+    expect(readStackEnv(noOwner)).toEqual({
+      kind: 'incomplete',
+      missing: ['DB_OWNER_PASSWORD'],
+    });
+  });
+
+  it('treats an empty file as missing everything', () => {
+    const reading = readStackEnv('');
+
+    expect(reading.kind).toBe('incomplete');
+    expect(reading.kind === 'incomplete' && reading.missing).toHaveLength(10);
   });
 });
