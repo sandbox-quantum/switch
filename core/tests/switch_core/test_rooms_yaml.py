@@ -2236,3 +2236,49 @@ async def test_provision_reports_a_kickoff_that_raises(env, monkeypatch):
     assert result.failed_attachments == [
         {"kind": "kickoff", "id": "kickoff", "error": "admin client is gone"}
     ]
+
+
+# ── capture export round trip ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_export_parameterize_round_trip(env):
+    """Export → parameterize (name) → re-parse with new input → same structure.
+
+    Mirrors the client-side parameterize transform: replace a literal value with
+    a ``{key}`` placeholder, add a ``params:`` block, and import the result with
+    an input supplying a different value.
+    """
+    import re
+
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Capture me"
+          description: "room to capture"
+          agents: ["claude-code.alice"]
+        """
+    )
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+    yaml_text = await _svc(env).export(result.room_id)
+
+    parameterized = yaml_text.replace("Capture me", "{room_name}")
+    parameterized = re.sub(
+        r"^(\s*name:\s+)(\{room_name\})$",
+        r"\1'{room_name}'",
+        parameterized,
+        flags=re.MULTILINE,
+    )
+    parameterized = (
+        "params:\n  room_name:\n    type: string\n    default: Capture me\n"
+        + parameterized
+    )
+
+    reparsed, _ = _svc(env).parse(parameterized, inputs={"room_name": "Cloned room"})
+    assert reparsed.name == "Cloned room"
+    assert reparsed.description == "room to capture"
+    assert sorted(reparsed.agents) == ["claude-code.alice"]
+
+    reparsed_default, _ = _svc(env).parse(parameterized)
+    assert reparsed_default.name == "Capture me"

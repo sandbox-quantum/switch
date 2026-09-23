@@ -2,6 +2,7 @@ import { Alert, Box, Chip, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { AccessChip } from "../../components/AccessControls";
 import DataTable from "../../components/DataTable";
 import type { TemplateSummary } from "../../data/api";
 import { useTemplates } from "../../data/hooks";
@@ -15,46 +16,49 @@ interface Props {
 
 export default function TemplatesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { data: templates, loading, error, refetch } = useTemplates();
   const [search, setSearch] = useState("");
+  // The server searches name and description. The request waits until
+  // typing has paused for a moment.
+  const [searchSent, setSearchSent] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchSent(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
   const [ownerId, setOwnerId] = useState<string>("");
   const [kind, setKind] = useState<string>("");
+  // Every filter is the server's. The whole catalogue is fetched once more,
+  // unfiltered, so the owner and kind options do not shrink to what the
+  // current search happens to match and hide the value that is selected.
+  const { data: catalogue, refetch: refetchCatalogue } = useTemplates();
+  const {
+    data: templates,
+    loading,
+    error,
+    refetch,
+  } = useTemplates({ q: searchSent, kind, owner_id: ownerId });
 
   useEffect(() => {
     refetch();
+    refetchCatalogue();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   const owners = useMemo(() => {
     const m = new Map<string, string>();
-    for (const t of templates ?? []) {
+    for (const t of catalogue ?? []) {
       m.set(t.owner_id, t.owner_name ?? t.owner_id);
     }
     return [...m.entries()].map(([id, name]) => ({ id, name }));
-  }, [templates]);
+  }, [catalogue]);
 
   // Kinds are free text on the server, so the filter offers whatever is
   // actually in the registry rather than a list this page would have to grow.
   const kinds = useMemo(() => {
-    const seen = new Set((templates ?? []).map((t) => t.kind));
+    const seen = new Set((catalogue ?? []).map((t) => t.kind));
     return [...seen].sort().map((k) => ({ value: k, label: k }));
-  }, [templates]);
+  }, [catalogue]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (templates ?? []).filter((t) => {
-      if (ownerId && t.owner_id !== ownerId) return false;
-      if (kind && t.kind !== kind) return false;
-      if (
-        q &&
-        !t.name.toLowerCase().includes(q) &&
-        !t.description.toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [templates, search, ownerId, kind]);
+  const filtered = templates ?? [];
 
   const columns = useMemo<GridColDef<TemplateSummary>[]>(
     () => [
@@ -72,6 +76,12 @@ export default function TemplatesTab({ refreshKey }: Props) {
         renderCell: ({ value }) => (
           <Chip size="small" variant="outlined" label={value as string} />
         ),
+      },
+      {
+        field: "read_visibility",
+        headerName: "Access",
+        width: 110,
+        renderCell: ({ row }) => <AccessChip pair={row} />,
       },
       {
         field: "owner_name",
@@ -110,6 +120,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
         onTypeChange={setKind}
         types={kinds}
         typeLabel="Kind"
+        searchPlaceholder="Search by name or description…"
       />
 
       {error && (

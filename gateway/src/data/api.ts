@@ -1570,6 +1570,11 @@ export interface TemplateSummary {
   name: string;
   description: string;
   kind: string;
+  read_visibility: "public" | "private";
+  write_visibility: "public" | "private";
+  /** What the signed-in user may do with it, as the server judges it. */
+  can_edit: boolean;
+  can_manage: boolean;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -1585,6 +1590,8 @@ export interface TemplateCreateInput {
   description: string;
   kind: string;
   content: string;
+  read_visibility?: "public" | "private";
+  write_visibility?: "public" | "private";
 }
 
 export interface TemplateUpdateInput {
@@ -1592,18 +1599,38 @@ export interface TemplateUpdateInput {
   description?: string;
   kind?: string;
   content?: string;
+  read_visibility?: "public" | "private";
+  write_visibility?: "public" | "private";
 }
 
 export interface TemplateDeleteResult {
   deleted_id: string;
 }
 
-export async function fetchTemplates(): Promise<TemplateSummary[] | null> {
-  return fetchJson<TemplateSummary[]>("/templates");
+export interface TemplateFilter {
+  /** Matched by the server against name and description. */
+  q?: string;
+  kind?: string;
+  owner_id?: string;
 }
 
-export async function fetchTemplate(id: string): Promise<TemplateDetail | null> {
-  return fetchJson<TemplateDetail>(`/templates/${id}`);
+/** The templates the signed-in user may see, narrowed on the server. */
+export async function fetchTemplates(
+  filter: TemplateFilter = {},
+): Promise<TemplateSummary[] | null> {
+  const params = new URLSearchParams();
+  const q = filter.q?.trim();
+  if (q) params.set("q", q);
+  if (filter.kind) params.set("kind", filter.kind);
+  if (filter.owner_id) params.set("owner_id", filter.owner_id);
+  const qs = params.toString();
+  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+}
+
+/** One template, or an error carrying the server's reason (403, 404, or the
+ * network), which the page shows as it is. */
+export async function fetchTemplate(id: string): Promise<TemplateDetail> {
+  return jsonRequest<TemplateDetail>(`/templates/${id}`, "GET");
 }
 
 export async function createTemplate(
@@ -1632,7 +1659,11 @@ export async function fetchTemplateContent(id: string): Promise<string> {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
   }
-  return res.text();
+  // Decoded without BOM stripping: `text()` drops a leading byte order mark,
+  // and the download promises the stored bytes.
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(
+    await res.arrayBuffer(),
+  );
 }
 
 export interface TemplateFinding {

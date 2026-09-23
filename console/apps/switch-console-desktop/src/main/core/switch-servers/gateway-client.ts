@@ -1044,6 +1044,36 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
   });
 }
 
+/**
+ * Export a room's configuration as YAML (`GET /rooms/{roomId}/yaml`). Returns
+ * the raw YAML text, in the shape `POST /rooms/from-yaml` accepts, so the
+ * exported file round-trips through import unchanged.
+ *
+ * Each section can be dropped via its boolean toggles (default: all included).
+ */
+export async function exportRoomYaml(
+  server: SwitchServer,
+  roomId: string,
+  sections?: {
+    agents?: boolean;
+    users?: boolean;
+    references?: boolean;
+    docs?: boolean;
+    roles?: boolean;
+  }
+): Promise<string> {
+  const params = new URLSearchParams();
+  if (sections?.agents === false) params.set('agents', 'false');
+  if (sections?.users === false) params.set('users', 'false');
+  if (sections?.references === false) params.set('references', 'false');
+  if (sections?.docs === false) params.set('docs', 'false');
+  if (sections?.roles === false) params.set('roles', 'false');
+  const query = params.toString();
+  const path = `/rooms/${encodeURIComponent(roomId)}/yaml${query ? `?${query}` : ''}`;
+  const res = await gatewayFetch(server, path, { authenticated: true });
+  return res.text();
+}
+
 /** The result of provisioning a room from a YAML template. */
 export type TemplateProvisionResult = {
   roomId: string;
@@ -1128,7 +1158,21 @@ export type StoredTemplateSummary = {
   creator: string;
   /** The owner's user id, so the Console can mark the signed-in user's own templates. */
   ownerId: string | null;
+  /** Starts at 1 and goes up by one each time the document is changed. */
+  version: number;
+  /** `private` is seen by its owner and admins only. */
+  readVisibility: TemplateVisibility;
+  /** `public` lets anyone who can read it change it. */
+  writeVisibility: TemplateVisibility;
+  /** Whether the signed-in user may change the document, as the server judges
+   * it. Null when the server does not say. */
+  canEdit: boolean | null;
+  /** Whether the signed-in user may remove it or change who uses it: the
+   * owner, or an admin of the workspace. Null when the server does not say. */
+  canManage: boolean | null;
 };
+
+export type TemplateVisibility = 'public' | 'private';
 
 export type StoredTemplateDetail = StoredTemplateSummary & {
   definition: string;
@@ -1141,6 +1185,11 @@ type RegistryTemplateSummary = {
   name: string;
   description: string;
   kind: string;
+  version?: number;
+  read_visibility?: TemplateVisibility;
+  write_visibility?: TemplateVisibility;
+  can_edit?: boolean;
+  can_manage?: boolean;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -1151,14 +1200,27 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     kind: t.kind,
     creator: t.owner_name ?? t.owner_id,
     ownerId: t.owner_id,
+    // A server that does not report versions is read as being on the first.
+    version: t.version ?? 1,
+    // A server without visibility fields shares every template and lets its
+    // owner or an admin change it, which is what these defaults say.
+    readVisibility: t.read_visibility ?? 'public',
+    writeVisibility: t.write_visibility ?? 'private',
+    canEdit: t.can_edit ?? null,
+    canManage: t.can_manage ?? null,
   };
 }
 
+/** The templates the signed-in user may see, optionally narrowed by kind or
+ * by a search over name and description. */
 export async function fetchTemplates(
   server: SwitchServer,
-  kind?: string
+  filter: { kind?: string; q?: string } = {}
 ): Promise<StoredTemplateSummary[]> {
-  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const params = new URLSearchParams();
+  if (filter.kind) params.set('kind', filter.kind);
+  if (filter.q) params.set('q', filter.q);
+  const qs = params.size > 0 ? `?${params}` : '';
   const res = await gatewayFetch(server, `/templates${qs}`, {
     authenticated: true,
   });
@@ -1169,12 +1231,55 @@ export async function fetchTemplates(
 /** Store a template document on the server's registry (`POST /templates`). */
 export async function createTemplate(
   server: SwitchServer,
-  params: { name: string; description: string; kind: string; content: string }
+  params: {
+    name: string;
+    description: string;
+    kind: string;
+    content: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }
 ): Promise<StoredTemplateDetail> {
+  const { readVisibility, writeVisibility, ...rest } = params;
   const res = await gatewayFetch(server, '/templates', {
     authenticated: true,
     method: 'POST',
-    body: params,
+    body: {
+      ...rest,
+      // Left out when unset: a server without visibility refuses unknown fields.
+      ...(readVisibility ? { read_visibility: readVisibility } : {}),
+      ...(writeVisibility ? { write_visibility: writeVisibility } : {}),
+    },
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
+/** Change a stored template (`PATCH /templates/{id}`). The server answers
+ * 404 for a template the caller may not read, 403 for one they may not
+ * edit, and 409 when the owner already has a template by the new name. */
+export async function updateTemplate(
+  server: SwitchServer,
+  templateId: string,
+  changes: {
+    name?: string;
+    description?: string;
+    /** The listing label, sent when an edit changed the document's shape. */
+    kind?: string;
+    content?: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }
+): Promise<StoredTemplateDetail> {
+  const { readVisibility, writeVisibility, ...rest } = changes;
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: {
+      ...rest,
+      ...(readVisibility ? { read_visibility: readVisibility } : {}),
+      ...(writeVisibility ? { write_visibility: writeVisibility } : {}),
+    },
   });
   const t = (await res.json()) as RegistryTemplateSummary & { content: string };
   return { ...toSummary(t), definition: t.content };

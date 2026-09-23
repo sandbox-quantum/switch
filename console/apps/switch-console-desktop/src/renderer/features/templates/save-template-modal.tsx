@@ -15,6 +15,8 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { TEMPLATE_ACCESS_OPTIONS, type TemplateAccess, visibilityOf } from './template-visibility';
 
 export type SaveTemplateArgs = {
   serverId: string;
@@ -47,6 +49,7 @@ export function SaveTemplateModal({
   const descriptionId = useId();
   const [name, setName] = useState(initialName);
   const [description, setDescription] = useState(initialDescription);
+  const [access, setAccess] = useState<TemplateAccess>('shared');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,6 +63,7 @@ export function SaveTemplateModal({
         description: description.trim(),
         kind,
         content,
+        ...visibilityOf(access),
       });
       toast({
         title: `"${name.trim()}" is now on ${serverName ?? 'the server'}`,
@@ -95,8 +99,7 @@ export function SaveTemplateModal({
     >
       <DialogContentArea className="gap-4">
         <p className="text-sm text-foreground-muted">
-          Everyone on this workspace will find it under Templates.{' '}
-          <Badge variant="outline">{kind} template</Badge>
+          Saved under Templates on this workspace. <Badge variant="outline">{kind} template</Badge>
         </p>
         <FieldGroup>
           <Field>
@@ -119,6 +122,19 @@ export function SaveTemplateModal({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What it is for, in a line"
             />
+          </Field>
+          <Field>
+            <FieldLabel>Who can use it</FieldLabel>
+            <SegmentedControl
+              value={access}
+              onChange={setAccess}
+              options={TEMPLATE_ACCESS_OPTIONS}
+              ariaLabel="Who can use it"
+              className="w-max"
+            />
+            <p className="text-xs text-foreground-muted">
+              {TEMPLATE_ACCESS_OPTIONS.find((o) => o.value === access)?.hint}
+            </p>
           </Field>
         </FieldGroup>
         {error && (

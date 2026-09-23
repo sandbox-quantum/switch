@@ -129,7 +129,7 @@ class TestTemplateStoreListing:
                 session, owner_id=owner.id, name="coffee", content="☕" * 10
             )
 
-            (row,) = await _STORE.list_all(session)
+            (row,) = await _STORE.list_all(session, viewer_id="", is_admin=True)
             assert row.size_bytes == 30
             assert not hasattr(row, "content")
 
@@ -143,7 +143,10 @@ class TestTemplateStoreListing:
             await _make_template(session, owner_id=alice.id, name="alice-room")
             await _make_template(session, owner_id=bob.id, name="bob-room")
 
-            listed = {t.name for t in await _STORE.list_all(session)}
+            listed = {
+                t.name
+                for t in await _STORE.list_all(session, viewer_id="", is_admin=True)
+            }
             assert listed == {"alice-room", "bob-room"}
 
     async def test_search_matches_name_and_description(
@@ -164,7 +167,12 @@ class TestTemplateStoreListing:
                 session, owner_id=owner.id, name="other", description="nothing here"
             )
 
-            hits = {t.name for t in await _STORE.list_all(session, query="deploy")}
+            hits = {
+                t.name
+                for t in await _STORE.list_all(
+                    session, viewer_id="", is_admin=True, query="deploy"
+                )
+            }
             assert hits == {"deploy-room", "unrelated"}
 
     async def test_search_treats_wildcards_as_literal_text(
@@ -176,7 +184,12 @@ class TestTemplateStoreListing:
             await _make_template(session, owner_id=owner.id, name="100%-coverage")
             await _make_template(session, owner_id=owner.id, name="plain")
 
-            hits = {t.name for t in await _STORE.list_all(session, query="%")}
+            hits = {
+                t.name
+                for t in await _STORE.list_all(
+                    session, viewer_id="", is_admin=True, query="%"
+                )
+            }
             assert hits == {"100%-coverage"}
 
     async def test_filters_by_kind_and_owner(
@@ -191,11 +204,19 @@ class TestTemplateStoreListing:
             )
             await _make_template(session, owner_id=bob.id, name="b-room", kind="room")
 
-            by_kind = {t.name for t in await _STORE.list_all(session, kind="room")}
+            by_kind = {
+                t.name
+                for t in await _STORE.list_all(
+                    session, viewer_id="", is_admin=True, kind="room"
+                )
+            }
             assert by_kind == {"a-room", "b-room"}
 
             by_owner = {
-                t.name for t in await _STORE.list_all(session, owner_id=alice.id)
+                t.name
+                for t in await _STORE.list_all(
+                    session, viewer_id="", is_admin=True, owner_id=alice.id
+                )
             }
             assert by_owner == {"a-room", "a-group"}
 
@@ -224,7 +245,7 @@ class TestTemplateStoreNaming:
                 await _make_template(session, owner_id=owner.id, name="deploy-room")
 
             await _make_template(session, owner_id=owner.id, name="something-else")
-            assert len(await _STORE.list_all(session)) == 2
+            assert len(await _STORE.list_all(session, viewer_id="", is_admin=True)) == 2
 
     async def test_two_owners_may_share_a_name(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -235,7 +256,7 @@ class TestTemplateStoreNaming:
             await _make_template(session, owner_id=alice.id, name="deploy-room")
             await _make_template(session, owner_id=bob.id, name="deploy-room")
 
-            assert len(await _STORE.list_all(session)) == 2
+            assert len(await _STORE.list_all(session, viewer_id="", is_admin=True)) == 2
 
 
 class TestTemplateStoreUpdate:
@@ -415,7 +436,7 @@ class TestTemplateStoreDelete:
 
             await _STORE.delete(session, created.id)
             assert await _STORE.get(session, created.id) is None
-            assert await _STORE.list_all(session) == []
+            assert await _STORE.list_all(session, viewer_id="", is_admin=True) == []
 
     async def test_delete_of_a_missing_template_raises(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -423,3 +444,31 @@ class TestTemplateStoreDelete:
         async with session_factory() as session:
             with pytest.raises(ValueError, match="Template not found"):
                 await _STORE.delete(session, "nope")
+
+
+class TestGuard:
+    async def test_a_guard_that_refuses_leaves_the_row_as_it_was(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A guard that raises leaves the content and the version as they were."""
+        async with session_factory() as session:
+            alice = await _make_user(session, "alice")
+            created = await _make_template(
+                session, owner_id=alice.id, name="t", content="a"
+            )
+            await session.commit()
+            template_id = created.id
+
+            def refuse(_row: Template) -> None:
+                raise PermissionError("closed since")
+
+            with pytest.raises(PermissionError):
+                await _STORE.update_fields(
+                    session, template_id, content="b", guard=refuse
+                )
+            await session.rollback()
+
+        async with session_factory() as session:
+            reloaded = await _STORE.get(session, template_id)
+            assert reloaded is not None
+            assert (reloaded.content, reloaded.version) == ("a", 1)

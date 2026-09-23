@@ -86,6 +86,7 @@ async def _create(
         _USER_STORE,
         config or _config(),
         user,  # type: ignore[arg-type]
+        await _is_admin(session, user),  # type: ignore[arg-type]
     )
 
 
@@ -107,6 +108,7 @@ class TestUploadAndFetch:
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 owner,
+                await _is_admin(session, owner),
             )
             assert fetched.content == _AWKWARD_DOCUMENT
 
@@ -115,6 +117,7 @@ class TestUploadAndFetch:
                 session,
                 _TEMPLATE_STORE,
                 owner,
+                await _is_admin(session, owner),
             )
             assert raw.body.decode("utf-8") == _AWKWARD_DOCUMENT
             assert raw.media_type == "application/x-yaml"
@@ -160,7 +163,14 @@ class TestUploadAndFetch:
             await session.commit()
 
             with pytest.raises(HTTPException) as exc:
-                await get_template("nope", session, _TEMPLATE_STORE, _USER_STORE, owner)
+                await get_template(
+                    "nope",
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    owner,
+                    await _is_admin(session, owner),
+                )
             assert exc.value.status_code == 404
 
 
@@ -198,7 +208,12 @@ class TestSizeLimit:
                     content="room: " + "x" * 101,
                     config=_config(template_max_bytes=100),
                 )
-            assert await _TEMPLATE_STORE.list_all(session) == []
+            assert (
+                await _TEMPLATE_STORE.list_all(
+                    session, viewer_id=owner.id, is_admin=False
+                )
+                == []
+            )
 
     async def test_the_limit_counts_bytes_so_multibyte_text_cannot_slip_past(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -233,7 +248,11 @@ class TestCatalogue:
             # Listed identically whoever is asking.
             for caller in (alice, bob):
                 listed = await list_templates(
-                    session, _TEMPLATE_STORE, _USER_STORE, caller
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    caller,
+                    await _is_admin(session, caller),
                 )
                 assert {t.name for t in listed} == {"alice-room", "bob-room"}
                 assert {t.owner_name for t in listed} == {"alice", "bob"}
@@ -246,7 +265,13 @@ class TestCatalogue:
             await session.commit()
             await _create(session, owner, name="t", content=_AWKWARD_DOCUMENT)
 
-            listed = await list_templates(session, _TEMPLATE_STORE, _USER_STORE, owner)
+            listed = await list_templates(
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                owner,
+                await _is_admin(session, owner),
+            )
             assert not hasattr(listed[0], "content")
             assert listed[0].size_bytes == len(_AWKWARD_DOCUMENT.encode("utf-8"))
 
@@ -261,7 +286,12 @@ class TestCatalogue:
             await _create(session, owner, name="unrelated", description="x")
 
             hits = await list_templates(
-                session, _TEMPLATE_STORE, _USER_STORE, owner, q="deploy"
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                owner,
+                await _is_admin(session, owner),
+                q="deploy",
             )
             assert {t.name for t in hits} == {"deploy-room", "other"}
 
@@ -275,7 +305,12 @@ class TestCatalogue:
             await _create(session, owner, name="b", kind="group")
 
             hits = await list_templates(
-                session, _TEMPLATE_STORE, _USER_STORE, owner, kind="group"
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                owner,
+                await _is_admin(session, owner),
+                kind="group",
             )
             assert {t.name for t in hits} == {"b"}
 
@@ -341,6 +376,7 @@ class TestOwnership:
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 bob,
+                await _is_admin(session, bob),
             )
             assert fetched.content == _AWKWARD_DOCUMENT
 
@@ -508,3 +544,163 @@ class TestUpdate:
                     await _is_admin(session, alice),
                 )
             assert exc.value.status_code == 409
+
+
+class TestVisibility:
+    async def test_a_private_template_is_listed_and_fetched_only_by_its_owner(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            bob = await add_user(session, name="bob")
+            await session.commit()
+            created = await create_template(
+                TemplateCreateRequest(
+                    name="mine", content="room:\n  name: n\n", read_visibility="private"
+                ),
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                _config(),
+                alice,
+                await _is_admin(session, alice),
+            )
+            for who, expected in ((alice, {"mine"}), (bob, set())):
+                listed = await list_templates(
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    who,
+                    await _is_admin(session, who),
+                )
+                assert {t.name for t in listed} == expected
+            with pytest.raises(HTTPException) as exc:
+                await get_template(
+                    created.id,  # type: ignore[attr-defined]
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    bob,
+                    await _is_admin(session, bob),
+                )
+            assert exc.value.status_code == 404
+
+    async def test_anyone_may_edit_an_open_template_but_not_close_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            bob = await add_user(session, name="bob")
+            await session.commit()
+            created = await create_template(
+                TemplateCreateRequest(
+                    name="open", content="room:\n  name: n\n", write_visibility="public"
+                ),
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                _config(),
+                alice,
+                await _is_admin(session, alice),
+            )
+            edited = await patch_template(
+                created.id,  # type: ignore[attr-defined]
+                TemplateUpdateRequest(content="room:\n  name: changed\n"),
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                _config(),
+                bob,
+                await _is_admin(session, bob),
+            )
+            assert edited.version == 2
+            with pytest.raises(HTTPException) as exc:
+                await patch_template(
+                    created.id,  # type: ignore[attr-defined]
+                    TemplateUpdateRequest(write_visibility="private"),
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    _config(),
+                    bob,
+                    await _is_admin(session, bob),
+                )
+            assert exc.value.status_code == 403
+
+    async def test_a_writable_template_must_be_readable(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            await session.commit()
+            with pytest.raises(HTTPException) as exc:
+                await create_template(
+                    TemplateCreateRequest(
+                        name="odd",
+                        content="room:\n  name: n\n",
+                        read_visibility="private",
+                        write_visibility="public",
+                    ),
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    _config(),
+                    alice,
+                    await _is_admin(session, alice),
+                )
+            assert exc.value.status_code == 422
+
+    async def test_an_empty_visibility_is_refused_not_ignored(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            await session.commit()
+            created = await _create(session, alice, name="t")
+            with pytest.raises(HTTPException) as exc:
+                await patch_template(
+                    created.id,  # type: ignore[attr-defined]
+                    TemplateUpdateRequest(read_visibility=""),
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    _config(),
+                    alice,
+                    await _is_admin(session, alice),
+                )
+            assert exc.value.status_code == 422
+
+    async def test_each_row_says_what_the_caller_may_do(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            bob = await add_user(session, name="bob")
+            await session.commit()
+            await create_template(
+                TemplateCreateRequest(
+                    name="open", content="room:\n  name: n\n", write_visibility="public"
+                ),
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                _config(),
+                alice,
+                await _is_admin(session, alice),
+            )
+            (row,) = await list_templates(
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                bob,
+                await _is_admin(session, bob),
+            )
+            assert (row.can_edit, row.can_manage) == (True, False)
+            (own,) = await list_templates(
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                alice,
+                await _is_admin(session, alice),
+            )
+            assert (own.can_edit, own.can_manage) == (True, True)
