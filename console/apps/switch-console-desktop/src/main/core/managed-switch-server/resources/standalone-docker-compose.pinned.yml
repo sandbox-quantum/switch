@@ -222,7 +222,10 @@ services:
       GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
       # Off by default. The recorded session behind it posts a card into a
       # real channel with no session behind it, so it is opt-in per server.
-      SESSION_DEMO_ENABLED: ${SESSION_DEMO_ENABLED:-}
+      # The default is `false`, not empty: switch-core reads this as a bool
+      # and refuses to boot on an empty string, which is what every stack
+      # that does not set it would otherwise pass.
+      SESSION_DEMO_ENABLED: ${SESSION_DEMO_ENABLED:-false}
       MESSAGING_PUBLIC_URL: ${MESSAGING_PUBLIC_URL:-}
       SLACK_APP_CLIENT_ID: ${SLACK_APP_CLIENT_ID:-}
       SLACK_APP_CLIENT_SECRET: ${SLACK_APP_CLIENT_SECRET:-}

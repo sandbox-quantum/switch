@@ -166,6 +166,14 @@ describe('buildEnvFile', () => {
     expect(composeYaml).toMatch(/^\s+TELEMETRY_ENABLED:\s*$/m);
   });
 
+  it('gives switch-core a boolean for the session demo when the .env names none', () => {
+    // A released start writes no SESSION_DEMO_ENABLED, and switch-core refuses
+    // to boot on an empty boolean — so an empty compose default took down
+    // every managed stack that did not build from a checkout.
+    expect(vars.SESSION_DEMO_ENABLED).toBeUndefined();
+    expect(composeYaml).toMatch(/^\s+SESSION_DEMO_ENABLED: \$\{SESSION_DEMO_ENABLED:-false\}$/m);
+  });
+
   it('points the deeplink redirect at the API, not the operator UI', () => {
     // switch-core only rewrites `switchdash://` links into clickable http ones
     // when this is set, and serves the redirect on the agent-bridge app — so
