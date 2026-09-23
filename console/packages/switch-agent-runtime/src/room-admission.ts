@@ -49,6 +49,26 @@ export interface RoomReservation extends RoomDelivery {
   expired: boolean;
 }
 
+/** A room a session was serving that the server would not record for it. */
+export interface RefusedRoom {
+  roomId: string;
+  reason: string;
+}
+
+/**
+ * What the server recorded of the rooms this agent's sessions were serving on
+ * connections of their own.
+ *
+ * `unverifiable` names sessions the server could decide neither way: live, and
+ * bound to a connection it cannot see. Nothing was carried for them and
+ * nothing is known to have been lost, which is not the same as having nothing
+ * to carry.
+ */
+export interface CarriedRooms {
+  sessions: { sessionId: string; adopted: string[]; refused: RefusedRoom[] }[];
+  unverifiable: string[];
+}
+
 /**
  * A refusal, or a server that could not be reached.
  *
@@ -69,6 +89,15 @@ export class RoomAdmissionError extends Error {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Refusals that say "not now" rather than "no".
+ *
+ * The status alone cannot carry this: a conflict is normally the server's
+ * final answer, and one of these is the opposite — state that moved while the
+ * server was deciding, which the next attempt reads afresh.
+ */
+const RETRYABLE_CODES = new Set(['CLAIM_MOVED']);
 
 function text(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0)
@@ -115,7 +144,7 @@ export class SwitchRoomAdmissions {
       throw new RoomAdmissionError(
         code || `HTTP_${response.status}`,
         `Switch refused a room admission (${response.status}): ${detail}`,
-        [408, 425, 429, 500, 502, 503, 504].includes(response.status)
+        RETRYABLE_CODES.has(code) || [408, 425, 429, 500, 502, 503, 504].includes(response.status)
       );
     }
     return response.json();
@@ -174,6 +203,58 @@ export class SwitchRoomAdmissions {
       `Switch answered an unknown room admission status: ${String(body.status)}`,
       false
     );
+  }
+
+  /**
+   * Have the server record which of this agent's sessions is serving which
+   * room, for the sessions still serving themselves.
+   *
+   * Asked before the sessions started by an older build are replaced, because
+   * what answers it is the connection each of them is still holding: the rooms
+   * the server is subscribed to on that connection are the rooms it is already
+   * delivering to that session. Once the worker is gone so is the answer.
+   *
+   * `connectionId` is this controller's own, and only says which sessions are
+   * already on it. What a session is given comes from its own connection.
+   */
+  async carryRooms(connectionId: string, signal: AbortSignal): Promise<CarriedRooms> {
+    const answer = await this.request(
+      'carry-connection-rooms',
+      { connection_id: connectionId },
+      signal
+    );
+    const body = (answer ?? {}) as Record<string, unknown>;
+    if (!Array.isArray(body.sessions) || !Array.isArray(body.unverifiable))
+      throw new RoomAdmissionError(
+        'INVALID_RESPONSE',
+        'Switch answered no account of the rooms its sessions were serving.',
+        false
+      );
+    return {
+      sessions: body.sessions.map((entry) => {
+        const row = entry as Record<string, unknown>;
+        if (!Array.isArray(row.adopted) || !Array.isArray(row.refused))
+          throw new RoomAdmissionError(
+            'INVALID_RESPONSE',
+            'Switch answered an unreadable account of a session.',
+            false
+          );
+        return {
+          sessionId: text(row.sessionId, 'the session it carried rooms for'),
+          adopted: row.adopted.map((room) => text(room, 'a room it recorded')),
+          refused: row.refused.map((room) => {
+            const refusal = room as Record<string, unknown>;
+            return {
+              roomId: text(refusal.roomId, 'a room it did not record'),
+              reason: text(refusal.reason, 'a reason it did not record a room'),
+            };
+          }),
+        };
+      }),
+      unverifiable: body.unverifiable.map((session) =>
+        text(session, 'a session it could not decide')
+      ),
+    };
   }
 
   /** The verified deliveries the server is still holding for this agent. */

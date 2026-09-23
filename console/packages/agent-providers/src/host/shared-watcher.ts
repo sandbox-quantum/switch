@@ -162,6 +162,83 @@ function reachableBy(config: SharedHostConfig, connectionId: string): SharedHost
   return { ...structuredClone(config), roomConnection: { connectionId } };
 }
 
+/** How long a carry waits between attempts, before giving the watcher up. */
+const CARRY_RETRY_MS = [1000, 3000, 9000];
+
+/**
+ * Has Switch record which of this agent's sessions is serving which room,
+ * while the sessions that serve themselves are still doing so.
+ *
+ * A session started by a build that gave every session a connection of its own
+ * holds its room on that connection and nowhere else. Switch knows which — it
+ * is the one routing to it — but nothing has written it against the session,
+ * so a restart brings the session back holding nothing and the room is
+ * answered next by a session that knows none of the conversation. This is
+ * where that is written down, and it has to happen before anything replaces
+ * those workers: closing the connection is what destroys the evidence.
+ *
+ * Which is why an unreachable server takes the watcher down with it rather
+ * than being carried on past. Nothing has been replaced at this point, so
+ * every one of those sessions is still serving its room exactly as it was
+ * before this watcher started, and the next attempt finds the same evidence
+ * intact. Going on instead would replace them with the one thing that cannot
+ * be retried.
+ *
+ * A server that refuses outright is a different answer and is taken as one:
+ * older than this call, or certain the rooms are not these sessions' to keep.
+ * Retrying cannot change it, so it is reported and the upgrade proceeds
+ * without them.
+ */
+export async function carryLegacyRooms(
+  admissions: SwitchRoomAdmissions,
+  connectionId: string,
+  signal: AbortSignal
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const carried = await admissions.carryRooms(connectionId, signal);
+      for (const session of carried.sessions)
+        for (const room of session.refused)
+          console.warn(
+            `Session ${session.sessionId} was serving room ${room.roomId} over a connection of its own, and Switch would not record the room against it (${room.reason}). The room will be answered by a new session.`
+          );
+      for (const sessionId of carried.unverifiable)
+        console.warn(
+          `Session ${sessionId} is running on a connection Switch could not look up, so what it was serving could not be established. Any room it was serving will be answered by a new session.`
+        );
+      return;
+    } catch (error) {
+      if (!(error instanceof RoomAdmissionError)) throw error;
+      if (!error.retryable) {
+        console.error(
+          `Switch will not record what this agent's sessions are serving (${error.message}). The sessions running the superseded build are being replaced without it, and any room they were serving will be answered by a new session.`
+        );
+        return;
+      }
+      const wait = CARRY_RETRY_MS[attempt];
+      if (wait === undefined)
+        throw new Error(
+          `Switch could not be asked what this agent's sessions are serving (${error.message}). They are still serving their rooms and have been left alone; the watcher stops here rather than replace them with nothing recorded.`
+        );
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, wait);
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+      if (signal.aborted)
+        throw new Error(
+          `The controller stopped before Switch could say what this agent's sessions are serving (${error.message}). They are still serving their rooms and have been left alone.`
+        );
+    }
+  }
+}
+
 /**
  * Replaces this agent's sessions that are still running the build the watcher
  * has just superseded. A session is supervised independently of the watcher,
@@ -542,6 +619,7 @@ export async function runSharedWatcher(
       await handOff(sessionRoot, event);
       return true;
     };
+    await carryLegacyRooms(admissions, connectionId, stop.signal);
     await replaceSupersededSessions(template.session.agentId, connectionId, supervision);
     const launchAssigned = async () => {
       for (const config of assignments.sessions()) await launch(config);

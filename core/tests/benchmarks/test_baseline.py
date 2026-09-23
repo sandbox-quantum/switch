@@ -723,10 +723,11 @@ async def test_baseline_upgrades_over_a_running_legacy_session(
     The agent comes back to one connection and the room does not go quiet:
     every message is delivered exactly once, and a room first addressed after
     the upgrade is served normally. The room keeps its session too. The old
-    build left its room set on disk and nothing of it on the server, so the
-    restarted session offers Switch what it finds there before it binds; the
-    room is still nobody else's, Switch gives it back, and the next message is
-    answered by the same session with the same conversation behind it.
+    build recorded nothing of the room against the session, so what says the
+    session was serving it is the connection the old worker is still holding:
+    the new controller has Switch write that down before it replaces the
+    worker, and the next message is answered by the same session with the same
+    conversation behind it.
 
     The old controller is killed rather than asked to quit, so the connection
     it held is swept on its heartbeat instead of being closed. That is the
@@ -816,10 +817,11 @@ async def test_baseline_upgrades_over_a_running_legacy_session(
         f"and was back to one, the controller's, {settled:.1f}s after a newer "
         "controller was started on the same state. Every message was delivered "
         "once, and a room first addressed after the upgrade was served normally. "
-        "The room the older build had been serving kept its session: the upgrade "
-        f"restarted {assigned[served_room]}, which carried the room across to "
-        "Switch before it bound, so the next message there was answered by "
-        f"{serving}, resuming the provider conversation it already had "
+        "The room the older build had been serving kept its session: Switch was "
+        f"told the room was {assigned[served_room]}'s while that session was "
+        "still serving it over a connection of its own, and only then was it "
+        f"restarted, so the next message there was answered by {serving}, "
+        "resuming the provider conversation it already had "
         f"({conversations[0]}) rather than beginning another."
     )
     assert duplicated == {}, duplicated

@@ -251,15 +251,6 @@ export const roomMessageReceiptSchema = commandStatusSchema.extend({
 // its events arrive over. The session's own, not the connection's: one
 // connection carries every session an agent has.
 export const roomBindingSchema = z.object({ rooms: z.array(z.string().min(1)) });
-// What Switch gave a session of the rooms it offered to carry across from a
-// build that claimed none of them here. A room is refused by name and reason
-// rather than left out of `adopted`, because it is a conversation that will be
-// answered next by a session that knows nothing of it and somebody has to be
-// able to say which one and why.
-export const roomAdoptionSchema = z.object({
-  adopted: z.array(z.string().min(1)),
-  refused: z.array(z.object({ roomId: z.string().min(1), reason: z.string().min(1) })),
-});
 
 export function eventBytes(event: unknown): number {
   return new TextEncoder().encode(JSON.stringify(event)).byteLength;

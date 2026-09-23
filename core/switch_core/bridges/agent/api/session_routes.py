@@ -353,8 +353,9 @@ async def bind_room_connection(
     return {"rooms": rooms}
 
 
-class RoomAdoptionRequest(HostLease):
-    room_ids: list[str] = Field(min_length=1)
+class ConnectionCarryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1)
 
 
 class RefusedRoomResponse(BaseModel):
@@ -363,26 +364,40 @@ class RefusedRoomResponse(BaseModel):
     reason: str
 
 
-class RoomAdoptionResponse(BaseModel):
+class CarriedSessionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    session_id: str
     adopted: list[str]
     refused: list[RefusedRoomResponse]
 
 
-@router.post("/{session_id}/adopt-rooms")
-async def adopt_rooms(
-    session_id: str,
-    body: RoomAdoptionRequest,
+class ConnectionCarryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    sessions: list[CarriedSessionResponse]
+    unverifiable: list[str]
+
+
+@router.post("/carry-connection-rooms")
+async def carry_connection_rooms(
+    body: ConnectionCarryRequest,
     agent: AuthenticatedAgent,
     factory: Factory,
-) -> RoomAdoptionResponse:
-    adoption = await SessionAuthority(factory).adopt_rooms(
-        agent.id, session_id, body.host_id, body.epoch, body.room_ids
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> ConnectionCarryResponse:
+    carry = await SessionAuthority(factory).carry_connection_rooms(
+        agent.id, body.connection_id, protocol.connections
     )
-    return RoomAdoptionResponse(
-        adopted=list(adoption.adopted),
-        refused=[
-            RefusedRoomResponse(room_id=room.room_id, reason=room.reason)
-            for room in adoption.refused
+    return ConnectionCarryResponse(
+        sessions=[
+            CarriedSessionResponse(
+                session_id=session.session_id,
+                adopted=list(session.adopted),
+                refused=[
+                    RefusedRoomResponse(room_id=room.room_id, reason=room.reason)
+                    for room in session.refused
+                ],
+            )
+            for session in carry.sessions
         ],
+        unverifiable=list(carry.unverifiable),
     )

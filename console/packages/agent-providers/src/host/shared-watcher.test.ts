@@ -3,12 +3,14 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
+import { SwitchRoomAdmissions } from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import { declareHandoffCapability, HANDOFF_FILE } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
 import {
+  carryLegacyRooms,
   replaceSupersededSessions,
   runSharedWatcher,
   SharedWatchAssignments,
@@ -47,6 +49,9 @@ const server = vi.hoisted(() => ({
   discarded: [] as string[],
   refusals: [] as { code: string; retryable: boolean }[],
   listRefusals: [] as { code: string; retryable: boolean }[],
+  carryAsked: [] as string[],
+  carryRefusals: [] as { code: string; retryable: boolean }[],
+  carried: { sessions: [], unverifiable: [] } as runtime.CarriedRooms,
 }));
 vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
   const original = await importOriginal<typeof runtime>();
@@ -90,6 +95,12 @@ vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
         }
         return { status: 'none', grantExpiresAt: new Date(Date.now() + 120000).toISOString() };
       }
+      async carryRooms(connectionId: string): Promise<runtime.CarriedRooms> {
+        server.carryAsked.push(connectionId);
+        const refusal = server.carryRefusals.shift();
+        if (refusal) throw refuse(refusal);
+        return structuredClone(server.carried);
+      }
       async reservations(): Promise<runtime.RoomReservation[]> {
         const refusal = server.listRefusals.shift();
         if (refusal) throw refuse(refusal);
@@ -127,6 +138,9 @@ afterEach(async () => {
   server.discarded.length = 0;
   server.refusals.length = 0;
   server.listRefusals.length = 0;
+  server.carryAsked.length = 0;
+  server.carryRefusals.length = 0;
+  server.carried = { sessions: [], unverifiable: [] };
   vi.mocked(ensureSharedProcess).mockReset();
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -666,6 +680,190 @@ it('leaves the rest of a restore unstarted once spawning is turned off midway', 
   }
 
   expect(started).toEqual([first.session.sessionId]);
+});
+
+/** The client the watcher builds, answered by the server state above. */
+function admissions() {
+  return new SwitchRoomAdmissions({
+    agentId: 'agent',
+    apiEndpoint: 'http://127.0.0.1/agent',
+    token: 'placeholder-token',
+  });
+}
+
+it('has Switch record what a session is serving before anything replaces it', async () => {
+  // Which rooms a session of the older build is serving is known only from the
+  // connection that session is still holding, so it has to be recorded while
+  // the worker holding it is alive — which is before this watcher restarts it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-carry-order-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const legacy = await existing(root, config, false);
+  supervisors.set(legacy.sessionRoot, { build: 'superseded' });
+  server.carried = {
+    sessions: [{ sessionId: legacy.sessionId, adopted: ['room'], refused: [] }],
+    unverifiable: [],
+  };
+  const carriedFirst: boolean[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(async () => {
+    carriedFirst.push(server.carryAsked.length === 1);
+    return { created: true };
+  });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(server.carryAsked).toEqual([config.roomConnection!.connectionId]);
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
+    legacy.sessionRoot,
+  ]);
+  expect(carriedFirst).toEqual([true]);
+});
+
+it('asks again when Switch cannot be reached, and records the rooms on the retry', async () => {
+  vi.useFakeTimers();
+  try {
+    server.carryRefusals.push({ code: 'UNREACHABLE', retryable: true });
+    server.carried = {
+      sessions: [{ sessionId: 'legacy-session', adopted: ['room'], refused: [] }],
+      unverifiable: [],
+    };
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failure = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const carry = carryLegacyRooms(admissions(), 'agent-controller', new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(1000);
+    await carry;
+
+    expect(server.carryAsked).toEqual(['agent-controller', 'agent-controller']);
+    expect(warning).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('leaves the superseded sessions serving when the carry goes unanswered', async () => {
+  // The intent is kept by refusing to destroy what proves it: every one of
+  // those workers is still up and still serving its rooms, so the watcher that
+  // runs after this one reads the same connections and asks the same question.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-carry-unreachable-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const legacy = await existing(root, config, false);
+  supervisors.set(legacy.sessionRoot, { build: 'superseded' });
+  server.carryRefusals.push({ code: 'UNREACHABLE', retryable: true });
+  server.carried = {
+    sessions: [{ sessionId: legacy.sessionId, adopted: ['room'], refused: [] }],
+    unverifiable: [],
+  };
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  await eventually(() => server.carryAsked.length === 1);
+  abort.abort();
+  await run;
+
+  expect(ensureSharedProcess).not.toHaveBeenCalled();
+  expect(streams).toEqual([]);
+  // Untouched on disk as well as still running, so the next watcher start
+  // finds the same session bound to the same connection of its own.
+  expect(JSON.parse(await readFile(join(legacy.sessionRoot, 'config.json'), 'utf8'))).toMatchObject(
+    { session: { sessionId: legacy.sessionId } }
+  );
+
+  await expect(
+    carryLegacyRooms(admissions(), 'watcher', new AbortController().signal)
+  ).resolves.toBeUndefined();
+  expect(server.carryAsked).toHaveLength(2);
+});
+
+it('gives the watcher up rather than replace sessions Switch never accounted for', async () => {
+  vi.useFakeTimers();
+  try {
+    for (let attempt = 0; attempt < 4; attempt++)
+      server.carryRefusals.push({ code: 'UNREACHABLE', retryable: true });
+    const settled = carryLegacyRooms(
+      admissions(),
+      'agent-controller',
+      new AbortController().signal
+    ).then(
+      () => null,
+      (error: Error) => error
+    );
+    await vi.advanceTimersByTimeAsync(13000);
+
+    expect((await settled)?.message).toContain('left alone');
+    expect(server.carryAsked).toHaveLength(4);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('stops rather than record nothing when the controller shuts down between attempts', async () => {
+  vi.useFakeTimers();
+  try {
+    server.carryRefusals.push({ code: 'UNREACHABLE', retryable: true });
+    const abort = new AbortController();
+    const settled = carryLegacyRooms(admissions(), 'agent-controller', abort.signal).then(
+      () => null,
+      (error: Error) => error
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    abort.abort();
+
+    expect((await settled)?.message).toContain('left alone');
+    expect(server.carryAsked).toEqual(['agent-controller']);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('names the rooms Switch would not record and the sessions it could not decide', async () => {
+  server.carried = {
+    sessions: [
+      { sessionId: 'kept-session', adopted: ['kept-room'], refused: [] },
+      {
+        sessionId: 'refused-session',
+        adopted: [],
+        refused: [{ roomId: 'taken-room', reason: 'ROOM_HELD' }],
+      },
+    ],
+    unverifiable: ['unseen-session'],
+  };
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  await carryLegacyRooms(admissions(), 'agent-controller', new AbortController().signal);
+
+  const said = warning.mock.calls.map((call) => String(call[0]));
+  expect(said).toHaveLength(2);
+  expect(said[0]).toContain('refused-session');
+  expect(said[0]).toContain('taken-room');
+  expect(said[0]).toContain('ROOM_HELD');
+  expect(said[1]).toContain('unseen-session');
+  expect(said.join(' ')).not.toContain('kept-session');
+});
+
+it('goes on with the upgrade when Switch refuses the recording outright, and says so', async () => {
+  // An older server has no such route, and a server certain the rooms are not
+  // these sessions' to keep will say the same thing however often it is asked.
+  server.carryRefusals.push({ code: 'HTTP_404', retryable: false });
+  const failure = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  await carryLegacyRooms(admissions(), 'agent-controller', new AbortController().signal);
+
+  expect(server.carryAsked).toEqual(['agent-controller']);
+  expect(String(failure.mock.calls[0]?.[0])).toContain('answered by a new session');
 });
 
 it('restarts only the live sessions of this agent left on a superseded build', async () => {

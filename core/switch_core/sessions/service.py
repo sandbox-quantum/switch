@@ -154,7 +154,7 @@ class RoomGrant:
 
 @dataclass(frozen=True)
 class RefusedRoom:
-    """A room a session offered to adopt and was not given.
+    """A room a session was serving and was not given.
 
     The reason is part of the answer rather than a log line. A room that does
     not come across is a conversation that will be answered by a new session,
@@ -167,11 +167,61 @@ class RefusedRoom:
 
 
 @dataclass(frozen=True)
-class RoomAdoption:
-    """What a session was and was not given of the rooms it offered."""
+class CarriedSession:
+    """What one session kept of the rooms its own connection was serving."""
 
+    session_id: str
     adopted: tuple[str, ...]
     refused: tuple[RefusedRoom, ...]
+
+
+@dataclass(frozen=True)
+class ConnectionCarry:
+    """The result of carrying an agent's self-served rooms onto its sessions.
+
+    `unverifiable` names the sessions this server could not decide either way:
+    live, holding no room here, and bound to a connection it cannot see. Their
+    rooms are neither carried nor knowingly lost, and saying so is the whole
+    point of the field — the alternative is an empty answer that reads like
+    "nothing to do".
+    """
+
+    sessions: tuple[CarriedSession, ...]
+    unverifiable: tuple[str, ...]
+
+
+def _carry_notice(adopted: list[str], refused: list[RefusedRoom]) -> Notice:
+    """What the session's own log is told about the rooms it was serving.
+
+    Written wherever a session had rooms of its own to account for, including
+    where every one of them came across. A room that did not is the reader's
+    warning that the conversation in it starts again elsewhere, and a log that
+    only ever mentions the failures cannot be told apart from one where the
+    question was never asked.
+    """
+    kept = (
+        f"Recorded here: {', '.join(adopted)}."
+        if adopted
+        else "None of them were recorded here."
+    )
+    if not refused:
+        return Notice(
+            type="notice",
+            level="info",
+            code="ROOMS_CARRIED",
+            message=f"This session was serving rooms over a connection of its own. {kept}",
+        )
+    lost = ", ".join(f"{room.room_id} ({room.reason})" for room in refused)
+    return Notice(
+        type="notice",
+        level="warning",
+        code="ROOMS_NOT_CARRIED",
+        message=(
+            f"This session was serving rooms over a connection of its own. {kept} "
+            f"These stay with whichever session claims them next, and their conversations "
+            f"will not continue here: {lost}."
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -2233,45 +2283,61 @@ class SessionAuthority:
             )
         return displaced
 
-    async def adopt_rooms(
+    async def carry_connection_rooms(
         self,
         agent_id: str,
-        session_id: str,
-        host_id: str,
-        epoch: str,
-        room_ids: list[str],
-    ) -> RoomAdoption:
-        """Record rooms a session has been serving but never claimed here.
+        controller_connection_id: str,
+        connections: ConnectionRegistry,
+    ) -> ConnectionCarry:
+        """Record the rooms this agent's sessions are already being served.
 
-        A session started by a build that kept its room set on disk and served
-        it over a connection of its own left no claim on the server: there was
-        nothing to claim against. Restarted by a build whose controller holds
-        the agent's only connection, it comes up holding nothing, and the room
-        it was in the middle of is answered next by a session that knows none
-        of it. This is where that association is carried across, once.
+        A session started by a build that gave every session a connection of
+        its own left no claim here: it subscribed its connection to its room
+        and served it from there, and the session row stayed empty because
+        there was nothing to claim against. Restarted by a build whose
+        controller holds the agent's only connection, it comes up holding
+        nothing, and the room it was in the middle of is answered next by a
+        session that knows none of it.
 
-        What the caller offers is intent, never authority: a room list read off
-        a local disk says where a session was, not that the room is still its
-        to take. So every room is decided here, against what the server holds —
-        and a room that does not survive that is refused by name rather than
-        quietly skipped, because it is a conversation that will start again.
+        What carries the association across is not the caller and not anything
+        on the caller's disk — a room list read off a disk says where a session
+        was, not that the room is still its to take. It is this server's own
+        routing: the session row names a connection, that connection is in the
+        live registry, and the rooms it is subscribed to are the ones this
+        server is delivering to that session right now. Nothing is inferred
+        from an absence, so a session whose connection this server cannot see
+        is reported unverifiable rather than given rooms it cannot be shown to
+        hold.
+
+        The evidence lasts only as long as the old worker does, so this runs
+        while it is still alive — before its controller replaces it. A
+        connection that moves or closes underneath the decision invalidates it:
+        every one is re-read against the generation and room set it was decided
+        on, and the whole carry is refused rather than committed against state
+        that has moved.
+
+        `controller_connection_id` is the one thing the caller supplies, and it
+        names the caller rather than any session: a session already bound to it
+        belongs to this build and is left alone. It cannot manufacture
+        provenance — a session's rooms still come from its own connection's
+        subscriptions and only a `single`-scoped connection has any — so the
+        worst a wrong value does is make this look at sessions that turn out to
+        have nothing to carry.
 
         A room is taken only if all of it holds: the agent is still a member;
         nothing unfinished claims it; no grant is outstanding for it; and this
-        session has never been recorded holding it. That last is the fence that
-        makes a retry safe and a reclaim impossible — a room this session held
-        and lost is in its own event history, so the loss is remembered and the
-        room is not asserted a second time.
+        session has never been recorded holding it. What is refused is named
+        and written into the session's own log, because a room that does not
+        come across is a conversation that starts again somewhere else.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
             # The same order as `bind_room`: the agent row, then every session
-            # of the agent by id, then the caller's own. A session being
-            # created for one of these rooms serializes on the agent row, which
-            # is what keeps a grant and an adoption from both finding the room
-            # free.
+            # of the agent by id. A session being created for one of these
+            # rooms serializes on the agent row, which is what keeps a grant
+            # and a carry from both finding the room free.
             await self._lock_agent(db, agent_id)
             rows = list(
                 await db.scalars(
@@ -2284,37 +2350,81 @@ class SessionAuthority:
                     .with_for_update()
                 )
             )
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
             client_id = await self._client_id(db, agent_id)
             now = await _now(db)
-            snapshot = _stored_snapshot(row)
-            held = list(snapshot.session.room_ids)
-            adopted: list[str] = []
-            refused: list[RefusedRoom] = []
-            for room_id in dict.fromkeys(room_ids):
-                if room_id in held:
-                    adopted.append(room_id)
-                elif await db.get(ClientRoom, (client_id, room_id)) is None:
-                    refused.append(RefusedRoom(room_id, "NOT_A_MEMBER"))
-                elif await self._ever_held(db, session_id, room_id):
-                    refused.append(RefusedRoom(room_id, "PRIOR_CLAIM_RECORDED"))
-                elif _room_claimants(rows, room_id, now)[1]:
-                    refused.append(RefusedRoom(room_id, "ROOM_HELD"))
-                elif await self._grant_outstanding(db, agent_id, room_id, now):
-                    refused.append(RefusedRoom(room_id, "GRANT_OUTSTANDING"))
-                else:
-                    held.append(room_id)
-                    adopted.append(room_id)
-            if held != snapshot.session.room_ids:
-                await self._append(
-                    db,
-                    row,
-                    SessionUpsert(
-                        type="session.upsert",
-                        session=snapshot.session.model_copy(update={"room_ids": held}),
-                    ),
+            uptime = time.monotonic()
+            carried: list[CarriedSession] = []
+            unverifiable: list[str] = []
+            evidence: list[tuple[str, int, frozenset[str]]] = []
+            for row in rows:
+                snapshot = _stored_snapshot(row)
+                if (
+                    snapshot.session.room_ids
+                    or snapshot.session.retired
+                    or _session_is_over(row)
+                    or not _host_holds(row, now)
+                    or row.connection_id is None
+                    or row.connection_id == controller_connection_id
+                ):
+                    continue
+                connection = connections.get(row.connection_id)
+                if (
+                    connection is None
+                    or connection.agent_id != agent_id
+                    or not connection.is_alive(uptime)
+                ):
+                    unverifiable.append(row.id)
+                    continue
+                # An `all` connection subscribes to nothing and covers what no
+                # sibling claims, so it says nothing about which of the
+                # sessions on it was serving which room.
+                if connection.scope != "single" or not connection.rooms:
+                    continue
+                evidence.append(
+                    (
+                        connection.id,
+                        connection.stream_generation,
+                        frozenset(connection.rooms),
+                    )
                 )
-            return RoomAdoption(tuple(adopted), tuple(refused))
+                adopted: list[str] = []
+                refused: list[RefusedRoom] = []
+                for room_id in sorted(connection.rooms):
+                    if await db.get(ClientRoom, (client_id, room_id)) is None:
+                        refused.append(RefusedRoom(room_id, "NOT_A_MEMBER"))
+                    elif await self._ever_held(db, row.id, room_id):
+                        refused.append(RefusedRoom(room_id, "PRIOR_CLAIM_RECORDED"))
+                    elif _room_claimants(rows, room_id, now)[1]:
+                        refused.append(RefusedRoom(room_id, "ROOM_HELD"))
+                    elif await self._grant_outstanding(db, agent_id, room_id, now):
+                        refused.append(RefusedRoom(room_id, "GRANT_OUTSTANDING"))
+                    else:
+                        adopted.append(room_id)
+                if adopted:
+                    await self._append(
+                        db,
+                        row,
+                        SessionUpsert(
+                            type="session.upsert",
+                            session=snapshot.session.model_copy(
+                                update={"room_ids": adopted}
+                            ),
+                        ),
+                    )
+                await self._append(db, row, _carry_notice(adopted, refused))
+                carried.append(CarriedSession(row.id, tuple(adopted), tuple(refused)))
+            for connection_id, generation, rooms in evidence:
+                moved = connections.get(connection_id)
+                if (
+                    moved is None
+                    or moved.stream_generation != generation
+                    or frozenset(moved.rooms) != rooms
+                ):
+                    raise SessionError(
+                        "CLAIM_MOVED",
+                        f"Connection {connection_id} changed while its rooms were being carried across.",
+                    )
+            return ConnectionCarry(tuple(carried), tuple(unverifiable))
 
     async def _ever_held(self, db: AsyncSession, session_id: str, room_id: str) -> bool:
         """Has this session ever been recorded in `room_id`?

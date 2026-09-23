@@ -50,6 +50,8 @@ export {
 export {
   RoomAdmissionError,
   SwitchRoomAdmissions,
+  type CarriedRooms,
+  type RefusedRoom,
   type RoomAdmission,
   type RoomDelivery,
   type RoomReservation,
