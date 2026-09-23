@@ -48,6 +48,19 @@ it('writes down each answer the server gives it, and writes the same one once', 
   ]);
 });
 
+it('reads back the rooms it last recorded, and nothing where it recorded none', async () => {
+  // The only surviving evidence of what a session that served its own
+  // connection was serving: the config it was written from is parsed without
+  // the room set now. It has to be read before a binding, which replaces it
+  // with the server's answer — empty for a session the server holds no claim
+  // for, which is the room being lost.
+  const { inbox } = await inboxWith([{ type: 'rooms', rooms: ['room', 'other'] }]);
+  expect(inbox.recorded()).toEqual(['room', 'other']);
+  await inbox.serves([]);
+  expect(inbox.recorded()).toEqual([]);
+  expect((await inboxWith([])).inbox.recorded()).toEqual([]);
+});
+
 it('admits a routed event exactly once, on the message rather than the position', async () => {
   // A session upgraded from one that served itself can hold the same event
   // under two numberings: its old connection's, and its controller's.

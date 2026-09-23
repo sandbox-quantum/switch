@@ -928,6 +928,184 @@ it('starts, and says so, when its controller is not there yet to bind to', async
   }
 }, 30000);
 
+/** Writes the room set a session served over a connection of its own. */
+async function servedLocally(root: string, rooms: string[]): Promise<void> {
+  await writeFile(join(root, 'room-inbox.jsonl'), `${JSON.stringify({ type: 'rooms', rooms })}\n`, {
+    mode: 0o600,
+  });
+}
+
+const claimed = {
+  contractVersion: 1,
+  throughSequence: 1,
+  session: { ...startingSession, epoch: 'server-epoch' },
+  turns: [],
+  items: [],
+  requests: [],
+  commandStatuses: [],
+  nextPageToken: null,
+};
+
+it('offers Switch the room it was serving before anything else can answer for it', async () => {
+  // A session of the build this one replaces kept its rooms on disk, so Switch
+  // holds no claim for it and the binding would answer with none. The offer has
+  // to come first, and after the inbox is listening: the moment Switch counts
+  // this session the room's owner, an event for it can be routed here.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-adopt-'));
+  roots.push(root);
+  await servedLocally(root, ['room']);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const order: string[] = [];
+  let offered: unknown = null;
+  let listening = false;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim')) return Response.json(claimed);
+      if (path.endsWith('/adopt-rooms')) {
+        order.push('adopt');
+        offered = JSON.parse(options.body as string);
+        listening = await readsHandoffs(root);
+        return Response.json({ adopted: ['room'], refused: [] });
+      }
+      if (path.endsWith('/room-connection')) {
+        order.push('bind');
+        return Response.json({ rooms: ['room'] });
+      }
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(order).toEqual(['adopt', 'bind']), { timeout: 3000 });
+    expect(offered).toEqual({ host_id: 'host', epoch: 'server-epoch', room_ids: ['room'] });
+    expect(listening).toBe(true);
+    // The room came across, so the binding answers with it and the record of
+    // what this session serves is the one it started from.
+    expect(await boundRooms(root)).toEqual([['room']]);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('offers nothing when it has no room of its own to carry across', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-adopt-none-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const paths: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path.endsWith('/claim')) return Response.json(claimed);
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(async () => expect(await boundRooms(root)).toEqual([['room']]), {
+      timeout: 3000,
+    });
+    expect(paths.filter((path) => path.endsWith('/adopt-rooms'))).toEqual([]);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('says which room Switch would not carry across, and runs on without it', async () => {
+  // The room is somebody else's now, and the session comes up without it. What
+  // it must not do is come up quietly without it: a conversation is about to be
+  // answered by a session that knows nothing of the one before it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-adopt-refused-'));
+  roots.push(root);
+  await servedLocally(root, ['room']);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim')) return Response.json(claimed);
+      if (path.endsWith('/adopt-rooms'))
+        return Response.json({ adopted: [], refused: [{ roomId: 'room', reason: 'ROOM_HELD' }] });
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: [] });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(adapter.startSession).toHaveBeenCalled(), { timeout: 3000 });
+    const said = warn.mock.calls.map(([message]) => String(message));
+    expect(said.some((message) => message.includes('room') && message.includes('ROOM_HELD'))).toBe(
+      true
+    );
+    await vi.waitFor(async () => expect(await boundRooms(root)).toEqual([['room'], []]), {
+      timeout: 3000,
+    });
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('starts, and says so, against a server that cannot carry rooms across at all', async () => {
+  // A worker can reach a server older than itself. Losing the room there is the
+  // behaviour it would have had anyway; refusing to start is not.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-adopt-unsupported-'));
+  roots.push(root);
+  await servedLocally(root, ['room']);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim')) return Response.json(claimed);
+      if (path.endsWith('/adopt-rooms'))
+        return Response.json({ detail: 'Not Found' }, { status: 404 });
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: [] });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(adapter.startSession).toHaveBeenCalled(), { timeout: 3000 });
+    expect(warn.mock.calls.map(([message]) => String(message)).join('\n')).toContain('404');
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
 it('says in the transcript when its room connection is refused, and when it is back', async () => {
   // The connection belongs to the agent's controller, which can stop and be
   // started again under the same session. Nothing else would tell the agent

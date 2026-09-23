@@ -153,6 +153,28 @@ class RoomGrant:
 
 
 @dataclass(frozen=True)
+class RefusedRoom:
+    """A room a session offered to adopt and was not given.
+
+    The reason is part of the answer rather than a log line. A room that does
+    not come across is a conversation that will be answered by a new session,
+    and the caller has to be able to say which room and why instead of going
+    quiet about it.
+    """
+
+    room_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class RoomAdoption:
+    """What a session was and was not given of the rooms it offered."""
+
+    adopted: tuple[str, ...]
+    refused: tuple[RefusedRoom, ...]
+
+
+@dataclass(frozen=True)
 class RoomAdmission:
     """Who, if anyone, an agent's controller may hand a room delivery to.
 
@@ -2210,6 +2232,139 @@ class SessionAuthority:
                 ),
             )
         return displaced
+
+    async def adopt_rooms(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        room_ids: list[str],
+    ) -> RoomAdoption:
+        """Record rooms a session has been serving but never claimed here.
+
+        A session started by a build that kept its room set on disk and served
+        it over a connection of its own left no claim on the server: there was
+        nothing to claim against. Restarted by a build whose controller holds
+        the agent's only connection, it comes up holding nothing, and the room
+        it was in the middle of is answered next by a session that knows none
+        of it. This is where that association is carried across, once.
+
+        What the caller offers is intent, never authority: a room list read off
+        a local disk says where a session was, not that the room is still its
+        to take. So every room is decided here, against what the server holds —
+        and a room that does not survive that is refused by name rather than
+        quietly skipped, because it is a conversation that will start again.
+
+        A room is taken only if all of it holds: the agent is still a member;
+        nothing unfinished claims it; no grant is outstanding for it; and this
+        session has never been recorded holding it. That last is the fence that
+        makes a retry safe and a reclaim impossible — a room this session held
+        and lost is in its own event history, so the loss is remembered and the
+        room is not asserted a second time.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            # The same order as `bind_room`: the agent row, then every session
+            # of the agent by id, then the caller's own. A session being
+            # created for one of these rooms serializes on the agent row, which
+            # is what keeps a grant and an adoption from both finding the room
+            # free.
+            await self._lock_agent(db, agent_id)
+            rows = list(
+                await db.scalars(
+                    select(SdkSession)
+                    .where(
+                        SdkSession.tenant_id == require_tenant_id(),
+                        SdkSession.agent_id == agent_id,
+                    )
+                    .order_by(SdkSession.id)
+                    .with_for_update()
+                )
+            )
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            client_id = await self._client_id(db, agent_id)
+            now = await _now(db)
+            snapshot = _stored_snapshot(row)
+            held = list(snapshot.session.room_ids)
+            adopted: list[str] = []
+            refused: list[RefusedRoom] = []
+            for room_id in dict.fromkeys(room_ids):
+                if room_id in held:
+                    adopted.append(room_id)
+                elif await db.get(ClientRoom, (client_id, room_id)) is None:
+                    refused.append(RefusedRoom(room_id, "NOT_A_MEMBER"))
+                elif await self._ever_held(db, session_id, room_id):
+                    refused.append(RefusedRoom(room_id, "PRIOR_CLAIM_RECORDED"))
+                elif _room_claimants(rows, room_id, now)[1]:
+                    refused.append(RefusedRoom(room_id, "ROOM_HELD"))
+                elif await self._grant_outstanding(db, agent_id, room_id, now):
+                    refused.append(RefusedRoom(room_id, "GRANT_OUTSTANDING"))
+                else:
+                    held.append(room_id)
+                    adopted.append(room_id)
+            if held != snapshot.session.room_ids:
+                await self._append(
+                    db,
+                    row,
+                    SessionUpsert(
+                        type="session.upsert",
+                        session=snapshot.session.model_copy(update={"room_ids": held}),
+                    ),
+                )
+            return RoomAdoption(tuple(adopted), tuple(refused))
+
+    async def _ever_held(self, db: AsyncSession, session_id: str, room_id: str) -> bool:
+        """Has this session ever been recorded in `room_id`?
+
+        Every room set a session has had was written through its event log, so
+        the log answers this where the current set cannot: an empty set stands
+        equally for a session that never claimed a room and one that was
+        evicted from it, and the two must not be treated alike.
+        """
+        seen = await db.scalar(
+            select(SdkSessionEvent.sequence)
+            .where(
+                SdkSessionEvent.tenant_id == require_tenant_id(),
+                SdkSessionEvent.session_id == session_id,
+                SdkSessionEvent.event["body"]["session"]["roomIds"].op("@>")(
+                    func.jsonb_build_array(room_id)
+                ),
+            )
+            .limit(1)
+        )
+        return seen is not None
+
+    async def _grant_outstanding(
+        self, db: AsyncSession, agent_id: str, room_id: str, now: datetime
+    ) -> bool:
+        """Is the right to start a session for `room_id` in someone else's hands?
+
+        A grant is issued against a room nothing holds, and the session it is
+        for may not exist yet. Adopting the room in that window would leave the
+        grant to be redeemed against a room that is no longer free, so the
+        adoption waits for the grant to be spent or to lapse instead.
+
+        Unspent, as `admit_room` counts them. A grant that has been redeemed
+        produced a session, and that session answers for the room on its own
+        terms; reading the spent row as a hold as well would keep a room
+        unadoptable after the session it was granted to had finished with it.
+        """
+        outstanding = await db.scalar(
+            select(SdkRoomAdmission.message_id)
+            .where(
+                SdkRoomAdmission.tenant_id == require_tenant_id(),
+                SdkRoomAdmission.agent_id == agent_id,
+                SdkRoomAdmission.room_id == room_id,
+                SdkRoomAdmission.discarded_at.is_(None),
+                SdkRoomAdmission.granted_session_id.is_(None),
+                SdkRoomAdmission.grant_expires_at > now,
+            )
+            .limit(1)
+        )
+        return outstanding is not None
 
     async def _client_id(self, db: AsyncSession, agent_id: str) -> str:
         client_id = await db.scalar(select(Agent.client_id).where(Agent.id == agent_id))

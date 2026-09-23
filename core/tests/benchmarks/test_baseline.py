@@ -722,13 +722,11 @@ async def test_baseline_upgrades_over_a_running_legacy_session(
 
     The agent comes back to one connection and the room does not go quiet:
     every message is delivered exactly once, and a room first addressed after
-    the upgrade is served normally. What the room does not keep is its session.
-    The controller restarts a superseded session reachable over its own
-    connection but without the rooms that session was serving, so the session
-    comes up holding none, its claim on the room lapses, and the next message
-    there is answered by a new session that was never told what the last one
-    was. That is asserted as the behaviour it is, so that fixing it fails here
-    rather than passing quietly.
+    the upgrade is served normally. The room keeps its session too. The old
+    build left its room set on disk and nothing of it on the server, so the
+    restarted session offers Switch what it finds there before it binds; the
+    room is still nobody else's, Switch gives it back, and the next message is
+    answered by the same session with the same conversation behind it.
 
     The old controller is killed rather than asked to quit, so the connection
     it held is swept on its heartbeat instead of being closed. That is the
@@ -777,23 +775,31 @@ async def test_baseline_upgrades_over_a_running_legacy_session(
         assert served_room in assigned, assigned
         # The topology being upgraded from, in the state it leaves behind: the
         # controller's connection, and one the session opened for itself.
-        _, legacy = await _await_connections(bench, target.agent_id, 2, 30.0)
-        assert watcher.connection_id in legacy, legacy
+        _, legacy = await _await_connections(
+            bench, target.agent_id, 2, watcher.connection_id, 30.0
+        )
 
         watcher.stop_controller()
         watcher.start_controller(bundle, controller_connection_id(target.agent_id))
-        settled, current = await _await_connections(bench, target.agent_id, 1, 180.0)
-        assert current == (controller_connection_id(target.agent_id),), current
+        settled, _ = await _await_connections(
+            bench, target.agent_id, 1, controller_connection_id(target.agent_id), 180.0
+        )
 
         after = new_marker()
         markers[after] = await send(served_room, after)
         assert not await dispatch_wait(
             watcher, {after: markers[after]}, dispatch_timeout(1)
         )
-        # Answered, but by a session started for this message rather than by
-        # the one that had been serving the room since before the upgrade.
-        replacing = watcher.sessions_by_room()[served_room]
-        assert replacing != assigned[served_room]
+        # Answered by the session that had been serving the room since before
+        # the upgrade, rather than by one started for this message.
+        serving = watcher.sessions_by_room()[served_room]
+        assert serving == assigned[served_room]
+        # And by the conversation it was already having. Keeping the server's
+        # session identity and starting a new provider conversation under it
+        # would read to the room as the same loss.
+        conversations = watcher.provider_conversations(serving)
+        assert len(set(conversations)) == 1, conversations
+        assert len(conversations) > 1, conversations
 
         fresh = new_marker()
         markers[fresh] = await send(later_room, fresh)
@@ -810,10 +816,11 @@ async def test_baseline_upgrades_over_a_running_legacy_session(
         f"and was back to one, the controller's, {settled:.1f}s after a newer "
         "controller was started on the same state. Every message was delivered "
         "once, and a room first addressed after the upgrade was served normally. "
-        "The room the older build had been serving did not keep its session: the "
-        f"upgrade restarted {assigned[served_room]} without the rooms it held, so "
-        f"the next message there was answered by {replacing}, which was started "
-        "for that message and knows nothing of the conversation before it."
+        "The room the older build had been serving kept its session: the upgrade "
+        f"restarted {assigned[served_room]}, which carried the room across to "
+        "Switch before it bound, so the next message there was answered by "
+        f"{serving}, resuming the provider conversation it already had "
+        f"({conversations[0]}) rather than beginning another."
     )
     assert duplicated == {}, duplicated
 
@@ -888,8 +895,9 @@ async def test_baseline_upgrades_over_its_own_running_session(
 
         watcher.stop_controller()
         watcher.start_controller(successor, connection)
-        settled, current = await _await_connections(bench, target.agent_id, 1, 180.0)
-        assert current == (connection,), current
+        settled, _ = await _await_connections(
+            bench, target.agent_id, 1, connection, 180.0
+        )
 
         after = new_marker()
         markers[after] = await send(served_room, after)
@@ -988,13 +996,15 @@ async def _connection_counts(
 
 
 async def _await_connections(
-    bench: BenchServer, agent_id: str, expected: int, timeout: float
+    bench: BenchServer, agent_id: str, expected: int, settling_to: str, timeout: float
 ) -> tuple[float, tuple[str, ...]]:
     """Seconds until the agent holds exactly `expected` connections, and which.
 
-    The identities are returned rather than just the count because two
-    topologies meeting on one agent is exactly the case where the right number
-    of connections can be the wrong ones.
+    `settling_to` names the one the agent is settling onto, and the count alone
+    is not enough without it: two topologies meeting on one agent pass through
+    the right number of the wrong connections on the way. A build being taken
+    over holds its own until it is swept, so there is a moment where it is the
+    only one left and the build taking over has not connected yet.
     """
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -1004,12 +1014,12 @@ async def _await_connections(
         held = tuple(
             connection.id for connection in bench.connections.for_agent(agent_id)
         )
-        if len(held) == expected:
+        if len(held) == expected and settling_to in held:
             return loop.time() - started, held
         await asyncio.sleep(0.1)
     raise TimeoutError(
         f"agent {agent_id} held {len(held)} connection(s) rather than {expected} "
-        f"throughout {timeout}s: {held}"
+        f"including {settling_to} throughout {timeout}s: {held}"
     )
 
 

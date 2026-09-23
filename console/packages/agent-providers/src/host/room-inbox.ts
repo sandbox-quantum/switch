@@ -145,6 +145,22 @@ export class SharedRoomInbox {
   }
 
   /**
+   * The rooms this session last recorded itself serving, before it has bound.
+   *
+   * Written by a build that kept its room set locally and served it over a
+   * connection of its own, or by this one recording what the server answered
+   * its binding with. Which of the two it is, is not decided here: the server
+   * is told what was found and decides each room against what it holds.
+   *
+   * Read before the first binding and only then, because binding overwrites
+   * it with the server's answer — which for a session the server holds no
+   * claim for is the empty set that loses the room.
+   */
+  recorded(): string[] {
+    return this.rooms ? [...this.rooms] : [];
+  }
+
+  /**
    * Records the rooms the server says this session serves, so what the session
    * was last told is readable after the fact rather than only while it runs.
    */

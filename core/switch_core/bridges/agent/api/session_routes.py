@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
@@ -350,3 +351,38 @@ async def bind_room_connection(
         protocol.connections,
     )
     return {"rooms": rooms}
+
+
+class RoomAdoptionRequest(HostLease):
+    room_ids: list[str] = Field(min_length=1)
+
+
+class RefusedRoomResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    room_id: str
+    reason: str
+
+
+class RoomAdoptionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    adopted: list[str]
+    refused: list[RefusedRoomResponse]
+
+
+@router.post("/{session_id}/adopt-rooms")
+async def adopt_rooms(
+    session_id: str,
+    body: RoomAdoptionRequest,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+) -> RoomAdoptionResponse:
+    adoption = await SessionAuthority(factory).adopt_rooms(
+        agent.id, session_id, body.host_id, body.epoch, body.room_ids
+    )
+    return RoomAdoptionResponse(
+        adopted=list(adoption.adopted),
+        refused=[
+            RefusedRoomResponse(room_id=room.room_id, reason=room.reason)
+            for room in adoption.refused
+        ],
+    )

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   commandSchema,
+  roomAdoptionSchema,
   roomBindingSchema,
   roomMessageReceiptSchema,
   serverEventSchema,
@@ -367,14 +368,55 @@ export async function runSharedHost(
         "This session is not bound to its agent's room connection, so messages addressed to it in Switch are not reaching it. Delivery resumes by itself once that connection is back; if it does not, restart the agent's room watcher."
       );
     };
+    /**
+     * Offers Switch the rooms this session recorded itself serving.
+     *
+     * A session started by a build that served its own connection kept its
+     * room set on disk, so Switch holds no claim for it: the binding below
+     * would answer with nothing, and the conversation the session was in the
+     * middle of would be picked up next by a session that knows none of it.
+     * This is where that association is carried across, once.
+     *
+     * What is offered is evidence, never authority — a list read off a local
+     * disk says where the session was, not that the room is still its to take.
+     * Switch decides each room, and one it will not give back is said here
+     * rather than passed over silently, because it is a conversation that
+     * starts again somewhere else.
+     *
+     * Never fatal. A server that cannot answer leaves the session exactly
+     * where it would have been without the offer, with the reason said.
+     */
+    const adoptRecordedRooms = async (recorded: string[]): Promise<void> => {
+      if (!recorded.length) return;
+      try {
+        const adoption = roomAdoptionSchema.parse(
+          await request(`${sessionPath}/adopt-rooms`, { ...hostLease, room_ids: recorded })
+        );
+        for (const room of adoption.refused)
+          console.warn(
+            `Switch kept room ${room.roomId} away from this session (${room.reason}), so its next message is answered by another one.`
+          );
+      } catch (error) {
+        console.warn(
+          `Switch was not told which rooms this session was serving, so it may come up serving none of them: ${String(error)}`
+        );
+      }
+    };
     if (roomConnection) {
       rooms = await SharedRoomInbox.open(options.root);
+      // Read before binding, which replaces it with the server's own answer.
+      const recorded = rooms.recorded();
       // Before the first read of it, so an event this agent's controller routes
       // here while the session is still starting is waiting in the inbox rather
       // than written to a worker that had not yet said it reads one.
       await declareHandoffCapability(options.root);
       handoffs = new HandoffInbox(options.root);
       handoffs.listen(executionSignal);
+      // With the inbox already listening, so a room carried across has
+      // somewhere to be delivered from the moment Switch counts this session
+      // its owner, and before the binding both answers for those rooms and
+      // publishes the selector this session is routed to by.
+      await adoptRecordedRooms(recorded);
       await assertRoomBinding();
     }
     starting = true;
