@@ -3,7 +3,7 @@ import { err, ok, type Result } from '@switch-console/shared';
 import { BrowserWindow, session as electronSession } from 'electron';
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
-import { loadOrCreateSecrets } from '@main/core/managed-switch-server/secrets';
+import { readSecrets } from '@main/core/managed-switch-server/secrets';
 import { log } from '@main/lib/logger';
 import type { SwitchServer, SwitchUser } from '@shared/core/switch-servers/switch-servers';
 import { consoleIdentityHeaders } from './console-identity';
@@ -146,17 +146,29 @@ export async function refreshSession(
 }
 
 /**
- * Silent re-login for the managed local server. Switch Console generated that
- * server's admin password, so when its session is missing or expired we can
- * sign in again with no user interaction — the local server is meant to be
- * always signed in. Persists the fresh cookie (via `passwordLogin`) and returns
- * it for immediate reuse, or `null` when re-login failed (the caller then falls
- * back to the normal sign-in path). No-op for non-managed servers, whose
+ * Silent re-login for a managed server. Switch Console holds that server's
+ * admin password, so when its session is missing or expired we can sign in
+ * again with no user interaction — a managed server is meant to be always
+ * signed in. Persists the fresh cookie (via `passwordLogin`) and returns it for
+ * immediate reuse, or `null` when re-login failed (the caller then falls back
+ * to the normal sign-in path). No-op for non-managed servers, whose
  * credentials Switch Console does not hold.
+ *
+ * Reads the stored credentials and never makes them. Signing in is no moment
+ * to mint a password: one made here matches no running stack, so the sign-in
+ * fails anyway, and the made-up bundle is then kept as though it were the
+ * stack's — which is how a Console that had never started a shared stack used
+ * to end up holding credentials for it that opened nothing (CHOO-2893).
  */
 export async function reauthenticateManagedServer(server: SwitchServer): Promise<string | null> {
   if (!server.managed) return null;
-  const secrets = await loadOrCreateSecrets({ secretsKey: managedServerSecretsKey(server) });
+  const secrets = await readSecrets({ secretsKey: managedServerSecretsKey(server) });
+  if (secrets === null) {
+    log.warn('Managed Switch server has no stored credentials to sign in with', {
+      server: server.id,
+    });
+    return null;
+  }
   const result = await passwordLogin(
     server,
     LOCAL_SERVER_ADMIN_EMAIL,

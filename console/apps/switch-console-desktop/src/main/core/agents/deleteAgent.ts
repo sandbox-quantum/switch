@@ -238,11 +238,12 @@ async function removeAgent(
     })
   );
 
-  if (location && location.sshHost !== null) {
-    await stopRemoteWatcher(agentId).catch((error) => {
-      log.warn('deleteAgent: failed to stop remote watcher', { agentId, error: String(error) });
-    });
-  } else {
+  // A remote agent's watcher runs on its host, beside its sessions, and serves
+  // every Console that uses the agent — on a shared host, other people's too
+  // (CHOO-2893). Removing the agent from this Console leaves it running, as the
+  // removal dialog promises; only terminating the agent, above, stops it. A
+  // local agent's watcher is this Console's own child, so it goes with the row.
+  if (!(location && location.sshHost !== null)) {
     await autoSessionWatcher.stopForAgent(agentId);
   }
 

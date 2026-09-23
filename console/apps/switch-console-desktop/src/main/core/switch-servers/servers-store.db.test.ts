@@ -115,6 +115,138 @@ describe('servers-store: rename & delete', () => {
     });
   });
 
+  describe('ensureManagedServer URL clashes', () => {
+    // A stack someone else set up on a shared host brings the ports it was
+    // started with, which can be numbers this Console already gave another
+    // server (CHOO-2893). Sharing a port is not sharing a server.
+    async function insertServer(values: Partial<typeof switchServers.$inferInsert>) {
+      await fixture.db.insert(switchServers).values({
+        id: 'x',
+        name: 'x',
+        gatewayUrl: 'http://localhost:1',
+        apiUrl: 'http://localhost:2',
+        ...values,
+      });
+    }
+
+    it('never takes over another managed server’s row by URL', async () => {
+      await insertServer({
+        id: 'local-1',
+        name: 'My local server',
+        gatewayUrl: 'http://localhost:41000',
+        apiUrl: 'http://localhost:41001',
+        managed: true,
+        managementKind: 'local',
+      });
+
+      await expect(
+        ensureManagedServer(
+          {
+            name: 'Team server',
+            gatewayUrl: 'http://localhost:41000',
+            apiUrl: 'http://localhost:41001',
+          },
+          { kind: 'remote', sshHost: 'vm-1' }
+        )
+      ).rejects.toThrow(
+        /http:\/\/localhost:41000 is already the address of “My local server” \(the server Switch Console runs on this computer\).*on vm-1/
+      );
+      const [local] = await fixture.db
+        .select()
+        .from(switchServers)
+        .where(eq(switchServers.id, 'local-1'));
+      expect(local).toMatchObject({ managementKind: 'local', sshHost: null });
+    });
+
+    it('never takes over the row of a server on another host', async () => {
+      await insertServer({
+        id: 'remote-2',
+        name: 'Other VM',
+        gatewayUrl: 'http://localhost:41000',
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'vm-2',
+      });
+
+      await expect(
+        ensureManagedServer(
+          { name: 'Team', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+          { kind: 'remote', sshHost: 'vm-1' }
+        )
+      ).rejects.toThrow(/runs on vm-2/);
+    });
+
+    it('still adopts a server someone registered by hand at the same address', async () => {
+      await insertServer({
+        id: 'external-1',
+        name: 'Tunnel to the VM',
+        gatewayUrl: 'http://localhost:41000',
+        apiUrl: 'http://localhost:41001',
+      });
+
+      const adopted = await ensureManagedServer(
+        { name: 'Team', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+        { kind: 'remote', sshHost: 'vm-1' }
+      );
+
+      expect(adopted).toMatchObject({
+        id: 'external-1',
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'vm-1',
+      });
+    });
+
+    it('refuses to move a server onto an address another record holds, in words', async () => {
+      await insertServer({
+        id: 'remote-1',
+        name: 'Team',
+        gatewayUrl: 'http://localhost:3300',
+        apiUrl: 'http://localhost:8000',
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'vm-1',
+      });
+      await insertServer({
+        id: 'external-1',
+        name: 'Company server',
+        gatewayUrl: 'http://localhost:41000',
+        apiUrl: 'http://localhost:41001',
+      });
+
+      // Without the check this is a raw unique-index failure.
+      await expect(
+        ensureManagedServer(
+          { name: 'Team', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+          { kind: 'remote', sshHost: 'vm-1' }
+        )
+      ).rejects.toThrow(/already the address of “Company server”/);
+    });
+
+    it('follows a server to new ports when nothing else holds them', async () => {
+      await insertServer({
+        id: 'remote-1',
+        name: 'Team',
+        gatewayUrl: 'http://localhost:3300',
+        apiUrl: 'http://localhost:8000',
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'vm-1',
+      });
+
+      const moved = await ensureManagedServer(
+        { name: 'ignored', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+        { kind: 'remote', sshHost: 'vm-1' }
+      );
+
+      expect(moved).toMatchObject({
+        id: 'remote-1',
+        name: 'Team',
+        gatewayUrl: 'http://localhost:41000',
+      });
+    });
+  });
+
   describe('ensureManagedServer telemetry', () => {
     it('reports a new local managed server once', async () => {
       await ensureManagedServer(

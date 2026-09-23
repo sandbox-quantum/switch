@@ -97,6 +97,9 @@ vi.mock('@main/core/sessions/session-hooks', () => ({
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
 
 const { deleteAgent } = await import('./deleteAgent');
+const { getAgentLocation } = await import('./agent-location');
+const { stopRemoteWatcher } = await import('./remote-watcher');
+const { autoSessionWatcher } = await import('@main/core/switch-rooms/auto-session-watcher');
 
 const CREDS = JSON.stringify({
   env: { SWITCH_API_ENDPOINT: 'https://s', SWITCH_API_TOKEN: 'tok-123', SWITCH_AGENT_ID: 'sw-1' },
@@ -181,6 +184,47 @@ describe('deleteAgent', () => {
     });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-sibling'))).toBe(true);
+  });
+
+  describe('the auto-session watcher', () => {
+    it('leaves a remote agent’s watcher running on a plain remove', async () => {
+      // It runs on the host and serves every Console using the agent — on a
+      // shared host, other people's too (CHOO-2893). The removal dialog
+      // promises the sidecar is untouched unless asked.
+      vi.mocked(getAgentLocation).mockResolvedValueOnce({ sshHost: 'vm-1', dir: '/repo' } as never);
+
+      await deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      });
+
+      expect(stopRemoteWatcher).not.toHaveBeenCalled();
+      expect(autoSessionWatcher.stopForAgent).not.toHaveBeenCalled();
+    });
+
+    it('stops a remote agent’s watcher when the agent is terminated', async () => {
+      vi.mocked(getAgentLocation).mockResolvedValueOnce({ sshHost: 'vm-1', dir: '/repo' } as never);
+
+      await deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: true,
+        trigger: 'user',
+      });
+
+      expect(stopRemoteWatcher).toHaveBeenCalledExactlyOnceWith('agent-1');
+    });
+
+    it('stops a local agent’s watcher, which is this Console’s own child, on any remove', async () => {
+      await deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      });
+
+      expect(autoSessionWatcher.stopForAgent).toHaveBeenCalledWith('agent-1');
+      expect(stopRemoteWatcher).not.toHaveBeenCalled();
+    });
   });
 
   describe('what it reports', () => {
