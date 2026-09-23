@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getLocalStatus = vi.hoisted(() => vi.fn());
 const getRemoteStatus = vi.hoisted(() => vi.fn());
+const recheck = vi.hoisted(() => vi.fn());
 const isHostBlockedMock = vi.hoisted(() => vi.fn(() => false));
 const getReachability = vi.hoisted(() => vi.fn());
 
@@ -9,14 +10,18 @@ vi.mock('./local-server-service', () => ({
   localServerService: { getStatus: getLocalStatus },
 }));
 vi.mock('./remote-server-service', () => ({
-  remoteServerService: { getStatus: getRemoteStatus },
+  remoteServerService: { getStatus: getRemoteStatus, recheck },
 }));
 vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
   hostReachabilityService: { isBlocked: isHostBlockedMock, get: getReachability },
 }));
 
-const { isManagedServerRunning, managedServerHostBlocked, managedServerStoppedPhase } =
-  await import('./managed-server-status');
+const {
+  isManagedServerRunning,
+  managedServerHostBlocked,
+  managedServerStoppedPhase,
+  noteManagedServerUnanswered,
+} = await import('./managed-server-status');
 
 function reachability(overrides: Record<string, unknown>) {
   return {
@@ -201,5 +206,31 @@ describe('managedServerStoppedPhase', () => {
       managedServerStoppedPhase(server({ managementKind: 'remote', sshHost: 'host-a' }))
     ).toBeNull();
     expect(getRemoteStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('noteManagedServerUnanswered', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('asks the host again about a remote stack that stopped answering', () => {
+    // Shared by everyone with access to the host, so another Console may have
+    // stopped or moved it (CHOO-2893).
+    noteManagedServerUnanswered(server({ managementKind: 'remote', sshHost: 'host-a' }));
+
+    expect(recheck).toHaveBeenCalledExactlyOnceWith('host-a');
+  });
+
+  it('leaves the local stack alone: nobody else can change it', () => {
+    noteManagedServerUnanswered(server({ managementKind: 'local' }));
+
+    expect(recheck).not.toHaveBeenCalled();
+  });
+
+  it('leaves a server someone else runs alone', () => {
+    noteManagedServerUnanswered(server({ managed: false, managementKind: null }));
+
+    expect(recheck).not.toHaveBeenCalled();
   });
 });

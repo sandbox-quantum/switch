@@ -3,6 +3,7 @@ import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
   managedServerStoppedPhase,
+  noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -187,6 +188,7 @@ async function gatewayFetch(
         signal: AbortSignal.timeout(30_000),
       });
     } catch (cause) {
+      noteManagedServerUnanswered(server);
       throw new GatewayError(
         'network',
         `Could not reach ${server.gatewayUrl}: ${cause instanceof Error ? cause.message : String(cause)}`

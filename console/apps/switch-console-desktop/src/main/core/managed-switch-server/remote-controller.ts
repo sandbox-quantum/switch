@@ -1,5 +1,7 @@
 import type {
+  ConnectRemoteServerResult,
   DockerAvailability,
+  RemoteStackProbe,
   StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
@@ -13,8 +15,15 @@ export const remoteSwitchServerController = createRPCController({
   detectDocker: (sshHost: string): Promise<DockerAvailability> =>
     remoteServerService.detectDocker(sshHost),
 
+  probe: (sshHost: string): Promise<RemoteStackProbe> => remoteServerService.probe(sshHost),
+
   start: (params: { sshHost: string; name: string }): Promise<StartLocalServerResult> =>
     remoteServerService.start(params.sshHost, params.name),
+
+  connect: (params: { sshHost: string; name: string }): Promise<ConnectRemoteServerResult> =>
+    remoteServerService.connect(params.sshHost, params.name),
+
+  disconnect: (sshHost: string): Promise<void> => remoteServerService.disconnect(sshHost),
 
   stop: (sshHost: string): Promise<void> => remoteServerService.stop(sshHost),
 

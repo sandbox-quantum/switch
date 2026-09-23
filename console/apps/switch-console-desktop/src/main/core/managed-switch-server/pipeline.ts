@@ -174,7 +174,7 @@ async function migrateOffMatrix(
   };
 }
 
-type StackSettings = { secrets: LocalServerSecrets; ports: LocalServerPorts };
+export type StackSettings = { secrets: LocalServerSecrets; ports: LocalServerPorts };
 
 /**
  * Where a start's ports and credentials come from (CHOO-2893).
@@ -246,6 +246,38 @@ async function adoptSettings(
   await storeSecrets(host, secrets);
   await rememberPorts(host, stack.env.ports);
   return { secrets, ports: stack.env.ports };
+}
+
+/**
+ * Take up a stack that is running on a shared host without touching it: keep
+ * its settings as this desktop's copy, and bring this account's working dir in
+ * step so compose — for Stop, Restart and the status probes — reads the same
+ * `.env` the stack runs with. The compose file is written only where there is
+ * none, since rewriting it is a start's business. A stack this account started
+ * before settings were shared is published on the way, so the next person can
+ * join it.
+ *
+ * Shared by joining a stack and by picking one back up at launch, which is the
+ * same act from a Console that has joined before.
+ */
+export async function adoptRunningStack(
+  host: ServerHost,
+  stack: Extract<StackOnHost, { kind: 'present' }>
+): Promise<StackSettings> {
+  const shared = host.sharedState;
+  if (shared === null) {
+    throw new Error(`The stack on ${host.label} is not shared, so there is nothing to adopt.`);
+  }
+  const settings = await adoptSettings(host, stack);
+  if ((await host.readFile(COMPOSE_FILE_NAME)) === null) {
+    await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
+  }
+  if (stack.source === 'published') {
+    await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
+  } else if (!stack.published) {
+    await publishEnv(shared, stack.raw);
+  }
+  return settings;
 }
 
 async function settingsFor(
@@ -466,16 +498,8 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectRe
   }
   if (!stack.running) return { kind: 'not-running' };
 
-  const settings = await adoptSettings(host, stack);
-
   onMessage('Preparing this account’s copy of the server’s settings…');
-  await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
-  if (stack.source === 'published') {
-    await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
-  } else if (!stack.published) {
-    onMessage('Sharing the server’s settings on the host…');
-    await publishEnv(shared, stack.raw);
-  }
+  const settings = await adoptRunningStack(host, stack);
 
   await host.establishNetworking(settings.ports);
 

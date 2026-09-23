@@ -1,3 +1,4 @@
+import type { RemoteStackProbe } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   ENV_FILE_NAME,
   STACK_HELPER_IMAGE,
@@ -338,6 +339,33 @@ export function unsharedStackMessage(hostLabel: string, ownerDir: string | null)
     `replace its credentials and take it down, so nothing was changed. It is shared the next ` +
     `time Switch Console starts or connects to it from the account that set it up.`
   );
+}
+
+/** What the renderer is told of a host's stack: enough to choose between
+ * Connect and Start, and nothing secret. */
+export function probeFromStack(hostLabel: string, stack: StackOnHost): RemoteStackProbe {
+  switch (stack.kind) {
+    case 'absent':
+      return { kind: 'absent' };
+    case 'present':
+      return {
+        kind: 'present',
+        running: stack.running,
+        deployedVersion: stack.env.version,
+        shared: stack.published,
+      };
+    case 'unshared':
+      return {
+        kind: 'unshared',
+        running: stack.running,
+        ownerDir: stack.ownerDir,
+        message: unsharedStackMessage(hostLabel, stack.ownerDir),
+      };
+    case 'incomplete':
+      return { kind: 'incomplete', running: stack.running, missing: stack.missing };
+    case 'unreadable':
+      return { kind: 'unreadable', reason: stack.reason };
+  }
 }
 
 function isRunning(resources: ProjectResources): boolean {

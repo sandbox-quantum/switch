@@ -2,8 +2,10 @@ import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reacha
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
 import { deleteAgentsForServer } from '@main/core/switch-servers/delete-server-agents';
 import {
+  ensureManagedServer,
   getRemoteManagedServer,
   listManagedServers,
+  removeServer,
 } from '@main/core/switch-servers/servers-store';
 import {
   reportManagedServerOutcome,
@@ -14,7 +16,9 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
+  type ConnectRemoteServerResult,
   type DockerAvailability,
+  type RemoteStackProbe,
   type StartLocalServerResult,
   matrixMigrationFailedMessage,
   switchVersionDowngradeMessage,
@@ -24,12 +28,26 @@ import {
   remoteServerLogChannel,
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
-import { isStackRunning } from './compose';
 import { readVersionStatus } from './deployed-version';
+import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
-import { resetStack, startStack, stopStack } from './pipeline';
-import { readPersistedPorts } from './ports';
+import { hostSlug, remoteSecretsKey } from './host/remote-identity';
+import { remoteServerStateDir } from './paths';
+import { adoptRunningStack, connectStack, resetStack, startStack, stopStack } from './pipeline';
+import { clearPorts } from './ports';
+import { clearSecrets } from './secrets';
+import {
+  inspectStack,
+  probeFromStack,
+  type StackOnHost,
+  unsharedStackMessage,
+} from './stack-state';
 import { readDeployedTelemetry } from './telemetry-consent';
+
+/** How often a stack that stopped answering may be looked at again. The check
+ * is an SSH round trip and a handful of `docker` calls, and it is prompted by
+ * failing requests, which arrive in bursts. */
+const RECHECK_INTERVAL_MS = 30_000;
 
 function initialStatus(sshHost: string): RemoteServerStatus {
   return {
@@ -45,7 +63,38 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     deployedTelemetry: null,
     message: null,
     error: null,
+    notice: null,
   };
+}
+
+/**
+ * What to tell the user about a stack that is not running when this Console
+ * looked, or null when there is nothing to say. `wasRunning` is whether this
+ * Console last saw it up — a stack that was stopped from here needs no
+ * explanation; one that stopped under us does.
+ */
+function noticeForIdleStack(
+  hostLabel: string,
+  stack: StackOnHost,
+  wasRunning: boolean
+): string | null {
+  switch (stack.kind) {
+    case 'present':
+      return wasRunning
+        ? `The server on ${hostLabel} was stopped outside this Console — from another Console, or on the host.`
+        : null;
+    case 'absent':
+      return (
+        `Nothing is set up on ${hostLabel} any more: the server was removed from another ` +
+        `Console or on the host. Starting it sets up a new, empty one.`
+      );
+    case 'unshared':
+      return unsharedStackMessage(hostLabel, stack.ownerDir);
+    case 'incomplete':
+      return `The server's settings on ${hostLabel} are missing ${stack.missing.join(', ')}.`;
+    case 'unreadable':
+      return `Could not read the server's settings on ${hostLabel}: ${stack.reason}`;
+  }
 }
 
 /**
@@ -53,16 +102,23 @@ function initialStatus(sshHost: string): RemoteServerStatus {
  * alias), via the shared {@link startStack} pipeline on a {@link
  * RemoteServerHost}. Unlike the local service, a started host is KEPT ALIVE in
  * `hosts` because it owns the persistent port-forward that makes the stack
- * reachable from the desktop; it is disposed only on stop/reset/quit. The
- * containers themselves run detached, so a remote stack (and its remote-host
- * agents) stays up while Switch Console is closed — only the desktop-side forward
- * goes away.
+ * reachable from the desktop; it is disposed only on stop/reset/disconnect/
+ * quit. The containers themselves run detached, so a remote stack (and its
+ * remote-host agents) stays up while Switch Console is closed — only the
+ * desktop-side forward goes away.
+ *
+ * A remote stack is shared by everyone with access to its host (CHOO-2893), so
+ * this Console is one of possibly several supervising it. Its view is taken
+ * from the host rather than remembered: at launch, when the host comes back,
+ * and whenever the stack stops answering, the host is read again, so a stack
+ * another Console stopped, restarted or reset is shown as it is.
  */
 class RemoteServerService {
   private readonly statuses = new Map<string, RemoteServerStatus>();
   private readonly hosts = new Map<string, RemoteServerHost>();
   private readonly busy = new Set<string>();
   private readonly startAborts = new Map<string, AbortController>();
+  private readonly lastRecheck = new Map<string, number>();
 
   getStatuses(): RemoteServerStatus[] {
     return [...this.statuses.values()];
@@ -83,6 +139,25 @@ class RemoteServerService {
     const host = await createRemoteServerHost(sshHost);
     try {
       return await host.detectDocker();
+    } finally {
+      host.dispose();
+    }
+  }
+
+  /**
+   * What `sshHost` has of a stack, so the UI can offer the one action that is
+   * safe there: Connect to a running one, Start a stopped or absent one, or
+   * neither for one this account cannot read. Reads only.
+   */
+  async probe(sshHost: string): Promise<RemoteStackProbe> {
+    hostReachabilityService.requireReachable(sshHost);
+    const host = await createRemoteServerHost(sshHost);
+    try {
+      const docker = await host.detectDocker();
+      if (!docker.available) {
+        return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
+      }
+      return probeFromStack(host.label, await inspectStack(host));
     } finally {
       host.dispose();
     }
@@ -117,42 +192,111 @@ class RemoteServerService {
     await this.reconcileHost(sshHost, serverId);
   }
 
-  /** Adopt an already-running remote stack: re-open its forward and mark it
-   * running. Skipped while the host is blocked — the reachability manager will
-   * call back through {@link onHostReachable} when it recovers.
+  /**
+   * Look at a stack that was running and has stopped answering, at most once
+   * per {@link RECHECK_INTERVAL_MS}. Prompted by failing gateway calls: on a
+   * shared host the likeliest reason is that another Console stopped,
+   * restarted or reset the stack, and reading the host says which — rather
+   * than every later call reporting a local port that was never the problem.
+   * Fire-and-forget; the outcome arrives as a status.
+   */
+  recheck(sshHost: string): void {
+    if (this.busy.has(sshHost)) return;
+    if (this.getStatus(sshHost).phase !== 'running') return;
+    if (hostReachabilityService.isBlocked(sshHost)) return;
+    const now = Date.now();
+    if (now - (this.lastRecheck.get(sshHost) ?? 0) < RECHECK_INTERVAL_MS) return;
+    this.lastRecheck.set(sshHost, now);
+    void (async () => {
+      const serverId = (await this.remoteHosts()).get(sshHost);
+      if (!serverId || this.busy.has(sshHost)) return;
+      log.info(`remote-switch-server: ${sshHost} stopped answering; reading the host again`);
+      await this.reconcileHost(sshHost, serverId);
+    })();
+  }
+
+  /**
+   * Read the host and take its stack up as it is. A running stack is adopted
+   * with the settings the host holds — so a stack another Console restarted on
+   * new ports is forwarded to the new ones, and its record follows — and a
+   * stack that is not running is shown as stopped, saying why when this
+   * Console did not stop it. Skipped while the host is blocked — the
+   * reachability manager calls back through {@link onHostReachable} when it
+   * recovers.
    *
    * Also records how the host's deployed switch-core compares to this build's
    * pin, so an app update that moved the pin surfaces as drift rather than
    * leaving the host on a stale core (CHOO-1736). That check runs even when the
    * stack is down: its data volumes still hold the schema the last version
-   * migrated to, which is what makes a downgrade unsafe. */
+   * migrated to, which is what makes a downgrade unsafe.
+   */
   private async reconcileHost(sshHost: string, serverId: string): Promise<void> {
     if (hostReachabilityService.isBlocked(sshHost)) return;
+    const wasRunning = this.getStatus(sshHost).phase === 'running';
+    this.busy.add(sshHost);
+    // Whatever forward this Console held is to the ports it last knew, which
+    // are what is being checked.
+    this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
     let host: RemoteServerHost | null = null;
     let adopted = false;
     try {
       host = await createRemoteServerHost(sshHost);
-      if (await isStackRunning(host)) {
-        const ports = await readPersistedPorts(host);
-        if (ports) {
-          await host.establishNetworking(ports);
-          this.hosts.set(sshHost, host);
-          adopted = true;
-          this.setStatus(sshHost, { phase: 'running', serverId });
-          // Only for a running stack: a stopped one sends nothing, so it
-          // cannot be out of step with the user's answer.
-          this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
-        }
-        // Running but we don't know its ports — leave it stopped; the user can
-        // restart to re-derive them rather than forward to the wrong ports.
+      const stack = await inspectStack(host);
+      if (stack.kind === 'present' && stack.running) {
+        const settings = await adoptRunningStack(host, stack);
+        await this.followPorts(sshHost, serverId, settings.ports);
+        await host.establishNetworking(settings.ports);
+        this.hosts.set(sshHost, host);
+        adopted = true;
+        this.setStatus(sshHost, { phase: 'running', serverId, error: null, notice: null });
+        // Only for a running stack: a stopped one sends nothing, so it
+        // cannot be out of step with the user's answer.
+        this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
+      } else {
+        this.setStatus(sshHost, {
+          phase: 'stopped',
+          serverId,
+          deployedTelemetry: null,
+          notice: noticeForIdleStack(host.label, stack, wasRunning),
+        });
       }
       this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
     } catch (error) {
-      log.warn(`remote-switch-server: boot reconcile failed for ${sshHost}`, { error });
+      log.warn(`remote-switch-server: reconcile failed for ${sshHost}`, { error });
+      if (wasRunning) {
+        this.setStatus(sshHost, {
+          phase: 'stopped',
+          deployedTelemetry: null,
+          notice: `Could not read the server on ${sshHost}: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
     } finally {
       // The adopted host owns the live port-forward; anything else is throwaway.
       if (!adopted) host?.dispose();
+      this.busy.delete(sshHost);
     }
+  }
+
+  /** Point the server's record at the ports the stack actually publishes,
+   * when another Console has restarted it on different ones. */
+  private async followPorts(
+    sshHost: string,
+    serverId: string,
+    ports: LocalServerPorts
+  ): Promise<void> {
+    const gatewayUrl = gatewayUrlFor(ports);
+    const apiUrl = apiUrlFor(ports);
+    const record = await getRemoteManagedServer(sshHost);
+    if (!record || (record.gatewayUrl === gatewayUrl && record.apiUrl === apiUrl)) return;
+    log.info(`remote-switch-server: the stack on ${sshHost} now publishes different ports`, {
+      serverId,
+      from: record.gatewayUrl,
+      to: gatewayUrl,
+    });
+    await ensureManagedServer(
+      { name: record.name, gatewayUrl, apiUrl },
+      { kind: 'remote', sshHost }
+    );
   }
 
   async start(sshHost: string, serverName: string): Promise<StartLocalServerResult> {
@@ -171,6 +315,7 @@ class RemoteServerService {
       this.setStatus(sshHost, {
         phase: 'starting',
         error: null,
+        notice: null,
         message: `Connecting to ${sshHost}…`,
       });
       host = await createRemoteServerHost(sshHost);
@@ -236,6 +381,95 @@ class RemoteServerService {
     }
   }
 
+  /**
+   * Join the stack already running on `sshHost`, started by another Console
+   * or another account (CHOO-2893). Nothing on the host changes: see
+   * {@link connectStack}. The host is kept on success for the same reason a
+   * started one is — it owns the forward.
+   */
+  async connect(sshHost: string, serverName: string): Promise<ConnectRemoteServerResult> {
+    if (this.busy.has(sshHost)) {
+      return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
+    }
+    hostReachabilityService.requireReachable(sshHost);
+    this.busy.add(sshHost);
+    const abort = new AbortController();
+    this.startAborts.set(sshHost, abort);
+    this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
+    let host: RemoteServerHost | null = null;
+    try {
+      this.setStatus(sshHost, {
+        phase: 'starting',
+        error: null,
+        notice: null,
+        message: `Connecting to ${sshHost}…`,
+      });
+      host = await createRemoteServerHost(sshHost);
+      const result = await connectStack({
+        host,
+        ref: { kind: 'remote', sshHost },
+        serverName,
+        onMessage: (message) => this.setStatus(sshHost, { message }),
+        signal: abort.signal,
+      });
+      if (result.kind === 'connected') {
+        this.hosts.set(sshHost, host);
+        this.setStatus(sshHost, {
+          phase: 'running',
+          serverId: result.serverId,
+          message: null,
+          error: null,
+        });
+        this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
+        this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
+        return result;
+      }
+      host.dispose();
+      if (result.kind === 'not-running' || result.kind === 'absent') {
+        this.setStatus(sshHost, { phase: 'stopped', message: null });
+      } else if (result.kind === 'docker-unavailable') {
+        this.setStatus(sshHost, { phase: 'error', message: null, error: result.detail });
+      } else {
+        this.setStatus(sshHost, { phase: 'error', message: null, error: result.message });
+      }
+      return result;
+    } catch (error) {
+      host?.dispose();
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(`remote-switch-server: connect failed for ${sshHost}`, { error });
+      this.setStatus(sshHost, { phase: 'error', message: null, error: message });
+      return { kind: 'error', message };
+    } finally {
+      this.busy.delete(sshHost);
+      this.startAborts.delete(sshHost);
+    }
+  }
+
+  /**
+   * Stop using the stack on `sshHost` from this Console, leaving it running
+   * for everyone else (CHOO-2893): close the forward, remove the server
+   * record — its agents are unlinked and kept, as for any server — and drop
+   * this desktop's copy of the stack's credentials, which it no longer needs.
+   * Nothing on the host is touched, so this needs no connection to it.
+   */
+  async disconnect(sshHost: string): Promise<void> {
+    if (this.busy.has(sshHost))
+      throw new Error(`An operation is already in progress for ${sshHost}.`);
+    this.busy.add(sshHost);
+    try {
+      this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
+      const server = await getRemoteManagedServer(sshHost);
+      if (server) await removeServer(server.id);
+      await clearSecrets({ secretsKey: remoteSecretsKey(sshHost) });
+      await clearPorts({ stateDir: remoteServerStateDir(hostSlug(sshHost)) });
+      this.setStatus(sshHost, initialStatus(sshHost));
+      this.statuses.delete(sshHost);
+      this.lastRecheck.delete(sshHost);
+    } finally {
+      this.busy.delete(sshHost);
+    }
+  }
+
   async stop(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
       throw new Error(`An operation is already in progress for ${sshHost}.`);
@@ -254,6 +488,7 @@ class RemoteServerService {
         phase: 'stopped',
         message: null,
         error: null,
+        notice: null,
         deployedTelemetry: null,
       });
       reportManagedServerOutcome('stop', 'remote', 'success');
@@ -294,6 +529,7 @@ class RemoteServerService {
         phase: 'stopped',
         message: null,
         error: null,
+        notice: null,
         deployedTelemetry: null,
       });
       reportManagedServerOutcome('reset', 'remote', 'success');
@@ -311,12 +547,12 @@ class RemoteServerService {
   }
 
   /**
-   * Drop the host a teardown used, and the map entry it may have come from.
+   * Drop the host an operation used, and the map entry it may have come from.
    *
-   * Null when the teardown never got one — the alias is then left alone rather
-   * than un-keyed, because an entry dropped without being disposed strands the
-   * port-forward it owns and lets the reachability reconciler adopt the same
-   * stack a second time.
+   * Null when the operation never got one — the alias is then left alone
+   * rather than un-keyed, because an entry dropped without being disposed
+   * strands the port-forward it owns and lets the reachability reconciler adopt
+   * the same stack a second time.
    */
   private releaseHost(sshHost: string, host: RemoteServerHost | null): void {
     if (!host) return;

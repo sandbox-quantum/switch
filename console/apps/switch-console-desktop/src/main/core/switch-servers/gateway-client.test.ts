@@ -18,10 +18,12 @@ const managedServerHostBlocked = vi.hoisted(() => vi.fn<() => HostReachability |
 const managedServerStoppedPhase = vi.hoisted(() =>
   vi.fn<() => LocalServerPhase | null>(() => null)
 );
+const noteManagedServerUnanswered = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   managedServerHostBlocked,
   managedServerStoppedPhase,
+  noteManagedServerUnanswered,
 }));
 
 vi.mock('./servers-store', () => ({ getSessionCookie }));
@@ -205,6 +207,14 @@ describe('gatewayFetch console attribution', () => {
     expect(headersOf(fetchMock.mock.calls[1])).toMatchObject({
       'X-Switch-Console-Id': 'console-1',
     });
+  });
+
+  it('asks for the host to be read again when a managed server does not answer', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    await expect(fetchMe(MANAGED)).rejects.toThrow(/Could not reach/);
+
+    expect(noteManagedServerUnanswered).toHaveBeenCalledExactlyOnceWith(MANAGED);
   });
 
   it('tells a server someone else runs nothing about the desktop', async () => {

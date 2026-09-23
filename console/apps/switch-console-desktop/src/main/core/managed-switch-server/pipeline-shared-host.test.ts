@@ -114,16 +114,18 @@ function sharedHost() {
   );
   const establishNetworking = vi.fn(() => Promise.resolve());
   const teardownNetworking = vi.fn(() => Promise.resolve());
+  const readFile = vi.fn<(relPath: string) => Promise<string | null>>(() => Promise.resolve(null));
   const sharedState = { label: 'vm-1' } as unknown as StackStateHost;
   const host = {
     label: 'vm-1',
     sharedState,
     writeFile,
+    readFile,
     establishNetworking,
     teardownNetworking,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
   } as unknown as ServerHost;
-  return { host, sharedState, writeFile, establishNetworking, teardownNetworking };
+  return { host, sharedState, writeFile, readFile, establishNetworking, teardownNetworking };
 }
 
 function startOptions(host: ServerHost) {
@@ -368,6 +370,17 @@ describe('connecting to a shared stack', () => {
     expect((await connectStack(connectOptions(host))).kind).toBe('connected');
     expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'OWN_ENV\n');
     expect(writeFile).not.toHaveBeenCalledWith('.env', expect.anything(), expect.anything());
+  });
+
+  it('leaves a compose file this account already has alone: rewriting it is a start’s job', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host, writeFile, readFile } = sharedHost();
+    readFile.mockResolvedValue('services: { older: {} }');
+
+    await connectStack(connectOptions(host));
+
+    expect(writeFile).not.toHaveBeenCalledWith('standalone-docker-compose.yml', expect.anything());
+    expect(writeFile).toHaveBeenCalledWith('.env', 'PUBLISHED_ENV\n', 0o600);
   });
 
   it('sends a stopped stack to Start, touching nothing', async () => {
