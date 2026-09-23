@@ -286,7 +286,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     // generated from it, here and on every later edit.
     await writeAgentConfigFile(workspace.fs, params.name, {
       instructions: params.instructions,
-      settings: params.definitionAttributes,
+      settings: { ...params.providerConfig?.values, ...params.definitionAttributes },
       ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
     });
     await syncAgentConfig({

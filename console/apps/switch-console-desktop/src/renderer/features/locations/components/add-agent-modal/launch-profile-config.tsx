@@ -22,8 +22,8 @@ import {
 } from '../agent-model-catalogue';
 
 /**
- * Collapsed "Advanced configuration" section for a provider that keeps its
- * per-agent settings in a launch profile (Codex, OpenCode). Reports the assembled
+ * Collapsed "Advanced configuration" section for a provider that uses a launch
+ * profile or SDK session defaults. Reports the assembled
  * per-agent provider config (or null when nothing is set) so the modal can pass
  * it to `addAgent`, which persists it on the agent and folds it into the profile.
  *
@@ -66,7 +66,10 @@ export function LaunchProfileConfig({
     queryFn: () => (providerId ? rpc.agents.advancedFields({ providerId }) : Promise.resolve([])),
     enabled: !!providerId,
   });
-  const fields = useMemo(() => (surface === 'launch-profile' ? (data ?? []) : []), [data, surface]);
+  const fields = useMemo(
+    () => (surface === 'launch-profile' || surface === 'session' ? (data ?? []) : []),
+    [data, surface]
+  );
 
   // The models that host offers, for the fields bound to it. Asked of the host
   // the agent will run on, since that is what decides the answer — and only once
