@@ -52,14 +52,35 @@ export async function createAntigravityClient(input: {
   });
 }
 
+/**
+ * The ACP handshake, and nothing else.
+ *
+ * Deliberately does NOT sign in. The response's `authMethods` is the agent
+ * saying which sign-ins are still outstanding, so this is the whole of what a
+ * caller needs to ANSWER "is this signed in?" — and answering that question
+ * must not change it. Signing in is {@link authenticateAntigravity}, called
+ * only where the user has asked for work that needs it.
+ */
 export async function initializeAntigravity(client: StdioJsonRpcClient) {
-  const initialized = await client.request<{
+  return await client.request<{
     agentCapabilities?: { sessionCapabilities?: { resume?: unknown } };
+    authMethods?: { id?: string }[];
   }>('initialize', {
     protocolVersion: 1,
     clientInfo: { name: 'switch-console', version: '0.1.0' },
     clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
   });
+}
+
+/**
+ * Sign in to the ACP server.
+ *
+ * **This opens a browser** when the profile holds no usable token — the OAuth
+ * consent page, launched by the agent itself. `BROWSER=false` in the spawn env
+ * asks it not to, and it is not obliged to listen, which is why the call site
+ * matters more than the mitigation: only call this for work the user asked
+ * for, never to find out whether it would be needed.
+ */
+export async function authenticateAntigravity(client: StdioJsonRpcClient) {
   await client.request('authenticate', { methodId: 'oauth-personal' });
-  return initialized;
 }

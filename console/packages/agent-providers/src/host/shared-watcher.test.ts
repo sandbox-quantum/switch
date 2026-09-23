@@ -208,3 +208,53 @@ it('restarts only the live sessions of this agent left on a superseded build', a
   ]);
   expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].restart).toBe(false);
 });
+
+// The sweep reads every session on the machine and only then asks whether each
+// one belongs to this agent, so a directory left by an older build — naming a
+// provider that no longer exists — used to abort the call and take auto-start
+// down for an agent that had nothing to do with it.
+it('steps over a neighbour whose saved config no longer parses', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-stale-'));
+  roots.push(root);
+  paths.root = root;
+  supervisors.clear();
+  vi.mocked(ensureSharedProcess).mockClear();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const agentId = randomUUID();
+
+  // A provider this build has never heard of: exactly what `fde4e217` left on
+  // disk for anyone who had a gemini/droid/amp agent before it was removed.
+  const stale = template(root);
+  stale.session = { ...stale.session, sessionId: 'stale-session', agentId: randomUUID() };
+  await mkdir(join(root, 'stale'), { recursive: true });
+  await writeFile(
+    join(root, 'stale', 'config.json'),
+    JSON.stringify({ ...stale, start: { ...stale.start, provider: 'gemini' } })
+  );
+  // And one that is not even JSON, which must not be fatal either.
+  await mkdir(join(root, 'corrupt'), { recursive: true });
+  await writeFile(join(root, 'corrupt', 'config.json'), '{ truncated');
+
+  const mine = template(root);
+  mine.session = { ...mine.session, sessionId: 'my-session', agentId };
+  mine.start.input.sessionId = 'my-session';
+  await mkdir(join(root, 'mine'), { recursive: true });
+  await writeFile(join(root, 'mine', 'config.json'), JSON.stringify(mine));
+  supervisors.set(join(root, 'mine'), { build: '/host/shared-host-old.mjs' });
+
+  await expect(
+    replaceSupersededSessions(agentId, {
+      build: '/host/shared-host-new.mjs',
+      start: vi.fn(),
+      stop: vi.fn(),
+    })
+  ).resolves.toBeUndefined();
+
+  // This agent's own session is still picked up, which is the whole point.
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
+    join(root, 'mine'),
+  ]);
+  // Skipped, but never in silence.
+  expect(warn.mock.calls.map(String).join('\n')).toContain('stale');
+  warn.mockRestore();
+});

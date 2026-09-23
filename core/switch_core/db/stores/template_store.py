@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, func, or_, select
@@ -42,6 +43,8 @@ class TemplateListing:
     name: str
     description: str
     kind: str
+    read_visibility: str
+    write_visibility: str
     version: int
     size_bytes: int
     created_at: object
@@ -78,19 +81,28 @@ class TemplateStore:
         self,
         session: AsyncSession,
         *,
+        viewer_id: str,
+        is_admin: bool,
         query: str | None = None,
         kind: str | None = None,
         owner_id: str | None = None,
     ) -> list[TemplateListing]:
-        """The catalogue, newest first, without the documents.
+        """The catalogue as ``viewer_id`` may see it, newest first, without
+        the documents: every shared template, plus the viewer's own private
+        ones, and everything for an admin.
 
-        Every template in the tenant, whoever uploaded it: ownership governs
-        who may change or remove one, not who may see it. The tenant boundary
-        is the database's to enforce, not this query's — row-level security
-        filters it, so a filter here would be a second answer to a question
-        already answered, and the wrong place to notice if the two disagreed.
+        The tenant boundary is the database's to enforce, not this query's:
+        row-level security filters it, so a filter here would be a second
+        answer to a question already answered, and the wrong place to notice
+        if the two disagreed.
         """
         conditions: list[ColumnElement[bool]] = []
+        if not is_admin:
+            conditions.append(
+                or_(
+                    Template.read_visibility == "public", Template.owner_id == viewer_id
+                )
+            )
         if query:
             needle = _like_needle(query)
             conditions.append(
@@ -111,6 +123,8 @@ class TemplateStore:
                 Template.name,
                 Template.description,
                 Template.kind,
+                Template.read_visibility,
+                Template.write_visibility,
                 Template.version,
                 # Bytes, not characters — `length()` would undercount anything
                 # outside ASCII and disagree with the upload limit.
@@ -136,8 +150,16 @@ class TemplateStore:
         description: str | None = None,
         kind: str | None = None,
         content: str | None = None,
+        read_visibility: str | None = None,
+        write_visibility: str | None = None,
+        guard: Callable[[Template], None] | None = None,
     ) -> Template:
         """Change a stored template. Replacing the content bumps ``version``.
+
+                ``guard`` is called on the row once it is locked and may raise to
+        refuse the change. Authorization belongs here rather than on a row
+        read earlier: an access change committed before the lock is taken
+        is seen here and not by an earlier read.
 
         Metadata-only edits leave the revision alone: the document someone
         fetched is still the document they would fetch now.
@@ -159,6 +181,8 @@ class TemplateStore:
         )
         if template is None:
             raise ValueError(f"Template not found: {template_id}")
+        if guard is not None:
+            guard(template)
 
         if name is not None and name != template.name:
             # Asked before anything is mutated: a flush that fails the unique
@@ -183,6 +207,10 @@ class TemplateStore:
             template.description = description
         if kind is not None:
             template.kind = kind
+        if read_visibility is not None:
+            template.read_visibility = read_visibility
+        if write_visibility is not None:
+            template.write_visibility = write_visibility
 
         # Read off the object now: after a failed flush, touching it again can
         # lazy-load against a session that is no longer in a state to answer.

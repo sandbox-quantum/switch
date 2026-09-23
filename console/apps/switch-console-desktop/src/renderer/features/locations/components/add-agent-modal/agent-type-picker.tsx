@@ -10,7 +10,20 @@ import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { AgentTypeBlockedKind } from '@shared/core/switch-setup/agent-type-availability';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
+
+/**
+ * The tile is three words wide, so it gets the verdict and the full sentence
+ * goes to the tooltip. "Not installed" is only said where something really is
+ * missing — a provider with no adapter, or a host that could not be reached,
+ * would be sent off to install something that would not help.
+ */
+const BLOCKED_LABEL: Record<AgentTypeBlockedKind, string> = {
+  'not-installed': 'Not installed',
+  unsupported: 'Not supported here',
+  unknown: "Couldn't check",
+};
 
 /**
  * Picks the agent type for a new Switch agent. Only agent types that are both
@@ -124,7 +137,7 @@ export function AgentTypePicker({
         user has locally can legitimately be absent on the host they picked.
       */}
       <div className="grid grid-cols-3 gap-2">
-        {options.map(({ agent, available, blockedReason }) => (
+        {options.map(({ agent, available, blockedReason, blockedKind }) => (
           <button
             key={agent.id}
             type="button"
@@ -137,7 +150,9 @@ export function AgentTypePicker({
               value === agent.id
                 ? 'border-foreground bg-[var(--sel-soft)]'
                 : 'border-border hover:bg-[var(--sel-soft)]',
-              !available && 'cursor-not-allowed bg-background-1 hover:bg-transparent'
+              // Dimmed as a whole, icon and name included. Disabling the click
+              // without dimming left it looking exactly like a tile that works.
+              !available && 'cursor-not-allowed opacity-50 bg-background-1 hover:bg-transparent'
             )}
           >
             <AgentIcon id={agent.id} size={22} />
@@ -150,8 +165,10 @@ export function AgentTypePicker({
                 compact
               />
             ) : (
-              <span className="text-xs text-foreground-warning">
-                {blockedReason ?? 'Setup required'}
+              // Muted, not amber: a tile that is already greyed out does not
+              // also need to raise a warning, and the sentence is on hover.
+              <span className="text-xs text-foreground-muted">
+                {blockedKind ? BLOCKED_LABEL[blockedKind] : 'Not available'}
               </span>
             )}
           </button>

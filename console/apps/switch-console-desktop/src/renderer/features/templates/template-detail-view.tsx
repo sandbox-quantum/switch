@@ -7,6 +7,7 @@ import {
   Download,
   FileText,
   Loader2,
+  Pencil,
   Trash2,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -25,6 +26,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
+import { accessLine, accessOf } from './template-visibility';
 import { isRequired, paramLabel, typeLabel } from './use/use-template-model';
 
 function useViewParams() {
@@ -213,7 +215,14 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   }
 
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
-  const canDelete = loaded.server !== null && (mine || me?.role === 'admin');
+  // The server says what this user may do: it knows who administers the
+  // workspace, which the user's global role does not tell. An older server
+  // leaves the answer out, and the owner-or-admin guess stands in.
+  const canManage =
+    loaded.server !== null && (loaded.server.canManage ?? (mine || me?.role === 'admin'));
+  const canEdit =
+    loaded.server !== null &&
+    (loaded.server.canEdit ?? (canManage || loaded.server.writeVisibility === 'public'));
   const singleAgent = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
   // In a single-agent document the room refers to the agent as `{agent}`. The
   // Console fills that in with the agent's name, so it is not an input to list.
@@ -288,7 +297,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     : mine
       ? 'Yours'
       : `Uploaded by ${loaded.server?.creator ?? 'someone'}`;
-  const visibilityLine = loaded.server ? 'Shared with the workspace' : 'Shared with everyone';
+  const visibilityLine = loaded.server
+    ? accessLine(accessOf(loaded.server))
+    : 'Shared with everyone';
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
@@ -303,6 +314,12 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 <span>{ownerLine}</span>
                 <span>·</span>
                 <span>{visibilityLine}</span>
+                {loaded.server && loaded.server.version > 1 && (
+                  <>
+                    <span>·</span>
+                    <span>Version {loaded.server.version}</span>
+                  </>
+                )}
                 {loaded.copyOf && (
                   <>
                     <span>·</span>
@@ -347,7 +364,33 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 {busy === 'save' ? 'Saving…' : 'Save to workspace'}
               </Button>
             )}
-            {canDelete && (
+            {canEdit && loaded.server && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() =>
+                  navigate('templateImport', {
+                    serverId,
+                    yamlText: loaded.document,
+                    edit: true,
+                    editingTemplate: {
+                      id: loaded.server!.id,
+                      name: loaded.name,
+                      description: loaded.description,
+                      kind: loaded.server!.kind,
+                      access: accessOf(loaded.server!),
+                      canChangeAccess: canManage,
+                    },
+                  })
+                }
+              >
+                <Pencil className="size-3.5" />
+                Edit
+              </Button>
+            )}
+            {canManage && (
               <Button
                 type="button"
                 variant="outline"

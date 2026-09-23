@@ -42,6 +42,12 @@ export const switchSetupController = createRPCController({
               : cli.status === 'missing'
                 ? `Install ${agentId === 'cursor' ? 'Cursor CLI' : 'Antigravity ACP'} on ${sshHost}.`
                 : `Could not verify this CLI on ${sshHost}. Recheck the host setup.`,
+          blockedKind:
+            cli.status === 'available'
+              ? null
+              : cli.status === 'missing'
+                ? 'not-installed'
+                : 'unknown',
         };
       })
     );
@@ -55,6 +61,7 @@ export const switchSetupController = createRPCController({
               agentId: status.agentId,
               available: false,
               blockedReason: `Switch Console cannot manage this agent type on ${sshHost}.`,
+              blockedKind: 'unsupported' as const,
             };
           }
           // A status that could not be read is not a status. `installed` is
@@ -71,11 +78,17 @@ export const switchSetupController = createRPCController({
             };
           }
           return status.installed
-            ? { agentId: status.agentId, available: true, blockedReason: null }
+            ? {
+                agentId: status.agentId,
+                available: true,
+                blockedReason: null,
+                blockedKind: null,
+              }
             : {
                 agentId: status.agentId,
                 available: false,
                 blockedReason: `Its Switch connector is not installed on ${sshHost}.`,
+                blockedKind: 'not-installed' as const,
               };
         }),
     ];

@@ -405,6 +405,17 @@ pnpm run lint
   settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
   cache the answer across a send, since the user can revoke it at any time. Consent off
   means **no request is made at all**, not a request whose result is discarded.
+- **The answer reaches the managed server too, and never by omission.** "Share usage
+  data" is one decision covering this app and a Switch server it runs, so `startStack`
+  reads it and writes `TELEMETRY_ENABLED` into the stack's `.env` on every start —
+  `false` as explicitly as `true`, because the compose file forwards the key only when
+  the `.env` names it, and a stack started under a yes would otherwise keep reporting.
+  Adding a variable to that contract needs both edits: `deploy/local/standalone-docker-compose.yml`
+  plus `pnpm run sync:compose`, and `env-file.ts`. The server reads the gate once at
+  boot, so a running stack can be out of step; that is surfaced on the server's page with
+  a restart offered, never applied by restarting the user's server for them. Whether it
+  is out of step is read off the running container, not inferred from what we last wrote —
+  and a host that cannot be read is reported as unknown, never as agreeing.
 - **The toggle defaults to off.** The payload carries a random per-install id, which makes
   it pseudonymous personal data under GDPR/nFADP; an opt-out default does not cover that.
   Flipping the default back to on is a product decision that requires the id to go first,

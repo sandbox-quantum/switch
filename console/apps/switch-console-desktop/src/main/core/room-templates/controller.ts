@@ -1,5 +1,8 @@
+import { writeFile } from 'node:fs/promises';
 import Ajv from 'ajv';
+import { clipboard, dialog } from 'electron';
 import { dump, load } from 'js-yaml';
+import { getMainWindow } from '@main/app/window';
 import type { KV } from '@main/db/kv';
 import exampleTemplateYaml from '@root/../../../examples/room-templates/red-blue-workroom.template.yaml?raw';
 import {
@@ -230,6 +233,26 @@ export const roomTemplatesController = createRPCController({
   /** Only the `params:` of a document. For agent-only documents, which have no room to parse. */
   params: (params: { yamlText: string }): ParamSpec[] =>
     extractParams(parseYaml(params.yamlText).params),
+
+  /** Save YAML text to a file via the native save dialog. Returns the path, or
+   * null if the user cancelled. */
+  saveToFile: async (params: { yamlText: string; defaultName: string }): Promise<string | null> => {
+    const win = getMainWindow();
+    if (!win) return null;
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Save room template',
+      defaultPath: params.defaultName,
+      filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await writeFile(result.filePath, params.yamlText, 'utf8');
+    return result.filePath;
+  },
+
+  /** Copy YAML text to the system clipboard. */
+  copyToClipboard: (params: { text: string }): void => {
+    clipboard.writeText(params.text);
+  },
 
   parse: (params: { yamlText: string; schema?: Record<string, unknown> }): ParsedTemplate => {
     const warnings: string[] = [];

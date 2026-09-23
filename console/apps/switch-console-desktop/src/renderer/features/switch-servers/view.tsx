@@ -15,6 +15,7 @@ import { type GuardResult, type ViewDefinition } from '@renderer/app/view-regist
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -32,17 +33,24 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
+import { managedTelemetryNotice } from './managed-telemetry-notice';
 import { MessagingAppsCard } from './MessagingAppsCard';
 import { remoteServerStore } from './remote-server-store';
 import { RemoteServerControls } from './RemoteServerControls';
 import { serverIcon } from './server-icon';
-import { ServerAvatar, serverDrift, serverPlacementLabel } from './server-presentation';
+import {
+  ServerAvatar,
+  serverDeployedTelemetry,
+  serverDrift,
+  serverPlacementLabel,
+} from './server-presentation';
 import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
+import { TelemetryConsentNotice } from './TelemetryConsentNotice';
 import { myIdentitiesQueryKey } from './use-my-identities';
 import { VersionDriftNotice } from './VersionDriftNotice';
 
@@ -90,6 +98,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const queryClient = useQueryClient();
 
   const [refreshingPage, setRefreshingPage] = useState(false);
+  // The same answer the Console checks before its own events. Read here rather
+  // than pushed with the stack's status so that flipping the toggle in Settings
+  // updates this page at once, without waiting for the server to be re-probed.
+  const { value: telemetry } = useAppSettingsKey('telemetry');
 
   /**
    * Everything the page is showing, re-read.
@@ -273,6 +285,19 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           rather than waiting inside the stack card further down. */}
         <VersionDriftNotice
           drift={drift}
+          disabled={stackTransitioning}
+          onRestart={() => restartStack(server)}
+        />
+
+        {/* Same placement, and for the same reason: a consent decision that has
+            not reached this server is about the server, not about one card on
+            its page. */}
+        <TelemetryConsentNotice
+          notice={managedTelemetryNotice({
+            running: server.managed && isManagedRunning(server),
+            deployed: serverDeployedTelemetry(server),
+            consent: telemetry?.enabled ?? true,
+          })}
           disabled={stackTransitioning}
           onRestart={() => restartStack(server)}
         />

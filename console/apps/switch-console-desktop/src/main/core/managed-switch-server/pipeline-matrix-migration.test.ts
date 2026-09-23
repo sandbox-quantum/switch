@@ -45,7 +45,15 @@ vi.mock('./ports', () => ({
     Promise.resolve({ gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 }),
   clearPorts: vi.fn(),
 }));
-vi.mock('./env-file', () => ({ buildEnvFile: () => 'SWITCH_VERSION=0.24.0\n' }));
+vi.mock('./env-file', () => ({
+  buildEnvFile: () => 'SWITCH_VERSION=0.24.0\n',
+  readEnvValue: vi.fn(),
+  TELEMETRY_ENABLED_KEY: 'TELEMETRY_ENABLED',
+}));
+vi.mock('./telemetry-consent', () => ({
+  telemetryConsent: () => Promise.resolve(false),
+  readDeployedTelemetry: vi.fn(),
+}));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
   setActiveServerId: vi.fn(),
@@ -107,7 +115,11 @@ describe('startStack across the Matrix boundary', () => {
       return Promise.resolve();
     });
 
-    expect(await startStack(opts)).toEqual({ kind: 'started', serverId: 'srv-1' });
+    expect(await startStack(opts)).toEqual({
+      kind: 'started',
+      serverId: 'srv-1',
+      telemetryEnabled: false,
+    });
     // The old stack comes up and is drained before the new compose file lands:
     // that file is what removes the homeserver being read from.
     expect(order.slice(0, 3)).toEqual(['compose-up', 'backfill', 'write']);
@@ -159,7 +171,11 @@ describe('startStack across the Matrix boundary', () => {
     });
     const { opts } = options();
 
-    expect(await startStack(opts)).toEqual({ kind: 'started', serverId: 'srv-1' });
+    expect(await startStack(opts)).toEqual({
+      kind: 'started',
+      serverId: 'srv-1',
+      telemetryEnabled: false,
+    });
     expect(dockerRunOneOffMock).not.toHaveBeenCalled();
   });
 

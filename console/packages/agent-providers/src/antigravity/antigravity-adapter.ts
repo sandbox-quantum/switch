@@ -22,7 +22,7 @@ import {
   type ProviderLogger,
 } from '../transport/stdio-json-rpc';
 import { modelsFromConfig, type ConfigOption } from './protocol';
-import { createAntigravityClient, initializeAntigravity } from './runtime';
+import { authenticateAntigravity, createAntigravityClient, initializeAntigravity } from './runtime';
 
 interface PermissionOption {
   optionId: string;
@@ -154,6 +154,10 @@ export class AntigravityAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
       const initialized = await initializeAntigravity(client);
+      // Signing in belongs here — starting a session is work the user asked
+      // for, so a browser opening is an answer to something they did. The
+      // readiness probe deliberately stops at the handshake above.
+      await authenticateAntigravity(client);
       const mcpServers = Object.entries(input.mcpServers).map(([name, server]) =>
         server.transport === 'stdio'
           ? {

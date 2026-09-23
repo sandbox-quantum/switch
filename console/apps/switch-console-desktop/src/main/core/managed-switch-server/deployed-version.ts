@@ -6,6 +6,7 @@ import type {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { runningImages } from './compose';
 import { ENV_FILE_NAME } from './constants';
+import { readEnvValue } from './env-file';
 import type { ServerHost } from './host/types';
 
 /**
@@ -57,7 +58,7 @@ export async function readDeployedVersion(host: ServerHost): Promise<DeployedVer
       // No `.env` and no running container: nothing was ever deployed here.
       if (failures.length === 0) return { kind: 'absent' };
     } else {
-      const version = envVersion(env);
+      const version = readEnvValue(env, 'SWITCH_VERSION');
       if (version) return { kind: 'deployed', version, source: 'env-file' };
       failures.push(`${ENV_FILE_NAME}: no SWITCH_VERSION entry`);
     }
@@ -142,20 +143,6 @@ function imageTag(image: string): string | null {
   if (colon === -1) return null;
   const tag = name.slice(colon + 1).trim();
   return tag.length > 0 ? tag : null;
-}
-
-/** `SWITCH_VERSION` from a generated `.env`, unquoted, or null when absent. */
-function envVersion(env: string): string | null {
-  for (const raw of env.split('\n')) {
-    const line = raw.trim();
-    if (!line.startsWith('SWITCH_VERSION=')) continue;
-    const value = line
-      .slice('SWITCH_VERSION='.length)
-      .trim()
-      .replace(/^["']|["']$/g, '');
-    if (value.length > 0) return value;
-  }
-  return null;
 }
 
 function errorText(error: unknown): string {

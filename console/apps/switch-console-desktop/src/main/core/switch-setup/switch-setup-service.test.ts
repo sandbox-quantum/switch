@@ -285,6 +285,7 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
           blockedReason: installed
             ? null
             : 'Install Antigravity ACP on this computer to use SDK sessions.',
+          blockedKind: installed ? null : 'not-installed',
         },
       ]);
     }
@@ -304,6 +305,7 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
           blockedReason: installed
             ? null
             : 'Install Cursor CLI on this computer to use ACP sessions.',
+          blockedKind: installed ? null : 'not-installed',
         },
       ]);
     }
@@ -315,7 +317,7 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
     mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
 
     expect(await switchSetupService.listAgentTypeAvailability()).toEqual([
-      { agentId: 'claude', available: true, blockedReason: null },
+      { agentId: 'claude', available: true, blockedReason: null, blockedKind: null },
     ]);
   });
 

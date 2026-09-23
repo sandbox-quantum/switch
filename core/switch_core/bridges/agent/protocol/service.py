@@ -941,12 +941,13 @@ class ProtocolService:
 
         await self._remove_bridge_identities(tenant_id, resolved_name)
 
+        # One transaction for the agent and its client, stopped above; see
+        # `ClientLifecycleService.delete_record`.
         async with self.session_factory() as session:
             await self.agent_store.delete(session, resolved_id)
+            await self.client_lifecycle.delete_record(session, client_id)
             await session.commit()
         self.api_key_cache.invalidate_agent(resolved_id)
-
-        await self.client_lifecycle.remove(client_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
 

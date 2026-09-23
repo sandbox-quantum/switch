@@ -27,6 +27,7 @@ interface Props {
   types?: TypeOption[];
   /** What this axis is called on the resource being listed. */
   typeLabel?: string;
+  searchPlaceholder?: string;
 }
 
 export default function ResourceFiltersBar({
@@ -39,6 +40,7 @@ export default function ResourceFiltersBar({
   onTypeChange,
   types,
   typeLabel = "Type",
+  searchPlaceholder,
 }: Props) {
   const hasType = types !== undefined && onTypeChange !== undefined;
 
@@ -46,7 +48,7 @@ export default function ResourceFiltersBar({
     <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }}>
       <TextField
         size="small"
-        placeholder="Search by name…"
+        placeholder={searchPlaceholder ?? "Search by name…"}
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
         sx={{ minWidth: 240 }}

@@ -3,6 +3,7 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import {
   TELEMETRY_DETAILS_LABEL,
   TELEMETRY_DETAILS_URL,
+  TELEMETRY_SCOPE_NOTE,
   TELEMETRY_SUMMARY,
 } from '@renderer/features/telemetry/telemetry-copy';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -34,6 +35,7 @@ const TelemetrySettingsCard: React.FC = () => {
       description={
         <>
           <p>{TELEMETRY_SUMMARY}</p>
+          <p className="mt-1">{TELEMETRY_SCOPE_NOTE}</p>
           <button
             type="button"
             className="mt-1 cursor-pointer text-foreground-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"

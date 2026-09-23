@@ -105,16 +105,19 @@ import {
   fetchRooms,
   createTemplate,
   deleteTemplate,
+  updateTemplate,
   fetchTemplateDetail,
   fetchTemplates,
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
   createRoomFromTemplate,
+  exportRoomYaml,
   fetchTemplateSchema,
   removeRoomAgent,
   type StoredTemplateDetail,
   type StoredTemplateSummary,
+  type TemplateVisibility,
   type ProvisionFromTemplateResult,
   updateAddressingPolicy,
   updateAgentIcon,
@@ -567,8 +570,10 @@ export const switchServersController = createRPCController({
   listTemplates: async (params: {
     serverId: string;
     kind?: string;
+    /** Narrows to templates whose name or description contains it. */
+    q?: string;
   }): Promise<StoredTemplateSummary[]> =>
-    fetchTemplates(await requireServer(params.serverId), params.kind),
+    fetchTemplates(await requireServer(params.serverId), { kind: params.kind, q: params.q }),
 
   getTemplateDetail: async (params: {
     serverId: string;
@@ -579,12 +584,28 @@ export const switchServersController = createRPCController({
   deleteTemplate: async (params: { serverId: string; templateId: string }): Promise<void> =>
     deleteTemplate(await requireServer(params.serverId), params.templateId),
 
+  updateTemplate: async (params: {
+    serverId: string;
+    templateId: string;
+    name?: string;
+    description?: string;
+    kind?: string;
+    content?: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
+  }): Promise<StoredTemplateDetail> => {
+    const { serverId, templateId, ...changes } = params;
+    return updateTemplate(await requireServer(serverId), templateId, changes);
+  },
+
   saveTemplate: async (params: {
     serverId: string;
     name: string;
     description: string;
     kind: string;
     content: string;
+    readVisibility?: TemplateVisibility;
+    writeVisibility?: TemplateVisibility;
   }): Promise<StoredTemplateDetail> => {
     const { serverId, ...template } = params;
     return createTemplate(await requireServer(serverId), template);
@@ -592,6 +613,9 @@ export const switchServersController = createRPCController({
 
   fetchTemplateSchema: async (serverId: string): Promise<Record<string, unknown> | null> =>
     fetchTemplateSchema(await requireServer(serverId)),
+
+  exportRoomYaml: async (params: { serverId: string; roomId: string }): Promise<string> =>
+    exportRoomYaml(await requireServer(params.serverId), params.roomId),
 
   listAgentRooms: async (params: {
     serverId: string;

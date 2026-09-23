@@ -258,12 +258,22 @@ class ClientLifecycleService:
         self._client_tenants.clear()
         self._tasks.clear()
 
-    async def remove(self, client_id: str) -> None:
-        await self.stop(client_id)
-        async with self._session_factory() as session:
-            await self._client_store.delete(session, client_id)
-            await session.commit()
-        logger.info("Removed client %s", client_id)
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
+        """Delete a client's row in the caller's transaction, committing nothing.
+
+        The counterpart to `stop`, and separate from it on purpose. A client
+        row is only ever deleted alongside whatever owned the client — a
+        bridge and the puppets it minted, an agent — and those rows have to go
+        in one transaction or not at all: the owner's delete commits first
+        otherwise, and a failure after it leaves clients nothing points at and
+        nothing will retry.
+
+        Stopping the running client is the half that cannot join a
+        transaction, so callers do that first. A rollback then leaves a
+        stopped client whose row survives, which the next start repairs — the
+        opposite order leaves an orphan row that nothing repairs.
+        """
+        await self._client_store.delete(session, client_id)
 
     def get(self, client_id: str) -> ClientBase[ClientConfig] | None:
         return self._clients.get(client_id)

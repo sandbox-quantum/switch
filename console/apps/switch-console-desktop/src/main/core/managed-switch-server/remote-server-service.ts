@@ -29,6 +29,7 @@ import { readVersionStatus } from './deployed-version';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
 import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts } from './ports';
+import { readDeployedTelemetry } from './telemetry-consent';
 
 function initialStatus(sshHost: string): RemoteServerStatus {
   return {
@@ -41,6 +42,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     // A remote host builds nothing: its stack always runs the pinned released
     // images, so the dev checkout option is not on offer there.
     checkoutBuild: null,
+    deployedTelemetry: null,
     message: null,
     error: null,
   };
@@ -137,6 +139,9 @@ class RemoteServerService {
           this.hosts.set(sshHost, host);
           adopted = true;
           this.setStatus(sshHost, { phase: 'running', serverId });
+          // Only for a running stack: a stopped one sends nothing, so it
+          // cannot be out of step with the user's answer.
+          this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
         }
         // Running but we don't know its ports — leave it stopped; the user can
         // restart to re-derive them rather than forward to the wrong ports.
@@ -213,6 +218,7 @@ class RemoteServerService {
           error: null,
           deployedVersion: COMPATIBLE_SWITCH_VERSION,
           drift: null,
+          deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
       }
       reportManagedServerStart('remote', result);
@@ -244,7 +250,12 @@ class RemoteServerService {
       host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host);
-      this.setStatus(sshHost, { phase: 'stopped', message: null, error: null });
+      this.setStatus(sshHost, {
+        phase: 'stopped',
+        message: null,
+        error: null,
+        deployedTelemetry: null,
+      });
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
@@ -279,7 +290,12 @@ class RemoteServerService {
       if (server) await deleteAgentsForServer(server.id);
       this.setStatus(sshHost, { phase: 'stopping', message: 'Destroying containers and data…' });
       await resetStack(host);
-      this.setStatus(sshHost, { phase: 'stopped', message: null, error: null });
+      this.setStatus(sshHost, {
+        phase: 'stopped',
+        message: null,
+        error: null,
+        deployedTelemetry: null,
+      });
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {

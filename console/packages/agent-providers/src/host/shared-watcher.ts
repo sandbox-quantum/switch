@@ -91,7 +91,18 @@ export async function replaceSupersededSessions(
       );
     } catch (error) {
       if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
-      throw error;
+      // This is a sweep over every session on the machine, and the filter for
+      // "is it even this agent's" is the line below — after the parse. So a
+      // directory left by an older build, naming a provider this one no longer
+      // has, used to abort the whole call and take auto-sessions down for an
+      // agent that had nothing to do with it. One unreadable neighbour is not a
+      // reason to stop; it is a reason to say so and carry on.
+      console.warn(
+        `Skipping session state at ${root}: its config could not be read (${
+          error instanceof Error ? error.message : String(error)
+        }). It will not be restarted.`
+      );
+      continue;
     }
     if (config.session.agentId !== agentId) continue;
     const running = await liveSupervisor(root);

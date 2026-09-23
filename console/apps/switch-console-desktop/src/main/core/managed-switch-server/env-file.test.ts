@@ -30,6 +30,7 @@ describe('buildEnvFile', () => {
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
     sessionDemo: false,
+    telemetryEnabled: false,
   });
   const vars = Object.fromEntries(
     env
@@ -135,8 +136,34 @@ describe('buildEnvFile', () => {
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
       secrets,
       sessionDemo: true,
+      telemetryEnabled: false,
     });
     expect(fromCheckout).toContain('SESSION_DEMO_ENABLED=true');
+  });
+
+  it('carries the telemetry answer in both directions, never by omission', () => {
+    // The compose file passes this key through only when the `.env` names it,
+    // so leaving it out on "no" would let a stack started under a "yes" keep
+    // reporting. Off has to be written down (CHOO-2890).
+    expect(vars.TELEMETRY_ENABLED).toBe('false');
+
+    const sharing = buildEnvFile({
+      version: '1.2.3',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      secrets,
+      sessionDemo: false,
+      telemetryEnabled: true,
+    });
+    expect(sharing).toContain('TELEMETRY_ENABLED=true');
+  });
+
+  it('is the only thing the compose file needs to forward the gate', () => {
+    // A value in the `.env` that the `switch` service does not name never
+    // reaches the container, which is the failure mode this pairing exists to
+    // rule out — the writer and the contract have to agree.
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_ENABLED:\s*$/m);
   });
 
   it('points the deeplink redirect at the API, not the operator UI', () => {

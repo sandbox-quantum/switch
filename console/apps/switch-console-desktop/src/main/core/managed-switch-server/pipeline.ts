@@ -26,6 +26,7 @@ import type { ServerHost } from './host/types';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, resolvePorts } from './ports';
 import { clearSecrets, loadOrCreateSecrets } from './secrets';
+import { telemetryConsent } from './telemetry-consent';
 
 /**
  * The transport-agnostic lifecycle for a Switch Console-managed Switch stack, run
@@ -208,6 +209,9 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   const ports = await resolvePorts(host);
   const gatewayUrl = gatewayUrlFor(ports);
   const apiUrl = apiUrlFor(ports);
+  // Read here rather than taken from the caller: a start is the moment the
+  // user's answer reaches the server, and no supervisor can forget to carry it.
+  const telemetryEnabled = await telemetryConsent();
   await host.writeFile(
     ENV_FILE_NAME,
     buildEnvFile({
@@ -217,6 +221,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       ports,
       secrets,
       sessionDemo: checkoutRoot !== null,
+      telemetryEnabled,
     }),
     0o600
   );
@@ -255,7 +260,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   }
 
   await resolveAgentServers();
-  return { kind: 'started', serverId: server.id };
+  return { kind: 'started', serverId: server.id, telemetryEnabled };
 }
 
 /** Stop the stack's containers and tear down networking (leaves data + config). */

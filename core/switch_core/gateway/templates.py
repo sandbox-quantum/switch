@@ -20,7 +20,15 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, require_manage
+from switch_core.authz import (
+    Action,
+    Principal,
+    can,
+    can_manage,
+    require,
+    require_manage,
+    validate_visibility_pair,
+)
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Template, User
 from switch_core.db.stores.template_store import (
@@ -87,7 +95,9 @@ def _content_disposition(name: str) -> str:
     return f"attachment; filename=\"{stem}.yaml\"; filename*=UTF-8''{encoded}"
 
 
-def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
+def _summary(
+    row: TemplateListing, owner_name: str | None, principal: Principal
+) -> TemplateSummary:
     return TemplateSummary(
         id=row.id,
         owner_id=row.owner_id,
@@ -95,6 +105,10 @@ def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
         name=row.name,
         description=row.description,
         kind=row.kind,
+        read_visibility=row.read_visibility,
+        write_visibility=row.write_visibility,
+        can_edit=can(principal, "write", row),
+        can_manage=can_manage(principal, row.owner_id),
         version=row.version,
         size_bytes=row.size_bytes,
         created_at=str(row.created_at),
@@ -102,7 +116,9 @@ def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
     )
 
 
-def _detail(template: Template, owner_name: str | None) -> TemplateDetail:
+def _detail(
+    template: Template, owner_name: str | None, principal: Principal
+) -> TemplateDetail:
     return TemplateDetail(
         id=template.id,
         owner_id=template.owner_id,
@@ -110,6 +126,10 @@ def _detail(template: Template, owner_name: str | None) -> TemplateDetail:
         name=template.name,
         description=template.description,
         kind=template.kind,
+        read_visibility=template.read_visibility,
+        write_visibility=template.write_visibility,
+        can_edit=can(principal, "write", template),
+        can_manage=can_manage(principal, template.owner_id),
         version=template.version,
         size_bytes=_size_bytes(template.content),
         created_at=str(template.created_at),
@@ -167,27 +187,44 @@ def _require_within_size_limit(content: str, config: SwitchConfig) -> None:
         )
 
 
-async def _load_for_management(
+async def _load_for(
+    action: Action,
     session: AsyncSession,
     store: TemplateStore,
     template_id: str,
     user: User,
     is_admin: bool,
 ) -> Template:
-    """Fetch a template the caller is allowed to change, or fail saying why."""
+    """Fetch a template, refusing unless the caller may ``action`` it.
+
+    A private template the caller may not read is reported as not found,
+    so the listing and the detail route agree on what exists for them.
+    """
     template = await store.get(session, template_id)
     if template is None:
         raise HTTPException(
             status_code=404, detail=f"Template not found: {template_id}"
         )
+    principal = Principal(user.id, is_admin)
     try:
-        require_manage(
-            Principal(user.id, is_admin),
-            template.owner_id,
-        )
+        require(principal, "read", template)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+        raise HTTPException(
+            status_code=404, detail=f"Template not found: {template_id}"
+        ) from e
+    if action != "read":
+        try:
+            require(principal, action, template)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
     return template
+
+
+def _require_visibility(read_visibility: str, write_visibility: str) -> None:
+    try:
+        validate_visibility_pair(read_visibility, write_visibility)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 @router.get("/templates")
@@ -195,15 +232,24 @@ async def list_templates(
     session: Annotated[AsyncSession, Depends(get_session)],
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     q: Annotated[str | None, Query()] = None,
     kind: Annotated[str | None, Query()] = None,
     owner_id: Annotated[str | None, Query()] = None,
 ) -> list[TemplateSummary]:
     """Browse the catalogue. `q` matches name or description, case-insensitively."""
-    rows = await template_store.list_all(session, query=q, kind=kind, owner_id=owner_id)
+    rows = await template_store.list_all(
+        session,
+        viewer_id=user.id,
+        is_admin=is_admin,
+        query=q,
+        kind=kind,
+        owner_id=owner_id,
+    )
     names = await _owner_names(session, user_store, {r.owner_id for r in rows})
-    return [_summary(r, names.get(r.owner_id)) for r in rows]
+    principal = Principal(user.id, is_admin)
+    return [_summary(r, names.get(r.owner_id), principal) for r in rows]
 
 
 @router.post("/templates", status_code=201)
@@ -214,9 +260,11 @@ async def create_template(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDetail:
     _require_within_size_limit(req.content, config)
     _require_storable(req.content)
+    _require_visibility(req.read_visibility, req.write_visibility)
     try:
         template = await template_store.create(
             session,
@@ -226,6 +274,8 @@ async def create_template(
                 description=req.description,
                 kind=req.kind,
                 content=req.content,
+                read_visibility=req.read_visibility,
+                write_visibility=req.write_visibility,
             ),
         )
     except TemplateNameTaken as e:
@@ -237,7 +287,11 @@ async def create_template(
     emit_safely(
         current_telemetry(), "template_created", {"template_kind": _kind(req.kind)}
     )
-    return _detail(template, await _owner_name(session, user_store, user.id))
+    return _detail(
+        template,
+        await _owner_name(session, user_store, user.id),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.post("/templates/validate")
@@ -285,14 +339,17 @@ async def get_template(
     session: Annotated[AsyncSession, Depends(get_session)],
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDetail:
-    template = await template_store.get(session, template_id)
-    if template is None:
-        raise HTTPException(
-            status_code=404, detail=f"Template not found: {template_id}"
-        )
-    return _detail(template, await _owner_name(session, user_store, template.owner_id))
+    template = await _load_for(
+        "read", session, template_store, template_id, user, is_admin
+    )
+    return _detail(
+        template,
+        await _owner_name(session, user_store, template.owner_id),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.get("/templates/{template_id}/content", response_model=None)
@@ -300,14 +357,13 @@ async def get_template_content(
     template_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> Response:
     """The stored document itself, byte for byte, with no envelope around it."""
-    template = await template_store.get(session, template_id)
-    if template is None:
-        raise HTTPException(
-            status_code=404, detail=f"Template not found: {template_id}"
-        )
+    template = await _load_for(
+        "read", session, template_store, template_id, user, is_admin
+    )
     return Response(
         content=template.content.encode("utf-8"),
         media_type="application/x-yaml",
@@ -331,7 +387,35 @@ async def patch_template(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDetail:
-    await _load_for_management(session, template_store, template_id, user, is_admin)
+    current = await _load_for(
+        "write", session, template_store, template_id, user, is_admin
+    )
+    principal = Principal(user.id, is_admin)
+    changes_access = req.read_visibility is not None or req.write_visibility is not None
+    if changes_access:
+        # Who may see or change a template is decided by its owner or an
+        # admin, not by an editor: an open template must not be closed, or
+        # opened wider, by someone who may only edit its document.
+        try:
+            require_manage(principal, current.owner_id)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        _require_visibility(
+            current.read_visibility
+            if req.read_visibility is None
+            else req.read_visibility,
+            current.write_visibility
+            if req.write_visibility is None
+            else req.write_visibility,
+        )
+
+    def still_allowed(locked: Template) -> None:
+        # Checked again on the locked row: the owner may have closed the
+        # template since the check above.
+        require(principal, "write", locked)
+        if changes_access:
+            require_manage(principal, locked.owner_id)
+
     if req.content is not None:
         _require_within_size_limit(req.content, config)
         _require_storable(req.content)
@@ -343,7 +427,12 @@ async def patch_template(
             description=req.description,
             kind=req.kind,
             content=req.content,
+            read_visibility=req.read_visibility,
+            write_visibility=req.write_visibility,
+            guard=still_allowed,
         )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
@@ -351,7 +440,11 @@ async def patch_template(
         # delete that landed in between — gone, not in conflict.
         raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
-    return _detail(template, await _owner_name(session, user_store, template.owner_id))
+    return _detail(
+        template,
+        await _owner_name(session, user_store, template.owner_id),
+        Principal(user.id, is_admin),
+    )
 
 
 @router.delete("/templates/{template_id}")
@@ -362,8 +455,8 @@ async def delete_template(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDeleteResponse:
-    template = await _load_for_management(
-        session, template_store, template_id, user, is_admin
+    template = await _load_for(
+        "delete", session, template_store, template_id, user, is_admin
     )
     kind, age = _kind(template.kind), age_days(template.created_at)
     try:

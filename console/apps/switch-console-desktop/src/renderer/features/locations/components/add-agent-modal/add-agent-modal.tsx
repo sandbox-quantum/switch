@@ -564,11 +564,16 @@ export const AddAgentModal = observer(function AddAgentModal({
           />
         )}
 
+        {/* No `dir`: signing in is a property of the machine, not of the folder
+            an agent will run in — which is what the provider tiles above
+            already assume. Keying it on `dir` made this a second, separate
+            check of the same thing, re-run on every change to the working
+            directory. */}
         {canChooseAgentType && pickState.providerId && (
           <ProviderConnectionStatus
             providerId={pickState.providerId}
             sshHost={isRemoteRun ? runHost : null}
-            dir={dir}
+            dir=""
           />
         )}
 

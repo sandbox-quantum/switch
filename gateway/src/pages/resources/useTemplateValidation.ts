@@ -19,13 +19,18 @@ export function useTemplateValidation(
   const latest = useRef(0);
 
   useEffect(() => {
+    // Bumped on every change, including a clear: a request still in flight
+    // for the document that was on screen a moment ago must not land.
+    const token = ++latest.current;
     if (!enabled || content.trim().length === 0) {
       setResult(null);
       setChecking(false);
       return;
     }
 
-    const token = ++latest.current;
+    // A verdict belongs to the document it was given for. Once that document
+    // changes, holding it would keep Save disabled by findings nobody can see.
+    setResult(null);
     setChecking(true);
     const timer = setTimeout(() => {
       validateTemplate(content)
