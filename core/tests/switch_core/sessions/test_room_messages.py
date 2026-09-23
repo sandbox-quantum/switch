@@ -314,7 +314,9 @@ async def test_a_restart_is_said_in_the_next_prompt_of_every_room(session_factor
     buffer.ensure_counting(
         "agent-demo", connection.id, "room-demo", buffer.head("agent-demo")
     )
-    assert (await deliver("room-demo", "before")).endswith("Run the check")
+    before = await deliver("room-demo", "before")
+    assert "\nRun the check\n" in before
+    assert "⚠️" not in before
 
     buffer.mark_restarted("agent-demo")
     assert (await deliver("room-demo", "after")).endswith(

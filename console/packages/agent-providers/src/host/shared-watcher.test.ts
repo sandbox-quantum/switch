@@ -1003,12 +1003,9 @@ it('steps over a neighbour whose saved config no longer parses', async () => {
   await writeFile(join(root, 'mine', 'config.json'), JSON.stringify(mine));
   supervisors.set(join(root, 'mine'), { build: '/host/shared-host-old.mjs' });
 
+  const newer = { build: '/host/shared-host-new.mjs', start: vi.fn(), stop: vi.fn() };
   await expect(
-    replaceSupersededSessions(agentId, {
-      build: '/host/shared-host-new.mjs',
-      start: vi.fn(),
-      stop: vi.fn(),
-    })
+    replaceSupersededSessions(await supersededSessions(agentId, newer), 'agent-controller', newer)
   ).resolves.toBeUndefined();
 
   // This agent's own session is still picked up, which is the whole point.
