@@ -110,12 +110,14 @@ function summaryLine(s: TemplateSummary): string {
 }
 
 // The listing endpoint returns no document text, and the summary line
-// needs the document. Each card fetches its own once and keeps it for the
-// session.
+// needs the document. Each card fetches its own once per version of the
+// template and keeps it for the session.
 const summaryCache = new Map<string, Promise<TemplateSummary>>();
 
 function fetchSummary(serverId: string, item: TemplateListEntry): Promise<TemplateSummary> {
-  const key = `${serverId}:${item.id}`;
+  // The version is part of the key, so an edit made elsewhere refreshes the
+  // card as soon as the listing reports it.
+  const key = `${serverId}:${item.id}:${item.server?.version ?? 0}`;
   let pending = summaryCache.get(key);
   if (!pending) {
     pending = (async () => {
@@ -418,6 +420,33 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+  // The server searches name and description. The full listing stays loaded
+  // for the recents and for marking a built-in as saved; the search results
+  // replace it only for the workspace cards.
+  const [searchHits, setSearchHits] = useState<StoredTemplateSummary[] | null>(null);
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length === 0) {
+      setSearchHits(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      rpc.switchServers
+        .listTemplates({ serverId, q })
+        .then((hits) => {
+          if (!cancelled) setSearchHits(hits);
+        })
+        .catch(() => {
+          // The client-side match below still applies to what is loaded.
+          if (!cancelled) setSearchHits(null);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [serverId, query, reloadKey]);
 
   // An agent template needs a coding agent where its agents will run, and
   // this computer is the default run location. Say at the top of the listing
@@ -468,7 +497,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       server: byName.get(b.name) ?? null,
       content: b.yamlText,
     }));
-    const onWorkspace: TemplateListEntry[] = templates.map((t) => ({
+    const onWorkspace: TemplateListEntry[] = (searchHits ?? templates).map((t) => ({
       id: t.id,
       kind: kindOf(t.kind),
       name: t.name,
@@ -489,7 +518,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       builtIn: onlyMine ? [] : builtIn.filter(matches),
       onWorkspace: onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t))),
     };
-  }, [templates, query, kind, onlyMine, meId]);
+  }, [templates, searchHits, query, kind, onlyMine, meId]);
 
   const handleUse = (item: TemplateListEntry) =>
     navigate('templateUse', { serverId, templateId: item.id });
@@ -633,7 +662,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
             <Section
               title="On this workspace"
-              subtitle="Saved here. Everyone on this workspace can see and use them; only the owner can change one."
+              subtitle="Saved here. Each one says who can use it and who can change it."
             >
               {onWorkspace.length > 0 ? (
                 <div className={grid}>{onWorkspace.map(card)}</div>
