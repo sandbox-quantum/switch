@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { declareHandoffCapability, handOff, readsHandoffs } from './handoff';
-import { runSharedHost } from './shared-host';
+import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
 
 /** Every answer Switch has given this session's room binding, in order. */
 async function boundRooms(root: string): Promise<string[][]> {
@@ -1058,8 +1058,9 @@ function owingServer(server: {
         return Response.json({ detail: `the pull route answered ${status}` }, { status });
       }
       if (path.endsWith('/room-message')) {
-        const { message_id: messageId } = JSON.parse(options.body as string) as {
+        const { message_id: messageId, epoch } = JSON.parse(options.body as string) as {
           message_id: string;
+          epoch: string;
         };
         if (server.blocked(messageId))
           return Response.json(
@@ -1080,7 +1081,7 @@ function owingServer(server: {
             contractVersion: 1,
             commandId: `command-${messageId}`,
             sessionId: 'session',
-            epoch: 'server-epoch',
+            epoch,
             origin: {
               actorId: '@owner:example.test',
               surface: 'slack',
@@ -1649,96 +1650,165 @@ it('keeps renewing and serving handoffs while an ask the renewal started hangs',
   }
 }, 30000);
 
-it('acts on nothing a renewal or an ask said about the generation a reset replaced', async () => {
-  // A reset gives the session a new generation. What the server said about its
-  // rooms under the old one, and an answer to an ask made under it, belong to
-  // a lease the session no longer holds.
-  const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-reset-'));
-  roots.push(root);
-  const stop = new AbortController();
-  const { adapter, ran } = roomWorker();
-  let answer: () => void = () => {};
-  const released = new Promise<void>((resolve) => {
-    answer = resolve;
-  });
-  const server = owingServer({
-    owed: () => [{ room_id: 'room', message_id: 'stale', sequence: 4, expired: false }],
-    pullStatus: stalling(released),
-    blocked: () => false,
-  });
-  const renewals = renewing((epoch) => ({ leaseSeconds: 30, roomWork: epoch === 'server-epoch' }));
-  const snapshot = (epoch: string) =>
-    Response.json({
-      contractVersion: 1,
-      throughSequence: 1,
-      session: {
-        ...startingSession,
-        epoch,
-        capabilities: { ...startingSession.capabilities, reset: true },
-      },
-      turns: [],
-      items: [],
-      requests: [],
-      commandStatuses: [],
-      nextPageToken: null,
+const quiesced = () =>
+  Response.json({ code: 'HOST_OFFLINE', message: 'Host execution is quiesced.' }, { status: 409 });
+
+it.each([
+  { said: 'an answer', late: null, when: 'after recovery' },
+  { said: 'a lost lease', late: quiesced, when: 'after recovery' },
+  { said: 'a lost lease', late: quiesced, when: 'during the reset' },
+])(
+  'acts on nothing a renewal or an ask said about the generation a reset replaced: $said $when',
+  async ({ late, when }) => {
+    // A reset gives the session a new generation. What the server said about its
+    // rooms under the old one, and an answer to an ask made under it, belong to
+    // a lease the session no longer holds — whether the ask succeeded or said
+    // that old lease was gone.
+    const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-reset-'));
+    roots.push(root);
+    const stop = new AbortController();
+    const { adapter, ran } = roomWorker();
+    let answer: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      answer = resolve;
     });
-  let resetting = false;
-  let reset = false;
+    let landed: () => void = () => {};
+    const answered = new Promise<void>((resolve) => {
+      landed = resolve;
+    });
+    const server = owingServer({
+      owed: () => [{ room_id: 'room', message_id: 'stale', sequence: 4, expired: false }],
+      pullStatus: stalling(released),
+      blocked: () => false,
+    });
+    const renewals = renewing((epoch) => ({
+      leaseSeconds: 30,
+      roomWork: epoch === 'server-epoch',
+    }));
+    const snapshot = (epoch: string) =>
+      Response.json({
+        contractVersion: 1,
+        throughSequence: 1,
+        session: {
+          ...startingSession,
+          epoch,
+          capabilities: { ...startingSession.capabilities, reset: true },
+        },
+        turns: [],
+        items: [],
+        requests: [],
+        commandStatuses: [],
+        nextPageToken: null,
+      });
+    let resetting = false;
+    let reset = false;
+    const owing = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, options: RequestInit) => {
+        const path = new URL(url).pathname;
+        if (path.endsWith('/room-reservations')) {
+          const response = await owing(url, options);
+          setTimeout(landed, 50);
+          return late?.() ?? response;
+        }
+        if (path.endsWith('/claim')) return snapshot('server-epoch');
+        if (path.endsWith('/recover')) {
+          // Answered between standing the old generation down and granting
+          // the new one, so what it said is kept before the generation moves.
+          if (when === 'during the reset') {
+            answer();
+            await answered;
+          }
+          return snapshot('epoch-2');
+        }
+        if (path.endsWith('/commands') && resetting && !reset) {
+          reset = true;
+          return Response.json([
+            {
+              contractVersion: 1,
+              commandId: 'reset',
+              sessionId: 'session',
+              epoch: 'server-epoch',
+              origin: {
+                actorId: '@owner:example.test',
+                surface: 'slack',
+                roomId: 'room',
+                threadId: null,
+                messageId: 'reset',
+              },
+              body: { type: 'session.reset' },
+            },
+          ]);
+        }
+        return owing(url, options);
+      })
+    );
+    const outcome = startWorker(root, adapter, stop.signal);
+    try {
+      await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+      await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+      await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+      await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+      resetting = true;
+      await vi.waitFor(
+        () => expect(renewals.some((renewal) => renewal.epoch === 'epoch-2')).toBe(true),
+        { timeout: 5000 }
+      );
+
+      // The old generation's ask answers now, and a renewal under the new one has
+      // already said nothing is owed.
+      answer();
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      expect(server.admitted).toEqual(['routed']);
+      expect(ran).toEqual(['routed']);
+      expect(
+        (await inboxRecords(root)).filter(
+          (record) => record.type === 'received' && record.messageId === 'stale'
+        )
+      ).toEqual([]);
+      expect(server.pulled).toHaveLength(1);
+
+      // And the recovered generation carries on: still renewing, still running.
+      const renewed = renewals.length;
+      await handOff(root, { sequence: 5, roomId: 'room', messageId: 'after' });
+      await new Promise((r) => setTimeout(r, 3000));
+      console.log(
+        'DBG',
+        server.admitted,
+        ran,
+        JSON.stringify((await inboxRecords(root)).slice(-4))
+      );
+      await vi.waitFor(() => expect(ran).toEqual(['routed', 'after']), { timeout: 3000 });
+      await vi.waitFor(() => expect(renewals.length).toBeGreaterThan(renewed), { timeout: 7000 });
+      expect(renewals.at(-1)?.epoch).toBe('epoch-2');
+    } finally {
+      stop.abort();
+      expect(await outcome).toBeNull();
+    }
+  },
+  30000
+);
+
+it('stops when an ask under the lease it holds says that lease is gone', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-offline-'));
+  roots.push(root);
+  const { adapter } = roomWorker();
+  const server = owingServer({ owed: () => [], pullStatus: () => 200, blocked: () => false });
+  renewing(() => ({ leaseSeconds: 30, roomWork: true }));
   const owing = globalThis.fetch;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, options: RequestInit) => {
-      const path = new URL(url).pathname;
-      if (path.endsWith('/claim')) return snapshot('server-epoch');
-      if (path.endsWith('/recover')) return snapshot('epoch-2');
-      if (path.endsWith('/commands') && resetting && !reset) {
-        reset = true;
-        return Response.json([
-          {
-            contractVersion: 1,
-            commandId: 'reset',
-            sessionId: 'session',
-            epoch: 'server-epoch',
-            origin: {
-              actorId: '@owner:example.test',
-              surface: 'slack',
-              roomId: 'room',
-              threadId: null,
-              messageId: 'reset',
-            },
-            body: { type: 'session.reset' },
-          },
-        ]);
+      if (new URL(url).pathname.endsWith('/room-reservations')) {
+        await owing(url, options);
+        return Response.json({ code: 'HOST_OFFLINE', message: 'Lease lapsed.' }, { status: 409 });
       }
       return owing(url, options);
     })
   );
-  const outcome = startWorker(root, adapter, stop.signal);
-  try {
-    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
-    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
-    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
-    resetting = true;
-    await vi.waitFor(
-      () => expect(renewals.some((renewal) => renewal.epoch === 'epoch-2')).toBe(true),
-      { timeout: 5000 }
-    );
-
-    // The old generation's ask answers now, and a renewal under the new one has
-    // already said nothing is owed.
-    answer();
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    expect(server.admitted).toEqual(['routed']);
-    expect(ran).toEqual(['routed']);
-    expect(
-      (await inboxRecords(root)).filter(
-        (record) => record.type === 'received' && record.messageId === 'stale'
-      )
-    ).toEqual([]);
-    expect(server.pulled).toHaveLength(1);
-  } finally {
-    stop.abort();
-    expect(await outcome).toBeNull();
-  }
-}, 20000);
+  expect(await startWorker(root, adapter, new AbortController().signal)).toBeInstanceOf(
+    SharedHostLeaseExpiredError
+  );
+  expect(server.pulled).toHaveLength(1);
+}, 15000);

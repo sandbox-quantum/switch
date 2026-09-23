@@ -425,10 +425,10 @@ export async function runSharedHost(
     };
     let pulledAt: number | null = null;
     let pulledReading = 0;
-    let pullUnanswered = false;
+    let pullUnanswered: string | null = null;
     let pullFailing = false;
     let pulled: { epoch: string; owed: z.infer<typeof heldDeliveriesSchema> } | null = null;
-    let pullFatal: unknown = null;
+    let pullFatal: { epoch: string | null; error: unknown } | null = null;
     const givenUpOn = new Set<string>();
     /**
      * Ask Switch for the deliveries this session's own rooms still owe it.
@@ -446,8 +446,9 @@ export async function runSharedHost(
      * does — at which point it has still never been made.
      *
      * Asking is an addition, not a dependency. A server that does not answer
-     * is said once and not asked again; one that refuses is said and asked
-     * again next time, and in both cases the controller's route is untouched.
+     * is said once and not asked again under that lease generation; one that
+     * refuses is said and asked again next time, and in both cases the
+     * controller's route is untouched.
      *
      * Which is why nothing waits here. The loop this serves is also what
      * drains the handoffs the controller writes and what submits, runs and
@@ -464,7 +465,13 @@ export async function runSharedHost(
      * it again; a server that does not say leaves the ask on its interval.
      */
     const startPull = (): void => {
-      if (pulling !== null || pulled !== null || pullUnanswered || pullFatal !== null) return;
+      if (
+        pulling !== null ||
+        pulled !== null ||
+        pullUnanswered === hostLease.epoch ||
+        pullFatal !== null
+      )
+        return;
       const known = roomWork?.epoch === hostLease.epoch ? roomWork : null;
       if (known) {
         if (!known.owed || known.reading === pulledReading) return;
@@ -486,11 +493,15 @@ export async function runSharedHost(
           // route's, so they are kept for the loop to raise where every other
           // one of them is raised. Nothing acts on them here: an answer that
           // arrives after the host has stopped, or on a lease it no longer
-          // holds, must change nothing.
-          if (executionSignal.aborted || error instanceof SharedHostLeaseExpiredError)
-            pullFatal = error;
+          // holds, must change nothing. Abort stops the host whatever lease it
+          // came under; anything else said about a generation a recovery has
+          // replaced was about a lease this host no longer runs on.
+          if (executionSignal.aborted) pullFatal = { epoch: null, error };
+          else if (epoch !== hostLease.epoch) {
+            /* Asked for under a generation a recovery has since replaced. */
+          } else if (error instanceof SharedHostLeaseExpiredError) pullFatal = { epoch, error };
           else if (error instanceof RequestError && error.status === 404) {
-            pullUnanswered = true;
+            pullUnanswered = epoch;
             console.warn(
               `This Switch server does not answer a session's own room work, so room messages reach this session only while its controller is routing them: ${error.message}`
             );
@@ -517,7 +528,11 @@ export async function runSharedHost(
      * makes them.
      */
     const drainPull = async (inbox: SharedRoomInbox): Promise<void> => {
-      if (pullFatal !== null) throw pullFatal;
+      if (pullFatal !== null) {
+        if (pullFatal.epoch === null || pullFatal.epoch === hostLease.epoch) throw pullFatal.error;
+        // Kept under a generation a recovery has since replaced.
+        pullFatal = null;
+      }
       const answer = pulled;
       if (answer === null) return;
       pulled = null;
