@@ -274,6 +274,26 @@ class BenchWatcher:
                 continue
         return len(tree)
 
+    def kill_worker(self, session_id: str) -> int:
+        """Kill a session's worker, leaving the supervisor that owns it alive.
+
+        The supervisor is what brings a worker back, so killing the whole tree
+        measures a host lost and killing only what the supervisor started
+        measures the relaunch. SIGKILL for the same reason as the tree: a
+        worker given the chance to stop cleanly is not one that was lost.
+        """
+        tree = self.session_tree(session_id)
+        if len(tree) < 2:
+            raise RuntimeError(
+                f"session {session_id} has no worker under its supervisor: {tree}"
+            )
+        for pid in reversed(tree[1:]):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        return len(tree) - 1
+
     def session_pids(self) -> set[int]:
         """Every process serving a session this controller assigned.
 

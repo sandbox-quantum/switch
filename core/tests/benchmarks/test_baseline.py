@@ -328,6 +328,98 @@ async def test_baseline_recovers_from_a_lost_host(
     assert result.duplicated == (), result.duplicated
 
 
+async def test_baseline_recovers_from_a_lost_worker(
+    bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
+) -> None:
+    """The worker serving a room dies; its supervisor brings it straight back.
+
+    Distinct from losing the whole host: the supervisor and the controller both
+    survive, so nothing waits for a lease to lapse and the room is never
+    offered to anything else. The room comes back in seconds rather than after
+    the reap, which makes this the case where two ways of reaching the worker
+    are live at once — the controller still routes what the server pushes it,
+    and the worker that comes back asks Switch for what its own rooms are owed.
+
+    So the claim is exactly-once with both paths running, on messages the kill
+    is aimed at: one posted immediately before it, which may be anywhere
+    between the server and the provider, and one posted while there is no
+    worker at all. The room must still be served by the same session, on the
+    conversation it had, because a worker that came back as a new conversation
+    would have lost the thread it was answering.
+    """
+    target = await bench.register_agent("bench-target-worker")
+    poster = await bench.register_agent("bench-poster-worker")
+    await bench.start_clients(timeout=60.0)
+    room_id = await bench.create_room(
+        "bench-worker", [target.agent_id, poster.agent_id]
+    )
+    home = tmp_path / "home-worker"
+    home.mkdir(parents=True)
+
+    async def send(marker: str) -> str:
+        return correlation_for(
+            room_id,
+            await bench.address(
+                sender=poster,
+                room_id=room_id,
+                target=target.name,
+                body=f"@{target.name} {marked(marker)}",
+            ),
+        )
+
+    with bench_watcher(
+        bundle=bundle,
+        home=home,
+        base_url=bench.base_url,
+        agent_id=target.agent_id,
+        api_key=target.api_key,
+        connection_id=controller_connection_id(target.agent_id),
+    ) as watcher:
+        await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
+        cold = new_marker()
+        markers = {cold: await send(cold)}
+        assert not await dispatch_wait(watcher, markers, dispatch_timeout(1))
+        assigned = watcher.sessions_by_room()
+        assert room_id in assigned, assigned
+
+        in_flight = new_marker()
+        markers[in_flight] = await send(in_flight)
+        killed = watcher.kill_worker(assigned[room_id])
+        # Reported rather than asserted: whether the kill caught the message
+        # before a provider saw it is a race, and the exactly-once claim below
+        # holds either way. This says which case the run exercised.
+        interrupted = in_flight not in dispatched(watcher, markers)
+
+        orphaned = new_marker()
+        markers[orphaned] = await send(orphaned)
+        assert not await dispatch_wait(watcher, markers, dispatch_timeout(2))
+        assert watcher.sessions_by_room()[room_id] == assigned[room_id]
+        conversations = set(watcher.provider_conversations(assigned[room_id]))
+        assert len(conversations) == 1, conversations
+        # Nothing is left owed: a worker that came back and answered what it
+        # was pushed, while Switch still held a promise for the same message,
+        # would be a delivery waiting to be made a second time.
+        reserved = await bench.reserved_deliveries(target.agent_id)
+        assert not {_message_of(markers[m]) for m in markers} & set(reserved), reserved
+        # One connection throughout: the worker is not what holds it, so a
+        # relaunch that opened its own would be a connection per session again.
+        held = bench.connections.for_agent(target.agent_id)
+        assert len(held) == 1, held
+
+        collector.ingest_jsonl(watcher.trace_path, markers)
+
+    duplicated = collector.subset(set(markers.values())).repeats(PROVIDER_DISPATCH)
+    print(
+        f"lost worker: {killed} worker process(es) were killed under a supervisor "
+        "and a controller that both survived; the message posted before the kill "
+        f"was {'still in flight' if interrupted else 'already dispatched'}, the "
+        "message posted while there was no worker was delivered once, and the room "
+        f"came back on the session ({assigned[room_id]}) and conversation "
+        "it already had."
+    )
+    assert duplicated == {}, duplicated
+
+
 async def test_baseline_survives_a_controller_restart(
     bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
 ) -> None:
