@@ -142,10 +142,11 @@ import {
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { claimIdentityOnServer, searchDirectoryOnServer } from './identities';
 import {
-  getLocalCodexSubscription,
-  localCodexAuthPath,
-  readLocalCodexSubscription,
-} from './local-codex-subscription';
+  getLocalProviderSignIn,
+  localProviderAuthPath,
+  readLocalProviderSignIn,
+  type LocalSignInProvider,
+} from './local-provider-sign-in';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import {
   addServer,
@@ -314,12 +315,12 @@ function reportRoomCreated(
 }
 
 export const switchServersController = createRPCController({
-  getLocalCodexSubscription,
-  connectLocalCodexSubscription: async (serverId: string) => {
+  getLocalProviderSignIn,
+  connectLocalProviderSignIn: async (serverId: string, provider: LocalSignInProvider) => {
     const server = await requireReachableServer(serverId);
-    const credential = await readLocalCodexSubscription(localCodexAuthPath());
-    if (!credential) throw new Error('Codex sign-in file is missing. Sign in locally first.');
-    return connectCloudProvider(server, 'codex', 'auth-json', credential);
+    const credential = await readLocalProviderSignIn(provider, localProviderAuthPath(provider));
+    if (!credential) throw new Error('Local sign-in file is missing. Sign in locally first.');
+    return connectCloudProvider(server, provider, 'auth-json', credential);
   },
   getCloudProviderConnection: async (serverId: string, provider: AgentProviderId) =>
     getCloudProviderConnection(await requireReachableServer(serverId), provider),
