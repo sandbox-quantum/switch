@@ -342,11 +342,21 @@ export async function runSharedHost(
       }
     })();
     if (options.roomConnection?.restoreRoomId) {
-      const answer = await request(`${sessionPath}/restore-legacy-room`, {
-        ...hostLease,
-        room_id: options.roomConnection.restoreRoomId,
-      });
-      if (!z.object({ restored: z.boolean() }).parse(answer).restored)
+      let answer: unknown = null;
+      try {
+        answer = await request(`${sessionPath}/restore-legacy-room`, {
+          ...hostLease,
+          room_id: options.roomConnection.restoreRoomId,
+        });
+      } catch (error) {
+        // An uncoded 404 is a server that predates the route rather than a
+        // refusal from it; one naming a code is the route answering.
+        if (!(error instanceof RequestError) || error.status !== 404 || error.code) throw error;
+        console.warn(
+          'This Switch server cannot restore a saved room; the session keeps the room ownership Switch already records.'
+        );
+      }
+      if (answer !== null && !z.object({ restored: z.boolean() }).parse(answer).restored)
         console.warn('The saved room was not restored; Switch kept its current room ownership.');
     }
     await state.journal.append({ type: 'running' });

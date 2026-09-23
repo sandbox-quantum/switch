@@ -1413,3 +1413,43 @@ it('restores the saved room with the acquired lease before binding, without send
     expect(await outcome).toBeNull();
   }
 });
+
+function restoreAnswering(response: () => Response) {
+  admittingServer();
+  const server = globalThis.fetch;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) =>
+      new URL(url).pathname.endsWith('/restore-legacy-room') ? response() : server(url, options)
+    )
+  );
+}
+
+it('runs with the ownership Switch records when the server cannot restore a saved room', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-legacy-restore-absent-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  restoreAnswering(() => Response.json({ detail: 'Not Found' }, { status: 404 }));
+  const outcome = startWorker(root, adapter, stop.signal, 'room');
+  try {
+    await vi.waitFor(async () => expect(await boundRooms(root)).toEqual([['room']]));
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('stops when the restore route itself refuses the session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-legacy-restore-refused-'));
+  roots.push(root);
+  const { adapter } = roomWorker();
+  restoreAnswering(() =>
+    Response.json({ code: 'NOT_FOUND', message: 'Session not found.' }, { status: 404 })
+  );
+  expect(await startWorker(root, adapter, new AbortController().signal, 'room')).toMatchObject({
+    code: 'NOT_FOUND',
+    status: 404,
+  });
+  expect(await boundRooms(root)).toEqual([]);
+});
