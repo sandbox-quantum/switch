@@ -469,6 +469,9 @@ export class RemoteSwitchSetupService {
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
+      // A dead channel says nothing about the marketplace; `runReportedOperation`
+      // reports it as `error`.
+      if (err instanceof TransportError) throw err;
       return marketplaceFailed(err, `Could not add marketplace: ${String(err)}`);
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
@@ -533,6 +536,7 @@ export class RemoteSwitchSetupService {
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
+      if (err instanceof TransportError) throw err;
       return {
         run: marketplaceFailed(err, `Could not add marketplace: ${String(err)}`),
         wasReinstall: false,
@@ -566,7 +570,25 @@ export class RemoteSwitchSetupService {
         wasReinstall: true,
       };
     }
-    const added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
+    let added: ConnectorRunResult;
+    try {
+      added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
+    } catch (err) {
+      // The remove already went through, so this cannot escape as a plain
+      // `error`: the host may now have no connector, and the caller has to say so.
+      if (!(err instanceof TransportError)) throw err;
+      log.error('remote-switch-setup: connection dropped between remove and re-add', {
+        agentId,
+        err,
+      });
+      return {
+        run: connectorFailed(
+          'Update failed: the plugin was removed, then the connection to the host dropped before it could be reinstalled. Reconnect and install it again for this host.',
+          'error'
+        ),
+        wasReinstall: true,
+      };
+    }
     return {
       run:
         added.code === 0

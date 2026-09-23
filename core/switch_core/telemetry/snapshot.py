@@ -22,8 +22,9 @@ from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, case, distinct, exists, func, select
+from sqlalchemy import Select, and_, case, distinct, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from switch_core.db.models import (
     Agent,
@@ -176,7 +177,7 @@ class UsageCounts:
 
 @dataclass(frozen=True)
 class NewlyActiveRoom:
-    """A room whose first human interaction happened in the window just read."""
+    """A room that became active in the window just read. See `newly_active_rooms`."""
 
     # The milestone is measured from this, not from when the pass ran: a pass
     # is up to a whole interval late, always in the same direction.
@@ -202,6 +203,27 @@ def _room_has_an_agent(tenant_id: str) -> Select[tuple[str]]:
     )
 
 
+def _room_had_an_agent_message(tenant_id: str) -> Select[tuple[str]]:
+    """Correlated subquery: an agent has posted in the message's room.
+
+    Aliased because the enclosing query already has `Message` and `Client` —
+    the human's message and the human — in its FROM.
+    """
+    agent_message = aliased(Message)
+    agent = aliased(Client)
+    return (
+        select(agent_message.id)
+        .join(agent, agent.id == agent_message.sender_client_id)
+        .where(
+            agent_message.room_id == Message.room_id,
+            agent_message.tenant_id == tenant_id,
+            agent_message.seq > 0,
+            agent.type == AGENT_CLIENT_TYPE,
+            agent.tenant_id == tenant_id,
+        )
+    )
+
+
 def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
     """The one definition of "a human used this room", shared by all four paths
     that ask it: the two room-activity gauges, the once-per-room activation
@@ -212,13 +234,15 @@ def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
 
     Both conditions are kept:
 
-    - **The room must have an agent in it.** A message from a bridge relay or
-      the admin client is not a person, and a person talking in a room with no
-      agent is not using the product this telemetry is about — two agents
-      talking to each other is likewise not activity, which is why this keys
-      on the human side only. This half is live today: an internal-only room
-      with people and no agent exists in practice, and dropping it is the
-      visible behaviour change this predicate fixes.
+    - **The room must have an agent in it, or have had one post in it.** A
+      message from a bridge relay or the admin client is not a person, and a
+      person talking in a room with no agent is not using the product this
+      telemetry is about — two agents talking to each other is likewise not
+      activity, which is why this keys on the human side only. Membership
+      alone would make the lifetime questions depend on who is in the room at
+      the moment they are asked: a busy room whose agents were removed before
+      it was archived would read as never used. An agent's messages outlive
+      its membership, so they answer for the room's history.
     - **`seq` must be positive.** `MessageStore.create_historical` backfills
       imported history with a negative `seq`, and a backfill is not someone
       using the product today. Nothing calls it yet, so this half is a latent
@@ -232,7 +256,10 @@ def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
         Client.type == HUMAN_CLIENT_TYPE,
         Client.tenant_id == tenant_id,
         Message.seq > 0,
-        exists(_room_has_an_agent(tenant_id)),
+        or_(
+            exists(_room_has_an_agent(tenant_id)),
+            exists(_room_had_an_agent_message(tenant_id)),
+        ),
     )
 
 
@@ -675,25 +702,34 @@ async def newly_active_rooms(
     since: datetime,
     now: datetime | None = None,
 ) -> list[NewlyActiveRoom]:
-    """Rooms whose *first* human interaction happened after `since`.
+    """Rooms that became active after `since`.
+
+    A room becomes active the moment it has both a human message and an agent:
+    the later of its earliest human message and the earliest sign of an agent
+    (the first agent to join among its current members, or the first agent
+    message, whichever came first). Taking the later of the two is what lets a
+    room where somebody spoke before any agent was added still be reported,
+    once the agent arrives.
 
     The window is what makes this once-per-room without storing anything: a
-    room qualifies only if its earliest human message falls inside it, and each
-    window starts where the last one ended. A room that was already active
-    before `since` has an earlier first message and is skipped for good.
+    room qualifies only if it became active inside it, and each window starts
+    where the last one ended. A room that was already active before `since` is
+    skipped for good.
 
     The cost of that is a room can be reported late — up to one window — and
     cannot be reported at all if the deployment was down when the window that
     covered it would have run. Both are acceptable for a figure nobody reads
-    inside a day, and neither can produce a duplicate.
+    inside a day. One duplicate is possible: an agent that never posted,
+    removed and added back, moves its room's join time later, and the room can
+    be reported a second time.
 
     One tenant's failure is contained to that tenant, the same as
     `collect_usage`: its rooms are collected into a scratch list first and only
     folded into the result if every query for it succeeds, so a query that
-    raises partway through never contributes a partial set of rooms. A
-    contained tenant's rooms fall into the gap the paragraph above already
-    describes — reported late once the tenant recovers, or not at all if the
-    window has since moved past them — rather than crashing the pass.
+    raises partway through never contributes a partial set of rooms. The
+    caller advances its watermark regardless, so a contained tenant's rooms
+    for this window are never reported — logged as an error rather than
+    crashing the pass.
     """
     moment = now or datetime.now(UTC)
     found: list[NewlyActiveRoom] = []
@@ -717,6 +753,39 @@ async def newly_active_rooms(
                     .group_by(Message.room_id)
                     .subquery()
                 )
+                agent_joined = (
+                    select(
+                        ClientRoom.room_id.label("room_id"),
+                        func.min(ClientRoom.joined_at).label("at"),
+                    )
+                    .join(Client, Client.id == ClientRoom.client_id)
+                    .where(
+                        ClientRoom.tenant_id == tenant_id,
+                        Client.type == AGENT_CLIENT_TYPE,
+                        Client.tenant_id == tenant_id,
+                    )
+                    .group_by(ClientRoom.room_id)
+                    .subquery()
+                )
+                agent_posted = (
+                    select(
+                        Message.room_id.label("room_id"),
+                        func.min(Message.sent_at).label("at"),
+                    )
+                    .join(Client, Client.id == Message.sender_client_id)
+                    .where(
+                        Message.tenant_id == tenant_id,
+                        Message.seq > 0,
+                        Client.type == AGENT_CLIENT_TYPE,
+                        Client.tenant_id == tenant_id,
+                    )
+                    .group_by(Message.room_id)
+                    .subquery()
+                )
+                # LEAST and GREATEST skip NULLs, so a room with no agent at all
+                # would otherwise become active at its first human message.
+                agent_since = func.least(agent_joined.c.at, agent_posted.c.at)
+                activated_at = func.greatest(first_interaction.c.first_at, agent_since)
                 agent_count = (
                     select(func.count())
                     .select_from(ClientRoom)
@@ -732,29 +801,39 @@ async def newly_active_rooms(
                 rows = await session.execute(
                     select(
                         Room.created_at,
-                        first_interaction.c.first_at,
+                        activated_at,
                         Room.channel_type,
                         Room.bridge_id,
                         Room.metadata_["created_by_kind"].astext,
                         agent_count,
                     )
                     .join(first_interaction, first_interaction.c.room_id == Room.id)
+                    .outerjoin(agent_joined, agent_joined.c.room_id == Room.id)
+                    .outerjoin(agent_posted, agent_posted.c.room_id == Room.id)
                     .where(
                         and_(
                             Room.tenant_id == tenant_id,
-                            first_interaction.c.first_at > since,
-                            first_interaction.c.first_at <= moment,
+                            agent_since.is_not(None),
+                            activated_at > since,
+                            activated_at <= moment,
                         )
                     )
                 )
 
                 platforms = await _bridge_platforms(session)
-                for created_at, first_at, channel_type, bridge_id, kind, agents in rows:
+                for (
+                    created_at,
+                    active_at,
+                    channel_type,
+                    bridge_id,
+                    kind,
+                    agents,
+                ) in rows:
                     tenant_found.append(
                         NewlyActiveRoom(
-                            first_active_at=as_utc(first_at),
+                            first_active_at=as_utc(active_at),
                             seconds_since_room_created=max(
-                                (first_at - created_at).total_seconds(), 0.0
+                                (active_at - created_at).total_seconds(), 0.0
                             ),
                             bridge_platform=normalise_platform(
                                 platforms.get(bridge_id)
@@ -777,8 +856,8 @@ async def newly_active_rooms(
         logger.error(
             "Usage snapshot: could not check %d of %d tenant(s) for "
             "newly-active rooms: %s. Any room of theirs that went active in "
-            "this window is missing from this pass's room_became_active "
-            "events.",
+            "this window will never be reported as room_became_active: the "
+            "next window starts where this one ends.",
             len(failed_tenants),
             len(tenant_ids),
             ", ".join(failed_tenants),

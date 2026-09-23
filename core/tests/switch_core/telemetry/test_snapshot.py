@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -111,8 +112,20 @@ async def _agent(session: AsyncSession, runtime: str | None) -> Agent:
     return agent
 
 
-async def _join(session: AsyncSession, client: Client, room: Room) -> None:
-    session.add(ClientRoom(client_id=client.id, room_id=room.id))
+async def _join(
+    session: AsyncSession,
+    client: Client,
+    room: Room,
+    *,
+    when: datetime | None = None,
+) -> None:
+    """Pinned to the room's creation unless told otherwise: the column defaults
+    to the database clock, which is later than `NOW`."""
+    session.add(
+        ClientRoom(
+            client_id=client.id, room_id=room.id, joined_at=when or room.created_at
+        )
+    )
     await session.flush()
 
 
@@ -552,6 +565,43 @@ class TestNewlyActiveRooms:
 
         assert found == []
 
+    async def test_a_person_who_spoke_before_any_agent_counts_once_one_arrives(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A bridged channel often has people in it before anyone adds an agent.
+        The room becomes active when the agent arrives, and is reported in the
+        window that covers that moment rather than never."""
+        async with session_factory() as session:
+            room = await _room(session, created_at=NOW - timedelta(hours=10))
+            human = await _client(session, "user")
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1, when=NOW - timedelta(hours=6))
+            await session.commit()
+
+        before_the_agent = await newly_active_rooms(
+            session_factory,
+            since=NOW - timedelta(hours=8),
+            now=NOW - timedelta(hours=5),
+        )
+
+        async with session_factory() as session:
+            agent = await _client(session, "agent")
+            await _join(session, agent, room, when=NOW - timedelta(hours=3))
+            await session.commit()
+
+        when_it_arrives = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=5), now=NOW
+        )
+        the_window_after = await newly_active_rooms(
+            session_factory, since=NOW, now=NOW + timedelta(hours=5)
+        )
+
+        assert before_the_agent == []
+        assert len(when_it_arrives) == 1
+        assert when_it_arrives[0].first_active_at == NOW - timedelta(hours=3)
+        assert when_it_arrives[0].seconds_since_room_created == 7 * 3600
+        assert the_window_after == []
+
 
 class TestRoomHadHumanActivity:
     async def test_it_reports_whether_a_person_ever_posted(
@@ -660,6 +710,42 @@ class TestTheFourPathsAgreeOnActivity:
         assert counts.user_active_1d == 1
         assert was_ever_active is True
         assert len(newly_active) == 1
+
+    async def test_all_four_agree_a_room_keeps_its_history_when_its_agent_leaves(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Membership is only who is in the room now. A room archived after its
+        agent was removed was still used, and the agent's replies say so."""
+        async with session_factory() as session:
+            room = await _room(session, created_at=NOW - timedelta(hours=5))
+            human = await _client(session, "user")
+            agent = await _client(session, "agent")
+            await _join(session, human, room)
+            await _join(session, agent, room)
+            await _say(session, room, human, seq=1, when=NOW - timedelta(hours=2))
+            await _say(session, room, agent, seq=2, when=NOW - timedelta(minutes=90))
+            await session.execute(
+                delete(ClientRoom).where(
+                    ClientRoom.room_id == room.id, ClientRoom.client_id == agent.id
+                )
+            )
+            await session.flush()
+
+            counts = await _counts(session)
+            was_ever_active = await room_had_human_activity(
+                session, TENANT_ZERO, room.id
+            )
+            await session.commit()
+
+        newly_active = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert counts.room_active_1d == 1
+        assert counts.user_active_1d == 1
+        assert was_ever_active is True
+        assert len(newly_active) == 1
+        assert newly_active[0].first_active_at == NOW - timedelta(minutes=90)
 
 
 class TestTheDeploymentTotal:

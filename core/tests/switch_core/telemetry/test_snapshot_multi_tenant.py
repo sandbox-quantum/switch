@@ -102,8 +102,12 @@ async def _room_with_a_conversation(
         await session.flush()
         session.add_all(
             [
-                ClientRoom(client_id=human.id, room_id=room.id),
-                ClientRoom(client_id=agent.id, room_id=room.id),
+                ClientRoom(
+                    client_id=human.id, room_id=room.id, joined_at=room.created_at
+                ),
+                ClientRoom(
+                    client_id=agent.id, room_id=room.id, joined_at=room.created_at
+                ),
             ]
         )
         session.add(

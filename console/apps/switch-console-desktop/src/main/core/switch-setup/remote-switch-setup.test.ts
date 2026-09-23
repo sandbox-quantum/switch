@@ -508,9 +508,56 @@ describe('RemoteSwitchSetupService transport failures', () => {
       agent_type: 'codex',
       target: 'remote',
       outcome: 'failure',
-      // Everything that can throw runs before the remove-then-add, so the flag
-      // is false and the pair is not counted as a half-finished reinstall.
+      // Resolution throws before anything is removed, so the pair is not
+      // counted as a half-finished reinstall.
       was_reinstall: false,
+      trigger: 'user',
+      failure_reason: 'error',
+      duration_ms: aDurationMs,
+    });
+  });
+});
+
+describe('RemoteSwitchSetupService when the channel drops mid-operation', () => {
+  function dropsOn(command: string) {
+    return (_bin: string, args: string[] = []) =>
+      args.join(' ') === command
+        ? Promise.reject(new TransportError('SSH transport failure: channel closed'))
+        : Promise.resolve({ stdout: '', stderr: '' });
+  }
+
+  it('does not blame the marketplace for a dead channel', async () => {
+    mocks.exec.mockImplementation(dropsOn('plugin marketplace list --json'));
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    await service.install('codex');
+
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      failure_reason: 'error',
+      duration_ms: aDurationMs,
+    });
+  });
+
+  it('says the plugin was removed when the channel drops before the re-add', async () => {
+    mocks.exec.mockImplementation(dropsOn(`plugin add ${CODEX_REF}`));
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.update('codex', 'user');
+
+    expect(calls().slice(-2)).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+    expect(result).toEqual({
+      success: false,
+      message:
+        'Update failed: the plugin was removed, then the connection to the host dropped before it could be reinstalled. Reconnect and install it again for this host.',
+    });
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_updated', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+      was_reinstall: true,
       trigger: 'user',
       failure_reason: 'error',
       duration_ms: aDurationMs,
