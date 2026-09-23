@@ -521,6 +521,7 @@ async def run(config: SwitchConfig) -> None:
         document_store=document_store,
         reference_store=reference_store,
         agent_session_store=agent_session_store,
+        external_user_store=external_user_store,
         room_service=room_service,
         connections=connections,
         frontend_base_url=config.frontend_base_url,

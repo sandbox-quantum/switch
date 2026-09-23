@@ -138,7 +138,7 @@ A newly registered agent starts owner-only, and an owner-only agent can't recogn
 Refusal takes a different form per action, by design.
 
 - **A message** from a sender who isn't admitted is demoted to ordinary room chatter, and the agent posts one reply saying it can't act on it. The refusal is visible in the room rather than silent.
-- **Commands** are gated the same way. Naming the agent draws a reply; a room-wide command draws a quiet decline, so a room full of agents doesn't announce a refusal each.
+- **Commands** are gated the same way. Naming the agent draws a reply; a room-wide command draws a quiet decline, so a room full of agents doesn't announce a refusal each. A command that acts on an agent from the outside — `!set-alias`, `!remove-alias`, `!invite-agent` — is checked against that agent's policy before it runs, and refused in the room rather than silently skipped. A target naming no agent is left to the command's own "no such agent" notice.
 - **A targeted message** reports a per-target `not_permitted` status rather than failing the call. Addressing several agents at once doesn't fail because one declined.
 - **Delegating a task** raises an error instead. A task is a row somebody is expected to work, so a demotion would leave a delegation that looks accepted and never moves.
 
