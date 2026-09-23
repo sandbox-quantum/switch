@@ -154,11 +154,11 @@ export async function refreshSession(
  * to the normal sign-in path). No-op for non-managed servers, whose
  * credentials Switch Console does not hold.
  *
- * Reads the stored credentials and never makes them. Signing in is no moment
- * to mint a password: one made here matches no running stack, so the sign-in
- * fails anyway, and the made-up bundle is then kept as though it were the
- * stack's — which is how a Console that had never started a shared stack used
- * to end up holding credentials for it that opened nothing (CHOO-2893).
+ * Reads the stored credentials and never makes them. A password minted here
+ * would match no running stack, so the sign-in would fail anyway — and the
+ * made-up bundle would then be kept as though it were the stack's, which on a
+ * server shared from a VM (CHOO-2893) is the one place its credentials must
+ * come from the host instead.
  */
 export async function reauthenticateManagedServer(server: SwitchServer): Promise<string | null> {
   if (!server.managed) return null;

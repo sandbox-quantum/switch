@@ -16,7 +16,6 @@ vi.mock('@main/core/agents/getAgentById', () => ({
 vi.mock('@main/core/agents/observed-guard', () => ({
   // Every agent in these cases is one this Console runs (CHOO-2893).
   locationWhereAgentRuns: async () => ({ sshHost: 'host', dir: '/work', observed: false }),
-  isObservedAgent: async () => false,
 }));
 it('requests host recovery using the saved session rather than a permanent stop', async () => {
   await restartSessionAgent('session');

@@ -20,7 +20,14 @@ vi.mock('@main/core/locations/store', async () => {
       this.name = 'ObservedLocationError';
     }
   }
-  return { getLocationById, getLocationByHostDir, ObservedLocationError };
+  const assertRunsHere = (location: {
+    observed: boolean;
+    dir: string;
+    observedOwner: string | null;
+  }) => {
+    if (location.observed) throw new ObservedLocationError(location);
+  };
+  return { getLocationById, getLocationByHostDir, ObservedLocationError, assertRunsHere };
 });
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected }));
 vi.mock('@main/core/providers/plugin-fs', () => ({ createPluginFs }));
@@ -34,7 +41,7 @@ vi.mock('@main/core/locations/location-manager', () => ({
 }));
 vi.mock('@main/core/locations/path-utils', () => ({ checkIsValidDirectory: () => true }));
 
-const { isObservedAgent, locationWhereAgentRuns } = await import('./observed-guard');
+const { locationWhereAgentRuns } = await import('./observed-guard');
 const { resolveWorkspaceFsFor } = await import('./agent-workspace-fs');
 const { openLocation } = await import('@main/core/locations/operations/open-location');
 const { ObservedLocationError } = await import('@main/core/locations/store');
@@ -65,7 +72,6 @@ describe('locationWhereAgentRuns', () => {
     getLocationById.mockResolvedValue(OWN);
 
     await expect(locationWhereAgentRuns(AGENT)).resolves.toEqual(OWN);
-    await expect(isObservedAgent(AGENT)).resolves.toBe(false);
   });
 
   it('refuses, naming the owner, for an agent another account runs', async () => {
@@ -73,7 +79,6 @@ describe('locationWhereAgentRuns', () => {
 
     await expect(locationWhereAgentRuns(AGENT)).rejects.toBeInstanceOf(ObservedLocationError);
     await expect(locationWhereAgentRuns(AGENT)).rejects.toThrow(/belongs to alice/);
-    await expect(isObservedAgent(AGENT)).resolves.toBe(true);
   });
 });
 

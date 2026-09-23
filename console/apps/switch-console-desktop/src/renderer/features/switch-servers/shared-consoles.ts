@@ -37,11 +37,6 @@ export function describeConsole(console: Pick<StackConsole, 'name' | 'hostAccoun
   return `${console.name} (as ${console.hostAccount})`;
 }
 
-/** This Console's own entry, when it has recorded one. */
-export function selfEntry(register: StackRegister | null): StackConsole | null {
-  return register?.consoles.find((c) => c.consoleId === register.self) ?? null;
-}
-
 function names(consoles: StackConsole[]): string {
   const [first, second, ...rest] = consoles.map((c) => c.name);
   if (!second) return first ?? '';

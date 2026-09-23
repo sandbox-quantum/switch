@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { getLocationByHostDir, ObservedLocationError } from '@main/core/locations/store';
+import { assertRunsHere, getLocationByHostDir } from '@main/core/locations/store';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { createRemotePluginFs } from '@main/core/providers/remote-plugin-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
@@ -51,7 +51,7 @@ export async function resolveWorkspaceFsFor(
   dir: string
 ): Promise<WorkspaceFs> {
   const location = await getLocationByHostDir(sshHost, dir);
-  if (location?.observed) throw new ObservedLocationError(location);
+  if (location) assertRunsHere(location);
   if (sshHost === null) {
     return { fs: createPluginFs(dir), homeFs: createPluginFs(homedir()), close: () => {} };
   }

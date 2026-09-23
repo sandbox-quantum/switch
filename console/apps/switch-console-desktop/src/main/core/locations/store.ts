@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@main/db/client';
-import { locations, type LocationRow } from '@main/db/schema';
+import { agents, locations, type LocationRow } from '@main/db/schema';
 import type { Location } from '@shared/core/locations/locations';
 
 function rowToLocation(row: LocationRow): Location {
@@ -106,6 +106,31 @@ export async function ensureObservedLocation(params: {
     })
     .returning();
   return rowToLocation(row!);
+}
+
+/**
+ * Drop an observed location once no agent is left at it (CHOO-2893). Unlike a
+ * location this Console runs agents in, which is kept for reuse, an observed
+ * one only stands for agents followed there; left behind, it would refuse the
+ * directory for good — should its owner later share it, it could be neither
+ * loaded the ordinary way nor followed.
+ */
+export async function forgetObservedLocationIfUnused(locationId: string): Promise<void> {
+  const [row] = await db.select().from(locations).where(eq(locations.id, locationId)).limit(1);
+  if (!row?.observed) return;
+  const [remaining] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(eq(agents.locationId, locationId))
+    .limit(1);
+  if (remaining) return;
+  await db.delete(locations).where(eq(locations.id, locationId));
+}
+
+/** Refuse, with {@link ObservedLocationError}, a location this Console only
+ * observes — the one check every path that would run or write there makes. */
+export function assertRunsHere(location: Location): void {
+  if (location.observed) throw new ObservedLocationError(location);
 }
 
 /** Raised when something tries to run agents at, or write to, a location this

@@ -86,8 +86,11 @@ export const DeleteServerModal = observer(function DeleteServerModal({
   const remoteHost =
     server?.managed && server.managementKind === 'remote' && server.sshHost ? server.sshHost : null;
 
+  // The server page has usually read it already; only a cold open asks the host.
   useEffect(() => {
-    if (remoteHost) void remoteServerStore.loadRegister(remoteHost);
+    if (remoteHost && !remoteServerStore.registerFor(remoteHost)) {
+      void remoteServerStore.loadRegister(remoteHost);
+    }
   }, [remoteHost]);
 
   const destroying = managed && (remoteHost === null || removal === 'delete');

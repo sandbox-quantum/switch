@@ -11,6 +11,7 @@ const getServer = vi.hoisted(() => vi.fn());
 const fetchAgents = vi.hoisted(() => vi.fn());
 const getAgents = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 const ensureObservedLocation = vi.hoisted(() => vi.fn());
+const getLocationByHostDir = vi.hoisted(() => vi.fn(async () => undefined as unknown));
 const createAgent = vi.hoisted(() => vi.fn());
 const emit = vi.hoisted(() => vi.fn());
 const startRemoteDiscovery = vi.hoisted(() => vi.fn(async () => {}));
@@ -28,7 +29,7 @@ vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
 vi.mock('@main/core/locations/location-transport', () => ({
   sshConnectionIdForHost: (host: string) => `ssh:${host}`,
 }));
-vi.mock('@main/core/locations/store', () => ({ ensureObservedLocation }));
+vi.mock('@main/core/locations/store', () => ({ ensureObservedLocation, getLocationByHostDir }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchAgents,
@@ -283,6 +284,46 @@ describe('attachObservedAgents', () => {
 
     expect(!result.success && 'message' in result.error && result.error.message).toMatch(
       /mystery agent/
+    );
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  it('makes no row at all when any selected agent would be refused', async () => {
+    // A bad agent late in the selection must not leave the earlier ones
+    // half-attached, with no discovery started for them.
+    fetchAgents.mockResolvedValue([
+      summary('a1'),
+      summary('a2', {
+        knownAgentType: 'mystery',
+        knownAgentOptions: { repo_dir: '/home/alice/x' },
+      }),
+    ]);
+    hostAnswers(['denied', 'denied']);
+
+    const result = await attachObservedAgents({
+      sshHost: 'vm-1',
+      serverId: 'srv-1',
+      switchAgentIds: ['a1', 'a2'],
+    });
+
+    expect(result.success).toBe(false);
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(ensureObservedLocation).not.toHaveBeenCalled();
+  });
+
+  it('refuses a directory this Console already runs agents in, before making anything', async () => {
+    fetchAgents.mockResolvedValue([summary('a1')]);
+    hostAnswers(['denied']);
+    getLocationByHostDir.mockResolvedValueOnce({ id: 'loc-own', observed: false });
+
+    const result = await attachObservedAgents({
+      sshHost: 'vm-1',
+      serverId: 'srv-1',
+      switchAgentIds: ['a1'],
+    });
+
+    expect(!result.success && 'message' in result.error && result.error.message).toMatch(
+      /already a location this Console runs agents in/
     );
     expect(createAgent).not.toHaveBeenCalled();
   });

@@ -236,7 +236,10 @@ export class RemoteServerStore {
         }
       });
     } catch (cause) {
-      this.setError(cause, 'Could not check the host for a Switch server.');
+      // Kept as the host's answer rather than as a page error: the setup step
+      // must stop saying it is looking, and offer to look again.
+      const { headline } = describeFailure(cause, 'Could not check the host for a Switch server.');
+      runInAction(() => this.probes.set(sshHost, { kind: 'unreadable', reason: headline }));
     } finally {
       runInAction(() => this.probingHosts.delete(sshHost));
     }

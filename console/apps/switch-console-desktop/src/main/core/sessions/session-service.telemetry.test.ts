@@ -28,9 +28,13 @@ vi.mock('./operations/createSession', () => ({ createSession: hoisted.createSess
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: hoisted.getAgentById }));
 vi.mock('@main/core/locations/store', () => ({
   getLocationById: hoisted.getLocationById,
-  ObservedLocationError: class extends Error {
-    constructor(location: { dir: string; observedOwner: string | null }) {
-      super(`${location.dir} belongs to the account ${location.observedOwner}`);
+  assertRunsHere: (location: {
+    observed?: boolean;
+    dir: string;
+    observedOwner?: string | null;
+  }) => {
+    if (location.observed) {
+      throw new Error(`${location.dir} belongs to the account ${location.observedOwner}`);
     }
   },
 }));

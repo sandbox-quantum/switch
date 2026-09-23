@@ -80,9 +80,21 @@ const ACTIONS: readonly StackActivityAction[] = [
   'disconnected',
 ];
 
-async function hostAccount(host: StackStateHost): Promise<string> {
-  const { stdout } = await host.ctx.exec('id', ['-un'], { timeout: 20_000 });
-  return stdout.trim() || 'unknown';
+/** The account each host connection logs in as. It cannot change for the life
+ * of a connection, so it is asked once rather than on every record. */
+const accounts = new WeakMap<StackStateHost, Promise<string>>();
+
+function hostAccount(host: StackStateHost): Promise<string> {
+  let account = accounts.get(host);
+  if (!account) {
+    account = host.ctx
+      .exec('id', ['-un'], { timeout: 20_000 })
+      .then(({ stdout }) => stdout.trim() || 'unknown');
+    // A failed ask is not remembered: the next record asks again.
+    account.catch(() => accounts.delete(host));
+    accounts.set(host, account);
+  }
+  return account;
 }
 
 /**

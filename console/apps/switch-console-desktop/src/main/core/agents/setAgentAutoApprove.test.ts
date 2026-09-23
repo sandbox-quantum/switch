@@ -17,7 +17,6 @@ vi.mock('./getAgentById', () => ({
 vi.mock('./observed-guard', () => ({
   // Every agent in these cases is one this Console runs (CHOO-2893).
   locationWhereAgentRuns: async () => ({ sshHost: 'host', dir: '/work', observed: false }),
-  isObservedAgent: async () => false,
 }));
 vi.mock('./agent-location', () => ({
   getRemoteAgentLocation: (a: unknown) => getRemoteAgentLocation(a),

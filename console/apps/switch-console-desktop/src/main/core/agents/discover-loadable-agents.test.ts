@@ -25,8 +25,12 @@ vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
   SshExecutionContext: class {},
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), info: vi.fn() } }));
+vi.mock('@main/core/locations/store', () => ({
+  ObservedLocationError: class ObservedLocationError extends Error {},
+}));
 
 const { discoverLoadableAgentsOnHost } = await import('./discover-loadable-agents');
+const { FileSystemError, FileSystemErrorCodes } = await import('@main/core/fs/types');
 
 const SERVER = { id: 'srv-1', name: 'Team', apiUrl: 'http://localhost:41001' };
 
@@ -113,13 +117,28 @@ describe('discoverLoadableAgentsOnHost on a shared host', () => {
   it('follows the agents of a readable directory whose files it cannot read', async () => {
     fetchAgents.mockResolvedValue([remote('theirs', 'reviewer', '/srv/shared/reviewer')]);
     probeDirAccess.mockResolvedValue(new Map([['/srv/shared/reviewer', 'readable']]));
-    discoverConfiguredAgents.mockRejectedValue(new Error('Permission denied'));
+    discoverConfiguredAgents.mockRejectedValue(
+      new FileSystemError('Permission denied', FileSystemErrorCodes.PERMISSION_DENIED)
+    );
 
     const { agents } = await discoverLoadableAgentsOnHost({ sshHost: 'vm-1', serverId: 'srv-1' });
 
     expect(agents).toEqual([
       expect.objectContaining({ name: 'reviewer', observed: true, observedOwner: null }),
     ]);
+  });
+
+  it('does not take a failed scan of a readable directory for another account’s', async () => {
+    // A dropped channel on this account's own directory says nothing about
+    // whose the files are.
+    fetchAgents.mockResolvedValue([remote('mine', 'builder', '/home/bob/builder')]);
+    probeDirAccess.mockResolvedValue(new Map([['/home/bob/builder', 'readable']]));
+    discoverConfiguredAgents.mockRejectedValue(new Error('Channel open failure'));
+
+    const { agents } = await discoverLoadableAgentsOnHost({ sshHost: 'vm-1', serverId: 'srv-1' });
+
+    expect(agents).toEqual([]);
+    expect(hostHomes).not.toHaveBeenCalled();
   });
 
   it('marks an agent this Console already follows', async () => {

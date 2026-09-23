@@ -1,5 +1,5 @@
 import type { PluginFs, SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
-import { ObservedLocationError } from '@main/core/locations/store';
+import { assertRunsHere } from '@main/core/locations/store';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentConfigFile } from './agent-config-file';
 import { readAgentConfigFile } from './agent-config-file';
@@ -57,7 +57,7 @@ export async function withAgentWorkspace<T>(
   const location = await getAgentLocation(agent);
   // An observed agent's working directory is another account's (CHOO-2893):
   // neither readable nor writable from here, and its config is its owner's.
-  if (location.observed) throw new ObservedLocationError(location);
+  assertRunsHere(location);
   const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
   try {
     return await run(agent, workspace.fs);

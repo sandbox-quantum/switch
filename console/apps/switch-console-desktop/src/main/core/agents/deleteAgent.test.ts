@@ -34,6 +34,7 @@ const h = vi.hoisted(() => {
     removeSwitchCredentials: vi.fn(async () => {}),
     sessionHookEmit: vi.fn(),
     trackEvent: vi.fn(),
+    forgetObservedLocationIfUnused: vi.fn(async () => {}),
   };
 });
 
@@ -95,6 +96,18 @@ vi.mock('@main/core/sessions/session-hooks', () => ({
   sessionHooks: { _emit: h.sessionHookEmit },
 }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
+vi.mock('@main/core/locations/store', () => ({
+  forgetObservedLocationIfUnused: h.forgetObservedLocationIfUnused,
+  assertRunsHere: (location: {
+    observed?: boolean;
+    dir: string;
+    observedOwner?: string | null;
+  }) => {
+    if (location.observed) {
+      throw new Error(`${location.dir} belongs to the account ${location.observedOwner}`);
+    }
+  },
+}));
 
 const { deleteAgent } = await import('./deleteAgent');
 const { getAgentLocation } = await import('./agent-location');
@@ -193,6 +206,7 @@ describe('deleteAgent', () => {
     // Followed from this Console (CHOO-2893): it can be let go of, but its
     // sessions, identity and files are its owner's.
     const OBSERVED = {
+      id: 'loc-observed',
       sshHost: 'vm-1',
       dir: '/home/alice/reviewer',
       observed: true,
@@ -213,6 +227,8 @@ describe('deleteAgent', () => {
       expect(autoSessionWatcher.stopForAgent).not.toHaveBeenCalled();
       expect(gatewayDeleteAgent).not.toHaveBeenCalled();
       expect(h.removeSwitchCredentials).not.toHaveBeenCalled();
+      // The observed location stands only for agents followed there.
+      expect(h.forgetObservedLocationIfUnused).toHaveBeenCalledExactlyOnceWith('loc-observed');
       expect(h.trackEvent).toHaveBeenCalledWith(
         'agent_removed',
         expect.objectContaining({ outcome: 'success' })

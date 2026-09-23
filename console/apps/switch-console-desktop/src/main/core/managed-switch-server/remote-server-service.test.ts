@@ -354,6 +354,44 @@ describe('recheck', () => {
     expect(service.getStatus('vm-1').phase).toBe('stopped');
   });
 
+  it('keeps the forward it holds when the stack is still where it was', async () => {
+    const { service, first } = await runningService();
+    const second = fakeHost();
+    createRemoteServerHost.mockResolvedValue(second);
+
+    service.recheck('vm-1');
+
+    await vi.waitFor(() => expect(second.dispose).toHaveBeenCalledOnce());
+    expect(first.dispose).not.toHaveBeenCalled();
+    expect(second.establishNetworking).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', notice: null });
+  });
+
+  it.each([
+    [
+      'cannot be reached',
+      () => createRemoteServerHost.mockRejectedValue(new Error('ssh: timed out')),
+    ],
+    [
+      'cannot say what it has',
+      () => {
+        createRemoteServerHost.mockResolvedValue(fakeHost());
+        inspectStack.mockResolvedValue({ kind: 'unreadable', reason: 'docker ps failed' });
+      },
+    ],
+  ])('keeps a running stack running, and its forward, when the host %s', async (_, arrange) => {
+    // A failure to ask says nothing about the stack; dropping the forward on
+    // one would strand a server that is still up, for good.
+    const { service, first } = await runningService();
+    arrange();
+
+    service.recheck('vm-1');
+
+    await vi.waitFor(() => expect(service.getStatus('vm-1').notice).toMatch(/Could not check/));
+    expect(service.getStatus('vm-1').phase).toBe('running');
+    expect(first.dispose).not.toHaveBeenCalled();
+  });
+
   it('looks at most once per interval, however many calls fail', async () => {
     const { service } = await runningService();
     createRemoteServerHost.mockClear();

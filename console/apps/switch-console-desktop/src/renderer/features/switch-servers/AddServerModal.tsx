@@ -539,12 +539,14 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   }, [store]);
 
   // A host is shared by everyone with access to it (CHOO-2893), so what is
-  // offered depends on what is already there: look before offering anything.
+  // offered depends on what is already there: look before offering anything —
+  // and again when a host that was out of reach comes back.
+  const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
   useEffect(() => {
-    if (!sshHost) return;
+    if (!sshHost || hostBlocked) return;
     void store.checkDocker(sshHost);
     void store.probe(sshHost);
-  }, [store, sshHost]);
+  }, [store, sshHost, hostBlocked]);
 
   const running = sshHost ? store.isRunning(sshHost) : false;
   const starting = sshHost ? store.isTransitioning(sshHost) : false;
@@ -558,7 +560,6 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
     : null;
   const joining = action?.kind === 'connect';
 
-  const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
   const canAct =
     !!sshHost &&
     name.trim().length > 0 &&

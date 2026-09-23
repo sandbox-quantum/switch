@@ -13,12 +13,12 @@ import type { ServerHost } from './host/types';
  * itself rather than out of this desktop's store (CHOO-2893).
  *
  * A stack on a shared VM is used by everyone with access to that VM, from their
- * own Consoles and often under their own accounts. The ports it publishes and
- * the credentials its volumes were created with used to live only in the
- * encrypted store of whichever Console started it first, so a second Console
- * had neither, generated its own, rewrote the stack's `.env` with them and took
- * the running server down. The host is the one place every Console can reach,
- * so the host is the source of truth, and each desktop's copy is a cache of it.
+ * own Consoles and often under their own accounts. Every one of them needs the
+ * ports it publishes and the credentials its volumes were created with: a
+ * Console without them would generate its own, rewrite the stack's `.env` with
+ * them, and lock the stack out of its own database. The host is the one place
+ * every Console can reach, so the host is the source of truth, and each
+ * desktop's copy is a cache of it.
  *
  * Two places on the host hold that truth:
  *
@@ -182,15 +182,10 @@ async function ensureHelperImage(host: StackStateHost): Promise<void> {
 
 /**
  * Run a shell `script` in a throwaway container with the state volume mounted
- * at `/state`, returning its stdout. `scriptArgs` arrive as `$1…`, so a value
- * is never spliced into the script's text. The volume must already exist —
+ * read-only at `/state`, returning its stdout. The volume must already exist —
  * `docker run -v` would otherwise create it, and reading must not.
  */
-export async function readStateVolume(
-  host: StackStateHost,
-  script: string,
-  scriptArgs: string[] = []
-): Promise<string> {
+export async function readStateVolume(host: StackStateHost, script: string): Promise<string> {
   await ensureHelperImage(host);
   return docker(host, [
     'run',
@@ -205,7 +200,6 @@ export async function readStateVolume(
     '-c',
     script,
     'stack-state',
-    ...scriptArgs,
   ]);
 }
 
@@ -223,13 +217,14 @@ async function ensureStateVolume(host: StackStateHost): Promise<void> {
 /**
  * Run a shell `script` against the state volume with `input` on its stdin.
  * Input is the only way a secret reaches it, for the reason
- * `writeCommandInput` gives. Creates the volume on first use.
+ * `writeCommandInput` gives; `scriptArgs` arrive as `$1…`, so no value is
+ * spliced into the script's text. Creates the volume on first use.
  */
 export async function writeStateVolume(
   host: StackStateHost,
   script: string,
   input: string,
-  scriptArgs: string[] = []
+  scriptArgs: string[]
 ): Promise<void> {
   await ensureHelperImage(host);
   await ensureStateVolume(host);
@@ -275,7 +270,8 @@ export async function publishEnv(host: StackStateHost, env: string): Promise<voi
     host,
     `umask 077 && cat > "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" && ` +
       `mv "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}"`,
-    env
+    env,
+    []
   );
 }
 
@@ -291,7 +287,8 @@ export async function withdrawPublishedEnv(host: StackStateHost): Promise<void> 
   await writeStateVolume(
     host,
     `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp"`,
-    ''
+    '',
+    []
   );
 }
 
@@ -299,8 +296,8 @@ export async function withdrawPublishedEnv(host: StackStateHost): Promise<void> 
 export type StackEnvSource = 'published' | 'working-dir';
 
 export type StackOnHost =
-  /** Nothing of the stack's project on this daemon, and no `.env` here: a
-   * first start, and the only case where new credentials may be made. */
+  /** Nothing of the stack's project on this daemon — no containers, no data:
+   * a first start, and the only case where new credentials may be made. */
   | { kind: 'absent' }
   /** The stack's settings, readable by this account. `published` says whether
    * other accounts can read them too — false for a stack started before
@@ -390,11 +387,14 @@ function fromEnvText(
 /**
  * Find out what this host has of the stack, in the order that can be trusted:
  *
- * 1. the published copy, which every account shares and every start refreshes;
- * 2. this account's own `.env`, but only when nothing on the daemon says the
+ * 1. nothing of the stack's project on the daemon — no containers, no data —
+ *    which is a first start whatever settings are lying about: a `.env` or a
+ *    published copy with no stack behind it belongs to one that was reset or
+ *    removed, and the credentials in it open nothing;
+ * 2. the published copy, which every account shares and every start refreshes;
+ * 3. this account's own `.env`, but only when nothing on the daemon says the
  *    stack belongs to another account — a stale file left from before someone
- *    else reset and restarted the stack would otherwise be taken for the truth;
- * 3. nothing at all, which is the one state that allows new credentials.
+ *    else reset and restarted the stack would otherwise be taken for the truth.
  */
 export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   let resources: ProjectResources;
@@ -408,13 +408,11 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
     return { kind: 'unreadable', reason: errorText(error) };
   }
 
+  const hasProject = resources.containers.length > 0 || resources.dataVolumes.length > 0;
+  if (!hasProject) return { kind: 'absent' };
+
   const running = isRunning(resources);
   if (published !== null) return fromEnvText(published, 'published', running, true);
-
-  const hasProject = resources.containers.length > 0 || resources.dataVolumes.length > 0;
-  if (!hasProject) {
-    return own === null ? { kind: 'absent' } : fromEnvText(own, 'working-dir', false, false);
-  }
 
   // The stack exists and was never published: it is ours only if the account
   // that created its containers is this one.

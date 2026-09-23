@@ -253,26 +253,35 @@ class RemoteServerService {
     if (hostReachabilityService.isBlocked(sshHost)) return;
     const wasRunning = this.getStatus(sshHost).phase === 'running';
     this.busy.add(sshHost);
-    // Whatever forward this Console held is to the ports it last knew, which
-    // are what is being checked.
-    this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
+    // The forward this Console holds stays until the host gives an answer that
+    // replaces it: a failure to ask says nothing about the stack, and dropping
+    // the forward on one would strand a server that is still up.
+    const live = this.hosts.get(sshHost) ?? null;
     let host: RemoteServerHost | null = null;
-    let adopted = false;
+    let kept = false;
     try {
       host = await createRemoteServerHost(sshHost);
       const stack = await inspectStack(host);
+      if (stack.kind === 'unreadable') {
+        this.leaveUnanswered(sshHost, wasRunning, stack.reason);
+        return;
+      }
       if (stack.kind === 'present' && stack.running) {
         const settings = await adoptRunningStack(host, stack);
-        await this.followPorts(sshHost, serverId, settings.ports);
-        await host.establishNetworking(settings.ports);
-        this.hosts.set(sshHost, host);
-        adopted = true;
+        const moved = await this.followPorts(sshHost, serverId, settings.ports);
+        if (!live || moved) {
+          this.releaseHost(sshHost, live);
+          await host.establishNetworking(settings.ports);
+          this.hosts.set(sshHost, host);
+          kept = true;
+        }
         this.setStatus(sshHost, { phase: 'running', serverId, error: null, notice: null });
         // Only for a running stack: a stopped one sends nothing, so it
         // cannot be out of step with the user's answer.
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
         await recordOnHost(host, null);
       } else {
+        this.releaseHost(sshHost, live);
         this.setStatus(sshHost, {
           phase: 'stopped',
           serverId,
@@ -283,31 +292,42 @@ class RemoteServerService {
       this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
     } catch (error) {
       log.warn(`remote-switch-server: reconcile failed for ${sshHost}`, { error });
-      if (wasRunning) {
-        this.setStatus(sshHost, {
-          phase: 'stopped',
-          deployedTelemetry: null,
-          notice: `Could not read the server on ${sshHost}: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
+      this.leaveUnanswered(
+        sshHost,
+        wasRunning,
+        error instanceof Error ? error.message : String(error)
+      );
     } finally {
-      // The adopted host owns the live port-forward; anything else is throwaway.
-      if (!adopted) host?.dispose();
+      // A host that became the live one owns its forward; any other is throwaway.
+      if (!kept) host?.dispose();
       this.busy.delete(sshHost);
     }
   }
 
+  /**
+   * The host could not be asked what it has. That is not news about the stack,
+   * so a stack this Console saw running keeps its forward and its phase, and
+   * says it could not be checked; the next failing call asks again.
+   */
+  private leaveUnanswered(sshHost: string, wasRunning: boolean, reason: string): void {
+    log.warn(`remote-switch-server: could not check the stack on ${sshHost}`, { reason });
+    if (wasRunning) {
+      this.setStatus(sshHost, { notice: `Could not check the server on ${sshHost}: ${reason}` });
+    }
+  }
+
   /** Point the server's record at the ports the stack actually publishes,
-   * when another Console has restarted it on different ones. */
+   * when another Console has restarted it on different ones. Returns whether
+   * they moved — the record holds the ports this Console forwards. */
   private async followPorts(
     sshHost: string,
     serverId: string,
     ports: LocalServerPorts
-  ): Promise<void> {
+  ): Promise<boolean> {
     const gatewayUrl = gatewayUrlFor(ports);
     const apiUrl = apiUrlFor(ports);
     const record = await getRemoteManagedServer(sshHost);
-    if (!record || (record.gatewayUrl === gatewayUrl && record.apiUrl === apiUrl)) return;
+    if (!record || (record.gatewayUrl === gatewayUrl && record.apiUrl === apiUrl)) return false;
     log.info(`remote-switch-server: the stack on ${sshHost} now publishes different ports`, {
       serverId,
       from: record.gatewayUrl,
@@ -317,6 +337,7 @@ class RemoteServerService {
       { name: record.name, gatewayUrl, apiUrl },
       { kind: 'remote', sshHost }
     );
+    return true;
   }
 
   async start(sshHost: string, serverName: string): Promise<StartLocalServerResult> {

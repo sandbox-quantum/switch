@@ -91,6 +91,16 @@ describe('recording a Console on the host', () => {
     expect(input.trim().split('\n')).toHaveLength(1);
   });
 
+  it('asks the host which account it is once per connection, not per record', async () => {
+    const { host: h, exec } = host();
+
+    await writeRecord(h, 'started');
+    await writeRecord(h, null);
+
+    expect(exec).toHaveBeenCalledOnce();
+    expect(writeStateVolume).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses to use an id that is not one as a file name', async () => {
     getConsoleIdentity.mockResolvedValueOnce({ id: '../../etc/passwd', name: 'x' });
     const { host: h } = host();

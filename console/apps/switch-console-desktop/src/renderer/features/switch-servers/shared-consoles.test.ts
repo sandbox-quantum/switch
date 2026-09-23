@@ -8,7 +8,6 @@ import {
   affectedSentence,
   describeConsole,
   othersRecentlySeen,
-  selfEntry,
   sharedWithSentence,
 } from './shared-consoles';
 
@@ -97,12 +96,5 @@ describe('the sentences', () => {
 
     expect(activitySentence(entry, 'me')).toBe('bob@desk stopped it');
     expect(activitySentence({ ...entry, consoleId: 'me' }, 'me')).toBe('This Console stopped it');
-  });
-
-  it('finds this Console’s own entry', () => {
-    expect(selfEntry(register([seen('bob@desk', 1), seen('me@laptop', 0, 'me')]))?.name).toBe(
-      'me@laptop'
-    );
-    expect(selfEntry(register([seen('bob@desk', 1)]))).toBeNull();
   });
 });

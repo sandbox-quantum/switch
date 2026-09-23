@@ -1,5 +1,7 @@
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
+import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { ObservedLocationError } from '@main/core/locations/store';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { fetchAgents, fetchMe } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
@@ -167,13 +169,24 @@ export async function discoverLoadableAgentsOnHost(
           });
         }
       } catch (error) {
-        // The directory is readable but its agents' files are not: they are
-        // still another account's, so they are followed rather than lost.
-        log.warn('discoverLoadableAgentsOnHost: server-assisted dir scan failed; following', {
+        const detail = {
           dir,
           sshHost: params.sshHost,
           error: error instanceof Error ? error.message : String(error),
-        });
+        };
+        if (!deniedToThisAccount(error)) {
+          // Anything but a refusal says nothing about whose the files are — a
+          // dropped channel on this account's own directory must not turn its
+          // agents into someone else's.
+          log.warn('discoverLoadableAgentsOnHost: server-assisted dir scan failed', detail);
+          continue;
+        }
+        // Readable directory, unreadable agent files: another account's, so
+        // they are followed rather than lost.
+        log.info(
+          'discoverLoadableAgentsOnHost: agent files are another account’s; following',
+          detail
+        );
         await observe(dir, agents);
       }
     }
@@ -233,6 +246,15 @@ export async function discoverLoadableAgentsOnHost(
   }
 
   return { agents: [...seen.values()], serverApiUrl: server.apiUrl };
+}
+
+/** Whether a scan failed because this account may not read what it found —
+ * the one failure that says the directory's agents are another account's. */
+function deniedToThisAccount(error: unknown): boolean {
+  return (
+    (error instanceof FileSystemError && error.code === FileSystemErrorCodes.PERMISSION_DENIED) ||
+    error instanceof ObservedLocationError
+  );
 }
 
 /** An agent another account runs here, as the server describes it. */

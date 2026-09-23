@@ -9,8 +9,8 @@ import type { StackOnHost, StackStateHost } from './stack-state';
  * The start and connect paths on a host whose stack other Consoles share
  * (CHOO-2893). The rule under test throughout: a remote stack's settings are
  * the host's, a desktop's copy is a cache, and new credentials are made only
- * when the host has nothing of the stack at all — anything else is how a
- * second person's Console used to take a running server down.
+ * when the host has nothing of the stack at all — anything else locks a
+ * running server out of its own database, for everyone using it.
  */
 
 const inspectStackMock = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());

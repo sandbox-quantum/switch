@@ -307,14 +307,13 @@ describe('inspectStack', () => {
     });
   });
 
-  it('reads a leftover working-dir file on an otherwise empty host as a stopped stack', async () => {
-    const { host } = fakeHost({ own: envFor() });
+  it('treats settings with no stack behind them as a first start', async () => {
+    // What a reset leaves: this account's `.env`, and possibly a published copy
+    // from a Console that did not withdraw it. Their credentials open nothing,
+    // and a stopped stack that "keeps its data" is not what is there.
+    const { host } = fakeHost({ own: envFor(), stateVolume: true, published: envFor() });
 
-    expect(await inspectStack(host)).toMatchObject({
-      kind: 'present',
-      source: 'working-dir',
-      running: false,
-    });
+    expect(await inspectStack(host)).toEqual({ kind: 'absent' });
   });
 
   it('refuses to take another account’s unpublished stack for this one', async () => {
@@ -347,6 +346,7 @@ describe('inspectStack', () => {
 
   it('names what a partial published copy is missing', async () => {
     const { host } = fakeHost({
+      dataVolumes: [`${PROJECT}_pgdata`],
       stateVolume: true,
       published: envFor().replace(/^JWT_SECRET_KEY=.*$/m, ''),
     });

@@ -2,13 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from '@switch-console/shared';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { ensureObservedLocation } from '@main/core/locations/store';
+import { ensureObservedLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { fetchAgents, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
@@ -206,8 +207,9 @@ export async function attachObservedAgents(
     }
   }
 
-  const homes = await hostHomes(params.sshHost);
-  const created: Agent[] = [];
+  // Everything that can refuse is checked before any row is made, so a bad
+  // agent in the selection cannot leave the ones before it half-attached.
+  const planned: { summary: RemoteAgentSummary; dir: string; providerId: AgentProviderId }[] = [];
   for (const { summary, dir } of wanted) {
     const providerId = providerForKnownAgentType(summary.knownAgentType);
     if (!providerId) {
@@ -216,6 +218,20 @@ export async function attachObservedAgents(
         message: `${summary.name} is a ${summary.knownAgentType ?? 'untyped'} agent, which this Switch Console does not know how to show.`,
       });
     }
+    const existing = await getLocationByHostDir(params.sshHost, dir);
+    if (existing && !existing.observed) {
+      return err({
+        type: 'invalid-directory',
+        dir,
+        message: `${dir} on ${params.sshHost} is already a location this Console runs agents in, so ${summary.name} cannot be followed there.`,
+      });
+    }
+    planned.push({ summary, dir, providerId });
+  }
+
+  const homes = await hostHomes(params.sshHost);
+  const created: Agent[] = [];
+  for (const { summary, dir, providerId } of planned) {
     const location = await ensureObservedLocation({
       sshHost: params.sshHost,
       dir,

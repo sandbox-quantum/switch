@@ -82,6 +82,19 @@ describe('probe', () => {
     });
   });
 
+  it('stops looking, and says why, when the host cannot be asked', async () => {
+    // Otherwise the setup step says it is looking for a server forever, with
+    // nothing offered and nothing to press.
+    rpcRemote.probe.mockRejectedValue(new Error('ssh: connection refused'));
+    const store = new RemoteServerStore();
+
+    await store.probe('vm-1');
+
+    expect(store.isProbing('vm-1')).toBe(false);
+    expect(store.probeFor('vm-1')).toMatchObject({ kind: 'unreadable' });
+    expect(store.error).toBeNull();
+  });
+
   it('asks nothing of a host that is out of reach', async () => {
     isBlocked.mockReturnValue(true);
     const store = new RemoteServerStore();

@@ -11,8 +11,15 @@ vi.mock('@main/db/client', () => ({
   },
 }));
 
-const { ensureLocation, ensureObservedLocation, getLocationByHostDir, ObservedLocationError } =
-  await import('./store');
+const {
+  ensureLocation,
+  ensureObservedLocation,
+  forgetObservedLocationIfUnused,
+  getLocationByHostDir,
+  getLocationById,
+  ObservedLocationError,
+} = await import('./store');
+const { agents } = await import('@main/db/schema');
 
 /**
  * A location this Console only observes (CHOO-2893) and one it runs agents in
@@ -87,6 +94,38 @@ describe('observed locations', () => {
     await expect(
       ensureObservedLocation({ sshHost: 'vm-1', dir: '/home/bob/proj', name: 'proj', owner: null })
     ).rejects.toThrow(/already a location this Console runs agents in/);
+  });
+
+  it('forgets an observed location once its last agent is gone, and only then', async () => {
+    const observed = await ensureObservedLocation({
+      sshHost: 'vm-1',
+      dir: '/home/alice/reviewer',
+      name: 'reviewer',
+      owner: 'alice',
+    });
+    await fixture.db
+      .insert(agents)
+      .values({ id: 'a1', locationId: observed.id, name: 'reviewer', providerId: 'claude' });
+
+    await forgetObservedLocationIfUnused(observed.id);
+    expect(await getLocationById(observed.id)).toBeDefined();
+
+    await fixture.db.delete(agents);
+    await forgetObservedLocationIfUnused(observed.id);
+    expect(await getLocationById(observed.id)).toBeUndefined();
+    // With it gone, the directory can be loaded the ordinary way if its owner
+    // shares it later.
+    await expect(
+      ensureLocation({ sshHost: 'vm-1', dir: '/home/alice/reviewer', name: 'reviewer' })
+    ).resolves.toMatchObject({ observed: false });
+  });
+
+  it('never forgets a location this Console runs agents in', async () => {
+    const own = await ensureLocation({ sshHost: 'vm-1', dir: '/home/bob/proj', name: 'proj' });
+
+    await forgetObservedLocationIfUnused(own.id);
+
+    expect(await getLocationById(own.id)).toBeDefined();
   });
 
   it('leaves an ordinary location unobserved', async () => {
