@@ -44,6 +44,44 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.27.0] - 2026-09-23
+
+#### Added
+- **Multi-tenancy phase 1 — tenant isolation enforced in the database.** Every
+  request and every unit of background work now binds a tenant onto its session,
+  the schema is scoped to a tenant, and row-level security enforces the boundary
+  under a restricted database role whose only exemption is the tenant-resolution
+  lookups. Tenant admin is split from the deployment-operator capability, and a
+  session with several memberships can select which tenant it acts as.
+- **Distributed messaging-install protocol.** A collaboration app can be
+  installed into a workspace and later ended through a first-class lifecycle
+  (`messaging_installs`, install/end routes, and the tenant-routing lookup),
+  inbound platform events are routed to the installing tenant and handled exactly
+  once, and `MESSAGING_PUBLIC_URL` is configurable separately from the gateway's
+  public origin.
+- **Workspaces, invitations and members.** Gateway routes to manage a workspace,
+  its invitations and its members, backed by an invitations table and the lookup
+  that resolves an invitation to a tenant.
+- **Datadog observability (#491).** OpenTelemetry metrics, a liveness/readiness
+  split (only the database gates readiness), log export, and a shipped Datadog
+  dashboard and monitor set. Tracing is not yet wired.
+- **Product-usage telemetry for switch-core (#487).**
+- **Template registry (#421)** — server-side storage and API for room templates.
+- Index on `rooms.group_id` (#404).
+
+#### Fixed
+- Removing an agent from a room no longer stops message delivery to the rest of
+  the room (#412).
+- A failed bridge read is no longer mistaken for an empty bridge list (#515).
+- The gateway refuses to delete a bridge an install created, and refuses to
+  remove a member who still owns agents in the workspace.
+- The gateway requires `GATEWAY_OIDC_SCOPES` to include `openid` and no longer
+  500s on a userinfo hiccup (#418).
+- Migration lock waits are bounded, and the deploy job runs through boot's path.
+- A log context token is never restored in a context that did not create it
+  (#428).
+- Dependency: `pyjwt` 2.12.1 → 2.13.0 (#508).
+
 #### Security
 - Room message bodies are delivered to an agent inside `BEGIN`/`END SWITCH
   MESSAGE` markers carrying a per-message nonce. Any room participant writes the
