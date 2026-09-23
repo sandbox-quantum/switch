@@ -27,7 +27,7 @@ const instructions = {
     file: '~/.codex/auth.json',
     docs: 'https://developers.openai.com/codex/auth/',
   },
-  cursor: { command: '', file: '', docs: 'https://cursor.com/docs/cli/reference/authentication' },
+  cursor: { command: '', file: '', docs: 'https://cursor.com/dashboard/api' },
   opencode: {
     command: 'opencode auth login',
     file: '~/.local/share/opencode/auth.json',
@@ -189,6 +189,7 @@ function OtherProviderConnectionStep({
             <p className="flex items-center gap-2">
               <Spinner /> Checking connection…
             </p>
+            <p className="text-xs text-foreground-muted">Allow about 1–2 minutes for this check.</p>
             <p className="text-xs text-foreground-muted">
               Switch is starting a temporary worker and sending a short test request. It will shut
               down automatically. You can leave this screen while the check runs.
@@ -220,7 +221,7 @@ function OtherProviderConnectionStep({
             {kind === 'api-key' ? (
               <p>
                 {provider === 'cursor'
-                  ? 'Create a User API Key in your Cursor dashboard under Integrations.'
+                  ? 'Create a User API Key in your Cursor dashboard.'
                   : 'Create an API key in your OpenAI project. API usage is billed separately from a ChatGPT subscription.'}
               </p>
             ) : (
@@ -263,7 +264,7 @@ function OtherProviderConnectionStep({
               size="sm"
               onClick={() => openExternalUrl(info.docs, 'Could not open provider instructions')}
             >
-              Sign-in instructions
+              {provider === 'cursor' ? 'Open API keys' : 'Sign-in instructions'}
             </Button>
           </div>
         )}
