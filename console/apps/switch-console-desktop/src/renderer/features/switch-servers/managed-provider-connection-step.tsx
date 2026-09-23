@@ -117,6 +117,7 @@ function OtherProviderConnectionStep({
       setCredential('');
       setFilename('');
       await connection.refetch();
+      if (!remove) onDone();
     } catch (cause) {
       setError(String(cause));
     } finally {
