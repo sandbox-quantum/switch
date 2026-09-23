@@ -157,7 +157,11 @@ async def get_other_connection(
 ) -> dict:
     if config.hosted_provider_verification_enabled:
         job = await latest(session, user.id, provider)
-        if job and job.state not in ("cancelled", "succeeded"):
+        if (
+            job
+            and job.state not in ("cancelled", "succeeded")
+            and not (job.state == "finishing" and job.result is True)
+        ):
             return summary(job)
     row = await session.get(
         ProviderConnection,

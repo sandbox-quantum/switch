@@ -81,7 +81,7 @@ async def start(client, provider="codex"):
     return job_id, {"Authorization": "Bearer " + prepared.json()["token"]}
 
 
-async def test_verification_requires_model_result_and_confirmed_cleanup(
+async def test_verification_succeeds_before_cleanup_and_remains_queued_for_cleanup(
     verification_app,
 ):
     client, factory, owner = verification_app
@@ -112,7 +112,26 @@ async def test_verification_requires_model_result_and_confirmed_cleanup(
     ).status_code == 200
     assert (await client.get("/provider-connections/codex")).json()[
         "status"
-    ] == "verifying"
+    ] == "connected"
+    async with factory() as session:
+        job = await session.get(ProviderVerification, (require_tenant_id(), job_id))
+        assert job.state == "finishing"
+        assert job.encrypted_credential is None and job.encrypted_token is None
+        connection = await session.get(
+            ProviderConnection, (require_tenant_id(), owner, "codex")
+        )
+        assert (
+            decrypt_token(connection.encrypted_credential, KEY)
+            == "placeholder-refreshed"
+        )
+        verified_at = connection.verified_at
+        job.deadline = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    pending = (await client.get("/provider-verifications", headers=HEADERS)).json()
+    assert pending[0]["id"] == job_id and pending[0]["result"] is True
+    assert (await client.get("/provider-connections/codex")).json()[
+        "status"
+    ] == "connected"
     receipt = {"instance_id": "i-0123456789abcdef0", "terminated": True}
     assert (await client.post(base + "/observe", headers=HEADERS, json=receipt)).json()[
         "state"
@@ -127,6 +146,7 @@ async def test_verification_requires_model_result_and_confirmed_cleanup(
         connection = await session.get(
             ProviderConnection, (require_tenant_id(), owner, "codex")
         )
+        assert connection.verified_at == verified_at
         assert (
             decrypt_token(connection.encrypted_credential, KEY)
             == "placeholder-refreshed"
@@ -255,3 +275,50 @@ async def test_removed_member_cannot_use_verification_token(verification_app):
     assert (
         await client.post(base + "/result", headers=worker, json={"succeeded": True})
     ).status_code == 403
+
+
+async def test_disconnect_after_success_keeps_cleanup_without_restoring_connection(
+    verification_app,
+):
+    client, _, _ = verification_app
+    job_id, worker = await start(client)
+    base = "/provider-verifications/" + job_id
+    receipt = {"instance_id": "i-0123456789abcdef0", "terminated": False}
+    await client.post(base + "/observe", headers=HEADERS, json=receipt)
+    await client.post(base + "/result", headers=worker, json={"succeeded": True})
+    assert (await client.get("/provider-connections/codex")).json()[
+        "status"
+    ] == "connected"
+    assert (await client.delete("/provider-connections/codex")).status_code == 204
+    pending = (await client.get("/provider-verifications", headers=HEADERS)).json()
+    assert pending[0]["state"] == "cancelled"
+    assert pending[0]["instance_id"] == receipt["instance_id"]
+    receipt["terminated"] = True
+    await client.post(base + "/observe", headers=HEADERS, json=receipt)
+    assert (await client.get("/provider-connections/codex")).json()[
+        "status"
+    ] == "not_connected"
+    assert (await client.get("/provider-verifications", headers=HEADERS)).json() == []
+
+
+async def test_repeated_result_cannot_replace_verified_credential(verification_app):
+    client, factory, owner = verification_app
+    job_id, worker = await start(client)
+    base = "/provider-verifications/" + job_id
+    await client.post(base + "/result", headers=worker, json={"succeeded": True})
+    verified = (await client.get("/provider-connections/codex")).json()
+    response = await client.post(
+        base + "/result",
+        headers=worker,
+        json={"succeeded": True, "credential": "different-placeholder"},
+    )
+    assert response.status_code == 200
+    assert (await client.get("/provider-connections/codex")).json() == verified
+    assert (await client.get(base + "/credential", headers=worker)).status_code == 409
+    async with factory() as session:
+        saved = await session.get(
+            ProviderConnection, (require_tenant_id(), owner, "codex")
+        )
+        assert (
+            decrypt_token(saved.encrypted_credential, KEY) == "placeholder-credential"
+        )

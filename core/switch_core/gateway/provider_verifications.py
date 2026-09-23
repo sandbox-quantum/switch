@@ -136,41 +136,8 @@ async def observe(
         raise HTTPException(409, "Verification instance does not match.")
     job.instance_id = body.instance_id
     if body.terminated:
-        current = await latest(session, job.user_id, job.provider)
-        member = await session.get(TenantMember, (require_tenant_id(), job.user_id))
-        if (
-            job.state in ACTIVE
-            and job.result is True
-            and current
-            and current.id == job.id
-            and member
-            and job.encrypted_credential
-            and job.deadline > datetime.now(UTC)
-        ):
-            values = dict(
-                tenant_id=require_tenant_id(),
-                user_id=job.user_id,
-                provider=job.provider,
-                kind=job.kind,
-                encrypted_credential=job.encrypted_credential,
-                verified_at=datetime.now(UTC),
-                verification_status="verified",
-            )
-            await session.execute(
-                insert(ProviderConnection)
-                .values(**values)
-                .on_conflict_do_update(
-                    index_elements=["tenant_id", "user_id", "provider"],
-                    set_={
-                        key: value
-                        for key, value in values.items()
-                        if key not in {"tenant_id", "user_id", "provider"}
-                    },
-                )
-            )
-            job.state = "succeeded"
-        elif job.state != "cancelled":
-            job.state = "failed"
+        if job.state != "cancelled":
+            job.state = "succeeded" if job.result is True else "failed"
         if job.state == "cancelled":
             job.instance_id = None
         job.encrypted_credential = None
@@ -212,6 +179,7 @@ async def result(
         if len(raw) > 20 * 1024:
             raise HTTPException(413, "Verification result is too large.")
     job = await get_job(session, job_id)
+    await ProviderConnectionStore().lock_user(session, job.user_id)
     await session.refresh(job, with_for_update=True)
     if job.state not in ACTIVE or job.deadline <= datetime.now(UTC):
         raise HTTPException(409, "Connection check is no longer pending.")
@@ -236,5 +204,33 @@ async def result(
     job.state = "finishing"
     if job.result and updated is not None:
         job.encrypted_credential = encrypt_token(updated, config.jwt_secret_key)
+    current = await latest(session, job.user_id, job.provider)
+    member = await session.get(TenantMember, (require_tenant_id(), job.user_id))
+    if not current or current.id != job.id or not member:
+        raise HTTPException(409, "Connection check is no longer current.")
+    if job.result is True:
+        values = dict(
+            tenant_id=require_tenant_id(),
+            user_id=job.user_id,
+            provider=job.provider,
+            kind=job.kind,
+            encrypted_credential=job.encrypted_credential,
+            verified_at=datetime.now(UTC),
+            verification_status="verified",
+        )
+        await session.execute(
+            insert(ProviderConnection)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["tenant_id", "user_id", "provider"],
+                set_={
+                    key: value
+                    for key, value in values.items()
+                    if key not in {"tenant_id", "user_id", "provider"}
+                },
+            )
+        )
+    job.encrypted_credential = None
+    job.encrypted_token = None
     await session.commit()
     return {"received": True}
