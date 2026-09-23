@@ -555,15 +555,20 @@ async def test_baseline_settles_two_competing_controllers(
     controllers that each reclaimed the connection from the other would also,
     at any single moment, look like one.
 
-    A room the loser was serving does not come with it. Its workers keep
-    running and the winner cannot route to them, and once they are gone the
-    room is held by a session only the loser could start again — the saved
-    state a session is revived from lives in the controller's own directory,
-    which on two machines is not a thing the winner can read at all. Messages
-    addressed to that room are held by Switch and disclosed rather than lost or
-    served twice, and they stay held. That is asserted here as the behaviour it
-    is, beside a room the winner picks up normally, so the stranding is pinned
-    to the loser's rooms rather than to the takeover.
+    A room the loser was serving does not come with it: the winner cannot route
+    to a session it did not start, and on two machines it cannot read the saved
+    state that session would be revived from either. What it does not need to
+    do is wait to be routed to. The session is still in the room, still holding
+    its lease, and asks Switch for the work its own rooms owe it, so the
+    message is answered by the session that was already there rather than by
+    the controller that took the connection.
+
+    Once that session is gone the room is held by one only the loser could
+    start again, and a message addressed to it is held by Switch instead —
+    still not lost, still not served twice, and still not migrated to the
+    winner. Both halves are asserted here, beside a room the winner picks up
+    normally, so what the takeover costs is pinned to a room whose worker is
+    dead rather than to the takeover itself.
 
     Latency is not scored. The arrangement is two controllers on one agent,
     which is not a topology anybody runs deliberately; what it has to do is
@@ -634,21 +639,27 @@ async def test_baseline_settles_two_competing_controllers(
                 assert len(held) == 1, held
                 assert held[0].id == controller_connection_id(target.agent_id)
 
-                stranded = new_marker()
-                markers[stranded] = await send(room_id, stranded)
-                # Declined rather than delivered, while the room is held by a
-                # worker the winner has no way to reach.
+                carried = new_marker()
+                markers[carried] = await send(room_id, carried)
+                # Not the winner's to answer: the room is held by a session it
+                # did not start and has no route to.
                 assert await dispatch_wait(
-                    second, {stranded: markers[stranded]}, STRANDED_SECONDS
-                ) == frozenset([markers[stranded]])
-                released = await _await_release(
-                    second, room_id, _message_of(markers[stranded]), STRANDED_SECONDS
+                    second, {carried: markers[carried]}, STRANDED_SECONDS
+                ) == frozenset([markers[carried]])
+                # Answered by the session that is in the room, which asked for
+                # it rather than waiting to be handed it. The same session as
+                # before the takeover, running the conversation it already had.
+                assert not await dispatch_wait(
+                    first, {carried: markers[carried]}, STRANDED_SECONDS
                 )
-                # Held by Switch rather than answered for: the promise the
-                # winner declined is still an outstanding row, which is what a
-                # delivery is finally built from.
+                assert first.sessions_by_room()[room_id] == assigned[room_id]
+                conversations = set(first.provider_conversations(assigned[room_id]))
+                assert len(conversations) == 1, conversations
+                (conversation,) = conversations
+                # Made rather than still owed: the promise is consumed, so
+                # nothing is left for a controller to serve a second time.
                 reserved = await bench.reserved_deliveries(target.agent_id)
-                assert _message_of(markers[stranded]) in reserved, reserved
+                assert _message_of(markers[carried]) not in reserved, reserved
 
                 # Settled, not merely handed over once: a loser that reopened
                 # the connection would take it back, and the two would trade it
@@ -661,13 +672,16 @@ async def test_baseline_settles_two_competing_controllers(
 
                 # The losing machine's workers go away, as they would when its
                 # Console is closed, and the server stops calling the room
-                # served. It is still not the winner's to serve: reviving that
-                # session needs the state the loser saved, so the room stays
-                # held rather than being picked up.
+                # served. With nothing left in the room to ask for the work,
+                # what is addressed to it is held: reviving that session needs
+                # the state the loser saved, and no state moves between
+                # machines.
                 orphaned = first.kill_sessions()
                 lapsed = await _await_recoverable(
                     bench, target.agent_id, room_id, assigned[room_id], 120.0
                 )
+                stranded = new_marker()
+                markers[stranded] = await send(room_id, stranded)
                 assert await dispatch_wait(
                     second, {stranded: markers[stranded]}, STRANDED_SECONDS
                 ) == frozenset([markers[stranded]])
@@ -693,13 +707,15 @@ async def test_baseline_settles_two_competing_controllers(
     duplicated = collector.subset(set(markers.values())).repeats(PROVIDER_DISPATCH)
     print(
         f"competing controllers: the first stood down ({stood_down['reason']}) when "
-        f"the second took its connection, and stayed down. The message addressed to "
-        f"the room the first was serving was declined {released} time(s) and kept as "
-        f"an outstanding reservation; killing that controller's "
-        f"{orphaned} worker process(es) freed the room's claim {lapsed:.1f}s later "
-        "but the message is still held, because the session that holds the room can "
-        "only be started again by the controller that saved it. A room the first "
-        "never served was delivered to normally."
+        "the second took its connection, and stayed down. A message addressed to "
+        "the room the first was serving was not the winner's to route, and was "
+        f"answered by the session already in it ({assigned[room_id]}), which asked "
+        "Switch for the work its own rooms owed it and kept the provider "
+        f"conversation it had ({conversation}). Killing that controller's "
+        f"{orphaned} worker process(es) freed the room's claim {lapsed:.1f}s later, "
+        "and the next message to that room is held, because the session that holds "
+        "it can only be started again by the controller that saved it. A room the "
+        "first never served was delivered to normally."
     )
     assert duplicated == {}, duplicated
 
@@ -945,28 +961,6 @@ async def test_baseline_upgrades_over_its_own_running_session(
 def _message_of(correlation: str) -> str:
     """The message id half of a correlation, as the watcher journals it."""
     return correlation.split("/", 1)[1]
-
-
-async def _await_release(
-    watcher: BenchWatcher, room_id: str, message_id: str, timeout: float
-) -> int:
-    """How many times this controller handed one delivery back, once it has.
-
-    Polled rather than read once: the controller writes the journal record
-    after it has told Switch, so the log line saying it declined the delivery
-    is there before the record proving it did.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        handed_back = watcher.releases().count((room_id, message_id))
-        if handed_back:
-            return handed_back
-        await asyncio.sleep(0.1)
-    raise TimeoutError(
-        f"the controller neither delivered message {message_id} nor recorded "
-        f"handing it back within {timeout}s, so what became of it is unaccounted for"
-    )
 
 
 async def _await_takeover(watcher: BenchWatcher, timeout: float) -> dict[str, str]:

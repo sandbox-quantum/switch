@@ -225,30 +225,6 @@ class BenchWatcher:
             assigned[record["roomId"]] = record["config"]["session"]["sessionId"]
         return assigned
 
-    def releases(self) -> list[tuple[str, str]]:
-        """The deliveries this controller handed back to Switch unserved.
-
-        A controller that cannot route a delivery to the session already
-        serving the room releases it rather than answering for it, so Switch
-        keeps holding it. Returned as (room, message) pairs in the order the
-        journal records them, repeats included: releasing the same delivery
-        again is a retry, and how many there were is part of what happened.
-        """
-        journal = self.root / "assignments.jsonl"
-        if not journal.exists():
-            return []
-        released: list[tuple[str, str]] = []
-        for line in journal.read_text().splitlines():
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            if "released" not in record:
-                continue
-            released.append(
-                (record["released"]["roomId"], record["released"]["messageId"])
-            )
-        return released
-
     def session_root(self, session_id: str) -> Path:
         """Where a session of this watcher keeps its state on disk."""
         digest = hashlib.sha256(session_id.encode()).hexdigest()
@@ -257,10 +233,12 @@ class BenchWatcher:
     def provider_conversations(self, session_id: str) -> list[str]:
         """The provider conversations this session has run, in order.
 
-        One entry per provider start: the native identity the provider
-        answered with. A host that recovered a session resumes the identity it
-        had, so a second entry differing from the first is a session that came
-        back as a new conversation rather than the one it was.
+        One entry per time the provider named its conversation, which a start
+        does both by announcing and by returning, so a single start can appear
+        twice. What the identity says is what matters: a host that recovered a
+        session resumes the identity it had, so an entry differing from the
+        first is a session that came back as a new conversation rather than
+        the one it was.
         """
         inbox = self.session_root(session_id) / "inbox.jsonl"
         if not inbox.exists():
