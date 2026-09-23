@@ -9,8 +9,12 @@ export const CAPABILITY_FILE = 'worker.json';
 const NEWLINE = 0x0a;
 
 /**
- * One routed event, in the sequence numbering the controller's connection and
- * the session's own connection share.
+ * One routed event, numbered in the agent's inbound event sequence.
+ *
+ * A session no longer has a connection of its own to number it against: the
+ * agent has one, the controller reads it, and the same numbering is what
+ * Switch answers a session's own ask for its room work in. So an event that
+ * arrives both ways is recognisably one event.
  */
 export const handoffSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -23,11 +27,13 @@ export type Handoff = z.infer<typeof handoffSchema>;
  * The handoff protocol a worker in this state root understands.
  *
  * A controller routes to a worker only where the worker has said it reads this
- * file, because the inbox is the only place a routed event exists: a worker
- * that does not read it would leave the event unadmitted, and the commands
- * endpoint only ever returns commands something already admitted, so the
- * message would go nowhere and report nothing. Bumping this number is how a
- * later protocol stops an older worker being routed to.
+ * file. Switch holds the delivery reserved for the session either way, so an
+ * event handed to a worker that does not read it is not the last copy going
+ * missing — the session asks for its own room work and is offered it again.
+ * What it is is a delivery this route did not make while the controller
+ * counted it made, so the room waits on the slower one with nobody saying why.
+ * Bumping this number is how a later protocol stops an older worker being
+ * routed to.
  */
 export const HANDOFF_PROTOCOL = 1;
 const capabilitySchema = z.object({ handoff: z.number().int().nonnegative() });

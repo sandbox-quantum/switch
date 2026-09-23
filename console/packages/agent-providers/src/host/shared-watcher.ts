@@ -977,9 +977,9 @@ export async function runSharedWatcher(
       flags = changed;
       spawn = flags.spawn;
       stream.setSpawnCapable(spawn);
-      // The rooms addressed while spawning was off were never journalled, so
-      // there is nothing to catch up on — but a session this controller was
-      // already assigned and could not start is started now.
+      // The rooms addressed while spawning was off are parked and asked about
+      // again on the retry above, so they need no catching up here. What does
+      // is a session this controller was already assigned and could not start.
       if (spawn) await launchAssigned();
     }
   } catch (error) {

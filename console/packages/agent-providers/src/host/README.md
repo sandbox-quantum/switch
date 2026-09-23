@@ -109,3 +109,41 @@ without compaction in this experimental implementation.
 
 Shared commands currently support queued text and request answers. SSH deployment
 and production session routing remain outside this experimental path.
+
+## Compatibility paths and when they can go
+
+One inbound connection per agent is reached by upgrading parts that are not
+upgraded together — a Console, the worker bundles already installed in its state
+roots, and a Switch server that may be older than both. Each path below exists
+for one of those gaps. None is removed here; each is written down with the
+condition that makes removing it safe, so a later change can check the condition
+rather than guess at it.
+
+- **Workers that have not said they read handoffs** (`handoff.ts`,
+  `HANDOFF_PROTOCOL`). A controller routes only to a worker whose state root
+  declares the protocol, and the declaration is left in place when the worker
+  stops. Removable once no state root in use can have been written by a bundle
+  older than the one that first declared it — in practice, when the oldest
+  Console that may still be running against these roots is at or past that
+  release, remote hosts included. Removing it sooner routes deliveries into a
+  worker that never reads them, and they wait for the session's own ask.
+- **Sessions holding a room connection of their own** (`carryLegacyRooms`,
+  `replaceSupersededSessions`). A watcher start asks Switch what each session
+  predating the agent connection is serving, carries those rooms across and
+  replaces the session. Removable once no start finds a session whose
+  `roomConnection.connectionId` is not the agent's — which is one watcher
+  restart after the last host is upgraded, and is observable from the absence of
+  the carry request. Removing it sooner replaces a working session with nothing
+  recorded, which is the one failure here that cannot be undone.
+- **Servers with no route for a session's own room work** (`shared-host.ts`, the
+  404 answer to `room-reservations`). Asked once, said once in the log, and not
+  asked again for the life of the session. Removable once the oldest server the
+  app supports answers the route. Until then a session on such a server hears
+  about a room message only while its controller is routing to it, which is what
+  the log line says.
+- **Servers that ignore `include_command=true` on `room-message`**
+  (`shared-host.ts`). The parameter rides in the query string precisely so an
+  older server can ignore it; the plain receipt carries no command and the host
+  falls back to the ordered command endpoint. Removable on the same terms as the
+  route above: when no supported server answers the plain receipt. Costs a
+  request per delivery until then, and nothing else.
