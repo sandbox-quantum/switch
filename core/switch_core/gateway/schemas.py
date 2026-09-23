@@ -721,6 +721,21 @@ class MemberDetail(BaseModel):
     created_at: str
 
 
+class UsageTotalResponse(BaseModel):
+    """One consumer's total of one metric over the requested window.
+
+    `client_name` and `client_type` are null when the client has since been
+    deleted; what it spent still counts against the workspace.
+    """
+
+    metric: str
+    client_id: str
+    client_name: str | None
+    client_type: str | None
+    model: str
+    amount: int
+
+
 class MemberUpdateRequest(BaseModel):
     role: str
 

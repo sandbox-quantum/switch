@@ -644,6 +644,7 @@ async def run(config: SwitchConfig) -> None:
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         template_store=template_store,
+        usage_store=usage_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
