@@ -229,6 +229,9 @@ async def test_invalid_session_metadata_is_still_refused(session_factory) -> Non
             await call(AGENT, *SESSION, epoch)
         assert refused.value.code == "INCOMPATIBLE_SESSION"
     with pytest.raises(SessionError) as refused:
+        await service.events(SESSION[0], "outsider", 0)
+    assert refused.value.code == "NOT_AUTHORIZED"
+    with pytest.raises(SessionError) as refused:
         await service.events(SESSION[0], "owner", 0)
     assert refused.value.code == "INCOMPATIBLE_SESSION"
 
@@ -251,7 +254,7 @@ async def test_a_lean_row_refuses_to_lazy_load_its_snapshot(session_factory) -> 
     """A write reached without loading the snapshot fails, never loads it quietly."""
     service, _ = await setup(session_factory)
     async with session_factory() as db, db.begin():
-        row, _state = await service._locked_state(db, SESSION[0])
+        (row,) = await service._locked_lean(db, SESSION[0])
         with pytest.raises(Exception, match="snapshot"):
             _ = row.snapshot
     async with session_factory() as db:

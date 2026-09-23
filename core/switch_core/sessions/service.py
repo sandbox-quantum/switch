@@ -3383,8 +3383,9 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            row, state = await self._locked_state(db, session_id)
+            row, stored_state = await self._locked_lean(db, session_id, _SESSION_STATE)
             await self._owner(db, row, user_id)
+            state = _valid_session(row.id, stored_state)
             if (
                 row.lease_expires_at <= (await _now(db))
                 and state.connectivity == "online"
@@ -3487,12 +3488,6 @@ class SessionAuthority:
         if found is None:
             raise SessionError("NOT_FOUND", "Session not found.")
         return found
-
-    async def _locked_state(
-        self, db: AsyncSession, session_id: str
-    ) -> tuple[SdkSession, Session]:
-        row, state = await self._locked_lean(db, session_id, _SESSION_STATE)
-        return row, _valid_session(row.id, state)
 
     async def _host(
         self, db: AsyncSession, agent_id: str, session_id: str, host_id: str, epoch: str
