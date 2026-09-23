@@ -6,7 +6,6 @@ import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconc
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
-  fetchSdkSessions,
   uploadSdkAttachment,
   fetchSdkSnapshot,
   fetchSdkEvents,
@@ -45,7 +44,6 @@ export const sdkHostController = createRPCController({
     if (!agent?.serverId) throw new Error('This agent has no Switch server.');
     return agent.serverId;
   },
-  sharedList: async (serverId: string) => fetchSdkSessions(await sharedServer(serverId)),
   sharedSnapshot: async (serverId: string, sessionId: string) => {
     const snapshot = snapshotSchema.parse(
       await fetchSdkSnapshot(await sharedServer(serverId), sessionId)

@@ -12,33 +12,6 @@ export const appController = createRPCController({
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   },
-  openPath: async (path: string) => {
-    try {
-      await appService.openPath(path);
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  },
-  readUserFile: async (path: string) => {
-    try {
-      const result = await appService.readUserFile(path);
-      return { success: true as const, ...result };
-    } catch (error) {
-      return {
-        success: false as const,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  },
-  clipboardWriteText: async (text: string) => {
-    try {
-      appService.clipboardWriteText(text);
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  },
   quit: () => {
     try {
       appService.quit();
@@ -79,7 +52,6 @@ export const appController = createRPCController({
     }
   },
   getAppVersion: () => appService.getCachedAppVersion(),
-  getElectronVersion: () => process.versions.electron,
   getPlatform: () => process.platform,
   getDiagnosticLogAttachment,
 });
