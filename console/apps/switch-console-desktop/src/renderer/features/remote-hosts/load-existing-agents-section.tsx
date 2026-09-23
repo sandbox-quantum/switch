@@ -57,6 +57,10 @@ type LoadableAgentRow = {
   source: 'server' | 'scan';
   endpointMismatch: boolean;
   blockedReason: string | null;
+  /** Another account runs it here (CHOO-2893): followed, not loaded — its
+   * sessions through the server, nothing run on the host. */
+  observed: boolean;
+  observedOwner: string | null;
 };
 
 export const LOAD_AGENTS_QUERY_KEY = 'load-existing-agents';
@@ -138,7 +142,7 @@ export function LoadExistingAgentsSection({
     >();
     for (const key of selected) {
       const agent = agents.find((a) => `${a.dir}\0${a.name}` === key);
-      if (!agent) continue;
+      if (!agent || agent.observed) continue;
       const pid = providerOverrides[key] ?? agent.providerId;
       if (!pid) continue;
       if (!byDir.has(agent.dir)) byDir.set(agent.dir, []);
@@ -146,6 +150,17 @@ export function LoadExistingAgentsSection({
     }
     return byDir;
   }, [selected, agents, providerOverrides]);
+
+  // Agents another account runs are followed by their server identity alone
+  // (CHOO-2893): nothing in their directories is read to load them.
+  const selectedObserved = useMemo(() => {
+    const ids: string[] = [];
+    for (const key of selected) {
+      const agent = agents.find((a) => `${a.dir}\0${a.name}` === key);
+      if (agent?.observed) ids.push(agent.switchAgentId);
+    }
+    return ids;
+  }, [selected, agents]);
 
   const allSelectedHaveProvider = useMemo(() => {
     for (const key of selected) {
@@ -161,6 +176,24 @@ export function LoadExistingAgentsSection({
   const loadMutation = useMutation({
     mutationFn: async () => {
       const results: string[] = [];
+      if (selectedObserved.length > 0) {
+        const followed = await rpc.agents.attachObservedAgents({
+          sshHost,
+          serverId,
+          switchAgentIds: selectedObserved,
+        });
+        if (!followed.success) {
+          const e = followed.error;
+          throw new Error(
+            'message' in e
+              ? e.message
+              : e.type === 'switch-agent-not-on-server'
+                ? `Agent ${e.agentId} not found on server ${e.serverName}`
+                : `Not signed in to server ${e.serverName}`
+          );
+        }
+        results.push(...followed.data.map((a: { name: string }) => a.name));
+      }
       for (const [dir, dirAgents] of selectedByDir) {
         const result = await rpc.agents.attachConfiguredAgents({
           sshHost,
@@ -442,6 +475,11 @@ export function LoadExistingAgentsSection({
                           <div className="flex items-center gap-2 text-xs text-foreground-muted">
                             <span className="truncate">{agent.dir}</span>
                             {agent.ownerName && <span>· by {agent.ownerName}</span>}
+                            {agent.observed && (
+                              <span className="shrink-0">
+                                · runs as {agent.observedOwner ?? 'another account'}
+                              </span>
+                            )}
                             {agent.providerId && (
                               <span>
                                 · {getProvider(agent.providerId)?.name ?? agent.providerId}
@@ -457,6 +495,13 @@ export function LoadExistingAgentsSection({
                                 </>
                               )}
                             </p>
+                          ) : agent.observed ? (
+                            !blocked && (
+                              <p className="text-xs text-foreground-muted">
+                                Followed, not run from here: its sessions show up in this Console
+                                through the server, and it keeps running under that account.
+                              </p>
+                            )
                           ) : (
                             !blocked &&
                             agent.ownerName && (
@@ -500,11 +545,15 @@ export function LoadExistingAgentsSection({
                           variant="ghost"
                           className="shrink-0 px-2 text-foreground-muted hover:text-destructive"
                           aria-label={`Delete ${agent.name}'s config from this host`}
-                          disabled={agent.alreadyAgent || removeMutation.isPending}
+                          disabled={
+                            agent.alreadyAgent || agent.observed || removeMutation.isPending
+                          }
                           title={
-                            agent.alreadyAgent
-                              ? 'Loaded in this Console — remove it from the agent itself'
-                              : 'Delete this config file from the host'
+                            agent.observed
+                              ? 'Its files belong to another account on this host'
+                              : agent.alreadyAgent
+                                ? 'Loaded in this Console — remove it from the agent itself'
+                                : 'Delete this config file from the host'
                           }
                           onClick={() => confirmRemove(agent)}
                         >
@@ -542,6 +591,15 @@ export function LoadExistingAgentsSection({
                             <dd>
                               {agent.source === 'server' ? 'server registration' : 'host scan'}
                             </dd>
+                            {agent.observed && (
+                              <>
+                                <dt>Runs as</dt>
+                                <dd>
+                                  {agent.observedOwner ?? 'another account'} — this account cannot
+                                  read its directory
+                                </dd>
+                              </>
+                            )}
                           </dl>
                         </div>
                       )}

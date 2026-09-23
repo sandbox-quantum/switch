@@ -5,6 +5,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import {
   asMounted,
   getLocationStore,
+  isObservedLocation,
   locationViewKind,
 } from '@renderer/features/locations/stores/location-selectors';
 import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
@@ -129,7 +130,9 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
             Open in gateway
           </DropdownMenuItem>
         )}
-        {sshHost !== null && agent && (
+        {/* Resetting stops the agent's sessions and its watcher — its owner's to
+            do when another account runs it (CHOO-2893). */}
+        {sshHost !== null && agent && !isObservedLocation(locationId) && (
           <DropdownMenuItem
             onClick={() =>
               showConfirmReset({
@@ -181,16 +184,23 @@ export const LocationTitlebar = observer(function LocationTitlebar() {
     : null;
 
   const mounted = locationViewKind(store) === 'ready' ? asMounted(store) : undefined;
+  const observedLocation = store?.data?.observed ? store.data : null;
 
   return (
     <Titlebar
       leftSlot={
         <div className="flex items-center gap-2">
           <AgentCrumb agent={agent} />
-          {agent?.ownerName && (
+          {observedLocation ? (
             <span className="text-xs text-foreground-tertiary-passive">
-              loaded · by {agent.ownerName}
+              followed · runs as {observedLocation.observedOwner ?? 'another account'}
             </span>
+          ) : (
+            agent?.ownerName && (
+              <span className="text-xs text-foreground-tertiary-passive">
+                loaded · by {agent.ownerName}
+              </span>
+            )
           )}
         </div>
       }
