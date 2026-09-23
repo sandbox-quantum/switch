@@ -66,6 +66,9 @@ def _fake_self(
         # No addressing policy in these tests — the message stays addressed.
         return _GateOutcome(addressed=True, refusal=None)
 
+    async def _note_hosted_addressed(_session: object, _agent: object) -> None:
+        return None  # not a hosted agent
+
     async def _is_available(_session: object, _agent: object, _room_id: str) -> bool:
         return False  # no live session → triggers the auto-reply
 
@@ -82,6 +85,7 @@ def _fake_self(
         _compute_addressed=_compute_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
+        _note_hosted_addressed=_note_hosted_addressed,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
         _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,

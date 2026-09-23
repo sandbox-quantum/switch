@@ -116,16 +116,21 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
   const addToRooms = useShowModal('addAgentToRoomModal');
   const { toastPromise } = useToast();
   const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
-  const stateLabel = {
-    queued: 'Queued',
-    provisioning: 'Starting…',
-    ready: 'Ready',
-    error: 'Needs attention',
-    stopping: 'Stopping…',
-    stopped: 'Stopped',
-    deleting: 'Removing…',
-    deleted: 'Removed',
-  }[launch.state];
+  const stateLabel =
+    launch.sleeping && launch.state === 'stopped'
+      ? 'Sleeping'
+      : launch.sleeping && launch.state === 'stopping'
+        ? 'Going to sleep…'
+        : {
+            queued: 'Queued',
+            provisioning: 'Starting…',
+            ready: 'Ready',
+            error: 'Needs attention',
+            stopping: 'Stopping…',
+            stopped: 'Stopped',
+            deleting: 'Removing…',
+            deleted: 'Removed',
+          }[launch.state];
   const add = () => {
     if (!launch.agent_id) return;
     const agentId = launch.agent_id;

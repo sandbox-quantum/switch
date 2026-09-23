@@ -85,6 +85,7 @@ def summary(launch: HostedLaunch) -> dict:
         "error": launch.error,
         "desired_state": launch.desired_state,
         "revision": launch.revision,
+        "sleeping": launch.sleeping,
     }
 
 
@@ -162,6 +163,7 @@ async def lifecycle(
         "deleted": "deleting",
     }[launch.desired_state]
     launch.error = None
+    launch.sleeping = False
     launch.revision += 1
     launch.updated_at = datetime.now(UTC)
     await session.commit()

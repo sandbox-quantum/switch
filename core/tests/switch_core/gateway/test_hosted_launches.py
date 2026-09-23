@@ -195,6 +195,27 @@ async def test_lifecycle_owner_revision_and_removal_guards(launch_app):
     ).status_code == 409
 
 
+async def test_lifecycle_action_ends_an_idle_sleep(launch_app):
+    client, _, _, _, _, factory = launch_app
+    request = body()
+    await client.post("/hosted-launches", json=request)
+    async with factory() as session:
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), request["request_id"])
+        )
+        launch.desired_state = "stopped"
+        launch.state = "stopped"
+        launch.sleeping = True
+        await session.commit()
+    url = f"/hosted-launches/{request['request_id']}"
+    assert (await client.get(url)).json()["sleeping"] is True
+    started = await client.post(
+        url + "/lifecycle", json={"action": "start", "revision": 1}
+    )
+    assert started.json()["desired_state"] == "running"
+    assert started.json()["sleeping"] is False
+
+
 async def test_session_operations_are_owner_scoped_and_idempotent(launch_app):
     client, _, _, _, identity, factory = launch_app
     request = body()

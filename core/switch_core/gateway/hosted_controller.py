@@ -21,6 +21,7 @@ from switch_core.db.models import (
     TenantMember,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.gateway.dependencies import (
     get_config,
     get_protocol,
@@ -214,6 +215,7 @@ async def observe(
     request_id: UUID,
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
     launch = await launch_by_id(session, request_id)
@@ -264,6 +266,23 @@ async def observe(
         ):
             launch.state = "error"
             launch.error = "The worker did not connect within 10 minutes. Check provider access and worker startup logs, then retry."
+        if launch.state == "ready":
+            now = datetime.now(UTC)
+            if previous_state != "ready" or await HostedLaunchStore().idle_busy(
+                session, launch
+            ):
+                launch.active_at = now
+            elif (
+                config.hosted_idle_stop_minutes > 0
+                and launch.spec["auto_session"]
+                and now - launch.active_at
+                >= timedelta(minutes=config.hosted_idle_stop_minutes)
+            ):
+                launch.desired_state = "stopped"
+                launch.state = "stopping"
+                launch.revision += 1
+                launch.error = None
+                launch.sleeping = True
     if launch.state != previous_state:
         launch.updated_at = datetime.now(UTC)
     await session.commit()

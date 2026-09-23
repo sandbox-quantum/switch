@@ -129,7 +129,7 @@ GitHub credentials and model-provider credentials are separate connections. User
 
 ### 4.4 Execution and controls
 
-An enabled agent keeps its hosted environment and room watcher available. Provider sessions start when needed. The MVP does not automatically suspend the environment or shut down idle sessions to save capacity.
+An enabled agent keeps its hosted environment and room watcher available. Provider sessions start when needed. An operator can optionally stop idle environments to save capacity (off by default; `HOSTED_IDLE_STOP_MINUTES` sets the idle period). Only agents that start sessions automatically are stopped, and only when no session is working, waiting on a request, or queued. Addressing a stopped agent wakes it: its message is kept and delivered once the environment is back. A user-stopped agent is never woken.
 
 | Action | Required behavior |
 | --- | --- |

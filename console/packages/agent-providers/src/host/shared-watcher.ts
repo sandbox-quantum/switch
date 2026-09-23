@@ -265,7 +265,7 @@ export async function runSharedWatcher(
       filter: 'addressed',
       spawnCapable: process.env.SWITCH_HOSTED_AUTO_SESSION !== 'false',
       rooms: [],
-      startCursor: assignments.cursor || undefined,
+      startCursor: assignments.cursor,
       signal: stop.signal,
       log: console,
       onEvent: (event) => {

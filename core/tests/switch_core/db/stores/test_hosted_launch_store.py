@@ -1,8 +1,9 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.db.models import Tenant, User
+from switch_core.db.models import HostedLaunch, Tenant, User, require_tenant_id
 from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchConflict,
     HostedLaunchStore,
@@ -83,3 +84,62 @@ async def test_concurrent_requests_cannot_exceed_capacity(launches):
     )
     assert sum(isinstance(value, str) for value in results) == 1
     assert sum(isinstance(value, HostedLaunchConflict) for value in results) == 1
+
+
+async def address(store, factory, launch_id, **state):
+    async with factory() as session:
+        if state:
+            launch = await session.get(HostedLaunch, (require_tenant_id(), launch_id))
+            for key, value in state.items():
+                setattr(launch, key, value)
+            launch.active_at = datetime.now(UTC) - timedelta(hours=1)
+            await session.commit()
+        result = await store.note_addressed(session, launch_id)
+        await session.commit()
+        return result
+
+
+async def test_addressing_a_sleeping_launch_wakes_it(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    woken = await address(
+        store,
+        factory,
+        "request-1",
+        desired_state="stopped",
+        state="stopped",
+        sleeping=True,
+        error="left over",
+    )
+    assert (woken.desired_state, woken.state, woken.revision) == (
+        "running",
+        "queued",
+        2,
+    )
+    assert woken.sleeping is False
+    assert woken.error is None
+    assert datetime.now(UTC) - woken.active_at < timedelta(minutes=1)
+
+
+async def test_addressing_a_ready_launch_only_marks_it_active(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    ready = await address(store, factory, "request-1", state="ready")
+    assert (ready.desired_state, ready.state, ready.revision) == ("running", "ready", 1)
+    assert datetime.now(UTC) - ready.active_at < timedelta(minutes=1)
+
+
+@pytest.mark.parametrize("desired", ["stopped", "deleted"])
+async def test_addressing_never_wakes_a_launch_its_owner_stopped(launches, desired):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    untouched = await address(
+        store, factory, "request-1", desired_state=desired, state="stopped"
+    )
+    assert (untouched.desired_state, untouched.revision) == (desired, 1)
+    assert datetime.now(UTC) - untouched.active_at > timedelta(minutes=59)
+
+
+async def test_addressing_a_missing_launch_returns_none(launches):
+    store, factory = launches
+    assert await address(store, factory, "no-such-launch") is None

@@ -442,10 +442,13 @@ async def test_a_cursor_from_before_a_restart_is_reported_not_ignored() -> None:
     registry.claim_room(conn, ROOM_A)
 
     stream = event_stream(conn=conn, registry=registry, buffer=buffer)
-    frames = await _take(stream, 2)
+    frames = await _take(stream, 3)
 
     assert frames[1][0] == "gap"
     assert "restarted" in frames[1][1]["reason"]
+    assert frames[1][1]["resumed_at"] == 0
+    assert frames[2][0] == "message"
+    assert frames[2][1]["payload"]["body"] == "after the restart"
 
 
 class TestALapsedHeartbeatStopsDelivery:

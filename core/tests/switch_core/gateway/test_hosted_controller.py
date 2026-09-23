@@ -20,6 +20,7 @@ from switch_core.db.models import (
     HostedLaunch,
     HostedOperation,
     ProviderConnection,
+    SdkSession,
     TenantMember,
     require_tenant_id,
 )
@@ -92,6 +93,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         await session.commit()
     service = make_service(session_factory)
     service.connections = SimpleNamespace(for_agent=lambda _: [])
+    service.config.hosted_idle_stop_minutes = 0
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
         token=TOKEN,
@@ -384,3 +386,96 @@ async def test_running_observation_does_not_undo_requested_stop(controller_app):
         json={"state": "running", "revision": 1},
     )
     assert result.json()["state"] == "stopping"
+
+
+async def _idle_ready(controller_app, *, minutes: int, **spec) -> None:
+    _, request_id, _, service, factory, _ = controller_app
+    service.config.hosted_idle_stop_minutes = minutes
+    service.connections.for_agent = lambda _: [SimpleNamespace(spawn_capable=True)]
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.spec = {**launch.spec, **spec}
+        launch.state = "ready"
+        launch.active_at = datetime.now(UTC) - timedelta(minutes=31)
+        await session.commit()
+
+
+async def _observe_running(controller_app) -> dict:
+    client, request_id, *_ = controller_app
+    response = await client.post(
+        f"/hosted-controller/{request_id}/observation",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={"state": "running", "revision": 1},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def test_idle_stop_is_off_when_unset(controller_app):
+    await _idle_ready(controller_app, minutes=0)
+    result = await _observe_running(controller_app)
+    assert result["state"] == "ready"
+    assert result["sleeping"] is False
+
+
+async def test_idle_ready_worker_is_put_to_sleep(controller_app):
+    await _idle_ready(controller_app, minutes=30)
+    result = await _observe_running(controller_app)
+    assert result["state"] == "stopping"
+    assert result["desired_state"] == "stopped"
+    assert result["sleeping"] is True
+    assert result["revision"] == 2
+
+
+async def test_worker_without_auto_session_is_never_idle_stopped(controller_app):
+    await _idle_ready(controller_app, minutes=30, auto_session=False)
+    assert (await _observe_running(controller_app))["state"] == "ready"
+
+
+@pytest.mark.parametrize(
+    ("lease", "expected"),
+    [(timedelta(minutes=1), "ready"), (timedelta(minutes=-1), "stopping")],
+    ids=["live-session-keeps-it-awake", "expired-lease-does-not"],
+)
+async def test_running_session_blocks_idle_stop_while_its_lease_lives(
+    controller_app, lease, expected
+):
+    client, request_id, agent_id, _, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    await _idle_ready(controller_app, minutes=30)
+    async with factory() as session:
+        session.add(
+            SdkSession(
+                id=str(uuid4()),
+                agent_id=agent_id,
+                host_id="host-1",
+                epoch="epoch-1",
+                lease_expires_at=datetime.now(UTC) + lease,
+                snapshot={"session": {"status": "running"}},
+            )
+        )
+        await session.commit()
+    assert (await _observe_running(controller_app))["state"] == expected
+    if expected == "ready":
+        async with factory() as session:
+            launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+            assert datetime.now(UTC) - launch.active_at < timedelta(minutes=1)
+
+
+async def test_pending_operation_blocks_idle_stop(controller_app):
+    _, request_id, _, _, factory, _ = controller_app
+    await _idle_ready(controller_app, minutes=30)
+    async with factory() as session:
+        session.add(
+            HostedOperation(
+                id=str(uuid4()),
+                launch_id=request_id,
+                session_id=str(uuid4()),
+                action="start",
+            )
+        )
+        await session.commit()
+    assert (await _observe_running(controller_app))["state"] == "ready"

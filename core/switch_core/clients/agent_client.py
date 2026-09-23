@@ -49,13 +49,14 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent
+from switch_core.db.models import Agent, HostedLaunch
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -149,6 +150,9 @@ _UNAVAILABLE_MESSAGES = {
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
 
+# Posted once per wake when a hosted agent's cloud worker is starting up.
+_WAKING_MESSAGE = "Waking up my cloud worker — I'll answer in a minute or two."
+
 
 # Fallback (no known-agent connect command) for a session_addressable agent
 # that has a session bound to this room but is not reporting as live — the
@@ -203,6 +207,15 @@ _ADDRESSING_DENIED_MESSAGE = ADDRESSING_DENIED_MESSAGE
 _ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 
 
+def _waking(launch: HostedLaunch) -> bool:
+    return launch.desired_state == "running" and launch.state in {
+        "queued",
+        "provisioning",
+        "stopping",
+        "stopped",
+    }
+
+
 class _GateOutcome(NamedTuple):
     """Whether a message that tags this agent really addresses it, plus the
     refusal to post when it does not. The refusal is returned rather than sent
@@ -243,6 +256,7 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
+        hosted_launch_store: HostedLaunchStore,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
@@ -257,6 +271,8 @@ class AgentClient(ClientBase[ClientConfig]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
+        self._hosted_launch_store = hosted_launch_store
+        self._waking_notice_revision: int | None = None
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -432,14 +448,24 @@ class AgentClient(ClientBase[ClientConfig]):
                     gate = await self._gate_addressed(session, agent, event, meta)
                     is_addressed = gate.addressed
                     refusal = gate.refusal
+                    launch = (
+                        await self._note_hosted_addressed(session, agent)
+                        if is_addressed
+                        else None
+                    )
                     if (
                         is_addressed
                         and not self._triggered_by_auto_reply(event)
                         and not await self._is_available(session, agent, meta.room_id)
                     ):
-                        unavailable = await self._reply_when_unavailable_here(
-                            session, agent, meta, self._sender_handle(event)
-                        )
+                        if launch is not None and _waking(launch):
+                            if self._waking_notice_revision != launch.revision:
+                                self._waking_notice_revision = launch.revision
+                                unavailable = _WAKING_MESSAGE
+                        else:
+                            unavailable = await self._reply_when_unavailable_here(
+                                session, agent, meta, self._sender_handle(event)
+                            )
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -461,7 +487,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 # and a paste-ready command are a wall of text to drop into a
                 # channel for something only one person can act on (CHOO-2344).
                 thread_id
-                if unavailable == _STARTING_SESSION_MESSAGE
+                if unavailable in (_STARTING_SESSION_MESSAGE, _WAKING_MESSAGE)
                 else reply_thread_root,
             )
 
@@ -680,6 +706,8 @@ class AgentClient(ClientBase[ClientConfig]):
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
+                if gate.addressed:
+                    await self._note_hosted_addressed(session, agent)
             is_addressed = gate.addressed
             if gate.refusal is not None:
                 await self._post_auto_reply(
@@ -867,6 +895,23 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         self._room_meta[matrix_room_id] = meta
         return meta
+
+    async def _note_hosted_addressed(
+        self, session: AsyncSession, agent: Agent
+    ) -> HostedLaunch | None:
+        """Keep a hosted agent's cloud worker awake, waking it if it idled out."""
+        launch_id = (agent.metadata_ or {}).get("hosted_launch_id")
+        if launch_id is None:
+            return None
+        launch = await self._hosted_launch_store.note_addressed(session, launch_id)
+        await session.commit()
+        if launch is None:
+            logger.error(
+                "Agent %s names cloud launch %s, which does not exist",
+                agent.id,
+                launch_id,
+            )
+        return launch
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str

@@ -56,6 +56,8 @@ explicitly and are not automatically repeated.
 
 `HOSTED_AGENTS_PER_OWNER` limits agents per user (default 3).
 `HOSTED_SESSIONS_PER_AGENT` limits sessions per worker (default 8).
+`HOSTED_IDLE_STOP_MINUTES` stops an auto-session worker after that many idle
+minutes (default 0, off); addressing the agent starts it again.
 The server launch capacity and controller assignment pool impose separate global
 limits. Each agent has its own VM, encrypted disk and scoped credentials.
 

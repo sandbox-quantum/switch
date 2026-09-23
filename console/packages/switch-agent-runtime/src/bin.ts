@@ -1270,15 +1270,20 @@ async function handleFrame(frame: SseFrame): Promise<void> {
       process.stderr.write(`switch: subscription now ${JSON.stringify(frame.data.rooms)}\n`);
       return;
 
-    case 'gap':
+    case 'gap': {
       // Never silent, but never a wake either: logged here and held for the
       // next notification, rather than spending a turn to say "you may have
       // missed something you may not care about".
       process.stderr.write(
         `switch: GAP — missed events before sequence ${frame.data.from_sequence}\n`
       );
+      const resumedAt = frame.data.resumed_at;
+      if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
+        throw new Error('Switch returned an invalid gap resume cursor.');
+      if (resumedAt !== undefined) cursor = Number(resumedAt);
       pendingGapReason = String(frame.data.reason ?? 'events were dropped and cannot be replayed');
       return;
+    }
 
     case 'evicted':
       process.stderr.write(`switch: evicted — ${frame.data.reason}\n`);

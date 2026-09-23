@@ -2,10 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type * as Runtime from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ensureSharedProcess } from './launch';
 import { sharedConfigSchema } from './shared-config';
-import { replaceSupersededSessions, SharedWatchAssignments } from './shared-watcher';
+import {
+  replaceSupersededSessions,
+  runSharedWatcher,
+  SharedWatchAssignments,
+} from './shared-watcher';
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
@@ -14,6 +19,16 @@ vi.mock('./launch', () => ({
   sharedSessionsBase: () => paths.root,
   liveSupervisor: (root: string) => Promise.resolve(supervisors.get(root) ?? null),
   ensureSharedProcess: vi.fn(),
+}));
+const streams = vi.hoisted(() => [] as Array<{ startCursor?: number }>);
+vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof Runtime>()),
+  SwitchEventStream: class {
+    constructor(deps: { startCursor?: number }) {
+      streams.push(deps);
+    }
+    start() {}
+  },
 }));
 const roots: string[] = [];
 afterEach(async () => {
@@ -138,7 +153,7 @@ function template(root: string) {
   });
 }
 
-it('resumes at the server head after its numbering restarts, keeping room sessions', async () => {
+it('forgets its saved position after the server numbering restarts, keeping room sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-'));
   roots.push(root);
   paths.root = root;
@@ -172,6 +187,44 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
     before.session.sessionId,
     after.session.sessionId,
   ]);
+});
+
+it('opens the stream at the oldest retained event when its journal is empty', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-empty-'));
+  roots.push(root);
+  paths.root = join(root, 'sessions');
+  streams.length = 0;
+  const config = template(root);
+  config.execution = {
+    credentialsPath: join(root, 'credentials.json'),
+    inheritEnv: [],
+    mcpRuntime: 'runtime',
+    codexConfig: '',
+    skill: '',
+    context: '',
+  };
+  await writeFile(
+    config.execution.credentialsPath,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.test',
+        SWITCH_API_TOKEN: 'placeholder',
+        SWITCH_AGENT_ID: config.session.agentId,
+      },
+    })
+  );
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true }));
+  const stop = new AbortController();
+  const watching = runSharedWatcher(root, config, stop.signal, {
+    build: 'build',
+    start: vi.fn(),
+    stop: vi.fn(),
+  });
+  await vi.waitFor(() => expect(streams).toHaveLength(1));
+  stop.abort();
+  await watching;
+
+  expect(streams[0]!.startCursor).toBe(0);
 });
 
 it('restarts only the live sessions of this agent left on a superseded build', async () => {

@@ -83,6 +83,9 @@ def _fake_client() -> SimpleNamespace:
     ) -> _GateOutcome:
         return _GateOutcome(addressed=True, refusal=None)
 
+    async def _note_hosted_addressed(_session: Any, _agent: Any) -> None:
+        return None
+
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="agent-a"),
         session_factory=_session_factory,
@@ -93,6 +96,7 @@ def _fake_client() -> SimpleNamespace:
         _addressed=_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
+        _note_hosted_addressed=_note_hosted_addressed,
         queue=queue,
     )
     ns._emit_media = AgentClient._emit_media.__get__(ns)

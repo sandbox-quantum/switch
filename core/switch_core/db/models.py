@@ -347,6 +347,12 @@ class HostedLaunch(TenantScoped, Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    sleeping: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    active_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class HostedOperation(TenantScoped, Base):
