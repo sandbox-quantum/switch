@@ -22,7 +22,7 @@ class ContractRange(NamedTuple):
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "switch-core": "0.27.0",
     "switch-console": "0.35.0",
-    "agent-runtime": "0.6.0",
+    "agent-runtime": "0.6.1",
     "sidecar": "1.9.8",
     "gateway": "0.27.0",
     "setup": "0.27.0",
