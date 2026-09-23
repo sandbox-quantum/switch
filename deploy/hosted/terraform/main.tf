@@ -65,11 +65,34 @@ resource "aws_iam_role_policy" "controller" {
   role = aws_iam_role.controller.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Sid = "Observe", Effect = "Allow", Action = ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeImages", "ec2:DescribeSubnets", "ec2:DescribeInstanceTypes"], Resource = "*" },
+    { Sid = "PopulateWorkerAssignments", Effect = "Allow", Action = ["secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue"], Resource = [for assignment in values(var.assignments) : assignment.secret_arn] },
+    { Sid = "EncryptWorkerAssignments", Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt"], Resource = [for assignment in values(var.assignments) : assignment.kms_key_arn],
+      Condition = { StringEquals = {
+        "kms:ViaService"                  = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"
+        "kms:EncryptionContext:SecretARN" = [for assignment in values(var.assignments) : assignment.secret_arn]
+      } }
+    },
     { Sid = "ApprovedLaunchInputs", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = [
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::image/${var.worker_image_id}",
       "${local.ec2_arn_base}:subnet/${aws_subnet.worker.id}",
       "${local.ec2_arn_base}:security-group/${aws_security_group.worker.id}"
     ] },
+    { Sid       = "CreateVerificationInstances", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:network-interface/*"],
+      Condition = { StringEquals = { "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-provider-verification" } }
+    },
+    { Sid = "CreateVerificationRoot", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = "${local.ec2_arn_base}:volume/*",
+      Condition = {
+        StringEquals  = { "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-provider-verification", "ec2:VolumeType" = "gp3" }
+        Bool          = { "ec2:Encrypted" = "true" }
+        NumericEquals = { "ec2:VolumeSize" = var.root_volume_gib }
+      }
+    },
+    { Sid       = "TagVerificationResources", Effect = "Allow", Action = ["ec2:CreateTags"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:volume/*", "${local.ec2_arn_base}:network-interface/*"],
+      Condition = { StringEquals = { "ec2:CreateAction" = "RunInstances", "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-provider-verification" } }
+    },
+    { Sid       = "TerminateVerificationInstances", Effect = "Allow", Action = ["ec2:TerminateInstances"], Resource = "${local.ec2_arn_base}:instance/*",
+      Condition = { StringEquals = { "ec2:ResourceTag/switch:installation-id" = var.installation_id, "ec2:ResourceTag/switch:managed-by" = "switch-provider-verification" } }
+    },
     { Sid       = "CreateManagedLaunchResources", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:network-interface/*"],
       Condition = { StringEquals = { "aws:RequestTag/switch:installation-id" = var.installation_id, "aws:RequestTag/switch:managed-by" = "switch-hosted-controller", "aws:RequestTag/switch:generation" = "1" }, StringLike = { "aws:RequestTag/switch:agent-id" = keys(var.assignments) } }
     },

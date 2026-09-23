@@ -1,5 +1,9 @@
-import { readFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { mkdir, open, readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { z } from 'zod';
 
 const MAX_TOKEN_BYTES = 16 * 1024;
 
@@ -17,20 +21,27 @@ export async function readGitHubCredential(path: string): Promise<string> {
   }
 }
 
-/** Personal tokens only. This validates identity, not access to a particular repository. */
-export async function validateGitHubCredential(token: string): Promise<void> {
+export async function validateGitHubCredential(token: string, repository?: string): Promise<void> {
   if (!validToken(token)) throw new Error('GitHub credential is invalid.');
+  if (
+    repository !== undefined &&
+    !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/.test(repository)
+  )
+    throw new Error('GitHub repository must be an owner/repository name.');
   let response: Response;
   try {
-    response = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      redirect: 'error',
-      signal: AbortSignal.timeout(10_000),
-    });
+    response = await fetch(
+      repository ? `https://api.github.com/repos/${repository}` : 'https://api.github.com/user',
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
   } catch {
     throw new Error('GitHub credential validation could not reach GitHub; retry when connected.');
   }
@@ -41,9 +52,7 @@ export async function validateGitHubCredential(token: string): Promise<void> {
     throw new Error('GitHub credential validation failed while closing the response.');
   }
   if (response.status === 401)
-    throw new Error(
-      'GitHub rejected the credential; replace the expired or revoked personal token.'
-    );
+    throw new Error('GitHub rejected the credential; replace the expired or revoked token.');
   if (response.status === 403)
     throw new Error(
       'GitHub denied the credential check; check token permissions, organization policy or rate limits.'
@@ -111,5 +120,124 @@ export async function runGitHubCredentialHelper(operation: string | undefined): 
     if (Buffer.byteLength(input) > 64 * 1024)
       throw new Error('Git credential request is too large.');
   }
-  process.stdout.write(gitHubCredentialResponse(operation, input, process.env.GH_TOKEN));
+  const eligible = gitHubCredentialResponse(operation, input, 'validation-only');
+  if (!eligible) return;
+  process.stdout.write(gitHubCredentialResponse(operation, input, await currentGitHubToken()));
+}
+
+export async function currentGitHubToken(): Promise<string | undefined> {
+  const credentialsPath = process.env.SWITCH_HOSTED_GITHUB_REFRESH_CREDENTIALS;
+  if (!credentialsPath) return process.env.GH_TOKEN;
+  return renewGitHubCredential(credentialsPath, process.env.SWITCH_HOSTED_GITHUB_REPOSITORY);
+}
+
+export async function renewGitHubCredential(
+  credentialsPath: string,
+  repository: string | undefined
+): Promise<string> {
+  try {
+    const { env } = JSON.parse(await readFile(credentialsPath, 'utf8'));
+    const endpoint = new URL(env.SWITCH_API_ENDPOINT);
+    if (
+      endpoint.protocol !== 'https:' ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash ||
+      !validToken(env.SWITCH_API_TOKEN)
+    )
+      throw new Error();
+    const response = await fetch(endpoint.href.replace(/\/$/, '') + '/hosted/github-credential', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.SWITCH_API_TOKEN}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error();
+    }
+    const credential = z
+      .object({ token: z.string(), repository: z.string(), expires_at: z.string() })
+      .parse(await response.json());
+    if (
+      !repository ||
+      !validToken(credential.token) ||
+      credential.repository !== repository ||
+      Date.parse(credential.expires_at) < Date.now() + 60_000 ||
+      !Number.isFinite(Date.parse(credential.expires_at))
+    )
+      throw new Error();
+    return credential.token;
+  } catch {
+    throw new Error(
+      'Could not renew cloud repository access. Check the owner’s GitHub connection.'
+    );
+  }
+}
+
+export async function prepareGitHubCli(root: string): Promise<string> {
+  const directory = join(root, 'bin');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, 'gh');
+  const entrypoint = fileURLToPath(new URL('./hosted-bootstrap.mjs', import.meta.url));
+  const source = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} --github-cli "$@"\n`;
+  try {
+    const file = await open(path, 'wx', 0o700);
+    try {
+      await file.writeFile(source);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    if ((await readFile(path, 'utf8')) !== source)
+      throw new Error('Hosted GitHub CLI wrapper differs from the deployment.');
+  }
+  return directory;
+}
+
+export async function runGitHubCli(args: string[]): Promise<void> {
+  const token = await currentGitHubToken();
+  if (!token) throw new Error('Cloud repository credential is missing.');
+  const child = spawn('/usr/local/bin/gh', args, {
+    stdio: 'inherit',
+    env: { ...process.env, GH_TOKEN: token },
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', () => reject(new Error('GitHub CLI could not start.')));
+    child.once('exit', (code) => {
+      process.exitCode = code ?? 1;
+      resolve();
+    });
+  });
+}
+
+export async function ensureHostedRepository(
+  workspace: string,
+  repository: string,
+  env: NodeJS.ProcessEnv
+): Promise<void> {
+  const url = `https://github.com/${repository}.git`;
+  const run = promisify(execFile);
+  try {
+    if ((await readdir(workspace)).length === 0) {
+      await run('git', ['clone', '--', url, workspace], {
+        env,
+        timeout: 120_000,
+        maxBuffer: 1024 * 1024,
+      });
+    } else {
+      const { stdout } = await run('git', ['-C', workspace, 'remote', 'get-url', 'origin'], {
+        env,
+        timeout: 10_000,
+      });
+      if (stdout.trim() !== url) throw new Error();
+    }
+  } catch {
+    throw new Error(
+      'Could not prepare the selected GitHub repository. Check repository access and the saved workspace.'
+    );
+  }
 }

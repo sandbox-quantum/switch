@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { prepareCodexSessionHome } from '../codex/home';
+import { materializeHostedProvider, fetchHostedProvider } from './hosted-provider';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 
@@ -72,6 +73,13 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
     if (!switchEnv.SWITCH_CONNECTION_ID)
       throw new Error('Shared SDK execution requires a persistent room connection.');
     input.env = { ...inherited, ...input.env, ...switchEnv };
+    if (process.env.SWITCH_HOSTED_CONTROL === '1')
+      await materializeHostedProvider(
+        root,
+        input.env,
+        await fetchHostedProvider(config),
+        execution.binaryPath ?? 'claude'
+      );
     const mcpRuntime = mcpRuntimeCommand(execution);
     input.mcpServers.switch = {
       transport: 'stdio',

@@ -163,9 +163,33 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "does not match"):
             worker.parse_secret_document(json.dumps(altered), config())
         insecure = json.loads(secret())
-        insecure["switchCredentials"]["env"]["SWITCH_API_ENDPOINT"] = "http://switch.invalid/api"
+        insecure["switchCredentials"]["env"]["SWITCH_API_ENDPOINT"] = (
+            "http://switch.invalid/api"
+        )
         with self.assertRaisesRegex(worker.WorkerError, "endpoint is invalid"):
             worker.parse_secret_document(json.dumps(insecure), config())
+
+    def test_watcher_assignment_is_room_independent_and_unambiguous(self):
+        document = json.loads(secret())
+        deployment = document["deployment"]
+        deployment.pop("room")
+        deployment["watch"] = True
+        parsed = worker.parse_secret_document(json.dumps(document), config())
+        self.assertTrue(parsed.deployment["watch"])
+        self.assertNotIn("room", parsed.deployment)
+        for invalid in (
+            {**deployment, "room": {"roomId": "room-1"}},
+            {**deployment, "watch": "true"},
+            {key: value for key, value in deployment.items() if key != "watch"},
+            {
+                **deployment,
+                "session": {**deployment["session"], "nativeSessionId": "old"},
+            },
+        ):
+            with self.subTest(invalid=invalid):
+                document["deployment"] = invalid
+                with self.assertRaises(worker.WorkerError):
+                    worker.parse_secret_document(json.dumps(document), config())
 
     def test_runtime_config_requires_a_fixed_baked_path_and_matching_hash(self):
         assignment = {
@@ -260,7 +284,13 @@ class WorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = {}
             hashes = {}
-            for name in ("node", "bootstrap", "sharedHostDaemon", "provider", "mcpRuntime"):
+            for name in (
+                "node",
+                "bootstrap",
+                "sharedHostDaemon",
+                "provider",
+                "mcpRuntime",
+            ):
                 path = Path(temporary) / name
                 path.write_bytes(f"trusted-{name}".encode())
                 path.chmod(0o444)
@@ -339,7 +369,25 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
             worker.parse_secret_document(json.dumps(unexpected), config())
 
-    def test_github_credential_requires_bounded_printable_ascii_without_whitespace(self):
+    def test_github_repository_is_optional_but_must_be_a_safe_full_name(self):
+        document = json.loads(github_secret())
+        document["deployment"]["github"]["repository"] = "example/project"
+        parsed = worker.parse_secret_document(json.dumps(document), config())
+        self.assertEqual(parsed.deployment["github"]["repository"], "example/project")
+        for name in [
+            "../project",
+            "example/..",
+            "example/project?token=x",
+            "example/project/extra",
+        ]:
+            with self.subTest(name=name):
+                document["deployment"]["github"]["repository"] = name
+                with self.assertRaisesRegex(worker.WorkerError, "owner/repository"):
+                    worker.parse_secret_document(json.dumps(document), config())
+
+    def test_github_credential_requires_bounded_printable_ascii_without_whitespace(
+        self,
+    ):
         invalid_credentials = [
             "",
             "two words",
@@ -350,7 +398,9 @@ class WorkerTests(unittest.TestCase):
         ]
         for credential in invalid_credentials:
             with self.subTest(credential_length=len(credential)):
-                with self.assertRaisesRegex(worker.WorkerError, "GitHub credential is invalid"):
+                with self.assertRaisesRegex(
+                    worker.WorkerError, "GitHub credential is invalid"
+                ):
                     worker.parse_secret_document(github_secret(credential), config())
 
     def test_secret_arn_supplies_region_without_ambient_aws_configuration(self):
@@ -387,7 +437,9 @@ class WorkerTests(unittest.TestCase):
                 return {"SecretString": secret()}
 
         client = Client()
-        self.assertEqual(worker.SecretsManager("eu-west-1", client).read("secret-id"), secret())
+        self.assertEqual(
+            worker.SecretsManager("eu-west-1", client).read("secret-id"), secret()
+        )
         self.assertEqual(client.calls, [{"SecretId": "secret-id"}])
 
     def test_storage_resolves_nitro_device_by_ebs_serial(self):
@@ -484,6 +536,42 @@ class WorkerTests(unittest.TestCase):
         mounted = next(call for call in commands.calls if call[0].endswith("mount"))
         self.assertEqual(mounted[-2], "/dev/nvme1n1")
 
+    def test_new_filesystem_waits_for_device_metadata_before_mount(self):
+        blank = worker.StorageObservation("/dev/nvme1n1", VOLUME, None, None, False, ())
+        formatted = worker.StorageObservation(
+            "/dev/nvme1n1", VOLUME, "ext4", FS_UUID, False, ()
+        )
+        settled = False
+        calls = []
+
+        def run(arguments, capture=True):
+            nonlocal settled
+            calls.append(arguments)
+            if arguments[:2] == ["/usr/bin/udevadm", "settle"]:
+                settled = True
+            return ""
+
+        commands = mock.Mock()
+        commands.run.side_effect = run
+        commands.result.return_value = subprocess.CompletedProcess([], 1, "", "")
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(worker, "DATA_MOUNT", Path(temporary) / "data"),
+                mock.patch.object(worker, "ROOT_UID", os.getuid()),
+                mock.patch.object(
+                    worker,
+                    "inspect_storage",
+                    side_effect=lambda *_: formatted if settled else blank,
+                ),
+            ):
+                observation, did_format = worker.prepare_storage(commands, config())
+        self.assertTrue(did_format)
+        self.assertEqual(observation.filesystem_uuid, FS_UUID)
+        self.assertEqual(sum(call[0].endswith("mkfs.ext4") for call in calls), 1)
+        self.assertIn(
+            ["/usr/bin/udevadm", "trigger", "--action=change", blank.device_path], calls
+        )
+
     def test_same_instance_new_boot_quarantines_only_proven_owners(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"
@@ -537,6 +625,60 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(len(quarantined), 1)
             with mock.patch.object(worker, "ROOT_UID", os.getuid()):
                 self.assertEqual(worker._read_root_marker(marker)["bootId"], BOOT_2)
+
+    def test_replacement_requires_exact_root_authorized_predecessor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            marker_directory = data / ".switch-hosted"
+            marker_directory.mkdir()
+            marker = marker_directory / "machine.json"
+            state = data / "state"
+            state.mkdir()
+            previous = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
+            with (
+                mock.patch.object(worker, "ROOT_UID", os.getuid()),
+                mock.patch.object(worker.os, "chown"),
+            ):
+                worker._write_root_json(
+                    marker,
+                    {
+                        "version": 1,
+                        "installationId": "installation-1",
+                        "agentId": "agent-1",
+                        **previous.json(),
+                        "filesystemUuid": FS_UUID,
+                        "runtimeFingerprint": RUNTIME_FP,
+                    },
+                )
+                kwargs = dict(
+                    marker_directory=marker_directory,
+                    marker_path=marker,
+                    state_path=state,
+                    data_mount=data,
+                )
+                current = worker.MachineIdentity("i-11111111111111111", BOOT_2, 7)
+                with self.assertRaises(worker.WorkerError):
+                    worker.reconcile_boot_identity(
+                        current,
+                        "installation-1",
+                        "agent-1",
+                        FS_UUID,
+                        RUNTIME_FP,
+                        previous_instance_id="i-22222222222222222",
+                        **kwargs,
+                    )
+                worker.reconcile_boot_identity(
+                    current,
+                    "installation-1",
+                    "agent-1",
+                    FS_UUID,
+                    RUNTIME_FP,
+                    previous_instance_id=INSTANCE,
+                    **kwargs,
+                )
+                self.assertEqual(
+                    worker._read_root_marker(marker)["instanceId"], current.instance_id
+                )
 
     def test_agent_account_cannot_resolve_to_root(self):
         account = mock.Mock(pw_uid=0, pw_gid=0)
@@ -630,6 +772,64 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "directory is invalid"):
                 worker._ownership_paths(state)
 
+    def test_runtime_upgrade_requires_exact_predecessor_and_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            directory = data / ".switch-hosted"
+            marker = directory / "machine.json"
+            arguments = dict(
+                marker_directory=directory,
+                marker_path=marker,
+                state_path=data / "state",
+                data_mount=data,
+            )
+            with (
+                mock.patch.object(worker, "ROOT_UID", os.getuid()),
+                mock.patch.object(worker.os, "chown"),
+            ):
+                worker.reconcile_boot_identity(
+                    worker.MachineIdentity(INSTANCE, BOOT_1, 7),
+                    "installation-1",
+                    "agent-1",
+                    FS_UUID,
+                    RUNTIME_FP,
+                    **arguments,
+                )
+                replacement = worker.MachineIdentity("i-11111111111111111", BOOT_2, 7)
+                for predecessor, fingerprint in [
+                    (None, RUNTIME_FP),
+                    (INSTANCE, "b" * 64),
+                    ("i-22222222222222222", RUNTIME_FP),
+                ]:
+                    with self.assertRaises(worker.WorkerError):
+                        worker.reconcile_boot_identity(
+                            replacement,
+                            "installation-1",
+                            "agent-1",
+                            FS_UUID,
+                            "c" * 64,
+                            previous_instance_id=predecessor,
+                            previous_runtime_fingerprint=fingerprint,
+                            **arguments,
+                        )
+                worker.reconcile_boot_identity(
+                    replacement,
+                    "installation-1",
+                    "agent-1",
+                    FS_UUID,
+                    "c" * 64,
+                    previous_instance_id=INSTANCE,
+                    previous_runtime_fingerprint=RUNTIME_FP,
+                    **arguments,
+                )
+                self.assertEqual(
+                    json.loads(marker.read_text())["runtimeFingerprint"], "c" * 64
+                )
+                self.assertEqual(
+                    json.loads(marker.read_text())["instanceId"],
+                    replacement.instance_id,
+                )
+
     def test_partial_quarantine_is_resumed_after_launcher_crash(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"
@@ -643,9 +843,7 @@ class WorkerTests(unittest.TestCase):
             (supervisor / "owner.json").write_text(
                 json.dumps({"pid": 42, "token": "supervisor", "machine": machine})
             )
-            quarantine = (
-                marker_directory / "quarantine" / f"{BOOT_1}--{BOOT_2}"
-            )
+            quarantine = marker_directory / "quarantine" / f"{BOOT_1}--{BOOT_2}"
             quarantine.mkdir(parents=True, mode=0o700)
             (quarantine / "shared-owner.lock").write_text(
                 json.dumps({"pid": 43, "token": "worker", "machine": machine})
@@ -704,7 +902,8 @@ class WorkerTests(unittest.TestCase):
                 )
                 self.assertFalse(orphan.exists())
                 self.assertEqual(
-                    (deployment_path.parent / "provider").read_text(), "provider-value\n"
+                    (deployment_path.parent / "provider").read_text(),
+                    "provider-value\n",
                 )
                 cleanup()
 
@@ -732,8 +931,12 @@ class WorkerTests(unittest.TestCase):
                 for path in directory.iterdir():
                     self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o440)
                     self.assertEqual(path.stat().st_uid, os.getuid())
-                self.assertEqual((directory / "github").read_text(), GITHUB_CREDENTIAL + "\n")
-                self.assertNotIn(GITHUB_CREDENTIAL, (directory / "deployment.json").read_text())
+                self.assertEqual(
+                    (directory / "github").read_text(), GITHUB_CREDENTIAL + "\n"
+                )
+                self.assertNotIn(
+                    GITHUB_CREDENTIAL, (directory / "deployment.json").read_text()
+                )
                 cleanup()
                 self.assertFalse(directory.exists())
 

@@ -1,7 +1,9 @@
-import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Cloud, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { NewAgentForm } from '@renderer/features/locations/components/add-agent-modal/new-agent-form';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -20,10 +22,12 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
+import { managedServiceOrigin } from '@shared/core/switch-servers/managed-service';
 import type {
   ServerApiUrlPropagation,
   SwitchServer,
@@ -31,6 +35,9 @@ import type {
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
+import { ManagedGitHubStep } from './managed-github-step';
+import { ManagedProviderConnectionStep } from './managed-provider-connection-step';
+import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { switchServersStore } from './switch-servers-store';
@@ -77,7 +84,18 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
-type Step = 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
+type Step =
+  | 'managedAgent'
+  | 'managedGitHub'
+  | 'managedClaude'
+  | 'managedReady'
+  | 'managed'
+  | 'choose'
+  | 'local'
+  | 'remoteHost'
+  | 'external'
+  | 'signIn'
+  | 'linkAccounts';
 
 /**
  * This wizard's steps and the shared list of step names say the same thing.
@@ -123,6 +141,11 @@ const CONNECT_STEPS = 4;
  */
 const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   choose: 'none',
+  managed: 'managed',
+  managedReady: 'managed',
+  managedClaude: 'managed',
+  managedGitHub: 'managed',
+  managedAgent: 'managed',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
@@ -135,6 +158,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
   const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
   const [step, setStep] = useState<Step>(openedAt);
+  const [providerIndex, setProviderIndex] = useState(0);
+  const [selectedProviders, setSelectedProviders] = useState<AgentProviderId[]>([]);
   // Which path was taken at the chooser, carried so every later step can be
   // attributed to it. `none` while still on the chooser, which is what makes a
   // drop-off before choosing distinguishable from one after.
@@ -199,10 +224,23 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'choose') {
     return (
       <ChooseStep
+        onManaged={() => goToStep('managed')}
         onLocal={() => goToStep('local')}
         onRemoteHost={() => goToStep('remoteHost')}
         onExternal={() => goToStep('external')}
         onClose={props.onClose}
+      />
+    );
+  }
+  if (step === 'managed') {
+    return (
+      <ManagedServerStep
+        onBack={() => goToStep('choose')}
+        onClose={props.onClose}
+        onConnected={(server) => {
+          setConnected(server);
+          goToStep(switchServersStore.isConnected(server.id) ? 'managedReady' : 'signIn');
+        }}
       />
     );
   }
@@ -224,13 +262,65 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       />
     );
   }
+  if (step === 'managedClaude' && connected) {
+    return (
+      <ManagedProviderConnectionStep
+        context="onboarding"
+        provider={selectedProviders[providerIndex] ?? 'claude'}
+        serverId={connected.id}
+        onBack={() =>
+          providerIndex > 0 ? setProviderIndex(providerIndex - 1) : goToStep('managedReady')
+        }
+        onDone={() =>
+          providerIndex + 1 < selectedProviders.length
+            ? setProviderIndex(providerIndex + 1)
+            : goToStep('managedGitHub')
+        }
+      />
+    );
+  }
+  if (step === 'managedAgent' && connected) {
+    return (
+      <NewAgentForm
+        entryPoint="onboarding"
+        initialRunLocation="cloud"
+        serverId={connected.id}
+        onBack={() => goToStep('managedGitHub')}
+        onClose={() => finish(connected.id)}
+      />
+    );
+  }
+  if (step === 'managedGitHub' && connected) {
+    return (
+      <ManagedGitHubStep
+        onContinue={() => goToStep('managedAgent')}
+        serverId={connected.id}
+        onBack={() => goToStep('managedClaude')}
+        onSkip={() => finish(connected.id)}
+      />
+    );
+  }
+  if (step === 'managedReady' && connected) {
+    return (
+      <ManagedProvidersStep
+        selected={selectedProviders}
+        onSelectionChange={setSelectedProviders}
+        onContinue={() => {
+          setProviderIndex(0);
+          goToStep('managedClaude');
+        }}
+        onSkip={() => finish(connected.id)}
+      />
+    );
+  }
   if (step === 'signIn' && connected) {
     return (
       <SignInStep
         server={connected}
-        onBack={() => goToStep('external')}
+        managed={choice === 'managed'}
+        onBack={() => goToStep(choice === 'managed' ? 'managed' : 'external')}
         onClose={props.onClose}
-        onSignedIn={() => goToStep('linkAccounts')}
+        onSignedIn={() => goToStep(choice === 'managed' ? 'managedReady' : 'linkAccounts')}
       />
     );
   }
@@ -264,11 +354,13 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
 // ---------------------------------------------------------------------------
 
 function ChooseStep({
+  onManaged,
   onLocal,
   onRemoteHost,
   onExternal,
   onClose,
 }: {
+  onManaged: () => void;
   onLocal: () => void;
   onRemoteHost: () => void;
   onExternal: () => void;
@@ -281,6 +373,12 @@ function ChooseStep({
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <div className="grid gap-3">
+          <ChoiceCard
+            icon={<Cloud className="size-5" />}
+            title="Switch-managed"
+            description="Sign in and let Switch run your server. Set up cloud agents next—no server or SSH configuration."
+            onClick={onManaged}
+          />
           <ChoiceCard
             icon={<Laptop className="size-5" />}
             title="Run a server on this computer"
@@ -304,6 +402,97 @@ function ChooseStep({
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>
           Cancel
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+function ManagedServerStep({
+  onBack,
+  onClose,
+  onConnected,
+}: {
+  onBack: () => void;
+  onClose: () => void;
+  onConnected: (server: SwitchServer) => void;
+}) {
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const connect = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const origin = managedServiceOrigin(import.meta.env.VITE_SWITCH_MANAGED_URL);
+      await switchServersStore.init();
+      const existing = switchServersStore.servers.find(
+        (server) =>
+          server.gatewayUrl.replace(/\/+$/, '') === origin &&
+          server.apiUrl.replace(/\/+$/, '') === origin
+      );
+      const server = existing ?? (await switchServersStore.addServer('Switch', origin, origin));
+      if (!server) {
+        setError(switchServersStore.errorText ?? 'Could not connect to Switch. Try again.');
+        return;
+      }
+      if (existing) await switchServersStore.refreshStatus(server.id);
+      onConnected(server);
+    } catch (cause) {
+      setError(failureText(cause, 'Could not connect to Switch. Try again.'));
+    } finally {
+      setConnecting(false);
+    }
+  };
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Let Switch run the server</DialogTitle>
+      </DialogHeader>
+      <DialogContentArea className="space-y-5 pt-0">
+        <p className="text-sm text-foreground-muted">
+          Connect your account, then create your first cloud agent.
+        </p>
+        <ol className="space-y-4">
+          {[
+            ['Sign in to Switch', 'Access your server, rooms and agents.'],
+            [
+              'Connect your providers and GitHub',
+              'Add your provider credentials and choose repository access.',
+            ],
+            [
+              'Create your cloud agent',
+              'Choose its repository and settings. Review before starting it.',
+            ],
+          ].map(([title, description], index) => (
+            <li key={title} className="flex items-start gap-3">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-border text-xs text-foreground-muted">
+                {index + 1}
+              </span>
+              <div>
+                <p className="text-sm font-medium">{title}</p>
+                <p className="text-xs text-foreground-muted">{description}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <p className="text-xs text-foreground-muted">
+          Signing in does not start an agent or allocate a worker. Agent setup comes next.
+        </p>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+      </DialogContentArea>
+      <DialogFooter>
+        <Button variant="outline" onClick={onBack} disabled={connecting}>
+          Back
+        </Button>
+        <Button variant="ghost" onClick={onClose} disabled={connecting}>
+          Close
+        </Button>
+        <Button onClick={() => void connect()} disabled={connecting}>
+          {connecting ? 'Connecting…' : 'Continue to sign in'}
         </Button>
       </DialogFooter>
     </>
@@ -865,11 +1054,13 @@ const ExternalServerStep = observer(function ExternalServerStep({
  * broken rather than unauthenticated.
  */
 const SignInStep = observer(function SignInStep({
+  managed,
   server,
   onBack,
   onClose,
   onSignedIn,
 }: {
+  managed: boolean;
   server: SwitchServer;
   onBack: () => void;
   onClose: () => void;
@@ -885,8 +1076,22 @@ const SignInStep = observer(function SignInStep({
 
   return (
     <>
-      <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
+      {managed ? (
+        <DialogHeader>
+          <DialogTitle>Sign in to Switch</DialogTitle>
+        </DialogHeader>
+      ) : (
+        <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
+      )}
       <DialogContentArea className="pt-0">
+        {signIn.configCheckFailed && !signIn.configChecking && (
+          <Button
+            variant="outline"
+            onClick={() => void switchServersStore.refreshAuthConfig(server.id)}
+          >
+            Retry sign-in options
+          </Button>
+        )}
         <ServerSignInFields
           signIn={signIn}
           idPrefix="connect-server-sign-in"

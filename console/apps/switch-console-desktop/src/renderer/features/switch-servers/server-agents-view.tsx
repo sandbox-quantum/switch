@@ -1,12 +1,14 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -23,10 +25,12 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import type { Agent } from '@shared/core/agents/agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import type { CloudLaunch } from '@shared/core/switch-servers/cloud-launch';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
+import { useCloudLaunches } from './use-cloud-launches';
 
 function useServerId(): string {
   return useParams('serverAgents').params.serverId;
@@ -48,6 +52,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   }, [serverId]);
 
   const agents = agentsStore.agentsOnServer(serverId);
+  const cloud = useCloudLaunches(serverId);
 
   return (
     <ServerPage
@@ -74,10 +79,161 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
+        {cloud.data
+          ?.filter((launch) => launch.state !== 'deleted')
+          .map((launch) => (
+            <CloudAgentCard key={launch.request_id} launch={launch} serverId={serverId} />
+          ))}
       </div>
+      {cloud.error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          {failureText(cloud.error, 'Could not load cloud agents.')}
+        </p>
+      )}
     </ServerPage>
   );
 });
+
+function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: string }) {
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const queryClient = useQueryClient();
+  const createSession = useShowModal('sessionModal');
+  const run = async (action: 'stop' | 'start' | 'restart' | 'remove' | 'retry') => {
+    setPending(true);
+    setActionError(null);
+    try {
+      await rpc.switchServers.cloudLifecycle(serverId, launch.request_id, action, launch.revision);
+      await queryClient.invalidateQueries({ queryKey: ['cloud-launches', serverId] });
+      setConfirmRemove(false);
+    } catch (error) {
+      setActionError(failureText(error, 'Cloud operation failed.'));
+    } finally {
+      setPending(false);
+    }
+  };
+  const addToRooms = useShowModal('addAgentToRoomModal');
+  const { toastPromise } = useToast();
+  const iconUrl = useAgentIconUrl(serverId, launch.agent_id);
+  const stateLabel = {
+    queued: 'Queued',
+    provisioning: 'Starting…',
+    ready: 'Ready',
+    error: 'Needs attention',
+    stopping: 'Stopping…',
+    stopped: 'Stopped',
+    deleting: 'Removing…',
+    deleted: 'Removed',
+  }[launch.state];
+  const add = () => {
+    if (!launch.agent_id) return;
+    const agentId = launch.agent_id;
+    void toastPromise(
+      switchRoomsStore.fetchAgentRooms(serverId, agentId).then((rooms) => {
+        if (rooms === null) throw new Error('Could not load the agent’s rooms.');
+        addToRooms({ serverId, switchAgentId: agentId, agentName: launch.name });
+      }),
+      {
+        loading: 'Loading rooms…',
+        success: 'Choose rooms for the agent',
+        error: (error) => failureText(error, 'Could not load the agent’s rooms.'),
+      }
+    );
+  };
+  return (
+    <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+      <div className="flex flex-1 items-center justify-center py-3">
+        <AgentAvatar name={launch.name} iconUrl={iconUrl} size={66} />
+      </div>
+      <div className="truncate text-sm font-medium">{launch.name}</div>
+      <div className="text-xs text-foreground-muted">
+        {providerDisplayName(launch.provider)} · Cloud · {stateLabel}
+      </div>
+      {launch.error && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {launch.error}
+        </p>
+      )}
+      {actionError && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {actionError}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1">
+        {launch.state === 'ready' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() =>
+                createSession({ cloudRequestId: launch.request_id, entryPoint: 'server_page' })
+              }
+            >
+              New session
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run('restart')}
+            >
+              Restart
+            </Button>
+          </>
+        )}
+        {['ready', 'provisioning', 'queued', 'error'].includes(launch.state) && (
+          <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
+            Stop worker
+          </Button>
+        )}
+        {launch.state === 'error' && (
+          <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
+            Retry
+          </Button>
+        )}
+        {launch.state === 'stopped' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run('start')}
+            >
+              Start worker
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => setConfirmRemove(true)}
+            >
+              Remove
+            </Button>
+          </>
+        )}
+      </div>
+      {confirmRemove && (
+        <div className="mt-2 text-xs">
+          <p>Remove this worker? Its data disk and conversation history will be retained.</p>
+          <Button size="sm" disabled={pending} onClick={() => void run('remove')}>
+            Remove worker
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setConfirmRemove(false)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {launch.state === 'ready' && (
+        <Button variant="ghost" size="sm" className="mt-2" onClick={add}>
+          <Plus className="size-3" />
+          Add to rooms
+        </Button>
+      )}
+    </div>
+  );
+}
 
 const AgentCard = observer(function AgentCard({
   agent,

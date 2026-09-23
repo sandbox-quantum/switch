@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { rpc } from '@renderer/lib/ipc';
 import { switchRoomsStore } from './switch-rooms-store';
+import { managedCloudServerId, useCloudLaunches } from './use-cloud-launches';
 
 /**
  * How much of this server Switch Console is holding: the agents onboarded
@@ -18,6 +19,8 @@ export const ServerStatTiles = observer(function ServerStatTiles({
 }: {
   serverId: string;
 }) {
+  const cloud = useCloudLaunches(serverId);
+  const cloudLoaded = serverId !== managedCloudServerId() || cloud.isSuccess;
   // Shares the key every other bridge reader uses, so the list is already in
   // cache by the time this renders and the tile never fetches on its own.
   const bridgesQuery = useQuery({
@@ -36,7 +39,11 @@ export const ServerStatTiles = observer(function ServerStatTiles({
     <div className="grid grid-cols-3 gap-3">
       <StatTile
         label="Your Agents"
-        value={agentsStore.loaded ? agentsStore.agentsOnServer(serverId).length : null}
+        value={
+          agentsStore.loaded && cloudLoaded
+            ? agentsStore.agentsOnServer(serverId).length + (cloud.data?.length ?? 0)
+            : null
+        }
       />
       <StatTile
         label="Your Rooms"

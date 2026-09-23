@@ -41,6 +41,12 @@ export function AgentAdvancedConfig({
     enabled: !!providerId && !!dir.trim(),
     staleTime: 60000,
   });
+  const executionCatalogue = dir.trim()
+    ? catalogue
+    : {
+        kind: 'unavailable' as const,
+        reason: 'No execution directory is configured yet. You can enter a model alias or ID.',
+      };
   const { data: allFields } = useQuery({
     queryKey: ['agentDefinitionFields', providerId],
     queryFn: () => (providerId ? rpc.agents.definitionFields({ providerId }) : Promise.resolve([])),
@@ -91,14 +97,14 @@ export function AgentAdvancedConfig({
                 {field.required || field.type === 'boolean' ? '' : ' (optional)'}
               </FieldLabel>
               <DefinitionFieldInput
-                suggestions={fieldCatalogueState(field, state, catalogue).suggestions}
+                suggestions={fieldCatalogueState(field, state, executionCatalogue).suggestions}
                 field={field}
                 value={state[field.key] ?? (field.type === 'boolean' ? false : '')}
                 onChange={(value) => setField(field.key, value)}
               />
-              {fieldCatalogueState(field, state, catalogue).note && (
+              {fieldCatalogueState(field, state, executionCatalogue).note && (
                 <FieldDescription>
-                  {fieldCatalogueState(field, state, catalogue).note}
+                  {fieldCatalogueState(field, state, executionCatalogue).note}
                 </FieldDescription>
               )}
               {field.help && (

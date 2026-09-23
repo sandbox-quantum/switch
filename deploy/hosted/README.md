@@ -1,14 +1,16 @@
-# Hosted EC2 workers: operator-controlled implementation
+# Hosted EC2 workers
 
-This directory implements the first EC2 infrastructure slice. It includes a
-single-controller service, a trusted VM launcher, a Kubernetes chart and generic
-Terraform. It does **not** implement Console onboarding or make the controller the
-source of truth for production Switch placements. Operator commands maintain a
-local durable assignment database until that service integration is implemented.
+This directory implements the bounded cloud-worker pilot: a controller service,
+a trusted VM launcher, a Kubernetes chart and generic Terraform. Console submits
+durable launch requests to the authenticated gateway. The controller consumes
+those requests and maintains its own durable AWS assignment database. Operator
+commands remain available for lifecycle management.
 
 Start from [the architecture proposal](../../docs/planning/hosted-execution-backend-proposal.md).
-One ordinary EC2 VM runs one assigned Claude session with a retained encrypted
-EBS data disk. The controller runs on existing EKS; workers never join that cluster.
+One ordinary EC2 VM runs one agent with a retained encrypted EBS data disk.
+The shared watcher starts a separate session for each addressed room on that VM.
+Creating an agent does not create a room. The controller runs on existing EKS;
+workers never join that cluster.
 
 ## Components
 
@@ -24,11 +26,59 @@ EBS data disk. The controller runs on existing EKS; workers never join that clus
 - `chart/`: a digest-pinned controller image, one replica with Recreate rollout,
   private durable database volume and no exposed application port.
 
-Only same-instance stop/start is supported in this slice. The worker rejects a
-disk from a different instance or assignment generation. Automatic replacement,
-cross-AZ migration and arbitrary retained-disk adoption remain disabled. A retained
-disk can be recovered through a separately reviewed operator recovery workflow;
-blind deletion of ownership locks is not that workflow.
+Stop/start preserves the disk and saved sessions. Automatic replacement requires
+confirmed termination of the old VM, a detached disk, and matching assignment
+identity. The new worker accepts only that exact predecessor. Recovery attempts
+are bounded. Cross-AZ migration and arbitrary disk adoption remain disabled.
+See [worker image upgrades](worker/README.md) for the explicit operator workflow.
+
+## GitHub App credential preparation
+
+The backend helper `switch_core.providers.github_installation` can issue a
+repository-scoped installation token after checking that the initiating user's
+GitHub account still has access to that repository in the selected installation.
+It signs with an operator-supplied RSA key and requests only contents and pull
+request write access. Credentials must stay on the backend and in the worker's
+private credential transport, never in Console responses or persisted launch specs.
+
+Console uses the shared New Agent form, a saved provider connection and a selected
+GitHub repository. The gateway reserves an identity from the operator-configured
+pool. The controller creates the data volume, writes the assignment secret with
+that volume ID, and then starts the VM. A worker is ready only after its shared
+watcher connects. Agents can start sessions automatically when addressed or use
+manual sessions. Both paths use the existing session form and conversation view.
+
+Cloud sessions appear in the agent sidebar and under their connected rooms.
+The conversation supports messages, permission requests, interruption, stop,
+resume and restart. Worker cards provide start, stop, restart, retry and removal.
+Removal retains the data disk and history. Uncertain operations are reported
+explicitly and are not automatically repeated.
+
+`HOSTED_AGENTS_PER_OWNER` limits agents per user (default 3).
+`HOSTED_SESSIONS_PER_AGENT` limits sessions per worker (default 8).
+The server launch capacity and controller assignment pool impose separate global
+limits. Each agent has its own VM, encrypted disk and scoped credentials.
+
+Managed workers request a fresh installation token before checkout and each Git
+or GitHub CLI command. The agent-authenticated renewal route checks the saved
+assignment, workspace membership and current GitHub repository access. It never
+accepts a caller-selected repository. Personal tokens remain an operator option.
+
+### Enable Console launches
+
+Mount a private backend JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
+`tenant_id`, a dedicated `token` of at least 32 characters, reserved UUID
+`agent_ids`, `github_private_key_path` and the HTTPS `agent_api_endpoint`.
+Set `HOSTED_LAUNCH_CAPACITY` no higher than that pool. Zero disables creation.
+The backend chart exposes `switchCore.hostedControllerSecret` (files
+`controller.json` and the referenced key) and `switchCore.hostedLaunchCapacity`.
+
+Mount a controller secret with `gateway.json` containing `origin`, the matching
+`token`, an allowed `instance_type`, and a pinned `mcp_runtime`. Set the controller
+chart's `gatewaySecretName` to that secret. The token authorizes only the hosted
+controller routes for its configured tenant. It is not a user or agent API key.
+The assignment UUIDs must match the Terraform and controller configurations.
+Keep all values and private keys outside this public repository.
 
 ## Prepare a deployable environment
 
@@ -169,5 +219,90 @@ The optional worker secret fields described in [the worker contract](worker/READ
 provide a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
 it in a workspace/config or passing it as a command argument. Bootstrap checks
 the token before starting the provider. Repository permission checks and actual
-clone/build/push/PR operations remain the coding task's responsibility; no live
-GitHub task or Console repository onboarding is implied by this implementation.
+clone/build/push/PR operations remain the coding task's responsibility; managed onboarding uses the renewable installation-token flow described above.
+
+## User-owned Claude connections
+
+The gateway exposes authenticated `GET`, `PUT`, and `DELETE` routes at
+`/gateway/provider-connections/claude`. The PUT body has `kind` (`api-key` or
+`setup-token`) and `credential`. GET returns connection status, kind and the last
+successful verification time, never the credential. Operations are scoped to the
+signed-in user's tenant and user ID; administrator status does not grant access
+to another user's connection. Concurrent changes to the same connection return
+409 so deletion and verification cannot race.
+
+The verifier is opt-in. Build the ordinary switch-core image from this checkout,
+then build the Linux amd64 hosted variant:
+
+```sh
+docker build --platform linux/amd64 -f deploy/hosted/Dockerfile.connections \
+  --build-arg SWITCH_CORE_IMAGE=your-built-core-image \
+  -t switch-core-with-claude .
+```
+
+Pin the base image by digest for deployment. The variant includes a checksum-pinned
+Claude Code executable and sets `HOSTED_CLAUDE_VERIFIER_PATH`. A non-container
+installation can set that variable to an absolute executable path. An invalid
+configured path fails startup; an unset path leaves connections unavailable.
+Run the normal database migration before rolling out the backend.
+
+Each check uses a temporary private home and a minimal environment with only the
+chosen credential. It runs one fixed Haiku request with tools, MCP servers, skills
+and session persistence disabled. It accepts only a successful Claude result.
+Checks time out after 25 seconds, process groups are killed on exit/cancellation,
+and temporary files are removed. There are at most two checks per gateway process.
+The verification process runs as the service user and accepts no user prompts,
+commands, repository paths or tool configuration; it is not a worker sandbox.
+
+Only verified credentials are written, using the existing server encryption key
+and the tenant-scoped `provider_connections` table. Failed replacement leaves the
+previous connection intact. Back up and rotate the server encryption key with the
+same care as other encrypted credentials. Removal deletes the database record;
+revocation at Anthropic and database-backup retention are separate concerns.
+
+Worker assignment bundles carry the initial credential through private tmpfs
+files. Managed runtimes fetch current credentials from the authenticated worker
+API. Revocation denies further credential and control requests and stops the
+affected workers. Reconnect the provider, then use Retry to start them again.
+
+Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
+under their provider IDs. Enable `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
+`switchCore.hostedProviderVerificationEnabled`) after deploying the verification
+API, controller IAM policy, and a worker image with `--verify-credential` support.
+This requires a hosted controller. With the setting off, credentials keep the
+existing configured-until-worker-check behavior.
+
+With verification enabled, saving a credential queues a durable connection check.
+Console polls its status and shows **Checking connection**. A temporary worker
+uses the native provider adapter to send one fixed model request in an empty
+workspace. It has no repository, agent assignment, instance profile, or retained
+data volume. Its encrypted root volume is deleted on termination. The controller
+allows at most two checks at a time. Each worker schedules its own shutdown after
+eight minutes; the controller also terminates checks past their ten-minute deadline.
+Checks and cleanup continue when Console closes.
+
+The connection becomes verified only after the model replies and the controller
+observes instance termination. Refreshed subscription credentials are saved with
+the result. Failed checks preserve an existing verified credential and show a retry
+action. Job credentials and bootstrap tokens are cleared when the job finishes.
+Test each provider with its intended account before deployment acceptance.
+
+### GitHub App connections
+
+To enable browser authorization, set `HOSTED_GITHUB_CONFIG_PATH` to a private JSON
+file containing `client_id`, `client_secret`, `slug`, and the public HTTPS Switch
+`origin`. In the backend Helm chart, `switchCore.githubConnectionsSecret` mounts
+an existing Secret's `github.json` key. Never put the client secret in image layers
+or Console build configuration.
+
+Register `<origin>/gateway/provider-connections/github/callback` as the GitHub App
+callback. Enable expiring user tokens. Contents and pull requests need read/write
+permissions for the planned coding workflow; metadata read access is mandatory.
+The Console requests user authorization, confirms the account, and offers GitHub
+App installation to select repositories. Organization approval may be required.
+
+Stored credentials are encrypted and scoped to the current user and tenant.
+The backend refreshes expiring user tokens and asks GitHub for current repository
+access. Disconnect deletes local connection storage, not the installation on
+GitHub. Authorization attempts expire after ten minutes and on backend restart.
+Worker installation tokens and webhook handling are not part of this increment.

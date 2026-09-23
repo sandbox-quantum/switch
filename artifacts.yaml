@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.26.0
+    version: 0.27.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.34.0
+    version: 0.35.0
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -160,8 +160,8 @@ contracts:
       that a client can always authenticate far enough to be told what is
       wrong.
     artifacts:
-      switch-core: { speaks: 1, accepts: 1 }
-      switch-console: { speaks: 1, accepts: 1 }
+      switch-core: { speaks: 5, accepts: 1 }
+      switch-console: { speaks: 5, accepts: 1 }
 
   stack-compose:
     description: >-
@@ -185,4 +185,4 @@ contracts:
       The database schema switch-core expects. Internal to switch-core — this
       contract is never disclosed in an externally facing response.
     artifacts:
-      switch-core: { speaks: 1, accepts: 1 }
+      switch-core: { speaks: 5, accepts: 1 }

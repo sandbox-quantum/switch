@@ -26,6 +26,7 @@ from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    HostedLaunch,
     MediaBlob,
     RoleLease,
     Room,
@@ -139,6 +140,8 @@ class SessionAuthority:
                 .with_for_update()
             )
             now = await self._now(db)
+            if row is None:
+                await self._check_cloud_capacity(db, agent_id, session.session_id)
             if row is not None:
                 if row.agent_id != agent_id:
                     raise SessionError(
@@ -320,6 +323,40 @@ class SessionAuthority:
                 command.status = status.model_dump(by_alias=True)
                 await self._append(db, row, status)
 
+    async def _check_cloud_capacity(
+        self, db: AsyncSession, agent_id: str, session_id: str
+    ) -> None:
+        launch = await db.scalar(
+            select(HostedLaunch).where(
+                HostedLaunch.tenant_id == require_tenant_id(),
+                HostedLaunch.agent_id == agent_id,
+            )
+        )
+        if launch is None:
+            return
+        if launch.desired_state != "running" or launch.state == "error":
+            raise SessionError(
+                "NOT_AUTHORIZED",
+                "The cloud worker is stopped, has failed, or is being removed.",
+            )
+        active = await db.scalars(
+            select(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id == agent_id,
+                SdkSession.id != session_id,
+            )
+        )
+        count = sum(
+            value.snapshot.get("session", {}).get("status") not in ("stopped", "error")
+            and not value.snapshot.get("session", {}).get("retired")
+            for value in active
+        )
+        if count >= launch.spec.get("session_limit", 8):
+            raise SessionError(
+                "CAPACITY_EXCEEDED",
+                "This cloud worker has reached its session limit. Stop a session before starting another.",
+            )
+
     async def recover(
         self,
         agent_id: str,
@@ -333,6 +370,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
+            await db.scalar(select(Agent).where(Agent.id == agent_id).with_for_update())
             row = await self._locked(db, session_id)
             if row.recovery.get("retired_epoch"):
                 raise SessionError(
@@ -365,6 +403,7 @@ class SessionAuthority:
                     "EXPECTED_SEQUENCE",
                     "Reconcile every durable upload before recovery.",
                 )
+            await self._check_cloud_capacity(db, agent_id, session_id)
             snapshot = _stored_snapshot(row)
             await self._interrupt_pending(db, row, snapshot, "HOST_RESTARTED")
             row.epoch = str(uuid.uuid4())

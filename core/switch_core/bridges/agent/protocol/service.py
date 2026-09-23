@@ -310,6 +310,7 @@ class ProtocolService:
         overwrite: bool = False,
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
+        reserved_agent_id: str | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -381,6 +382,10 @@ class ProtocolService:
 
         async with self.session_factory() as session:
             existing = await self.agent_store.get_by_name(session, name)
+            if reserved_agent_id is not None and existing is not None:
+                raise AgentExistsError(
+                    "The reserved cloud identity cannot overwrite an agent."
+                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
@@ -423,6 +428,7 @@ class ProtocolService:
             else:
                 agent_id = await self._create_agent(
                     session=session,
+                    reserved_agent_id=reserved_agent_id,
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
@@ -544,6 +550,7 @@ class ProtocolService:
         self,
         *,
         session: AsyncSession,
+        reserved_agent_id: str | None,
         name: str,
         description: str,
         icon_url: str | None,
@@ -581,6 +588,7 @@ class ProtocolService:
         )
 
         agent = Agent(
+            **({"id": reserved_agent_id} if reserved_agent_id is not None else {}),
             name=name,
             description=description,
             icon_url=icon_url,

@@ -798,6 +798,11 @@ async def _open_event_stream(
     except ConnectionError_ as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # Capture this generation before bookkeeping can yield to a reconnect.
+    stream = event_stream(
+        conn=conn, registry=protocol.connections, buffer=protocol.event_buffer
+    )
+
     # After the connection is open, so a bookkeeping failure can never be the
     # reason an agent could not connect.
     await protocol.record_client_declaration(agent.id, connection_id, declaration)
@@ -830,11 +835,7 @@ async def _open_event_stream(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return StreamingResponse(
-        event_stream(
-            conn=conn,
-            registry=protocol.connections,
-            buffer=protocol.event_buffer,
-        ),
+        stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

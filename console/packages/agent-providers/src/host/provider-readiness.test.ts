@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { checkProviderReadiness, parseAuthentication } from './provider-readiness';
+import {
+  checkProviderReadiness,
+  parseAuthentication,
+  parseOpenCodeInventory,
+} from './provider-readiness';
 
 describe('provider authentication', () => {
   it('recognizes signed-out Claude without assuming an installed CLI is ready', () => {
@@ -50,3 +54,15 @@ it.each(['Not logged in. Run agent login.', 'Authentication required', 'Not sign
     expect(parseAuthentication('cursor', output).status).toBe('unauthenticated');
   }
 );
+
+it('offers models only from connected OpenCode backends for verification', () => {
+  const result = parseOpenCodeInventory({
+    connected: ['opencode'],
+    all: [
+      { id: 'opencode', models: { 'fixture-model': { name: 'Fixture model' } } },
+      { id: 'unconnected', models: { 'other-model': { name: 'Other model' } } },
+    ],
+  });
+  expect(result.status).toBe('authenticated');
+  expect(result.models).toEqual([{ id: 'opencode/fixture-model', name: 'Fixture model' }]);
+});

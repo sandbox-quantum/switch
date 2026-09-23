@@ -19,9 +19,10 @@ import sys
 import tempfile
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 DATA_MOUNT = Path("/data")
@@ -32,9 +33,7 @@ MARKER_PATH = MARKER_DIRECTORY / "machine.json"
 RUNTIME_DIRECTORY = Path("/run/switch-hosted")
 LOCK_PATH = Path("/run/lock/switch-hosted-worker.lock")
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
-BAKED_MCP_RUNTIME_PATH = Path(
-    "/opt/switch/agent-providers/switch-agent-runtime.mjs"
-)
+BAKED_MCP_RUNTIME_PATH = Path("/opt/switch/agent-providers/switch-agent-runtime.mjs")
 BAKED_MCP_RUNTIME_ENV = "SWITCH_HOSTED_MCP_RUNTIME_PATH"
 IMDS_BASE = "http://169.254.169.254/latest"
 MAX_SECRET_BYTES = 128 * 1024
@@ -51,7 +50,9 @@ class WorkerError(RuntimeError):
     pass
 
 
-def _strict(value: Any, required: set[str], optional: set[str], label: str) -> dict[str, Any]:
+def _strict(
+    value: Any, required: set[str], optional: set[str], label: str
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise WorkerError(f"{label} must be an object.")
     keys = set(value)
@@ -63,7 +64,12 @@ def _strict(value: Any, required: set[str], optional: set[str], label: str) -> d
 
 
 def _text(value: Any, label: str, *, maximum: int = 4096) -> str:
-    if not isinstance(value, str) or not value or len(value) > maximum or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > maximum
+        or "\x00" in value
+    ):
         raise WorkerError(f"{label} is invalid.")
     return value
 
@@ -94,6 +100,7 @@ class RuntimeConfig:
     mcp_runtime_path: str | None
     allow_initial_format: bool
     artifact_sha256: dict[str, str]
+    providers: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,8 @@ class WorkerConfig:
     volume_id: str
     device_path: str
     runtime: RuntimeConfig
+    previous_instance_id: str | None = None
+    previous_runtime_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,7 +165,7 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
             "dataDevice",
             "mountPath",
         },
-        set(),
+        {"previousInstanceId", "previousRuntimeFingerprint"},
         "worker assignment",
     )
     if value["version"] != 1:
@@ -184,7 +193,7 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
             "allowInitialFormat",
             "artifactSha256",
         },
-        {"mcpRuntimePath"},
+        {"mcpRuntimePath", "providers"},
         "worker runtime",
     )
     if runtime_value["version"] != 1:
@@ -200,10 +209,14 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
     if mcp_runtime_path is not None and mcp_runtime_path != str(BAKED_MCP_RUNTIME_PATH):
         raise WorkerError("Baked MCP runtime path is not fixed.")
     if (mcp_runtime_path is None) != ("mcpRuntime" not in artifact_sha256):
-        raise WorkerError("Baked MCP runtime path and hash must be configured together.")
+        raise WorkerError(
+            "Baked MCP runtime path and hash must be configured together."
+        )
     runtime = RuntimeConfig(
         node_path=_absolute_path(runtime_value["nodePath"], "Node executable"),
-        bootstrap_path=_absolute_path(runtime_value["bootstrapPath"], "bootstrap entrypoint"),
+        bootstrap_path=_absolute_path(
+            runtime_value["bootstrapPath"], "bootstrap entrypoint"
+        ),
         shared_host_daemon_path=_absolute_path(
             runtime_value["sharedHostDaemonPath"], "shared host daemon"
         ),
@@ -217,32 +230,72 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         mcp_runtime_path=mcp_runtime_path,
         allow_initial_format=runtime_value["allowInitialFormat"],
         artifact_sha256=artifact_sha256,
+        providers=_provider_runtimes(runtime_value.get("providers", {})),
     )
     secret_id = _text(value["assignmentSecretId"], "worker secret ID")
     secret_region = _secret_arn_region(secret_id)
+    previous_fingerprint = value.get("previousRuntimeFingerprint")
+    if previous_fingerprint is not None and (
+        not isinstance(previous_fingerprint, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", previous_fingerprint)
+        or "previousInstanceId" not in value
+    ):
+        raise WorkerError(
+            "Runtime upgrade requires an exact predecessor and runtime fingerprint."
+        )
     return WorkerConfig(
         installation_id=_identifier(value["installationId"], "installation ID"),
         secret_id=secret_id,
         secret_region=secret_region,
         agent_id=_identifier(value["agentId"], "worker agent ID"),
-        generation=_positive_integer(value["generation"], "worker assignment generation"),
+        generation=_positive_integer(
+            value["generation"], "worker assignment generation"
+        ),
         volume_id=volume_id,
         device_path=_absolute_path(value["dataDevice"], "worker data device"),
         runtime=runtime,
+        previous_runtime_fingerprint=previous_fingerprint,
+        previous_instance_id=_text(value["previousInstanceId"], "previous instance ID")
+        if "previousInstanceId" in value
+        else None,
     )
+
+
+def _provider_runtimes(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict) or not set(value).issubset(
+        {"codex", "cursor", "opencode", "antigravity"}
+    ):
+        raise WorkerError("Pinned provider runtimes are invalid.")
+    for provider, runtime in value.items():
+        if (
+            not isinstance(runtime, dict)
+            or set(runtime) != {"path", "sha256"}
+            or runtime["path"]
+            != f"/opt/switch/providers/{'antigravity-acp' if provider == 'antigravity' else provider}"
+            or not re.fullmatch(r"[0-9a-f]{64}", str(runtime["sha256"]))
+        ):
+            raise WorkerError("Pinned provider runtime path or checksum is invalid.")
+    return value
 
 
 def _secret_arn_region(value: str) -> str:
     match = SECRET_ARN_RE.fullmatch(value)
     if not match:
-        raise WorkerError("Worker assignment secret ID must be a full Secrets Manager ARN.")
+        raise WorkerError(
+            "Worker assignment secret ID must be a full Secrets Manager ARN."
+        )
     partition, region, _account, _name = match.groups()
     if (
-        partition == "aws-cn" and not region.startswith("cn-")
-        or partition == "aws-us-gov" and not region.startswith("us-gov-")
-        or partition == "aws" and (region.startswith("cn-") or region.startswith("us-gov-"))
+        partition == "aws-cn"
+        and not region.startswith("cn-")
+        or partition == "aws-us-gov"
+        and not region.startswith("us-gov-")
+        or partition == "aws"
+        and (region.startswith("cn-") or region.startswith("us-gov-"))
     ):
-        raise WorkerError("Worker assignment secret ARN partition and region do not match.")
+        raise WorkerError(
+            "Worker assignment secret ARN partition and region do not match."
+        )
     return region
 
 
@@ -268,7 +321,13 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
         raise WorkerError("Assignment secret is invalid.") from None
     value = _strict(
         value,
-        {"version", "assignment", "deployment", "providerCredential", "switchCredentials"},
+        {
+            "version",
+            "assignment",
+            "deployment",
+            "providerCredential",
+            "switchCredentials",
+        },
         {"githubCredential"},
         "assignment secret",
     )
@@ -318,41 +377,68 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
             "session",
             "provider",
             "workspacePath",
-            "room",
             "runtimeMode",
             "switchCredentialsPath",
             "mcpRuntime",
         },
-        {"github"},
+        {"github", "room", "watch"},
         "hosted deployment",
     )
     if value["version"] != 1:
         raise WorkerError("Hosted deployment version is unsupported.")
     session = _strict(
-        value["session"], {"sessionId", "agentId"}, {"nativeSessionId"}, "deployment session"
+        value["session"],
+        {"sessionId", "agentId"},
+        {"nativeSessionId"},
+        "deployment session",
     )
     _identifier(session["sessionId"], "deployment session ID")
     _identifier(session["agentId"], "deployment agent ID")
     if "nativeSessionId" in session:
         _identifier(session["nativeSessionId"], "deployment native session ID")
+    if ("room" in value) == ("watch" in value):
+        raise WorkerError("Specify either a room session or an agent watcher.")
+    if "watch" in value and (
+        not isinstance(value["watch"], bool) or "nativeSessionId" in session
+    ):
+        raise WorkerError("Deployment watcher configuration is invalid.")
     provider = _strict(
         value["provider"],
         {"kind", "credential", "binaryPath", "context"},
-        {"model"},
+        {"model", "definition"},
         "deployment provider",
     )
-    if provider["kind"] != "claude":
+    if provider["kind"] not in {"claude", *config.runtime.providers}:
         raise WorkerError("Hosted deployment provider is unsupported.")
     credential = _strict(
-        provider["credential"], {"kind", "path"}, set(), "deployment provider credential"
+        provider["credential"],
+        {"kind", "path"},
+        {"refresh"},
+        "deployment provider credential",
     )
-    if credential["kind"] not in {"api-key", "setup-token"}:
+    if credential["kind"] not in {"api-key", "setup-token", "auth-json"}:
         raise WorkerError("Hosted deployment provider credential kind is unsupported.")
     if credential["path"] != str(RUNTIME_DIRECTORY / "secrets/provider"):
         raise WorkerError("Hosted deployment provider credential path is not fixed.")
-    if provider["binaryPath"] != config.runtime.provider_binary_path:
-        raise WorkerError("Hosted deployment provider executable is not the pinned executable.")
+    expected_binary = (
+        config.runtime.provider_binary_path
+        if provider["kind"] == "claude"
+        else config.runtime.providers[provider["kind"]]["path"]
+    )
+    if provider["binaryPath"] != expected_binary:
+        raise WorkerError(
+            "Hosted deployment provider executable is not the pinned executable."
+        )
     _text(provider["context"], "deployment provider context", maximum=64 * 1024)
+    if "definition" in provider:
+        definition = _strict(
+            provider["definition"], {"name", "content"}, set(), "agent definition"
+        )
+        if not isinstance(definition["name"], str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._-]{0,127}", definition["name"]
+        ):
+            raise WorkerError("Hosted agent definition name is invalid.")
+        _text(definition["content"], "agent definition", maximum=64 * 1024)
     if "model" in provider:
         model = _strict(provider["model"], {"id"}, {"options"}, "deployment model")
         _text(model["id"], "deployment model ID")
@@ -364,14 +450,15 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
                 raise WorkerError("Deployment model options are invalid.")
     if value["workspacePath"] != str(WORKSPACE_PATH):
         raise WorkerError("Hosted deployment workspace path is not fixed.")
-    room = _strict(value["room"], {"roomId"}, {"startCursor"}, "deployment room")
-    _identifier(room["roomId"], "deployment room ID")
-    if "startCursor" in room and (
-        isinstance(room["startCursor"], bool)
-        or not isinstance(room["startCursor"], int)
-        or room["startCursor"] < 0
-    ):
-        raise WorkerError("Deployment room cursor is invalid.")
+    if "room" in value:
+        room = _strict(value["room"], {"roomId"}, {"startCursor"}, "deployment room")
+        _identifier(room["roomId"], "deployment room ID")
+        if "startCursor" in room and (
+            isinstance(room["startCursor"], bool)
+            or not isinstance(room["startCursor"], int)
+            or room["startCursor"] < 0
+        ):
+            raise WorkerError("Deployment room cursor is invalid.")
     if value["runtimeMode"] not in {
         "approval-required",
         "auto-accept-edits",
@@ -384,7 +471,26 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     if value["mcpRuntime"] != config.runtime.mcp_runtime:
         raise WorkerError("Hosted deployment MCP runtime is not the pinned runtime.")
     if "github" in value:
-        github = _strict(value["github"], {"credentialPath"}, set(), "deployment GitHub")
+        github = _strict(
+            value["github"],
+            {"credentialPath"},
+            {"repository", "refresh"},
+            "deployment GitHub",
+        )
+        if "refresh" in github and (
+            github["refresh"] is not True or "repository" not in github
+        ):
+            raise WorkerError("Hosted GitHub refresh requires a selected repository.")
+        if "repository" in github and (
+            not isinstance(github["repository"], str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}",
+                github["repository"],
+            )
+        ):
+            raise WorkerError(
+                "Hosted GitHub repository must be an owner/repository name."
+            )
         if github["credentialPath"] != str(RUNTIME_DIRECTORY / "secrets/github"):
             raise WorkerError("Hosted deployment GitHub credential path is not fixed.")
     return value
@@ -492,7 +598,9 @@ class SecretsManager:
 
 
 class Commands:
-    def result(self, arguments: list[str], *, capture: bool = True) -> subprocess.CompletedProcess[str]:
+    def result(
+        self, arguments: list[str], *, capture: bool = True
+    ) -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
                 arguments,
@@ -503,7 +611,9 @@ class Commands:
                 env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C"},
             )
         except OSError:
-            raise WorkerError(f"Required host operation failed: {arguments[0]}.") from None
+            raise WorkerError(
+                f"Required host operation failed: {arguments[0]}."
+            ) from None
 
     def run(self, arguments: list[str], *, capture: bool = True) -> str:
         completed = self.result(arguments, capture=capture)
@@ -512,7 +622,9 @@ class Commands:
         return completed.stdout if capture else ""
 
 
-def inspect_storage(commands: Commands, device_path: str, volume_id: str) -> StorageObservation:
+def inspect_storage(
+    commands: Commands, device_path: str, volume_id: str
+) -> StorageObservation:
     try:
         value = json.loads(
             commands.run(
@@ -536,11 +648,15 @@ def inspect_storage(commands: Commands, device_path: str, volume_id: str) -> Sto
             raise ValueError()
         device = devices[0]
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        raise WorkerError("Data volume inspection returned an invalid result.") from None
+        raise WorkerError(
+            "Data volume inspection returned an invalid result."
+        ) from None
     resolved_path = _absolute_path(device.get("path"), "resolved data device")
     serial = str(device.get("serial") or "").lower().replace("-", "")
     if device.get("type") != "disk" or serial != volume_id.replace("-", ""):
-        raise WorkerError("Attached data device does not match the assigned EBS volume.")
+        raise WorkerError(
+            "Attached data device does not match the assigned EBS volume."
+        )
     children = bool(device.get("children"))
     signatures: tuple[str, ...] = ()
     if not device.get("fstype") and not children:
@@ -605,6 +721,10 @@ def prepare_storage(
             ],
             capture=False,
         )
+        commands.run(
+            ["/usr/bin/udevadm", "trigger", "--action=change", observation.device_path]
+        )
+        commands.run(["/usr/bin/udevadm", "settle", "--timeout=30"])
         observation = inspect_storage(commands, config.device_path, config.volume_id)
         formatted = True
     if (
@@ -612,14 +732,25 @@ def prepare_storage(
         or not observation.filesystem_uuid
         or observation.has_children
     ):
-        raise WorkerError("Data volume filesystem is unexpected; refusing to format or mount it.")
+        raise WorkerError(
+            "Data volume filesystem is unexpected; refusing to format or mount it."
+        )
     _validate_root_directory(DATA_MOUNT, create=True)
     mounted = commands.result(
-        ["/usr/bin/findmnt", "--mountpoint", str(DATA_MOUNT), "--noheadings", "--output", "SOURCE"]
+        [
+            "/usr/bin/findmnt",
+            "--mountpoint",
+            str(DATA_MOUNT),
+            "--noheadings",
+            "--output",
+            "SOURCE",
+        ]
     )
     if mounted.returncode == 0:
         mounted_source = mounted.stdout.strip()
-        if os.path.realpath(mounted_source) != os.path.realpath(observation.device_path):
+        if os.path.realpath(mounted_source) != os.path.realpath(
+            observation.device_path
+        ):
             raise WorkerError("The data mountpoint is occupied by another device.")
     elif mounted.returncode == 1:
         commands.run(
@@ -652,14 +783,20 @@ def acquire_root_lock(path: Path = LOCK_PATH) -> Any:
     path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     details = os.fstat(descriptor)
-    if not stat.S_ISREG(details.st_mode) or details.st_uid != ROOT_UID or details.st_mode & 0o077:
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_uid != ROOT_UID
+        or details.st_mode & 0o077
+    ):
         os.close(descriptor)
         raise WorkerError("Worker root lock is not a private root-owned file.")
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(descriptor)
-        raise WorkerError("Another trusted worker launcher already owns this instance.") from None
+        raise WorkerError(
+            "Another trusted worker launcher already owns this instance."
+        ) from None
     return os.fdopen(descriptor, "r+")
 
 
@@ -670,6 +807,8 @@ def reconcile_boot_identity(
     filesystem_uuid: str,
     runtime_fingerprint: str,
     *,
+    previous_instance_id: str | None = None,
+    previous_runtime_fingerprint: str | None = None,
     marker_directory: Path = MARKER_DIRECTORY,
     marker_path: Path = MARKER_PATH,
     state_path: Path = STATE_PATH,
@@ -685,12 +824,23 @@ def reconcile_boot_identity(
             raise WorkerError("Retained disk belongs to another installation.")
         if marker["agentId"] != agent_id:
             raise WorkerError("Retained disk belongs to another agent.")
-        if marker["runtimeFingerprint"] != runtime_fingerprint:
-            raise WorkerError("Pinned hosted runtime changed for the retained assignment.")
+        if marker["runtimeFingerprint"] != runtime_fingerprint and not (
+            previous.instance_id == previous_instance_id
+            and previous.instance_id != identity.instance_id
+            and marker["runtimeFingerprint"] == previous_runtime_fingerprint
+        ):
+            raise WorkerError(
+                "Pinned hosted runtime changed for the retained assignment."
+            )
         if marker["filesystemUuid"] != filesystem_uuid:
             raise WorkerError("Retained disk filesystem identity changed.")
-        if previous.instance_id != identity.instance_id:
-            raise WorkerError("Retained disk belongs to another EC2 instance; replacement is unsupported.")
+        if (
+            previous.instance_id != identity.instance_id
+            and previous.instance_id != previous_instance_id
+        ):
+            raise WorkerError(
+                "Retained disk belongs to another EC2 instance; replacement is unsupported."
+            )
         if previous.assignment_generation != identity.assignment_generation:
             raise WorkerError("Retained disk belongs to another assignment generation.")
         if previous.boot_id == identity.boot_id:
@@ -705,7 +855,9 @@ def reconcile_boot_identity(
             if child.name not in {"lost+found", marker_directory.name}
         }
         if unexpected:
-            raise WorkerError("Retained disk has no trusted machine marker; refusing legacy state.")
+            raise WorkerError(
+                "Retained disk has no trusted machine marker; refusing legacy state."
+            )
     _write_root_json(
         marker_path,
         {
@@ -838,12 +990,17 @@ def _known_owner_relative(relative: Path) -> bool:
     )
 
 
-def _validate_quarantine_tree(directory: Path, previous: MachineIdentity) -> dict[Path, Path]:
+def _validate_quarantine_tree(
+    directory: Path, previous: MachineIdentity
+) -> dict[Path, Path]:
     result: dict[Path, Path] = {}
     if not directory.exists() and not directory.is_symlink():
         return result
     _validated_directory(directory, root=directory)
-    if directory.lstat().st_uid != ROOT_UID or stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+    if (
+        directory.lstat().st_uid != ROOT_UID
+        or stat.S_IMODE(directory.lstat().st_mode) != 0o700
+    ):
         raise WorkerError("Ownership quarantine is not a private root-owned directory.")
     for root, names, files in os.walk(directory, followlinks=False):
         root_path = Path(root)
@@ -867,7 +1024,9 @@ def _validate_quarantine_tree(directory: Path, previous: MachineIdentity) -> dic
                 "ownership machine",
             )
             if machine != previous.json():
-                raise WorkerError("Quarantined ownership record has unknown machine identity.")
+                raise WorkerError(
+                    "Quarantined ownership record has unknown machine identity."
+                )
             result[relative] = path
     return result
 
@@ -903,7 +1062,9 @@ def _quarantine_stale_ownership(
     existing = _validate_quarantine_tree(quarantine, previous)
     collisions = set(sources) & set(existing)
     if collisions:
-        raise WorkerError("Ownership quarantine collides with a saved ownership record.")
+        raise WorkerError(
+            "Ownership quarantine collides with a saved ownership record."
+        )
     for relative, path in sources.items():
         target = quarantine / relative
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -946,10 +1107,14 @@ def prepare_agent_directories(user: str, group: str) -> tuple[int, int]:
         uid = pwd.getpwnam(user).pw_uid
         gid = grp.getgrnam(group).gr_gid
     except KeyError:
-        raise WorkerError("Pinned AMI is missing the unprivileged agent account.") from None
+        raise WorkerError(
+            "Pinned AMI is missing the unprivileged agent account."
+        ) from None
     account = pwd.getpwnam(user)
     if uid == 0 or gid == 0 or account.pw_gid != gid:
-        raise WorkerError("Pinned AMI agent account must use its non-root primary group.")
+        raise WorkerError(
+            "Pinned AMI agent account must use its non-root primary group."
+        )
     for path in [STATE_PATH, WORKSPACE_PATH]:
         if path.exists():
             details = path.lstat()
@@ -1008,12 +1173,22 @@ def _remove_secret_tree(directory: Path) -> None:
 
 
 def materialize_secrets(
-    bundle: SecretBundle, uid: int, gid: int, runtime_directory: Path = RUNTIME_DIRECTORY
+    bundle: SecretBundle,
+    uid: int,
+    gid: int,
+    runtime_directory: Path = RUNTIME_DIRECTORY,
 ) -> tuple[Path, Callable[[], None]]:
     del uid
     commands = Commands()
     filesystem = commands.run(
-        ["/usr/bin/findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(runtime_directory)]
+        [
+            "/usr/bin/findmnt",
+            "--noheadings",
+            "--output",
+            "FSTYPE",
+            "--target",
+            str(runtime_directory),
+        ]
     ).strip()
     if filesystem != "tmpfs":
         raise WorkerError("Runtime secret directory is not backed by tmpfs.")
@@ -1034,7 +1209,9 @@ def materialize_secrets(
             os.fchmod(directory_fd, 0o750)
             files = {
                 "provider": bundle.provider_credential + "\n",
-                "switch.json": json.dumps(bundle.switch_credentials, separators=(",", ":")),
+                "switch.json": json.dumps(
+                    bundle.switch_credentials, separators=(",", ":")
+                ),
                 "deployment.json": json.dumps(bundle.deployment, separators=(",", ":")),
             }
             if bundle.github_credential is not None:
@@ -1081,7 +1258,11 @@ def materialize_secrets(
 
 
 def build_launch(
-    config: WorkerConfig, identity: MachineIdentity, deployment_path: Path, uid: int, gid: int
+    config: WorkerConfig,
+    identity: MachineIdentity,
+    deployment_path: Path,
+    uid: int,
+    gid: int,
 ) -> tuple[list[str], dict[str, str]]:
     arguments = [
         "/usr/bin/setpriv",
@@ -1125,7 +1306,8 @@ def run_child(arguments: list[str], environment: dict[str, str]) -> int:
             pass
 
     previous = {
-        signum: signal.signal(signum, forward) for signum in (signal.SIGTERM, signal.SIGINT)
+        signum: signal.signal(signum, forward)
+        for signum in (signal.SIGTERM, signal.SIGINT)
     }
     try:
         code = child.wait()
@@ -1157,32 +1339,43 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
     }
     if config.runtime.mcp_runtime_path is not None:
         artifacts["mcpRuntime"] = config.runtime.mcp_runtime_path
+    hashes = dict(config.runtime.artifact_sha256)
+    for provider, runtime in config.runtime.providers.items():
+        artifacts["provider-" + provider] = runtime["path"]
+        hashes["provider-" + provider] = runtime["sha256"]
     for name, path in artifacts.items():
         try:
             details = os.stat(path, follow_symlinks=False)
         except OSError:
             raise WorkerError("Pinned runtime artifact is missing.") from None
-        if not stat.S_ISREG(details.st_mode) or details.st_uid != ROOT_UID or details.st_mode & 0o022:
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_uid != ROOT_UID
+            or details.st_mode & 0o022
+        ):
             raise WorkerError("Pinned runtime artifact is missing or not root-owned.")
-        if _sha256_file(path) != config.runtime.artifact_sha256[name]:
-            raise WorkerError("Pinned runtime artifact checksum does not match the AMI manifest.")
+        if _sha256_file(path) != hashes[name]:
+            raise WorkerError(
+                "Pinned runtime artifact checksum does not match the AMI manifest."
+            )
     try:
         version = subprocess.run(
             [config.runtime.node_path, "--version"],
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             env={"PATH": config.runtime.path, "LANG": "C"},
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
-        raise WorkerError("Pinned Node.js executable failed its version check.") from None
+        raise WorkerError(
+            "Pinned Node.js executable failed its version check."
+        ) from None
     if not re.fullmatch(r"v24\.\d+\.\d+", version):
         raise WorkerError("Pinned AMI does not provide Node.js 24.")
     fingerprint = hashlib.sha256(
         json.dumps(
             {
-                "artifacts": config.runtime.artifact_sha256,
+                "artifacts": hashes,
                 "mcpRuntime": config.runtime.mcp_runtime,
                 "nodeVersion": version,
             },
@@ -1205,7 +1398,10 @@ def main(argv: list[str] | None = None) -> int:
     if os.geteuid() != 0:
         raise WorkerError("Trusted worker launcher must run as root.")
     root_lock = acquire_root_lock()
-    cleanup: Callable[[], None] = lambda: None
+
+    def cleanup() -> None:
+        pass
+
     try:
         config = load_worker_config(arguments.config, arguments.runtime_config)
         runtime_fingerprint = verify_pinned_runtime(config)
@@ -1220,6 +1416,8 @@ def main(argv: list[str] | None = None) -> int:
             config.agent_id,
             storage.filesystem_uuid or "",
             runtime_fingerprint,
+            previous_instance_id=config.previous_instance_id,
+            previous_runtime_fingerprint=config.previous_runtime_fingerprint,
         )
         uid, gid = prepare_agent_directories(
             config.runtime.agent_user, config.runtime.agent_group

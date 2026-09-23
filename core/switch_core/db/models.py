@@ -261,6 +261,122 @@ class ApiKey(TenantScoped, Base):
     )
 
 
+class ProviderConnection(TenantScoped, Base):
+    __tablename__ = "provider_connections"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "provider"),
+        CheckConstraint(
+            "provider IN ('claude', 'github', 'codex', 'opencode', 'cursor', 'antigravity')",
+            name="ck_provider_connections_provider",
+        ),
+        CheckConstraint(
+            "(provider = 'claude' AND kind IN ('api-key', 'setup-token')) OR (provider = 'github' AND kind = 'oauth') OR (provider = 'codex' AND kind IN ('api-key', 'auth-json')) OR (provider = 'cursor' AND kind = 'api-key') OR (provider IN ('opencode', 'antigravity') AND kind = 'auth-json')",
+            name="ck_provider_connections_kind",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_credential: Mapped[str] = mapped_column(Text, nullable=False)
+    verification_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="verified"
+    )
+    verified_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ProviderVerification(TenantScoped, Base):
+    __tablename__ = "provider_verifications"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        Index(
+            "ix_provider_verification_owner",
+            "tenant_id",
+            "user_id",
+            "provider",
+            "created_at",
+        ),
+        Index("ix_provider_verification_state", "tenant_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_credential: Mapped[str | None] = mapped_column(Text)
+    encrypted_token: Mapped[str | None] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[bool | None] = mapped_column(Boolean)
+    instance_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class HostedLaunch(TenantScoped, Base):
+    __tablename__ = "hosted_launches"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        UniqueConstraint("tenant_id", "name", name="uq_hosted_launch_name"),
+        CheckConstraint(
+            "state IN ('queued', 'provisioning', 'ready', 'error', 'stopping', 'stopped', 'deleting', 'deleted')",
+            name="ck_hosted_launch_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    desired_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="running"
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class HostedOperation(TenantScoped, Base):
+    __tablename__ = "hosted_operations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('queued', 'claimed', 'applied', 'failed', 'unknown')",
+            name="ck_hosted_operation_state",
+        ),
+    )
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Invitations ────────────────────────────────────────────────────────────────
 
 

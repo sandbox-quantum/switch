@@ -33,6 +33,9 @@ class Agent:
     assignment_secret_arn: str
     instance_profile_arn: str
     instance_id: str | None
+    previous_instance_id: str | None
+    previous_runtime_fingerprint: str | None
+    recovery_count: int
     volume_id: str | None
     volume_az: str | None
     observed_state: ObservedState

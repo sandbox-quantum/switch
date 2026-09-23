@@ -1,4 +1,34 @@
-# EC2 infrastructure checkpoint
+# Hosted integration verification
+
+## Console and worker integration
+
+The current implementation adds cloud sessions to the existing Console, manual
+session control, worker lifecycle actions, provider credential refresh, quotas
+and automatic replacement with a retained disk.
+
+Verification includes 361 backend tests, 367 provider tests, 36 controller tests,
+25 worker tests, and 55 focused Console tests. Backend and desktop type checks
+pass. All five provider executables pass startup probes in a clean Linux image.
+
+Live Claude checks passed for manual creation, initial prompts, approval and
+denial, interruption, stop/resume, session restart and worker restart. A worker
+image upgrade retained conversation history and native context. Automatic VM
+replacement retained the same disk and a command marker with exactly one write.
+The interrupted command was not repeated. Two workers ran independently, and a
+cross-worker operation update was rejected. Credential revocation denied worker
+access and stopped compute; reconnect plus explicit retry restored the sessions.
+Worker removal terminated compute and retained its encrypted disk.
+
+The live checks found and corrected termination-state validation, saved-path
+compatibility and an expensive controller health probe. The deployed lightweight
+probe completed in under one second under the configured CPU limit.
+
+Authenticated model requests for Codex, Cursor, OpenCode and Antigravity remain
+an acceptance gate. Clean-image startup checks do not replace those account tests.
+Quota concurrency and tenant isolation have database-backed coverage; live scale
+verification used two workers. This is not a large-scale load test.
+
+## Historical infrastructure checkpoint
 
 Branch: `codex/hosted-ec2-workers`, based on committed SDK revision `522da979`.
 The reviewed headless runtime foundation is included. Uncommitted SDK workspace

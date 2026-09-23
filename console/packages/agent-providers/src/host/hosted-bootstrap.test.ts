@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import {
   type HostedBootstrapDependencies,
   type HostedDeploymentSpec,
+  hostedDeploymentSpecSchema,
   prepareHostedDeployment,
   runHostedBootstrap,
 } from './hosted-bootstrap';
@@ -444,6 +445,40 @@ it('wires the existing daemon to the foreground supervisor and forwards shutdown
   expect(launched?.signal.aborted).toBe(true);
 });
 
+it('starts the shared automatic-session watcher without binding it to a room', async () => {
+  const input = await fixture();
+  delete input.spec.room;
+  input.spec.watch = true;
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const supervise = vi.fn<typeof superviseSharedHost>(async () => {});
+  await runHostedBootstrap(
+    {
+      stateDirectory: input.state,
+      specPath: input.specPath,
+      sharedDaemonEntrypoint: '/opt/switch/shared-host-daemon.mjs',
+      signal: new AbortController().signal,
+    },
+    { supervise, fenceDeadWorker: async () => {} }
+  );
+  expect(supervise.mock.calls[0]?.[0].args.at(-1)).toBe('--watch-worker');
+  const config = JSON.parse(await readFile(join(input.state, 'config.json'), 'utf8'));
+  expect(config.roomConnection.rooms).toEqual([]);
+  expect(JSON.parse(await readFile(join(input.state, 'watch.json'), 'utf8'))).toEqual({
+    enabled: true,
+  });
+  expect(await prepareHostedDeployment(input.state, input.spec)).toMatchObject({ config });
+});
+
+it('rejects ambiguous or missing hosted session modes and watcher resumes', async () => {
+  const { spec } = await fixture();
+  expect(hostedDeploymentSpecSchema.safeParse({ ...spec, watch: true }).success).toBe(false);
+  delete spec.room;
+  expect(hostedDeploymentSpecSchema.safeParse(spec).success).toBe(false);
+  spec.watch = true;
+  spec.session.nativeSessionId = 'existing-session';
+  expect(hostedDeploymentSpecSchema.safeParse(spec).success).toBe(false);
+});
+
 it('redacts raw and encoded GitHub credentials from launcher failures', async () => {
   const input = await fixture();
   const token = 'github-secret:%value';
@@ -491,4 +526,57 @@ it('redacts the mounted provider credential from launcher failures', async () =>
       { supervise, fenceDeadWorker }
     )
   ).rejects.toThrow('provider rejected [REDACTED] with [REDACTED]');
+});
+
+it('enables managed controls for a retained watcher from an older worker image', async () => {
+  const input = await fixture();
+  delete input.spec.room;
+  input.spec.watch = true;
+  const original = await prepareHostedDeployment(input.state, input.spec);
+  expect(original.providerEnvironment.SWITCH_HOSTED_CONTROL).toBeUndefined();
+  vi.stubEnv('SWITCH_HOST_INSTANCE_ID', 'i-0123456789abcdef0');
+  vi.stubEnv('SWITCH_HOST_BOOT_ID', '11111111-1111-4111-8111-111111111111');
+  vi.stubEnv('SWITCH_HOST_ASSIGNMENT_GENERATION', '1');
+  const upgraded = await prepareHostedDeployment(input.state, input.spec);
+  expect(upgraded.config).toEqual(original.config);
+  expect(upgraded.providerEnvironment.SWITCH_HOSTED_CONTROL).toBe('1');
+  expect(upgraded.providerEnvironment.SWITCH_HOSTED_AUTO_SESSION).toBe('true');
+});
+
+it('does not invalidate credentials when provider readiness is inconclusive', async () => {
+  const input = await fixture();
+  input.spec.provider.credential.refresh = true;
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const request = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          status: 'connected',
+          revision: 'test-revision',
+          provider: 'claude',
+          kind: 'api-key',
+          credential: 'provider-secret-value',
+          sessions: [],
+        })
+      )
+  );
+  vi.stubGlobal('fetch', request);
+  const supervise = vi.fn();
+  await expect(
+    runHostedBootstrap(
+      {
+        stateDirectory: input.state,
+        specPath: input.specPath,
+        sharedDaemonEntrypoint: '/opt/switch/shared-host-daemon.mjs',
+        signal: new AbortController().signal,
+      },
+      { supervise, fenceDeadWorker: async () => {} }
+    )
+  ).rejects.toThrow('Could not verify authentication');
+  expect(request).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledWith(
+    expect.stringContaining('/hosted/provider-credential'),
+    expect.anything()
+  );
+  expect(supervise).not.toHaveBeenCalled();
 });

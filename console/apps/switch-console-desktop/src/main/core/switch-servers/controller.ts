@@ -18,6 +18,7 @@ import {
   isManagedServerRunning,
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
@@ -36,6 +37,11 @@ import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import {
+  validateClaudeCredential,
+  type ClaudeCredentialKind,
+} from '@shared/core/switch-servers/claude-credential';
+import type { CloudLaunchInput } from '@shared/core/switch-servers/cloud-launch';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -84,6 +90,25 @@ import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import { createBridgeOnServer } from './create-bridge';
 import { createRoomOnServer } from './create-room';
 import {
+  getGitHubConnection,
+  createCloudLaunch,
+  listCloudLaunches,
+  cloudLifecycle,
+  cloudSessionOperation,
+  cloudOperationStatus,
+  getCloudProviderConnection,
+  connectCloudProvider,
+  disconnectCloudProvider,
+  startGitHubConnection,
+  getGitHubFlow,
+  confirmGitHubConnection,
+  cancelGitHubConnection,
+  disconnectGitHub,
+} from './gateway-client';
+import {
+  getClaudeConnection,
+  connectClaude,
+  disconnectClaude,
   addRoomAgents,
   agentExistsOnServer,
   deleteBridge,
@@ -116,6 +141,13 @@ import {
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import { claimIdentityOnServer, searchDirectoryOnServer } from './identities';
+import {
+  getLocalProviderSignIn,
+  localProviderAuthPath,
+  readLocalProviderSignIn,
+  type LocalSignInProvider,
+} from './local-provider-sign-in';
+import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import {
   addServer,
   deleteSessionCookie,
@@ -283,6 +315,58 @@ function reportRoomCreated(
 }
 
 export const switchServersController = createRPCController({
+  getLocalProviderSignIn,
+  connectLocalProviderSignIn: async (serverId: string, provider: LocalSignInProvider) => {
+    const server = await requireReachableServer(serverId);
+    const credential = await readLocalProviderSignIn(provider, localProviderAuthPath(provider));
+    if (!credential) throw new Error('Local sign-in file is missing. Sign in locally first.');
+    return connectCloudProvider(server, provider, 'auth-json', credential);
+  },
+  getCloudProviderConnection: async (serverId: string, provider: AgentProviderId) =>
+    getCloudProviderConnection(await requireReachableServer(serverId), provider),
+  connectCloudProvider: async (
+    serverId: string,
+    provider: Exclude<AgentProviderId, 'claude'>,
+    kind: 'api-key' | 'auth-json',
+    credential: string
+  ) => connectCloudProvider(await requireReachableServer(serverId), provider, kind, credential),
+  disconnectCloudProvider: async (serverId: string, provider: Exclude<AgentProviderId, 'claude'>) =>
+    disconnectCloudProvider(await requireReachableServer(serverId), provider),
+  createCloudLaunch: async (serverId: string, input: CloudLaunchInput) => {
+    const definitions = getPlugin(input.provider).behavior.repoAgents;
+    const definition = definitions
+      ? definitions.renderDefinition({
+          ...input.definition_attributes,
+          name: input.name,
+          description: input.description,
+          instructions: input.instructions,
+        })
+      : '';
+    return createCloudLaunch(await requireReachableServer(serverId), { ...input, definition });
+  },
+  listCloudLaunches: async (serverId: string) =>
+    listCloudLaunches(await requireReachableServer(serverId)),
+  cloudLifecycle: async (
+    serverId: string,
+    requestId: string,
+    action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
+    revision: number
+  ) => cloudLifecycle(await requireReachableServer(serverId), requestId, action, revision),
+  cloudSessionOperation: async (
+    serverId: string,
+    requestId: string,
+    operation: { id: string; session_id: string; action: 'start' | 'restart' }
+  ) => cloudSessionOperation(await requireReachableServer(serverId), requestId, operation),
+  cloudOperationStatus: async (serverId: string, requestId: string, operationId: string) =>
+    cloudOperationStatus(await requireReachableServer(serverId), requestId, operationId),
+  getClaudeConnection: async (serverId: string) =>
+    getClaudeConnection(await requireServer(serverId)),
+  connectClaude: async (serverId: string, kind: ClaudeCredentialKind, credential: string) => {
+    const value = validateClaudeCredential(kind, credential);
+    return connectClaude(await requireServer(serverId), kind, value);
+  },
+  disconnectClaude: async (serverId: string) => disconnectClaude(await requireServer(serverId)),
+
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
   // Both outcomes are reported here rather than the success at the store's
@@ -332,6 +416,36 @@ export const switchServersController = createRPCController({
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
 
+  getGitHubConnection: async (serverId: string) =>
+    getGitHubConnection(await requireReachableServer(serverId)),
+  startGitHubConnection: async (serverId: string) => {
+    const server = await requireReachableServer(serverId);
+    const flow = await startGitHubConnection(server);
+    try {
+      await appService.openExternal(flow.url);
+    } catch {
+      await cancelGitHubConnection(server, flow.id);
+      throw new Error('Could not open GitHub in your browser.');
+    }
+    return flow.id;
+  },
+  getGitHubFlow: async (serverId: string, id: string) =>
+    getGitHubFlow(await requireReachableServer(serverId), id),
+  confirmGitHubConnection: async (serverId: string, id: string) =>
+    confirmGitHubConnection(await requireReachableServer(serverId), id),
+  cancelGitHubConnection: async (serverId: string, id: string) =>
+    cancelGitHubConnection(await requireReachableServer(serverId), id),
+  disconnectGitHub: async (serverId: string) =>
+    disconnectGitHub(await requireReachableServer(serverId)),
+  openGitHubInstallation: async (serverId: string) => {
+    const connection = await getGitHubConnection(await requireReachableServer(serverId));
+    if (
+      !/^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(connection.install_url)
+    )
+      throw new Error('The server returned an invalid GitHub installation URL.');
+    await appService.openExternal(connection.install_url);
+  },
+
   getActiveServerId: (): Promise<string | null> => getActiveServerId(),
 
   setActiveServer: (serverId: string): Promise<void> => setActiveServerId(serverId),
@@ -370,6 +484,7 @@ export const switchServersController = createRPCController({
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
+    await deleteManagedClaudeCredential(serverId);
     await deleteSessionCookie(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },

@@ -472,7 +472,7 @@ export function SessionV1Chat({
               ) : item.kind === 'assistant-message' ? (
                 <div className="text-sm leading-relaxed">
                   <MarkdownRenderer variant="compact" content={item.text} />
-                  {item.status === 'in-progress' && (
+                  {item.status === 'in-progress' && !stoppedTurns.has(item.turnId) && (
                     <span
                       aria-label="Still writing"
                       className="inline-block h-3 w-1 animate-pulse bg-foreground-muted"
@@ -482,13 +482,17 @@ export function SessionV1Chat({
               ) : (
                 <details className="rounded-lg border border-border px-3 py-2 text-xs">
                   <summary className="flex cursor-pointer items-center gap-2">
-                    {item.status === 'in-progress' ? (
+                    {item.status === 'in-progress' && !stoppedTurns.has(item.turnId) ? (
                       <Loader2 className="size-3 animate-spin" />
                     ) : (
                       <Wrench className="size-3" />
                     )}
                     <span className="min-w-0 flex-1 break-words">{item.title}</span>
-                    <span>{item.status}</span>
+                    <span>
+                      {item.status === 'in-progress'
+                        ? (stoppedTurns.get(item.turnId) ?? item.status)
+                        : item.status}
+                    </span>
                   </summary>
                   {item.text && <p className="mt-2 whitespace-pre-wrap">{item.text}</p>}
                 </details>

@@ -31,8 +31,8 @@ class Ec2Cloud:
     def availability_zone(self) -> str:
         return self._config.availability_zone
 
-    def validate_image(self) -> None:
-        images = self._ec2.describe_images(ImageIds=[self._config.image_id]).get("Images", [])
+    def validate_image(self, agent: Agent) -> None:
+        images = self._ec2.describe_images(ImageIds=[agent.image_id]).get("Images", [])
         if len(images) != 1:
             raise CloudResourceError("configured AMI lookup did not return exactly one image")
         image = images[0]
@@ -135,7 +135,7 @@ class Ec2Cloud:
             InstanceType=agent.instance_type,
             MinCount=1,
             MaxCount=1,
-            ClientToken=self._token(agent, "instance"),
+            ClientToken=self._token(agent, f"instance-{agent.recovery_count}"),
             IamInstanceProfile={"Arn": agent.instance_profile_arn},
             Placement={"AvailabilityZone": self._config.availability_zone},
             NetworkInterfaces=[
@@ -249,7 +249,7 @@ class Ec2Cloud:
         placement = instance.get("Placement") or {}
         if placement.get("AvailabilityZone") != self._config.availability_zone:
             raise CloudResourceError("instance is in the wrong availability zone")
-        if instance.get("State", {}).get("Name") == "terminated":
+        if instance.get("State", {}).get("Name") in {"shutting-down", "terminated"}:
             return
         profile = instance.get("IamInstanceProfile") or {}
         if profile.get("Arn") != agent.instance_profile_arn:
@@ -326,6 +326,10 @@ class Ec2Cloud:
             "dataDevice": DATA_DEVICE,
             "mountPath": "/data",
         }
+        if agent.previous_instance_id:
+            metadata["previousInstanceId"] = agent.previous_instance_id
+        if agent.previous_runtime_fingerprint:
+            metadata["previousRuntimeFingerprint"] = agent.previous_runtime_fingerprint
         encoded = base64.b64encode(
             json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode()
         ).decode()

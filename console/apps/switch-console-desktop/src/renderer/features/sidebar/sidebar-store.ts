@@ -167,6 +167,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   expandedRoomKeys = observable.set<string>();
   /** Collapsed second-level group keys; absence means expanded (default open). */
   collapsedGroupKeys = observable.set<string>();
+  cloudSessionNames: Record<string, string> = {};
   /**
    * Optional sidebar filters. Each is additive and composes with the others (AND
    * across dimensions, OR within a dimension). Empty set / false = not filtering.
@@ -463,6 +464,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
 
   get snapshot(): SidebarSnapshot {
     return {
+      cloudSessionNames: { ...this.cloudSessionNames },
       expandedLocationIds: [...this.expandedLocationIds],
       agentOrder: [...this.agentOrder],
       sessionOrderByLocation: { ...this.sessionOrderByLocation },
@@ -483,6 +485,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   }
 
   restoreSnapshot(snapshot: Partial<SidebarSnapshot>): void {
+    if (snapshot.cloudSessionNames) this.cloudSessionNames = { ...snapshot.cloudSessionNames };
     if (snapshot.expandedLocationIds !== undefined) {
       this.expandedLocationIds.replace(snapshot.expandedLocationIds);
     }
@@ -636,6 +639,10 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   }
 
   /** Whether a second-level group (room-under-agent / agent-under-room) is open. */
+  setCloudSessionName(serverId: string, sessionId: string, name: string): void {
+    this.cloudSessionNames[`${serverId}:${sessionId}`] = name;
+  }
+
   isGroupExpanded(key: string): boolean {
     return !this.collapsedGroupKeys.has(key);
   }
