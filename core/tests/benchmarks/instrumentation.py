@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -304,6 +305,52 @@ class StallGate:
             waiting.cancel()
 
         await self._app(scope, replay, send)
+
+
+class RequestCounter:
+    """Every HTTP request the server is sent, counted by route.
+
+    A route is named without the ids in its path, so fifty sessions renewing
+    count as fifty renewals rather than fifty different routes. Counted in
+    front of the application for the same reason the stall gate holds there:
+    what a client asked for is the measure, whatever the server made of it.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+        self.counts: Counter[str] = Counter()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") == "http":
+            self.counts[_route(scope.get("path", ""))] += 1
+        await self._app(scope, receive, send)
+
+
+def _route(path: str) -> str:
+    parts = path.strip("/").split("/")
+    if len(parts) >= 3 and parts[0] in ("sessions", "agents"):
+        return "/".join([parts[0], *parts[2:]])
+    return "/".join(parts)
+
+
+def count_statements(engine: AsyncEngine) -> tuple[Counter[str], Callable[[], None]]:
+    """Count the statements the server sends its database, for the life of a run.
+
+    Everything on the engine, background work included: an idle server's cost
+    is mostly background work. Returns the running count and a callable that
+    removes the listener.
+    """
+    counts: Counter[str] = Counter()
+
+    def on_execute(*_args: Any) -> None:
+        counts["statements"] += 1
+
+    event.listen(engine.sync_engine, "before_cursor_execute", on_execute)
+
+    def remove() -> None:
+        event.remove(engine.sync_engine, "before_cursor_execute", on_execute)
+
+    return counts, remove
 
 
 def _admission_correlation(body: bytes) -> str | None:

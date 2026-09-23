@@ -43,6 +43,7 @@ from tests.benchmarks.host import (
     successor_bundle,
 )
 from tests.benchmarks.instrumentation import Hold
+from tests.benchmarks.metrics import sample_processes
 from tests.benchmarks.server import BenchCore, BenchServer, RoomState
 from tests.benchmarks.trace import PROVIDER_DISPATCH, TraceCollector, correlation_for
 from tests.benchmarks.workload import (
@@ -87,6 +88,11 @@ ASK_HELD_SECONDS = 30.0
 
 #: How long an accepted command is given to reach a session and be applied.
 CONTROL_SECONDS = 30.0
+
+#: How long a population of served, idle sessions is watched for the requests
+#: it makes anyway. Six of a worker's five second renewals, so what happens
+#: once per renewal is counted several times over rather than caught once.
+IDLE_SECONDS = 30.0
 
 
 #: Environment variable naming a bench host bundle built from a checkout of the
@@ -211,6 +217,111 @@ async def test_baseline_scales_with_session_count(
         # whose work was done twice.
         assert result.undelivered == (), result.undelivered
         assert result.duplicated == (), result.duplicated
+
+
+async def test_baseline_idles_at_session_count(
+    bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
+) -> None:
+    """What 1, 10 and 50 served sessions ask of the server while nothing happens.
+
+    Each room is sent one message so that its session exists, has answered and
+    is idle, and the server is then watched for `IDLE_SECONDS` with nothing
+    addressed to anyone. Every request it is sent in that window is counted by
+    route, beside the statements it sends its database and the CPU the driver
+    process (which hosts the server) and the agent's process tree used.
+
+    Requests are counted rather than inferred, and CPU is reported beside them
+    rather than derived from them: fewer requests are not by themselves a
+    cheaper idle. After the window one more message is addressed, so a quieter
+    idle is seen not to have cost the next delivery its latency.
+    """
+    lines: list[str] = []
+    for rooms in SCALES:
+        target = await bench.register_agent(f"bench-target-idle-{rooms}")
+        poster = await bench.register_agent(f"bench-poster-idle-{rooms}")
+        await bench.start_clients(timeout=60.0)
+        room_ids = [
+            await bench.create_room(
+                f"bench-idle-{rooms}-{index}", [target.agent_id, poster.agent_id]
+            )
+            for index in range(rooms)
+        ]
+        home = tmp_path / f"home-idle-{rooms}"
+        home.mkdir(parents=True)
+
+        async def send(room: str, marker: str) -> str:
+            return correlation_for(
+                room,
+                await bench.address(
+                    sender=poster,
+                    room_id=room,
+                    target=target.name,
+                    body=f"@{target.name} {marked(marker)}",
+                ),
+            )
+
+        with bench_watcher(
+            bundle=bundle,
+            home=home,
+            base_url=bench.base_url,
+            agent_id=target.agent_id,
+            api_key=target.api_key,
+            connection_id=controller_connection_id(target.agent_id),
+        ) as watcher:
+            await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
+            markers: dict[str, str] = {}
+            for room in room_ids:
+                marker = new_marker()
+                markers[marker] = await send(room, marker)
+            assert not await dispatch_wait(watcher, markers, dispatch_timeout(rooms))
+            assert len(watcher.sessions_by_room()) == rooms
+            # Past the turn each session just finished, so what is counted is
+            # idling rather than the tail of the work.
+            await asyncio.sleep(5.0)
+
+            clock = asyncio.get_running_loop()
+            pids = [os.getpid(), *watcher.process_tree()]
+            cpu_before = sample_processes(pids)
+            requests_before = bench.requests.counts.copy()
+            statements_before = bench.statements["statements"]
+            started = clock.time()
+            await asyncio.sleep(IDLE_SECONDS)
+            watched = clock.time() - started
+            requests = bench.requests.counts - requests_before
+            statements = bench.statements["statements"] - statements_before
+            cpu_after = sample_processes(pids)
+
+            def cpu(chosen: list[int]) -> float:
+                return sum(
+                    cpu_after[pid].cpu_seconds - cpu_before[pid].cpu_seconds
+                    for pid in chosen
+                    if pid in cpu_before and pid in cpu_after
+                )
+
+            addressed = new_marker()
+            markers[addressed] = await send(room_ids[0], addressed)
+            sent = clock.time()
+            assert not await dispatch_wait(
+                watcher, {addressed: markers[addressed]}, dispatch_timeout(1)
+            )
+            latency = clock.time() - sent
+            assert watcher.failure() is None, watcher.failure()
+            collector.ingest_jsonl(watcher.trace_path, markers)
+
+        routes = ", ".join(
+            f"{route} {count}" for route, count in sorted(requests.items())
+        )
+        lines.append(
+            f"{rooms} idle session(s) over {watched:.1f}s: "
+            f"renew {requests['sessions/renew']}, "
+            f"room-reservations {requests['sessions/room-reservations']}, "
+            f"all requests {sum(requests.values())} ({routes}); "
+            f"{statements} database statements; CPU driver "
+            f"{cpu(pids[:1]):.2f}s, agent processes {cpu(pids[1:]):.2f}s; "
+            f"next addressed message dispatched in {latency:.2f}s"
+        )
+        print("\nidle: " + lines[-1])
+    print("\nidle summary:\n" + "\n".join(lines))
 
 
 async def test_baseline_concurrent_delivery(
@@ -751,17 +862,19 @@ async def test_baseline_settles_two_competing_controllers(
 
                 carried = new_marker()
                 markers[carried] = await send(room_id, carried)
-                # Not the winner's to answer: the room is held by a session it
-                # did not start and has no route to.
-                assert await dispatch_wait(
-                    second, {carried: markers[carried]}, STRANDED_SECONDS
-                ) == frozenset([markers[carried]])
+                sent = asyncio.get_running_loop().time()
                 # Answered by the session that is in the room, which asked for
                 # it rather than waiting to be handed it. The same session as
                 # before the takeover, running the conversation it already had.
                 assert not await dispatch_wait(
                     first, {carried: markers[carried]}, STRANDED_SECONDS
                 )
+                discovered = asyncio.get_running_loop().time() - sent
+                # Not the winner's to answer: the room is held by a session it
+                # did not start and has no route to.
+                assert await dispatch_wait(
+                    second, {carried: markers[carried]}, STRANDED_SECONDS
+                ) == frozenset([markers[carried]])
                 assert first.sessions_by_room()[room_id] == assigned[room_id]
                 conversations = set(first.provider_conversations(assigned[room_id]))
                 assert len(conversations) == 1, conversations
@@ -819,7 +932,8 @@ async def test_baseline_settles_two_competing_controllers(
         f"competing controllers: the first stood down ({stood_down['reason']}) when "
         "the second took its connection, and stayed down. A message addressed to "
         "the room the first was serving was not the winner's to route, and was "
-        f"answered by the session already in it ({assigned[room_id]}), which asked "
+        f"answered by the session already in it ({assigned[room_id]}) "
+        f"{discovered:.2f}s after it was sent, which asked "
         "Switch for the work its own rooms owed it and kept the provider "
         f"conversation it had ({conversation}). Killing that controller's "
         f"{orphaned} worker process(es) freed the room's claim {lapsed:.1f}s later, "
@@ -1255,6 +1369,11 @@ async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
         clock = asyncio.get_running_loop()
         bench.stalls.arm()
         try:
+            # A session asks only once its renewal says its rooms are owed
+            # something, and a served room owes nothing; this is what it is
+            # owed, so the ask that is held is one the session had reason to
+            # make.
+            await bench.owe_lapsed_delivery(target.agent_id, room_id)
             arrived = await bench.stalls.await_held(ASK_HELD_SECONDS)
 
             pushed = new_marker()

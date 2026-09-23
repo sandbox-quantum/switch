@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import uuid
+from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, cast
 
 import httpx
@@ -74,8 +77,10 @@ from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from tests.benchmarks.instrumentation import (
+    RequestCounter,
     StallGate,
     TracingMiddleware,
+    count_statements,
     trace_commits,
 )
 from tests.benchmarks.trace import TraceCollector
@@ -182,6 +187,8 @@ class BenchServer:
         connections: ConnectionRegistry,
         collector: TraceCollector,
         stalls: StallGate,
+        requests: RequestCounter,
+        statements: Counter[str],
         owner_id: str,
         session_factory: async_sessionmaker[AsyncSession],
         agents: tuple[BenchAgent, ...],
@@ -195,6 +202,8 @@ class BenchServer:
         self.connections = connections
         self.collector = collector
         self.stalls = stalls
+        self.requests = requests
+        self.statements = statements
         self.owner_id = owner_id
         self._session_factory = session_factory
         self._agents: list[BenchAgent] = list(agents)
@@ -260,6 +269,31 @@ class BenchServer:
                 .order_by(SdkRoomAdmission.message_id)
             )
         return tuple(rows)
+
+    async def owe_lapsed_delivery(self, agent_id: str, room_id: str) -> str:
+        """Leave a room owing this agent a delivery whose promise has run out.
+
+        Owed work a controller will never route: the promise lapsed before it
+        was handed over, and until the controller gives it up it is what a
+        session asking for its own rooms' work is told about. It is the one
+        kind a scenario can write without a verified event behind it, because
+        a lapsed delivery is named to the session and never built.
+        """
+        message_id = f"lapsed-{uuid.uuid4()}"
+        async with self._session_factory() as db, db.begin():
+            now = await _now(db)
+            db.add(
+                SdkRoomAdmission(
+                    agent_id=agent_id,
+                    room_id=room_id,
+                    message_id=message_id,
+                    sequence=0,
+                    delivery={},
+                    created_at=now - timedelta(minutes=5),
+                    expires_at=now - timedelta(minutes=1),
+                )
+            )
+        return message_id
 
     async def session_selectors(self, agent_id: str) -> dict[str, SessionSelector]:
         """How each of this agent's sessions would identify itself to the door.
@@ -634,6 +668,7 @@ async def _serve(
     )
 
     detach_commits = trace_commits(session_env.engine, collector)
+    statements, detach_statements = count_statements(session_env.engine)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -642,10 +677,11 @@ async def _serve(
     served_port = sock.getsockname()[1]
 
     stalls = StallGate(app)
+    requests = RequestCounter(TracingMiddleware(stalls, collector))
 
     server = _Server(
         uvicorn.Config(
-            TracingMiddleware(stalls, collector),
+            requests,
             log_level="warning",
             access_log=False,
             lifespan="on",
@@ -683,6 +719,8 @@ async def _serve(
         connections=connections,
         collector=collector,
         stalls=stalls,
+        requests=requests,
+        statements=statements,
         owner_id=owner_id,
         session_factory=session_factory,
         agents=agents,
@@ -696,6 +734,7 @@ async def _serve(
         server.should_exit = True
         await serving
         detach_commits()
+        detach_statements()
         await client_lifecycle.stop_all()
         await message_listener.stop()
         await provisioning.close()
