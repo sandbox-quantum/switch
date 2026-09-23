@@ -22,7 +22,17 @@ from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, case, distinct, exists, func, or_, select
+from sqlalchemy import (
+    CompoundSelect,
+    Select,
+    and_,
+    case,
+    distinct,
+    exists,
+    func,
+    select,
+    union_all,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -189,38 +199,38 @@ class NewlyActiveRoom:
     created_by_kind: str
 
 
-def _room_has_an_agent(tenant_id: str) -> Select[tuple[str]]:
-    """Correlated subquery: the message's room has an agent in it."""
-    return (
-        select(ClientRoom.room_id)
-        .join(Client, Client.id == ClientRoom.client_id)
-        .where(
-            ClientRoom.room_id == Message.room_id,
-            ClientRoom.tenant_id == tenant_id,
-            Client.type == AGENT_CLIENT_TYPE,
-            Client.tenant_id == tenant_id,
-        )
-    )
+def _rooms_with_an_agent(tenant_id: str) -> CompoundSelect:
+    """Room ids with an agent in them now, or that an agent has posted in.
 
+    Uncorrelated, and matched with `IN` rather than as an `OR` of two
+    `EXISTS`, so Postgres plans it as one semi-join: hashed across the tenant
+    for the snapshot, or narrowed to the single room `room_had_human_activity`
+    asks about. An `OR` of correlated probes cannot be planned that way and
+    re-runs both for every human message, which on a large room with no agent
+    is quadratic — and that check runs on every room archive and delete.
 
-def _room_had_an_agent_message(tenant_id: str) -> Select[tuple[str]]:
-    """Correlated subquery: an agent has posted in the message's room.
-
-    Aliased because the enclosing query already has `Message` and `Client` —
-    the human's message and the human — in its FROM.
+    Aliased so neither arm correlates with the human's `Client` and `Message`
+    in the enclosing query.
     """
+    member = aliased(Client)
+    poster = aliased(Client)
     agent_message = aliased(Message)
-    agent = aliased(Client)
-    return (
-        select(agent_message.id)
-        .join(agent, agent.id == agent_message.sender_client_id)
+    return union_all(
+        select(ClientRoom.room_id)
+        .join(member, member.id == ClientRoom.client_id)
         .where(
-            agent_message.room_id == Message.room_id,
+            ClientRoom.tenant_id == tenant_id,
+            member.type == AGENT_CLIENT_TYPE,
+            member.tenant_id == tenant_id,
+        ),
+        select(agent_message.room_id)
+        .join(poster, poster.id == agent_message.sender_client_id)
+        .where(
             agent_message.tenant_id == tenant_id,
             agent_message.seq > 0,
-            agent.type == AGENT_CLIENT_TYPE,
-            agent.tenant_id == tenant_id,
-        )
+            poster.type == AGENT_CLIENT_TYPE,
+            poster.tenant_id == tenant_id,
+        ),
     )
 
 
@@ -253,13 +263,18 @@ def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
       the inconsistent choice.
     """
     return (
+        *_human_message_conditions(tenant_id),
+        Message.room_id.in_(_rooms_with_an_agent(tenant_id)),
+    )
+
+
+def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
+    """The message half of `_human_activity_conditions`: a person sent it, and
+    it is live traffic rather than a backfill."""
+    return (
         Client.type == HUMAN_CLIENT_TYPE,
         Client.tenant_id == tenant_id,
         Message.seq > 0,
-        or_(
-            exists(_room_has_an_agent(tenant_id)),
-            exists(_room_had_an_agent_message(tenant_id)),
-        ),
     )
 
 
@@ -599,14 +614,23 @@ async def room_had_human_activity(
 
     The session must already be bound to `tenant_id`; the predicate is named
     anyway, for the reason `collect_tenant_counts` gives.
+
+    The agent condition is asked of the one room rather than of each message.
+    Uncorrelated, Postgres evaluates it once before reading anything, so a
+    room with no agent is answered without scanning its history — this runs
+    on every archive and delete.
     """
+    agent_rooms = _rooms_with_an_agent(tenant_id).subquery()
     found = await session.execute(
         select(Message.id)
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.room_id == room_id,
-            *_human_activity_conditions(tenant_id),
+            *_human_message_conditions(tenant_id),
+            exists(
+                select(agent_rooms.c.room_id).where(agent_rooms.c.room_id == room_id)
+            ),
         )
         .limit(1)
     )
