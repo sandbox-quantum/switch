@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useCloudLaunches } from '@renderer/features/switch-servers/use-cloud-launches';
+import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -118,7 +119,12 @@ export const CloudSessionGroups = observer(function CloudSessionGroups({
                 className={`size-3 ${sidebarStore.isGroupExpanded(`cloud:${roomId ?? 'agent'}:${launch.request_id}`) ? 'rotate-90' : ''}`}
               />
               <Cloud className="size-3.5" />
-              <span className="truncate">{launch.name}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate">{launch.name}</span>
+                {!sidebarStore.hideProviderMark && (
+                  <AgentIcon id={launch.provider} size={12} className="h-3 w-3 shrink-0" />
+                )}
+              </span>
             </SidebarMenuButton>
             {sidebarStore.isGroupExpanded(`cloud:${roomId ?? 'agent'}:${launch.request_id}`) &&
               sessions.data
