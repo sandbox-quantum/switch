@@ -1011,12 +1011,14 @@ async function inboxRecords(root: string): Promise<{ type: string; messageId?: s
  */
 function owingServer(server: {
   owed: () => Owed[];
-  answersPull: boolean;
+  /** What the pull route answers with: 200 to say, anything else to refuse. */
+  pullStatus: () => number;
   blocked: (messageId: string) => boolean;
 }) {
   const admitted: string[] = [];
   const notices: string[] = [];
   const pulled: unknown[] = [];
+  const commandPolls: unknown[] = [];
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, options: RequestInit) => {
@@ -1039,9 +1041,9 @@ function owingServer(server: {
       }
       if (path.endsWith('/room-reservations')) {
         pulled.push(JSON.parse(options.body as string));
-        return server.answersPull
-          ? Response.json(server.owed())
-          : Response.json({ detail: 'Not Found' }, { status: 404 });
+        const status = server.pullStatus();
+        if (status === 200) return Response.json(server.owed());
+        return Response.json({ detail: `the pull route answered ${status}` }, { status });
       }
       if (path.endsWith('/room-message')) {
         const { message_id: messageId } = JSON.parse(options.body as string) as {
@@ -1078,12 +1080,15 @@ function owingServer(server: {
           },
         });
       }
-      if (path.endsWith('/commands')) return Response.json([]);
+      if (path.endsWith('/commands')) {
+        commandPolls.push(options.body);
+        return Response.json([]);
+      }
       if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
       return Response.json({ leaseSeconds: 30 });
     })
   );
-  return { admitted, notices, pulled };
+  return { admitted, notices, pulled, commandPolls };
 }
 
 it('asks Switch what its own rooms owe it, and runs what it is told', async () => {
@@ -1096,7 +1101,7 @@ it('asks Switch what its own rooms owe it, and runs what it is told', async () =
   const { adapter, ran } = roomWorker();
   const server = owingServer({
     owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
-    answersPull: true,
+    pullStatus: () => 200,
     blocked: () => false,
   });
   const outcome = startWorker(root, adapter, stop.signal);
@@ -1123,7 +1128,7 @@ it('runs a delivery once, however often it is offered again', async () => {
   const routed = { sequence: 4, roomId: 'room', messageId: 'owed' };
   const server = owingServer({
     owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
-    answersPull: true,
+    pullStatus: () => 200,
     blocked: () => false,
   });
   const outcome = startWorker(root, adapter, stop.signal);
@@ -1160,7 +1165,7 @@ it('holds a delivery Switch will not take yet and makes it behind the one before
   const { adapter, ran } = roomWorker();
   const server = owingServer({
     owed: () => [{ room_id: 'room', message_id: 'first', sequence: 1, expired: false }],
-    answersPull: true,
+    pullStatus: () => 200,
     blocked: (messageId) => messageId === 'second' && !server.admitted.includes('first'),
   });
   const outcome = startWorker(root, adapter, stop.signal);
@@ -1186,7 +1191,7 @@ it('says once that a delivery Switch stopped promising was never made', async ()
   const { adapter, ran } = roomWorker();
   const server = owingServer({
     owed: () => [{ room_id: 'room', message_id: 'lapsed', sequence: 6, expired: true }],
-    answersPull: true,
+    pullStatus: () => 200,
     blocked: () => false,
   });
   const outcome = startWorker(root, adapter, stop.signal);
@@ -1213,7 +1218,7 @@ it('stops asking a server that cannot say what a session is owed, and says so on
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const stop = new AbortController();
   const { adapter, ran } = roomWorker();
-  const server = owingServer({ owed: () => [], answersPull: false, blocked: () => false });
+  const server = owingServer({ owed: () => [], pullStatus: () => 404, blocked: () => false });
   const outcome = startWorker(root, adapter, stop.signal);
   try {
     await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
@@ -1232,3 +1237,45 @@ it('stops asking a server that cannot say what a session is owed, and says so on
     expect(await outcome).toBeNull();
   }
 }, 20000);
+
+it('keeps serving what it is routed while Switch will not say what it is owed', async () => {
+  // The pull is the second way to the same work, so a server unreachable on it
+  // must cost nothing else. Waiting here until it answers would hold the loop
+  // that drains the controller's handoffs, submits what this session has run
+  // and collects its commands — every route that is still working.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-unavailable-'));
+  roots.push(root);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  let reachable = false;
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
+    pullStatus: () => (reachable ? 200 : 503),
+    blocked: () => false,
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 5000 });
+    expect(server.admitted).toEqual(['routed']);
+    const polledWhileFailing = server.commandPolls.length;
+    // Asked again on the poll's own cadence rather than in a tight loop, and
+    // the work it was owed all along arrives once the route comes back.
+    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), { timeout: 12000 });
+    expect(server.commandPolls.length).toBeGreaterThan(polledWhileFailing);
+    reachable = true;
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 12000 });
+    expect(server.admitted).toEqual(['routed', 'owed']);
+    expect(
+      warn.mock.calls.filter(
+        ([text]) => typeof text === 'string' && text.includes('would not say what room work')
+      )
+    ).toHaveLength(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 30000);

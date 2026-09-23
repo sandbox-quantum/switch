@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import get_args
 
 from pydantic import ValidationError
-from sqlalchemy import delete, func, literal, select, tuple_
+from sqlalchemy import Row, delete, func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import can_address, parse_policy
@@ -647,6 +647,56 @@ async def _require_oldest_promise(
             "ROOM_MESSAGE_OUT_OF_ORDER",
             f"An earlier delivery for this room ({older}) has not been made; this one stays reserved.",
         )
+
+
+async def _oldest_reservation_per_room(
+    db: AsyncSession,
+    agent_id: str,
+    room_ids: Iterable[str],
+    now: datetime,
+    expired: bool,
+) -> list[Row[tuple[str, str, int]]]:
+    """The oldest still-promised, or oldest lapsed, delivery of each of these rooms.
+
+    Both the choice per room and the cap are made in the database: the answer
+    is a bounded number of rows rather than a bounded slice of every row that
+    matched, so a session holding a great many rooms costs a bounded read.
+
+    Rooms come longest-waiting first, so the room that has been kept waiting
+    the longest is the one that survives the cap.
+    """
+    ranked = (
+        select(
+            SdkRoomAdmission.room_id,
+            SdkRoomAdmission.message_id,
+            SdkRoomAdmission.sequence,
+            SdkRoomAdmission.created_at,
+            func.row_number()
+            .over(
+                partition_by=SdkRoomAdmission.room_id,
+                order_by=(SdkRoomAdmission.created_at, SdkRoomAdmission.message_id),
+            )
+            .label("rank"),
+        )
+        .where(
+            SdkRoomAdmission.tenant_id == require_tenant_id(),
+            SdkRoomAdmission.agent_id == agent_id,
+            SdkRoomAdmission.room_id.in_(room_ids),
+            SdkRoomAdmission.consumed_at.is_(None),
+            SdkRoomAdmission.discarded_at.is_(None),
+            SdkRoomAdmission.expires_at <= now
+            if expired
+            else SdkRoomAdmission.expires_at > now,
+        )
+        .subquery()
+    )
+    rows = await db.execute(
+        select(ranked.c.room_id, ranked.c.message_id, ranked.c.sequence)
+        .where(ranked.c.rank == 1)
+        .order_by(ranked.c.created_at, ranked.c.message_id)
+        .limit(PULLED_ROOMS)
+    )
+    return list(rows)
 
 
 class SessionAuthority:
@@ -1457,10 +1507,16 @@ class SessionAuthority:
 
         A worker whose controller has stopped asking on its behalf comes here
         for the work it already owns. It is told about its own rooms only, and
-        about the oldest outstanding delivery of each, which is the one
-        submission would take next in any case. Rooms come longest-waiting
-        first and the answer is capped, so a room nobody is answering cannot
-        crowd the rest out of it.
+        about the oldest delivery of each that submission would take next —
+        which is the oldest the server is still promising, since a promise it
+        has stopped making no longer holds the room back.
+
+        A promise that ran out is named beside those, never in place of one.
+        It is a message that will not now be made and the session is the only
+        one left to say so, but saying so must not cost the room a delivery it
+        can still have: the two are chosen and capped separately, so an
+        abandoned message cannot stand in front of a live one or fill the
+        answer on its own.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
@@ -1476,28 +1532,21 @@ class SessionAuthority:
             if not state.room_ids:
                 return []
             now = await _now(db)
-            rows = await db.scalars(
-                select(SdkRoomAdmission)
-                .where(
-                    SdkRoomAdmission.tenant_id == require_tenant_id(),
-                    SdkRoomAdmission.agent_id == agent_id,
-                    SdkRoomAdmission.room_id.in_(state.room_ids),
-                    SdkRoomAdmission.consumed_at.is_(None),
-                    SdkRoomAdmission.discarded_at.is_(None),
-                )
-                .order_by(SdkRoomAdmission.created_at, SdkRoomAdmission.message_id)
+            promised = await _oldest_reservation_per_room(
+                db, agent_id, state.room_ids, now, expired=False
             )
-            oldest: dict[str, SdkRoomAdmission] = {}
-            for reservation in rows:
-                oldest.setdefault(reservation.room_id, reservation)
+            lapsed = await _oldest_reservation_per_room(
+                db, agent_id, state.room_ids, now, expired=True
+            )
             return [
                 RoomReservation(
                     room_id=reservation.room_id,
                     message_id=reservation.message_id,
                     sequence=reservation.sequence,
-                    expired=reservation.expires_at <= now,
+                    expired=expired,
                 )
-                for reservation in list(oldest.values())[:PULLED_ROOMS]
+                for expired, rows in ((False, promised), (True, lapsed))
+                for reservation in rows
             ]
 
     async def discard_room_reservation(

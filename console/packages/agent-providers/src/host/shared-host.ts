@@ -133,18 +133,28 @@ export async function runSharedHost(
     }
     return response.json();
   };
+  /**
+   * One attempt, behind the same fences as a retried one.
+   *
+   * Abort and the lease deadline are checked here rather than in the retry
+   * loop, so a caller that would rather come back later than wait still
+   * cannot talk to Switch on a lease this host no longer holds.
+   */
+  const attempt = async (path: string, body: unknown): Promise<unknown> => {
+    executionSignal.throwIfAborted();
+    if (performance.now() >= deadline) {
+      if (lease) throw new SharedHostLeaseExpiredError();
+      throw new Error(
+        'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
+      );
+    }
+    return requestOnce(path, body, executionSignal);
+  };
   const request = async (path: string, body: unknown): Promise<unknown> => {
     let disconnected = false;
     while (true) {
-      executionSignal.throwIfAborted();
-      if (performance.now() >= deadline) {
-        if (lease) throw new SharedHostLeaseExpiredError();
-        throw new Error(
-          'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
-        );
-      }
       try {
-        const result = await requestOnce(path, body, executionSignal);
+        const result = await attempt(path, body);
         if (disconnected) console.info('Shared host connection restored.');
         return result;
       } catch (error) {
@@ -401,6 +411,12 @@ export async function runSharedHost(
      * Asking is an addition, not a dependency. A server that does not answer
      * is said once and not asked again; one that refuses is said and asked
      * again next time, and in both cases the controller's route is untouched.
+     *
+     * Which is why this asks once and comes back rather than retrying until
+     * it gets an answer. The loop this runs in is also what drains the
+     * handoffs the controller writes and what submits and acknowledges what
+     * it has run: waiting here for a route that is only the second way to the
+     * same work would stop the first one.
      */
     const pullOwedDeliveries = async (inbox: SharedRoomInbox): Promise<void> => {
       if (pullUnanswered || (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS))
@@ -409,7 +425,7 @@ export async function runSharedHost(
       let owed: z.infer<typeof heldDeliveriesSchema>;
       try {
         owed = heldDeliveriesSchema.parse(
-          await request(`${sessionPath}/room-reservations`, hostLease)
+          await attempt(`${sessionPath}/room-reservations`, hostLease)
         );
       } catch (error) {
         if (executionSignal.aborted || error instanceof SharedHostLeaseExpiredError) throw error;

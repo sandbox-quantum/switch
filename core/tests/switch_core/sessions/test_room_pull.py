@@ -43,7 +43,7 @@ from switch_core.db.models import (
 )
 from switch_core.sessions.contract import Session, Snapshot
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionAuthority, SessionError
+from switch_core.sessions.service import PULLED_ROOMS, SessionAuthority, SessionError
 
 from .test_authority import EXAMPLES, setup
 
@@ -403,6 +403,80 @@ async def test_a_delivery_the_server_has_stopped_promising_holds_nothing_back(
     assert receipt.status == "accepted"
     held = await service.session_room_reservations(AGENT, *FIRST, epoch)
     assert [(r.message_id, r.expired) for r in held] == [("first", True)]
+
+
+@pytest.mark.asyncio
+async def test_a_promise_that_ran_out_is_named_beside_the_next_one_not_instead_of_it(
+    session_factory,
+) -> None:
+    """The delivery a room can still have must not be hidden by the one it cannot.
+
+    Nobody swept `first` when it ran out, because the controller that would
+    have given it up is the controller that is not there — which is the whole
+    reason the session is asking for itself. Submission would take `second`
+    next, since a promise the server has stopped making holds nothing back, so
+    an answer naming only `first` describes a room as owed a message that will
+    never be made while saying nothing of the one still waiting, poll after
+    poll, for as long as the session keeps asking.
+    """
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    earlier = buffer.enqueue(AGENT, ROOM, _event(ROOM, "first"))
+    later = buffer.enqueue(AGENT, ROOM, _event(ROOM, "second"))
+    await service.bind_room(AGENT, *FIRST, epoch, ROOM)
+    await service.admit_room(AGENT, ROOM, "first", earlier, False, buffer)
+    await service.admit_room(AGENT, ROOM, "second", later, False, buffer)
+    await _promise_run_out(session_factory, ROOM, "first")
+
+    for _ in range(2):
+        held = await service.session_room_reservations(AGENT, *FIRST, epoch)
+        assert [(r.message_id, r.expired) for r in held] == [
+            ("second", False),
+            ("first", True),
+        ]
+
+    receipt = await service.submit_room_message(
+        AGENT, *FIRST, epoch, ROOM, "second", later, False, buffer
+    )
+    assert receipt.status == "accepted"
+    held = await service.session_room_reservations(AGENT, *FIRST, epoch)
+    assert [(r.message_id, r.expired) for r in held] == [("first", True)]
+
+
+@pytest.mark.asyncio
+async def test_promises_that_ran_out_cannot_fill_the_answer_a_live_one_needs(
+    session_factory,
+) -> None:
+    """Saying what was lost is capped apart from saying what is left to do.
+
+    More rooms carry an abandoned promise than one answer holds, and they have
+    been waiting longest, so a single list ordered by age is made of nothing
+    else. The rooms with a delivery still to make would go unmentioned — and
+    with no controller left to sweep, unmentioned for good.
+    """
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+    abandoned = [f"room-lapsed-{index}" for index in range(PULLED_ROOMS + 1)]
+    waiting = ["room-live-a", "room-live-b"]
+    for room_id in [*abandoned, *waiting]:
+        await _add_room(session_factory, room_id)
+        message_id = f"message-{room_id}"
+        sequence = buffer.enqueue(AGENT, room_id, _event(room_id, message_id))
+        await service.admit_room(AGENT, room_id, message_id, sequence, False, buffer)
+    await _holds(session_factory, FIRST[0], [*abandoned, *waiting])
+    for index, room_id in enumerate(abandoned):
+        await _promised_at(
+            session_factory, room_id, f"message-{room_id}", minutes_ago=60 - index
+        )
+        await _promise_run_out(session_factory, room_id, f"message-{room_id}")
+    for index, room_id in enumerate(waiting):
+        await _promised_at(
+            session_factory, room_id, f"message-{room_id}", minutes_ago=2 - index
+        )
+
+    held = await service.session_room_reservations(AGENT, *FIRST, epoch)
+    assert [r.room_id for r in held if not r.expired] == waiting
+    assert len([r for r in held if r.expired]) == PULLED_ROOMS
 
 
 @pytest.mark.asyncio
