@@ -10,6 +10,8 @@ function rowToLocation(row: LocationRow): Location {
     name: row.name,
     sshHost: row.sshHost === '' ? null : row.sshHost,
     dir: row.dir,
+    observed: row.observed,
+    observedOwner: row.observedOwner ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -49,7 +51,15 @@ export async function ensureLocation(params: {
   name: string;
 }): Promise<Location> {
   const existing = await getLocationByHostDir(params.sshHost, params.dir);
-  if (existing) return existing;
+  if (existing) {
+    if (existing.observed) {
+      // A place this Console only observes cannot also be one it runs agents
+      // in: the directory is another account's, so every write and launch
+      // there would fail, or act as the wrong person.
+      throw new ObservedLocationError(existing);
+    }
+    return existing;
+  }
   const [row] = await db
     .insert(locations)
     .values({
@@ -60,4 +70,54 @@ export async function ensureLocation(params: {
     })
     .returning();
   return rowToLocation(row!);
+}
+
+/**
+ * Find or create the location for a directory another account on a shared host
+ * runs agents in (CHOO-2893), marked as observed. An existing location at the
+ * same place that this Console runs agents in is refused rather than turned
+ * observed — its agents would lose their runtime underneath them.
+ */
+export async function ensureObservedLocation(params: {
+  sshHost: string;
+  dir: string;
+  name: string;
+  owner: string | null;
+}): Promise<Location> {
+  const existing = await getLocationByHostDir(params.sshHost, params.dir);
+  if (existing) {
+    if (!existing.observed) {
+      throw new Error(
+        `${params.dir} on ${params.sshHost} is already a location this Console runs agents in, ` +
+          `so it cannot also be one it only observes.`
+      );
+    }
+    return existing;
+  }
+  const [row] = await db
+    .insert(locations)
+    .values({
+      id: randomUUID(),
+      name: params.name,
+      sshHost: params.sshHost,
+      dir: params.dir,
+      observed: true,
+      observedOwner: params.owner,
+    })
+    .returning();
+  return rowToLocation(row!);
+}
+
+/** Raised when something tries to run agents at, or write to, a location this
+ * Console only observes. */
+export class ObservedLocationError extends Error {
+  constructor(location: Pick<Location, 'dir' | 'sshHost' | 'observedOwner'>) {
+    super(
+      `${location.dir}${location.sshHost ? ` on ${location.sshHost}` : ''} belongs to ` +
+        `${location.observedOwner ? `the account ${location.observedOwner}` : 'another account'}, ` +
+        `so its agents run from that account's Switch Console. This Console can follow and ` +
+        `drive their sessions, but runs nothing there.`
+    );
+    this.name = 'ObservedLocationError';
+  }
 }

@@ -12,12 +12,21 @@ const mocks = vi.hoisted(() => ({
   provisionSessionRuntime: vi.fn(),
   registerSession: vi.fn(),
   startSession: vi.fn(),
+  storedLocation: vi.fn(),
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: mocks.getAgentById,
 }));
 
+vi.mock('@main/core/locations/store', () => ({
+  getLocationById: mocks.storedLocation,
+  ObservedLocationError: class extends Error {
+    constructor(location: { dir: string; observedOwner: string | null }) {
+      super(`${location.dir} belongs to the account ${location.observedOwner}`);
+    }
+  },
+}));
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: { getLocation: mocks.getLocation },
 }));
@@ -93,7 +102,39 @@ describe('createSession', () => {
     });
     mocks.registerSession.mockResolvedValue(undefined);
     mocks.startSession.mockResolvedValue(undefined);
+    mocks.storedLocation.mockResolvedValue({ id: 'loc-1', observed: false, observedOwner: null });
     setupInsertMock();
+  });
+
+  it('starts nothing for an agent another account runs, and says whose it is', async () => {
+    // Its sessions start where it runs (CHOO-2893); this Console only adopts
+    // them once they exist.
+    mocks.storedLocation.mockResolvedValue({
+      id: 'loc-1',
+      dir: '/home/alice/reviewer',
+      sshHost: 'vm-1',
+      observed: true,
+      observedOwner: 'alice',
+    });
+
+    const result = await createSession(baseParams);
+
+    expect(result).toEqual({
+      success: false,
+      error: { type: 'spawn-failed', message: '/home/alice/reviewer belongs to the account alice' },
+    });
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.provisionSessionRuntime).not.toHaveBeenCalled();
+  });
+
+  it('still adopts a session an observed agent already has', async () => {
+    mocks.storedLocation.mockResolvedValue({ id: 'loc-1', observed: true, observedOwner: 'alice' });
+
+    const result = await createSession({ ...baseParams, startSource: 'adopted' });
+
+    expect(result.success).toBe(true);
+    expect(mocks.storedLocation).not.toHaveBeenCalled();
+    expect(mocks.provisionSessionRuntime).not.toHaveBeenCalled();
   });
 
   it('returns agent-not-found when the agent does not exist', async () => {

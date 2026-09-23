@@ -39,6 +39,7 @@ vi.mock('./getAgentById', () => ({
     locationId: 'loc-1',
   }),
 }));
+vi.mock('@main/core/locations/store', () => ({ ObservedLocationError: class extends Error {} }));
 vi.mock('./agent-location', () => ({
   getAgentLocation: async () => ({ id: 'loc-1', dir: '/repo', sshHost: 'vm-1' }),
 }));

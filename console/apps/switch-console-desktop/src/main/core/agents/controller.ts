@@ -30,6 +30,7 @@ import {
 } from './discover-loadable-agents';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
+import { attachObservedAgents, type AttachObservedAgentsParams } from './observed-agents';
 import { onboardAgent } from './onboard-agent';
 import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-config';
 import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
@@ -85,6 +86,7 @@ export const agentsController = createRPCController({
   discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; serverId: string }) =>
     discoverLoadableAgentsInDir(params),
   attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
+  attachObservedAgents: (params: AttachObservedAgentsParams) => attachObservedAgents(params),
   removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>
     removeLoadableAgentConfig(params),
   getAgents: (locationId?: string) => getAgents(locationId),

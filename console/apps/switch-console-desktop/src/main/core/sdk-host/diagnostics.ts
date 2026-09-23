@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
-import { getAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { locationWhereAgentRuns } from '@main/core/agents/observed-guard';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { fetchSdkSessions } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
@@ -25,7 +25,10 @@ async function agentHost(agentId: string) {
   const agent = await getAgentById(agentId);
   if (!agent?.serverId || !agent.switchAgentId)
     throw new Error('The agent is not linked to Switch.');
-  const location = await getAgentLocation(agent);
+  // An observed agent's host and watcher are under its owner's account
+  // (CHOO-2893); looking in this account's would report nothing, as if it
+  // were not running.
+  const location = await locationWhereAgentRuns(agent);
   const ctx = location.sshHost
     ? (await connectRemoteAgent(agent)).ctx
     : new LocalExecutionContext();

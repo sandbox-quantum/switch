@@ -4,6 +4,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport, type LocationTransport } from '@main/core/locations/location-transport';
+import { log } from '@main/lib/logger';
 import { adoptSubagent } from './adopt-subagent';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { startLocalWatcher, stopLocalWatcher } from './local-host';
@@ -41,6 +42,17 @@ export async function configureSharedWatcher(
     throw new Error('Link the agent to Switch before enabling automatic sessions.');
   }
   const location = await getAgentLocation(agent);
+  // An observed agent's watcher runs on its host under the account that owns
+  // it (CHOO-2893). Starting one here would run it as the wrong person and set
+  // two watchers fighting over one session lease; stopping it would switch off
+  // someone else's auto-session. Either way it is not this Console's.
+  if (location.observed) {
+    log.info('shared-watcher: leaving an observed agent’s watcher to its owner', {
+      agentId,
+      enabled,
+    });
+    return;
+  }
   const transport = locationTransport(location);
   const identity = `watcher-${agent.switchAgentId}`;
   const opened = await locationManager.openLocation(location);

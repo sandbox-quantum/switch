@@ -14,7 +14,16 @@ vi.mock('./location-runtime-registry', () => ({
 
 it('awaited Console disposal detaches local SDK sessions', async () => {
   const location = new LocationProvider(
-    { id: 'local', name: 'Local', dir: '/workspace', sshHost: null, createdAt: '', updatedAt: '' },
+    {
+      id: 'local',
+      name: 'Local',
+      dir: '/workspace',
+      sshHost: null,
+      observed: false,
+      observedOwner: null,
+      createdAt: '',
+      updatedAt: '',
+    },
     { kind: 'local' },
     {
       ctx: {} as never,

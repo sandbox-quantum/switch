@@ -13,6 +13,7 @@ import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
+import { locationWhereAgentRuns } from './observed-guard';
 import { ensureRemoteWatcher, stopRemoteWatcher } from './remote-watcher';
 
 export type AgentAutoSessionParams = { agentId: string; enabled: boolean };
@@ -44,6 +45,10 @@ async function applyLocalAutoSessionState(agent: Agent, enabled: boolean): Promi
 export async function setAgentAutoSession(params: AgentAutoSessionParams): Promise<void> {
   const agent = await getAgentById(params.agentId);
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
+  // An observed agent's automatic sessions are its owner's to switch
+  // (CHOO-2893): the flag on the server and the watcher on the host have to
+  // move together, and only the owner's Console can move the watcher.
+  await locationWhereAgentRuns(agent);
   if (!agent.serverId || !agent.switchAgentId) {
     throw new Error('Agent is not linked to a Switch server; cannot set auto_session.');
   }

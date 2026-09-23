@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { ObservedLocationError } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { setAutoSessionAgent } from '@main/core/switch-rooms/auto-session-store';
@@ -212,6 +213,10 @@ async function removeAgent(
   options: DeleteAgentOptions
 ): Promise<void> {
   const terminate = options.removeProvisionedFiles || options.deleteInSwitch;
+  // An observed agent can only be let go of from this Console (CHOO-2893).
+  // Terminating it stops its owner's sessions, deleting it in Switch deletes
+  // their agent, and its files are in their directory: all theirs to do.
+  if (terminate && location?.observed) throw new ObservedLocationError(location);
   if (terminate && agent) {
     if (location?.sshHost) await stopRemoteWatcher(agentId);
     else await autoSessionWatcher.stopForAgent(agentId);

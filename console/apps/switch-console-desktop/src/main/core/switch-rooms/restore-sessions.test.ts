@@ -77,6 +77,26 @@ describe('restoreSwitchRoomSessions', () => {
     expect(hydrateSession).toHaveBeenCalledWith('local-1');
   });
 
+  it('brings up nothing for a session of an agent another account runs, and keeps it', async () => {
+    // It runs under its owner's account and is read through the server when it
+    // is opened (CHOO-2893) — not a stale entry to prune.
+    listPersistedSessionIds.mockResolvedValue(['session-1']);
+    getLocationById.mockResolvedValue({
+      id: 'location-1',
+      sshHost: 'vm-1',
+      dir: '/home/alice/reviewer',
+      observed: true,
+      observedOwner: 'alice',
+    });
+
+    await restoreSwitchRoomSessions();
+
+    expect(openLocation).not.toHaveBeenCalled();
+    expect(provisionSession).not.toHaveBeenCalled();
+    expect(hydrateSession).not.toHaveBeenCalled();
+    expect(prunePersisted).not.toHaveBeenCalled();
+  });
+
   it('prunes sessions whose row has gone', async () => {
     listPersistedSessionIds.mockResolvedValue(['session-1']);
     loadSessionWithAgent.mockResolvedValue(null);

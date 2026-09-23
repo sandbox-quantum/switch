@@ -44,6 +44,10 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         stale.push(sessionId);
         continue;
       }
+      // An observed agent's session runs under its owner's account and is read
+      // through the server when it is opened (CHOO-2893); there is nothing to
+      // bring up on this Console's side.
+      if (location.observed) continue;
 
       if (!locationManager.getLocation(loaded.locationId)) {
         const opened = await locationManager.openLocation(location);

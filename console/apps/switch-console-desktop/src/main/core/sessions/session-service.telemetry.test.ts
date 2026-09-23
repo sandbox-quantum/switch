@@ -26,7 +26,14 @@ const { hoisted } = vi.hoisted(() => ({
 
 vi.mock('./operations/createSession', () => ({ createSession: hoisted.createSession }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: hoisted.getAgentById }));
-vi.mock('@main/core/locations/store', () => ({ getLocationById: hoisted.getLocationById }));
+vi.mock('@main/core/locations/store', () => ({
+  getLocationById: hoisted.getLocationById,
+  ObservedLocationError: class extends Error {
+    constructor(location: { dir: string; observedOwner: string | null }) {
+      super(`${location.dir} belongs to the account ${location.observedOwner}`);
+    }
+  },
+}));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: hoisted.trackEvent }));
 
 // Provisioning reads the session row through the query builder before it can
@@ -289,6 +296,27 @@ describe('provisioning a session again', () => {
     await settle();
 
     expect(result.success).toBe(false);
+  });
+
+  it('refuses an agent another account runs with that reason, not "not open"', async () => {
+    // Its session runs under its owner's account and is read through the
+    // server (CHOO-2893); nothing is provisioned for it here.
+    hoisted.getLocationById.mockResolvedValue({
+      id: 'loc',
+      dir: '/home/alice/reviewer',
+      observed: true,
+      observedOwner: 'alice',
+    });
+
+    const result = await sessionService.provisionSession('s-1');
+    await settle();
+
+    expect(result).toEqual({
+      success: false,
+      error: { type: 'error', message: '/home/alice/reviewer belongs to the account alice' },
+    });
+    expect(hoisted.build).not.toHaveBeenCalled();
+    hoisted.getLocationById.mockReset();
   });
 
   it('never puts the failure message in the payload', async () => {

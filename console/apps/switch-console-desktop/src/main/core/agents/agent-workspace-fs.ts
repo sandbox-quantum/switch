@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { getLocationByHostDir, ObservedLocationError } from '@main/core/locations/store';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { createRemotePluginFs } from '@main/core/providers/remote-plugin-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
@@ -38,11 +39,19 @@ const EMPTY_PLUGIN_FS: PluginFs = {
  * (ssh host + dir) rather than an existing agent row — used at create/onboard
  * time before a row exists. Local dirs resolve on disk; remote dirs open an
  * SFTP channel to the host.
+ *
+ * Refuses a directory this Console only observes (CHOO-2893). It is another
+ * account's working directory, and every reader and writer of an agent's files
+ * comes through here — so this one check is what keeps a rename, a config sync,
+ * a storage migration or a file removal from reaching into it, however it was
+ * asked for.
  */
 export async function resolveWorkspaceFsFor(
   sshHost: string | null,
   dir: string
 ): Promise<WorkspaceFs> {
+  const location = await getLocationByHostDir(sshHost, dir);
+  if (location?.observed) throw new ObservedLocationError(location);
   if (sshHost === null) {
     return { fs: createPluginFs(dir), homeFs: createPluginFs(homedir()), close: () => {} };
   }

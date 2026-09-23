@@ -10,8 +10,10 @@ import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getLocationAgentsOnServer } from './getAgents';
 import { SWITCH_AGENTS_DIR_RELATIVE } from './switch-settings-paths';
 
-/** How an agent's provider was inferred, so the UI can say whether to trust it. */
-export type ProviderSource = 'definition' | 'unknown';
+/** How an agent's provider was inferred, so the UI can say whether to trust it.
+ * `server` is the server's own record of the agent's type — all there is for
+ * an agent whose directory cannot be read (CHOO-2893). */
+export type ProviderSource = 'definition' | 'server' | 'unknown';
 
 /**
  * An agent already configured in a working directory, found by its

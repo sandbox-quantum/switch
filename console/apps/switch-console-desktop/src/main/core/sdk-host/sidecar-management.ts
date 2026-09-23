@@ -1,5 +1,6 @@
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { locationWhereAgentRuns } from '@main/core/agents/observed-guard';
 import { setAgentAutoSession } from '@main/core/agents/setAgentAutoSession';
 import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { configureSharedWatcher } from './shared-watcher';
@@ -8,6 +9,10 @@ export async function manageAgentSidecar(
   agentId: string,
   action: 'update' | 'restart' | 'stop' | 'start'
 ): Promise<void> {
+  const owned = await getAgentById(agentId);
+  if (!owned) throw new Error(`Agent ${agentId} does not exist.`);
+  // An observed agent's sidecar runs under its owner's account (CHOO-2893).
+  await locationWhereAgentRuns(owned);
   if (action === 'stop' || action === 'start') {
     await setAgentAutoSession({ agentId, enabled: action === 'start' });
     return;

@@ -7,8 +7,10 @@ vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
 vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: async () => ({ id: 'agent', switchAgentId: 'remote-agent', serverId: 'server' }),
 }));
-vi.mock('@main/core/agents/agent-location', () => ({
-  getAgentLocation: async () => ({ sshHost: 'host', dir: '/work' }),
+vi.mock('@main/core/agents/observed-guard', () => ({
+  // Every agent in these cases is one this Console runs (CHOO-2893).
+  locationWhereAgentRuns: async () => ({ sshHost: 'host', dir: '/work', observed: false }),
+  isObservedAgent: async () => false,
 }));
 vi.mock('@main/core/agents/connect-remote-agent', () => ({
   connectRemoteAgent: async () => ({ ctx: { exec: mocks.exec } }),

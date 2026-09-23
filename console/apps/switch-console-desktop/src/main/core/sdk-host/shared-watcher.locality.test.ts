@@ -88,3 +88,27 @@ it('still deploys the shared host for an agent on an SSH host', async () => {
   );
   expect(mocks.startLocal).not.toHaveBeenCalled();
 });
+
+it.each([true, false])(
+  'leaves the watcher of an agent another account runs alone (enabled: %s)',
+  async (enabled) => {
+    // It runs under the account that owns the agent (CHOO-2893): starting one
+    // here would run it as the wrong person, and stopping it would switch off
+    // someone else's automatic sessions.
+    mocks.location.mockResolvedValue({
+      id: 'observed',
+      dir: '/home/alice/reviewer',
+      sshHost: 'builder',
+      observed: true,
+      observedOwner: 'alice',
+    });
+
+    await configureSharedWatcher('agent-1', enabled);
+
+    expect(mocks.deploy).not.toHaveBeenCalled();
+    expect(mocks.runCommand).not.toHaveBeenCalled();
+    expect(mocks.exec).not.toHaveBeenCalled();
+    expect(mocks.startLocal).not.toHaveBeenCalled();
+    expect(mocks.stopLocal).not.toHaveBeenCalled();
+  }
+);
