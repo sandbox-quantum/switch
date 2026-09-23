@@ -101,6 +101,27 @@ class ApprovalRequestStore:
 
 
 class SessionActivityStore:
+    async def status_for_update(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        session_id: str,
+        turn_id: str,
+        item_id: str,
+    ) -> str | None:
+        """The row's stored status, locked until the transaction ends, or None."""
+        status: str | None = await session.scalar(
+            select(SessionActivityItem.status)
+            .where(
+                SessionActivityItem.agent_id == agent_id,
+                SessionActivityItem.session_id == session_id,
+                SessionActivityItem.turn_id == turn_id,
+                SessionActivityItem.item_id == item_id,
+            )
+            .with_for_update()
+        )
+        return status
+
     async def upsert(self, session: AsyncSession, item: SessionActivityItem) -> bool:
         """Record `item` unless a revision at least as new is stored.
 

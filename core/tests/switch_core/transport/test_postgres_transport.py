@@ -17,15 +17,24 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, Client, ClientRoom, Room, Tenant
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Client,
+    ClientRoom,
+    Room,
+    Tenant,
+    TenantUsage,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -185,6 +194,7 @@ def _transport(
         session_factory=session_factory,
         room_store=RoomStore(),
         message_store=MessageStore(),
+        usage_store=UsageStore(),
         media_store=MediaStore(),
         listener=listener or _FakeListener(),
         invites=invites or InviteBus(),
@@ -198,6 +208,72 @@ class TestConformsToThePort:
     ) -> None:
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
         assert isinstance(transport, MessageTransport)
+
+
+class TestMetering:
+    """Every message a participant sends is counted against its tenant, in the
+    same write as the message, so the two cannot disagree."""
+
+    async def _usage(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> list[tuple[str, str, int]]:
+        async with session_factory() as session:
+            rows = await session.scalars(select(TenantUsage))
+            return [(r.metric, r.client_id, r.amount) for r in rows]
+
+    async def test_messages_and_media_are_counted_for_the_sender(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+        await transport.send_message(transport_room_id, "one", sender_name="a")
+        await transport.send_message(transport_room_id, "two", sender_name="a")
+        await transport.send_media(
+            transport_room_id,
+            "blob://1",
+            "report.pdf",
+            "application/pdf",
+            2048,
+            sender_name="a",
+            msgtype="m.file",
+        )
+
+        assert await self._usage(session_factory) == [("messages", client_id, 3)]
+
+    async def test_platform_events_are_not_counted(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Reports, runtime state and receipts are how Switch works, not
+        # something the tenant said, so they are not billed as messages.
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+        await transport.send_event(
+            transport_room_id, "com.switch.report.tool_call", {"tool": "Bash"}
+        )
+
+        assert await self._usage(session_factory) == []
+
+    async def test_the_count_survives_the_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Deleting a room cascades to its messages; it must not refund them.
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+        await transport.send_message(transport_room_id, "spent", sender_name="a")
+        async with session_factory() as session:
+            await session.execute(delete(Room).where(Room.id == room_id))
+            await session.commit()
+
+        assert await self._usage(session_factory) == [("messages", client_id, 1)]
 
 
 class TestSending:
@@ -455,6 +531,7 @@ class TestMedia:
                 session_factory=session_factory,
                 room_store=RoomStore(),
                 message_store=MessageStore(),
+                usage_store=UsageStore(),
                 media_store=MediaStore(),
                 listener=_FakeListener(),
                 invites=InviteBus(),

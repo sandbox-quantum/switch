@@ -41,7 +41,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
-from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
+from switch_core.db.models import (
+    ClientRoom,
+    MediaBlob,
+    Message,
+    MessageAttachment,
+    UsageMetric,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
@@ -80,6 +86,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.media_store import MediaStore
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.db.stores.usage_store import UsageStore
     from switch_core.messages.notify import MessageListener
 
 logger = logging.getLogger(__name__)
@@ -91,6 +98,12 @@ _DELIVERY_PAGE = 200
 
 # What makes an `m.room.message` a file rather than text.
 _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
+
+
+# What a tenant is metered for: something a participant said. Custom events
+# are the platform's own bookkeeping — reports, state, receipts — and charging
+# a tenant for them would bill it for how Switch works.
+_METERED_KINDS = frozenset({"message", "media"})
 
 
 def _sent_kind(event_type: str, content: dict[str, object]) -> str:
@@ -161,6 +174,7 @@ class PostgresTransport:
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         message_store: MessageStore,
+        usage_store: UsageStore,
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
@@ -186,6 +200,7 @@ class PostgresTransport:
         self._session_factory = session_factory
         self._room_store = room_store
         self._message_store = message_store
+        self._usage_store = usage_store
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
@@ -685,6 +700,15 @@ class PostgresTransport:
                 await self._message_store.create(
                     session, message, attachments_in(content)
                 )
+                if kind in _METERED_KINDS:
+                    await self._usage_store.record(
+                        session,
+                        tenant_id=tenant_id,
+                        metric=UsageMetric.MESSAGES,
+                        client_id=self.client_id,
+                        model="",
+                        amount=1,
+                    )
                 await session.commit()
         except Exception:
             # `MESSAGES_SENT` is recorded only after the commit, so without
