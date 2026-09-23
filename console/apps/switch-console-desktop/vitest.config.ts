@@ -106,7 +106,16 @@ export default defineConfig({
           name: 'browser',
           browser: {
             enabled: true,
-            provider: playwright(),
+            provider: playwright(
+              process.env.SWITCH_TEST_BROWSER_WS
+                ? {
+                    connectOptions: {
+                      wsEndpoint: process.env.SWITCH_TEST_BROWSER_WS,
+                      exposeNetwork: '<loopback>',
+                    },
+                  }
+                : {}
+            ),
             headless: true,
             instances: [{ browser: 'chromium' }],
           },

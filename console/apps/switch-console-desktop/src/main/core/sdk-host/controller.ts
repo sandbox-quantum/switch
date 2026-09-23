@@ -3,6 +3,7 @@ import type { AttachmentUpload, ClientCommand } from '@switch-console/shared/ses
 import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
+import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
@@ -25,6 +26,11 @@ async function sharedServer(serverId: string) {
   if (!server) throw new Error('Switch server not found.');
   return server;
 }
+async function readyServer(serverId: string) {
+  const server = await sharedServer(serverId);
+  await ensureServerSessionReady(server);
+  return server;
+}
 export const sdkHostController = createRPCController({
   stop: async (serverId: string, sessionId: string) =>
     stopSharedSession(await sharedServer(serverId), sessionId),
@@ -35,7 +41,7 @@ export const sdkHostController = createRPCController({
   retire: async (serverId: string, sessionId: string, epoch: string) =>
     retireSdkSession(await sharedServer(serverId), sessionId, epoch),
   uploadAttachment: async (serverId: string, sessionId: string, file: AttachmentUpload) =>
-    uploadSdkAttachment(await sharedServer(serverId), sessionId, file),
+    uploadSdkAttachment(await readyServer(serverId), sessionId, file),
   agentDiagnostics: sharedAgentDiagnostics,
   agentLogs: sharedAgentLogs,
   manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>
@@ -62,7 +68,7 @@ export const sdkHostController = createRPCController({
     return batch;
   },
   sharedSubmit: async (serverId: string, command: ClientCommand) =>
-    submitSdkCommand(await sharedServer(serverId), command),
+    submitSdkCommand(await readyServer(serverId), command),
   sharedReconcile: async (serverId: string, command: ClientCommand) =>
     reconcileSdkCommand(await sharedServer(serverId), command),
   sharedCommandStatus: async (serverId: string, sessionId: string, commandId: string) =>

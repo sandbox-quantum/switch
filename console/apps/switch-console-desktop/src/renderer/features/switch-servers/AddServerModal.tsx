@@ -404,7 +404,7 @@ const LocalSetupStep = observer(function LocalSetupStep({
               <SetupStepItem>
                 Pull the Switch images from GHCR (first run downloads a few GB)
               </SetupStepItem>
-              <SetupStepItem>Run Postgres, Matrix, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -414,6 +414,12 @@ const LocalSetupStep = observer(function LocalSetupStep({
 
         {!running && (
           <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
+        )}
+
+        {!running && dockerUnavailable && (
+          <Button variant="outline" size="sm" onClick={() => void store.checkDocker()}>
+            Check Docker again
+          </Button>
         )}
 
         {running && (

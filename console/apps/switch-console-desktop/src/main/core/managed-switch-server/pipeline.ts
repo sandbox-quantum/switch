@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import { ensureManagedServer, setActiveServerId } from '@main/core/switch-servers/servers-store';
@@ -40,6 +42,8 @@ export type StartStackOptions = {
   ref: ManagedServerRef;
   /** Display name for the registered server record. */
   serverName: string;
+  /** Background upgrades must not switch the user away from another server. */
+  activate?: boolean;
   /** Coarse step messages for the UI ("Pulling images…"). */
   onMessage: (message: string) => void;
   /** Live compose output lines for the UI log tail. */
@@ -239,7 +243,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   }
 
   const server = await ensureManagedServer({ name: serverName, gatewayUrl, apiUrl }, ref);
-  await setActiveServerId(server.id);
+  if (opts.activate !== false) await setActiveServerId(server.id);
 
   // Switch Console generated the admin password, so sign in on the user's behalf
   // rather than showing a login wall for a secret they never saw. A failure here
@@ -267,6 +271,9 @@ export async function stopStack(host: ServerHost): Promise<void> {
  * irreversible clean-slate reset. */
 export async function resetStack(host: ServerHost): Promise<void> {
   await composeDown(host, true);
+  // A reset must not bootstrap a new volume from the old credentials during
+  // upgrade preparation. Remove version evidence before clearing stored secrets.
+  if (host.kind === 'local') await rm(join(host.workingDir, ENV_FILE_NAME), { force: true });
   await host.teardownNetworking();
   await clearSecrets(host);
   await clearPorts(host);

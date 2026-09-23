@@ -44,7 +44,9 @@ router = APIRouter()
 
 
 def _gateway_declaration() -> ServerDeclaration:
-    return ServerDeclaration.model_validate(server_declaration("gateway-api"))
+    return ServerDeclaration.model_validate(
+        server_declaration("gateway-api", "sdk-sessions")
+    )
 
 
 def _session_response(user: User) -> SessionUserResponse:

@@ -9,12 +9,13 @@ import {
 } from './auto-session-store';
 
 class AutoSessionWatcher {
-  async initialize(): Promise<void> {
+  async initialize(serverId?: string): Promise<void> {
     for (const agentId of await listAutoSessionAgentIds()) {
       if (!(await getAgentById(agentId))) {
         await setAutoSessionAgent(agentId, false);
         continue;
       }
+      if (serverId && (await getAgentById(agentId))?.serverId !== serverId) continue;
       try {
         await this.startForAgent(agentId);
       } catch (error) {
@@ -26,6 +27,7 @@ class AutoSessionWatcher {
         await setAutoSessionSubagent(parentAgentId, name, false);
         continue;
       }
+      if (serverId && (await getAgentById(parentAgentId))?.serverId !== serverId) continue;
       try {
         await this.startForSubagent(parentAgentId, name);
       } catch (error) {

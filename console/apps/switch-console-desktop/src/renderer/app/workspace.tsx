@@ -1,5 +1,6 @@
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
+import { LocalServerUpgradeNotice } from '@renderer/features/switch-servers/LocalServerUpgradeNotice';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
 import { MonacoKeyboardBridge } from '@renderer/lib/components/monaco-keyboard-bridge';
@@ -35,5 +36,17 @@ export function Workspace() {
 
 function WorkspaceViewContent() {
   const { TitlebarSlot, MainPanel } = useWorkspaceSlots();
-  return <WorkspaceContentLayout titlebarSlot={<TitlebarSlot />} mainPanel={<MainPanel />} />;
+  return (
+    <WorkspaceContentLayout
+      titlebarSlot={<TitlebarSlot />}
+      mainPanel={
+        <>
+          <LocalServerUpgradeNotice />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <MainPanel />
+          </div>
+        </>
+      }
+    />
+  );
 }
