@@ -547,6 +547,66 @@ async def rooms_occupied(
     return occupied
 
 
+def _recorded_holder(
+    rows: Iterable[SdkSession], room_id: str, now: datetime
+) -> SdkSession | None:
+    """The unfinished session this room is recorded to, if one has it."""
+    return next(iter(_room_claimants(rows, room_id, now)[1]), None)
+
+
+async def require_recorded_rooms_unmoved(
+    db: AsyncSession,
+    agent_id: str,
+    connection: Connection,
+    claiming: frozenset[str],
+    dropping: frozenset[str],
+) -> None:
+    """Refuse a room slot move on a connection a session is serving itself over.
+
+    A session of the build this topology replaces is its own server: the
+    connection it opened is where its rooms are delivered, and until that
+    association is written down the slot is the only place it exists. Once it is
+    written down there are two answers to who a room belongs to, and only one of
+    them is read by the next delivery — so moving the slot here would leave the
+    recorded session named by admission and reached by nothing, with a success
+    reported for a transfer that did not happen.
+
+    Through the window between the record being written and the worker being
+    replaced, the slot therefore follows the record: a room recorded to another
+    session cannot be taken, and a room recorded to this connection's own
+    session cannot be given up. Refusing is the whole remedy, because the
+    association does move — when the session holding it is restarted onto the
+    controller's connection, which is a durable transition and not a claim.
+
+    Only a connection a session opened for itself is fenced. The controller's
+    is shared by every session it runs, so a room on it is already the record's
+    to route and a stream it opens naming one is that record being served, not
+    contradicted; an interactive client's belongs to no session at all. Both go
+    on changing hands cooperatively, as they always have.
+    """
+    if connection.scope != "single":
+        return
+    rows = await _sessions_of(db, [agent_id])
+    served = next((row for row in rows if row.connection_id == connection.id), None)
+    if served is None:
+        return
+    now = await _now(db)
+    for room_id in sorted(claiming):
+        holder = _recorded_holder(rows, room_id, now)
+        if holder is not None and holder.id != served.id:
+            raise SessionError(
+                "ROOM_MIGRATED",
+                f"Room {room_id} is recorded to session {holder.id}; the connection serving session {served.id} cannot take it.",
+            )
+    for room_id in sorted(dropping):
+        holder = _recorded_holder(rows, room_id, now)
+        if holder is not None and holder.id == served.id:
+            raise SessionError(
+                "ROOM_MIGRATED",
+                f"Room {room_id} is recorded to session {served.id}; the connection serving it cannot give it up.",
+            )
+
+
 class SessionAuthority:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
@@ -2340,11 +2400,13 @@ class SessionAuthority:
         is also re-read against the generation and rooms it was decided on and
         the whole carry refused rather than committed against state that moved.
 
-        Afterwards the room is the session's, recorded, and a repoint is an
-        ordinary later claim rather than a contradiction: the connection it
-        moves to belongs to a worker this controller is about to replace, and
-        once that connection is gone the room is served through the controller,
-        which routes it by the record written here.
+        Afterwards the room is the session's, recorded, and the record is what
+        the next delivery is routed by. A later claim on one of these workers'
+        own connections cannot move it: the slot would say one thing and the
+        record another, and the record is the one that is read. Those claims are
+        refused for as long as the association lasts — see
+        `require_recorded_rooms_unmoved` — which is until the session is
+        restarted onto the controller's connection and served from there.
 
         `controller_connection_id` is the one thing the caller supplies, and it
         names the caller rather than any session: a session already bound to it

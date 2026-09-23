@@ -20,8 +20,16 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
+from switch_core.bridges.agent.api.handlers import (
+    _open_event_stream,
+    connection_subscribe,
+    connection_unsubscribe,
+)
+from switch_core.bridges.agent.api.schemas import ConnectionSubscribeRequest
 from switch_core.bridges.agent.api.session_routes import (
     ConnectionCarryRequest,
     carry_connection_rooms,
@@ -35,11 +43,14 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import SdkSessionEvent, require_tenant_id
+from switch_core.db.session_scope import tenant_session
 from switch_core.sessions.service import (
     CarriedSession,
     ConnectionCarry,
+    RoomAdmission,
     SessionAuthority,
     SessionError,
+    require_recorded_rooms_unmoved,
 )
 
 from .test_authority import setup
@@ -55,6 +66,71 @@ from .test_shared_connection import (
 
 FIRST_SESSION, FIRST_HOST = "session-demo", "host-demo"
 CONTROLLER = "connection-controller"
+
+
+class _Doors:
+    """What the room-control handlers reach on the server, with the real rule.
+
+    Membership and the declaration are stubbed because neither decides anything
+    here; the slot rule is the real one, read against this test's own database.
+    """
+
+    def __init__(self, session_factory, connections: ConnectionRegistry) -> None:
+        self.connections = connections
+        self.event_buffer = EventBuffer()
+        self._sessions = session_factory
+
+    async def require_room_member(self, agent_id: str, room_id: str) -> None:
+        return None
+
+    async def record_client_declaration(
+        self, agent_id: str, connection_id: str, declaration: ClientDeclaration
+    ) -> None:
+        return None
+
+    async def require_recorded_rooms_unmoved(
+        self,
+        agent_id: str,
+        connection: Connection,
+        claiming: frozenset[str],
+        dropping: frozenset[str],
+    ) -> None:
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            await require_recorded_rooms_unmoved(
+                db, agent_id, connection, claiming, dropping
+            )
+
+
+async def _subscribe(doors: _Doors, connection: Connection, room_id: str) -> None:
+    await connection_subscribe(
+        AGENT,
+        ConnectionSubscribeRequest(
+            connection_id=connection.id,
+            room_id=room_id,
+            takeover=True,
+            generation=connection.stream_generation,
+        ),
+        agent=SimpleNamespace(id=AGENT),  # type: ignore[arg-type]
+        protocol=doors,  # type: ignore[arg-type]
+    )
+
+
+async def _second_worker(
+    service: SessionAuthority, connections: ConnectionRegistry
+) -> Connection:
+    """A second session of the older build, serving itself over its own connection."""
+    epoch = await _second_session(service)
+    connection = _serving(connections, SECOND[0], [])
+    await service.bind_connection(
+        AGENT, SECOND[0], SECOND[1], epoch, connection.id, connections
+    )
+    return connection
+
+
+async def _next_admission(service: SessionAuthority, message_id: str) -> RoomAdmission:
+    buffer = EventBuffer()
+    sequence = buffer.enqueue(AGENT, ROOM, _room_event(ROOM, message_id))
+    return await service.admit_room(AGENT, ROOM, message_id, sequence, True, buffer)
 
 
 def _serving(
@@ -418,11 +494,13 @@ async def test_a_room_cannot_change_hands_while_the_carry_is_being_written(
     between the last look and the record landing there is a suspension no
     further look happens after. A claim moving in it would be a room this
     server had stopped delivering to the session, recorded against it anyway.
-    So whoever moves a room slot waits for the carry to be written, and lands
-    after it as an ordinary later claim.
+    So whoever moves a room slot waits for the carry to be written — and, having
+    waited, finds the room recorded to the session it was carried to and is
+    refused rather than moving it afterwards.
     """
     service, connections = await _legacy(session_factory, [ROOM])
-    elsewhere = _serving(connections, SECOND[0], [])
+    elsewhere = await _second_worker(service, connections)
+    doors = _Doors(session_factory, connections)
     deciding = asyncio.Event()
     order: list[str] = []
     ever_held = service._ever_held
@@ -434,11 +512,10 @@ async def test_a_room_cannot_change_hands_while_the_carry_is_being_written(
 
     async def repoint() -> None:
         await deciding.wait()
-        async with connections.slots(AGENT):
-            order.append("repointed")
-            serving = connections.get(f"connection-{FIRST_SESSION}")
-            connections.release_room(serving, ROOM)
-            connections.claim_room(elsewhere, ROOM)
+        with pytest.raises(SessionError) as refused:
+            await _subscribe(doors, elsewhere, ROOM)
+        order.append("repointed")
+        assert refused.value.code == "ROOM_MIGRATED"
 
     service._ever_held = suspended  # type: ignore[method-assign]
     moving = asyncio.create_task(repoint())
@@ -453,6 +530,14 @@ async def test_a_room_cannot_change_hands_while_the_carry_is_being_written(
     assert carry.sessions[0].adopted == (ROOM,)
     assert order == ["carried", "repointed"]
     assert (await service.snapshot(FIRST_SESSION, "owner")).session.room_ids == [ROOM]
+    # The two answers to who the room belongs to still agree, which is what the
+    # ordering is for: the slot is where the record says, and the next delivery
+    # goes to the session the room was carried to.
+    assert connections.claimant_of(AGENT, ROOM) is connections.get(
+        f"connection-{FIRST_SESSION}"
+    )
+    admission = await _next_admission(service, "after-the-carry")
+    assert (admission.status, admission.session_id) == ("owner", FIRST_SESSION)
 
 
 async def test_a_connection_that_moves_while_the_carry_is_decided_commits_nothing(
@@ -520,3 +605,112 @@ async def test_the_answer_the_controller_reads_names_the_session_and_its_rooms(
         ],
         "unverifiable": [],
     }
+
+
+async def test_the_session_a_room_was_carried_to_keeps_it_against_a_sibling(
+    session_factory,
+):
+    """A worker of the old build cannot take a room the record has given away.
+
+    Its stream is still up and its claims are still answered, so nothing stops
+    it asking. But the room is now recorded to the session that was serving it,
+    and admission reads the record: letting the slot move would route the next
+    message to a session the events no longer reach, and answer the mover as
+    though the transfer had happened.
+    """
+    service, connections = await _legacy(session_factory, [ROOM])
+    sibling = await _second_worker(service, connections)
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+    doors = _Doors(session_factory, connections)
+
+    with pytest.raises(SessionError) as refused:
+        await _subscribe(doors, sibling, ROOM)
+
+    assert refused.value.code == "ROOM_MIGRATED"
+    assert FIRST_SESSION in str(refused.value)
+    assert sibling.rooms == set()
+    admission = await _next_admission(service, "to-the-holder")
+    assert (admission.status, admission.session_id) == ("owner", FIRST_SESSION)
+
+
+async def test_the_session_a_room_was_carried_to_cannot_move_off_it(session_factory):
+    """The same refusal on the connection that holds the room.
+
+    A `single`-scope connection replaces its room rather than adding to it, so
+    a worker subscribing somewhere else drops the one it was carried. That drop
+    is the same disagreement seen from the other side: the record would go on
+    naming a session with nothing delivering to it.
+    """
+    service, connections = await _legacy(session_factory, [ROOM])
+    await _second_room(session_factory)
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+    serving = connections.get(f"connection-{FIRST_SESSION}")
+    doors = _Doors(session_factory, connections)
+
+    with pytest.raises(SessionError) as refused:
+        await _subscribe(doors, serving, OTHER_ROOM)
+
+    assert refused.value.code == "ROOM_MIGRATED"
+    assert serving.rooms == {ROOM}
+
+
+async def test_a_carried_room_cannot_be_unsubscribed_either(session_factory):
+    """Releasing is a move too: the room would be recorded to nobody's reach."""
+    service, connections = await _legacy(session_factory, [ROOM])
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+    serving = connections.get(f"connection-{FIRST_SESSION}")
+    doors = _Doors(session_factory, connections)
+
+    with pytest.raises(SessionError) as refused:
+        await connection_unsubscribe(
+            AGENT,
+            ConnectionSubscribeRequest(
+                connection_id=serving.id,
+                room_id=ROOM,
+                generation=serving.stream_generation,
+            ),
+            agent=SimpleNamespace(id=AGENT),  # type: ignore[arg-type]
+            protocol=doors,  # type: ignore[arg-type]
+        )
+
+    assert refused.value.code == "ROOM_MIGRATED"
+    assert serving.rooms == {ROOM}
+
+
+async def test_a_stream_reopened_on_the_room_is_refused_and_says_which_refusal(
+    session_factory,
+):
+    """The third door, and the one a worker reaches without asking for a room.
+
+    Rooms named on the stream URL are taken over, not requested, so a sibling
+    reconnecting with the room still on its URL would walk through the other
+    two refusals. It is told which refusal this is, rather than being answered
+    as though it had been thrown out of the room's membership.
+    """
+    service, connections = await _legacy(session_factory, [ROOM])
+    sibling = await _second_worker(service, connections)
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+    doors = _Doors(session_factory, connections)
+
+    with pytest.raises(HTTPException) as refused:
+        await _open_event_stream(
+            agent=SimpleNamespace(id=AGENT),  # type: ignore[arg-type]
+            protocol=doors,  # type: ignore[arg-type]
+            connection_id=sibling.id,
+            scope="single",
+            event_filter="all",
+            start_from="head",
+            spawn_capable=False,
+            declaration=ClientDeclaration(),
+            rooms=ROOM,
+            last_event_id=None,
+            expected_generation=None,
+        )
+
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "ROOM_MIGRATED"
+    assert connections.claimant_of(AGENT, ROOM) is connections.get(
+        f"connection-{FIRST_SESSION}"
+    )
+    admission = await _next_admission(service, "after-the-reopen")
+    assert (admission.status, admission.session_id) == ("owner", FIRST_SESSION)

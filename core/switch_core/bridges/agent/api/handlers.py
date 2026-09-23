@@ -81,6 +81,7 @@ from switch_core.bridges.agent.dependencies import (
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     Closure,
+    Connection,
     ConnectionError_,
     DeliveryFilter,
     NoStreamAttachedError,
@@ -107,6 +108,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.sessions.service import SessionError
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -869,10 +871,24 @@ async def _open_event_stream(
             # share connections keeps the slot, and the supervisor's restored
             # stream 409s and retries forever.
             async with protocol.connections.slots(agent.id):
+                await protocol.require_recorded_rooms_unmoved(
+                    agent.id, conn, frozenset({room_id}), frozenset()
+                )
                 protocol.connections.claim_room(conn, room_id, takeover=True)
             # The room's unread count follows the slot: whoever is told how far
             # behind the room is has to be the one whose reading clears it.
             protocol.event_buffer.take_counting(agent.id, conn.id, room_id, conn.cursor)
+        except SessionError as exc:
+            # Caught ahead of the ValueError it is one of: a room the record
+            # gives to another session is a refusal in its own right, and the
+            # client acts on its code rather than reading a membership failure.
+            protocol.connections.close(
+                conn.id,
+                Closure(code="closed", message=str(exc), room_id=room_id),
+            )
+            raise HTTPException(
+                status_code=409, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
         except (ValueError, PermissionError) as exc:
             protocol.connections.close(
                 conn.id,
@@ -967,6 +983,27 @@ async def connection_beat(
     return {"ok": True, "rooms": sorted(conn.rooms), "cursor": conn.cursor}
 
 
+def _current_connection(
+    protocol: ProtocolService, agent_id: str, req: ConnectionSubscribeRequest
+) -> Connection:
+    """The connection this request may write to, or the refusal saying why not.
+
+    A connection id survives a takeover, so it names the connection rather than
+    the client on it. Asked again after any wait, because what a caller was
+    admitted on is not what it is still holding.
+    """
+    try:
+        return protocol.connections.require_current(
+            agent_id, req.connection_id, generation=req.generation
+        )
+    except (SupersededControlError, UnfencedControlError) as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
+    except UnknownConnectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/{agent_id}/connection/subscribe")
 async def connection_subscribe(
     agent_id: str,
@@ -987,16 +1024,7 @@ async def connection_subscribe(
     door names no session, so the connection is the whole of what it is, and
     replacing is what it has always been promised.
     """
-    try:
-        conn = protocol.connections.require_current(
-            agent.id, req.connection_id, generation=req.generation
-        )
-    except (SupersededControlError, UnfencedControlError) as exc:
-        raise HTTPException(
-            status_code=409, detail={"code": exc.code, "message": str(exc)}
-        ) from exc
-    except UnknownConnectionError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn = _current_connection(protocol, agent.id, req)
 
     try:
         await protocol.require_room_member(agent.id, req.room_id)
@@ -1006,7 +1034,18 @@ async def connection_subscribe(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     async with protocol.connections.slots(agent.id):
-        held = set(conn.rooms)
+        departing = (
+            frozenset(conn.rooms - {req.room_id})
+            if conn.scope == "single"
+            else frozenset()
+        )
+        await protocol.require_recorded_rooms_unmoved(
+            agent.id, conn, frozenset({req.room_id}), departing
+        )
+        # Named again now the wait for the slots is over, and with nothing
+        # awaited between here and the write: a client displaced while it waited
+        # would otherwise move a room on the connection its successor holds.
+        conn = _current_connection(protocol, agent.id, req)
         try:
             evicted = protocol.connections.claim_room(
                 conn, req.room_id, takeover=req.takeover
@@ -1014,9 +1053,8 @@ async def connection_subscribe(
         except RoomOccupiedError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        if conn.scope == "single":
-            for departed in held - {req.room_id}:
-                protocol.connections.release_room(conn, departed)
+        for departed in departing:
+            protocol.connections.release_room(conn, departed)
 
     # A room slot changes hands here as much as it does on the stream URL or in
     # connect_to_room, and the room's unread count follows it: the holder being
@@ -1052,18 +1090,13 @@ async def connection_unsubscribe(
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """Release a room, returning coverage to any all-scope connection."""
-    try:
-        conn = protocol.connections.require_current(
-            agent.id, req.connection_id, generation=req.generation
-        )
-    except (SupersededControlError, UnfencedControlError) as exc:
-        raise HTTPException(
-            status_code=409, detail={"code": exc.code, "message": str(exc)}
-        ) from exc
-    except UnknownConnectionError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn = _current_connection(protocol, agent.id, req)
 
     async with protocol.connections.slots(agent.id):
+        await protocol.require_recorded_rooms_unmoved(
+            agent.id, conn, frozenset(), frozenset({req.room_id})
+        )
+        conn = _current_connection(protocol, agent.id, req)
         protocol.connections.release_room(conn, req.room_id)
     return {"ok": True, "rooms": sorted(conn.rooms)}
 

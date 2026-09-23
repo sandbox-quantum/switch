@@ -48,6 +48,15 @@ class _Protocol:
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         self.membership_checks.append(room_id)
 
+    async def require_recorded_rooms_unmoved(
+        self,
+        agent_id: str,
+        connection: Any,
+        claiming: frozenset[str],
+        dropping: frozenset[str],
+    ) -> None:
+        """No session of this agent is recorded anywhere, so nothing is fenced."""
+
 
 def _attach_declaring(protocol: _Protocol, declaration: ClientDeclaration) -> Any:
     return protocol.connections.open(
