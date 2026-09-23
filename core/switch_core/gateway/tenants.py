@@ -7,7 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -201,13 +202,14 @@ async def list_tenants(
     return await list_tenant_memberships(session_factory, user_store, user_id)
 
 
-async def _require_workspace_allowance(
-    session_factory: async_sessionmaker[AsyncSession],
-    user_store: UserStore,
-    caller: AuthenticatedCaller,
-    limit: int,
-) -> None:
-    """Raise 403 unless `caller` may own one more workspace.
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
+async def _lock_workspace_allowance(
+    session: AsyncSession, caller: AuthenticatedCaller, limit: int
+) -> User:
+    """Lock the caller's row and raise 403 unless they may create one more
+    workspace. Returns the locked row, for the caller to count the creation on.
 
     Creating a workspace is not just a row: `all_tenant_ids()` drives a fan-out
     per tenant at boot and a sweep every few seconds, so unbounded creation
@@ -216,76 +218,61 @@ async def _require_workspace_allowance(
     route entirely, which is how a deployment that is not ready to offer
     self-service says so.
 
-    Operators are exempt before anything is read, both because the bypass is
-    what `is_operator` means everywhere else in this codebase (`authz.py`) and
-    because the person provisioning workspaces for other people is the one
-    caller a self-service bound must not stop.
+    The bound is on workspaces created (`users.workspaces_created`), not on
+    workspaces owned: ownership can be handed to another account, so a count of
+    ownership could be reset by creating, handing over and stepping down, over
+    and over. An invitation into someone else's workspace spends nothing.
 
-    Counts `owner` memberships, not memberships: an invitation into someone
-    else's workspace must not spend an allowance, since the invitee cannot get
-    it back without being removed. The count reuses `list_tenant_memberships`
-    rather than asking the database for a number — there is no exemption that
-    returns a caller's *roles* across tenants, only `tenants_of_user`, and
-    adding one would mean a tenth `SECURITY DEFINER` lookup and a migration for
-    an answer this bounds to a handful of rows by construction.
+    The row lock is what makes the check hold under concurrent requests. It
+    is taken `NOWAIT`, so a second request from the same person is refused
+    with 409 at once rather than holding a pool connection while it waits —
+    the request holding the lock needs more connections to provision, and a
+    burst of waiters could starve it of them. `FOR NO KEY UPDATE` rather than
+    `FOR UPDATE`, because the new owner membership's foreign key takes a key
+    share on this same row from another session, and `FOR UPDATE` would make
+    the request wait on itself.
     """
-    if caller.is_operator:
-        return
     if limit == 0:
         raise HTTPException(
             status_code=403,
             detail="Workspace creation is disabled on this deployment",
         )
-    memberships = await list_tenant_memberships(session_factory, user_store, caller.id)
-    owned = sum(1 for membership in memberships if membership.role == "owner")
-    if owned >= limit:
+    try:
+        user = await session.scalar(
+            select(User)
+            .where(User.id == caller.id)
+            .with_for_update(key_share=True, nowait=True)
+        )
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+            raise
+        raise HTTPException(
+            status_code=409,
+            detail="Another workspace is being created for you; try again shortly",
+        ) from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    if user.workspaces_created >= limit:
         raise HTTPException(
             status_code=403,
-            detail=(f"You own {owned} workspaces, and this deployment allows {limit}"),
+            detail=(
+                f"You have created {user.workspaces_created} workspaces, and "
+                f"this deployment allows {limit}"
+            ),
         )
+    return user
 
 
-@router.post("/tenants", status_code=201)
-async def create_tenant(
-    req: TenantCreateRequest,
-    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
-    session_factory: Annotated[
-        async_sessionmaker[AsyncSession], Depends(get_session_factory)
-    ],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
-) -> TenantMembershipResponse:
-    """Create a workspace. The caller becomes its `owner`.
-
-    How many workspaces one person may own is bounded, and the bound is checked
-    before anything is provisioned — see `_require_workspace_allowance`. This
-    is the only route in this file with no tenant to authorize against, so the
-    limit is what stands in for the role check its neighbours have.
-
-    Provisioning goes through `ClientLifecycleService.create_tenant` — "the
-    one seam a tenant comes into existence through" — rather than inserting a
-    `Tenant` row here, so a workspace created through this route gets the same
-    admin client every other tenant does. The membership row is not part of
-    that call (it provisions the tenant, not any particular person's place in
-    it), so it is written here, in its own session bound to the new tenant.
-
-    Two transactions, therefore, and the gap between them is real: the tenant
-    is committed before the membership is attempted, so a failure in the
-    second leaves a workspace nobody belongs to and a slug nobody can reuse.
-    It is not folded into one because the tenant row has to be committed
-    before `ensure_system_client` can provision against it, and that call is
-    inside the seam. What the gap gets instead is a log line naming the
-    workspace and the person who should have owned it, because the alternative
-    — a 500 with the orphan unrecorded — is the silent degradation this
-    codebase refuses. An operator repairs it by inserting the membership.
-    """
-    await _require_workspace_allowance(
-        session_factory, user_store, caller, config.gateway_max_workspaces_per_user
-    )
-    slug = _derive_slug(req.name)
+async def _provision_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    client_lifecycle: ClientLifecycleService,
+    caller: AuthenticatedCaller,
+    name: str,
+) -> Tenant:
+    slug = _derive_slug(name)
     try:
-        tenant = await client_lifecycle.create_tenant(req.name, slug)
+        tenant = await client_lifecycle.create_tenant(name, slug)
     except IntegrityError as exc:
         raise HTTPException(
             status_code=409, detail=f"Slug already taken: {slug}"
@@ -307,6 +294,62 @@ async def create_tenant(
             caller.id,
         )
         raise
+    return tenant
+
+
+@router.post("/tenants", status_code=201)
+async def create_tenant(
+    req: TenantCreateRequest,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    allowance: Annotated[AsyncSession, Depends(get_system_session)],
+) -> TenantMembershipResponse:
+    """Create a workspace. The caller becomes its `owner`.
+
+    How many workspaces one person may create is bounded, and the bound is
+    checked before anything is provisioned — see `_lock_workspace_allowance`.
+    Deployment operators are exempt, both because the bypass is what
+    `is_operator` means everywhere else in this codebase (`authz.py`) and
+    because the person provisioning workspaces for other people is the one
+    caller a self-service bound must not stop; nothing is counted for them. This
+    is the only route in this file with no tenant to authorize against, so the
+    limit is what stands in for the role check its neighbours have.
+
+    Provisioning goes through `ClientLifecycleService.create_tenant` — "the
+    one seam a tenant comes into existence through" — rather than inserting a
+    `Tenant` row here, so a workspace created through this route gets the same
+    admin client every other tenant does. The membership row is not part of
+    that call (it provisions the tenant, not any particular person's place in
+    it), so it is written here, in its own session bound to the new tenant.
+
+    Two transactions, therefore, and the gap between them is real: the tenant
+    is committed before the membership is attempted, so a failure in the
+    second leaves a workspace nobody belongs to and a slug nobody can reuse.
+    It is not folded into one because the tenant row has to be committed
+    before `ensure_system_client` can provision against it, and that call is
+    inside the seam. What the gap gets instead is a log line naming the
+    workspace and the person who should have owned it, because the alternative
+    — a 500 with the orphan unrecorded — is the silent degradation this
+    codebase refuses. An operator repairs it by inserting the membership.
+    """
+    if caller.is_operator:
+        tenant = await _provision_workspace(
+            session_factory, user_store, client_lifecycle, caller, req.name
+        )
+    else:
+        user = await _lock_workspace_allowance(
+            allowance, caller, config.gateway_max_workspaces_per_user
+        )
+        tenant = await _provision_workspace(
+            session_factory, user_store, client_lifecycle, caller, req.name
+        )
+        user.workspaces_created += 1
+        await allowance.commit()
 
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role="owner"

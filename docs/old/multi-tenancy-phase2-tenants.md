@@ -202,8 +202,13 @@ a sweep every few seconds, across clients, collaboration bridges, server
 connectors and rooms, so unbounded self-service creation buys steady-state work
 in the deployment, not storage. `GATEWAY_MAX_WORKSPACES_PER_USER` is both the
 cap and the gate: at the limit `POST /tenants` is a 403, and `0` closes the
-route outright. It counts `owner` memberships only, so being invited into
-someone else's workspace never spends an allowance the invitee cannot get back.
+route outright. It counts workspaces a person has *created*
+(`users.workspaces_created`), not ones they own: ownership can be handed to a
+second account, so a count of ownership could be reset by creating, handing
+over and stepping down. Being invited into someone else's workspace spends
+nothing. The check, the creation and the count run under a lock on the
+person's `users` row, so concurrent requests cannot all pass a check that only
+one of them should.
 Deployment operators are exempt, on the same grounds as every other operator
 bypass — this bounds self-service, and an operator provisioning workspaces for
 other people is not that.

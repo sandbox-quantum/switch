@@ -16,6 +16,7 @@ depending on. The unique-slug behaviour under test comes from the same
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -303,7 +304,7 @@ class TestWorkspaceCreationLimit:
             third = await client.post("/tenants", json={"name": "Third"})
 
         assert third.status_code == 403
-        assert "own 2 workspaces" in third.json()["detail"]
+        assert "created 2 workspaces" in third.json()["detail"]
 
     async def test_nothing_is_provisioned_for_a_refused_caller(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -326,6 +327,81 @@ class TestWorkspaceCreationLimit:
                 select(Tenant).where(Tenant.slug == "never-made")
             )
             assert found.first() is None
+
+    async def test_handing_a_workspace_over_does_not_free_the_allowance(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # What is bounded is creation. Were it ownership, creating, promoting a
+        # second account and stepping down would reset the count every time.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="hand-off", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "hand-off@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, token) as client:
+            first = await client.post("/tenants", json={"name": "Handed Over"})
+            async with session_factory() as session:
+                member = await session.get(TenantMember, (first.json()["id"], user_id))
+                assert member is not None
+                member.role = "member"
+                await session.commit()
+            second = await client.post("/tenants", json={"name": "One Too Many"})
+
+        assert first.status_code == 201
+        assert second.status_code == 403
+
+    async def test_concurrent_requests_cannot_all_pass_the_check(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="burst", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "burst@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, token) as client:
+            responses = await asyncio.gather(
+                *(
+                    client.post("/tenants", json={"name": f"Burst {i}"})
+                    for i in range(5)
+                )
+            )
+
+        codes = sorted(r.status_code for r in responses)
+        assert codes.count(201) == 1
+        assert set(codes) - {201} <= {403, 409}
+        async with session_factory() as session:
+            owned = await session.scalars(
+                select(TenantMember).where(
+                    TenantMember.user_id == user_id, TenantMember.role == "owner"
+                )
+            )
+            assert len(owned.all()) == 1
+
+    async def test_a_request_during_another_creation_is_refused_not_queued(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Waiting would hold a pool connection for as long as the other
+        # creation takes; refusing at once holds none.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="in-flight", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "in-flight@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=3)
+        async with session_factory() as holder:
+            await holder.scalar(
+                select(User).where(User.id == user_id).with_for_update(key_share=True)
+            )
+            async with _client(app, token) as client:
+                response = await client.post("/tenants", json={"name": "Queued"})
+
+        assert response.status_code == 409
+        assert "being created" in response.json()["detail"]
 
     async def test_a_limit_of_zero_says_creation_is_disabled(
         self, session_factory: async_sessionmaker[AsyncSession]
