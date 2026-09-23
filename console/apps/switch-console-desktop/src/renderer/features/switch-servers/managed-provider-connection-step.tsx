@@ -87,6 +87,15 @@ function OtherProviderConnectionStep({
   const [kind, setKind] = useState<'api-key' | 'auth-json'>(
     provider === 'codex' || provider === 'cursor' ? 'api-key' : 'auth-json'
   );
+  const localSubscription = provider === 'codex' && kind === 'auth-json';
+  const localSignIn = useQuery({
+    queryKey: ['local-codex-subscription'],
+    queryFn: () => rpc.switchServers.getLocalCodexSubscription(),
+    enabled: localSubscription,
+    refetchInterval: localSubscription ? 2000 : false,
+    staleTime: 0,
+    retry: false,
+  });
   const [credential, setCredential] = useState('');
   const [filename, setFilename] = useState('');
   const [pending, setPending] = useState(false);
@@ -103,6 +112,7 @@ function OtherProviderConnectionStep({
     setError(null);
     try {
       if (remove) await rpc.switchServers.disconnectCloudProvider(serverId, provider);
+      else if (localSubscription) await rpc.switchServers.connectLocalCodexSubscription(serverId);
       else await rpc.switchServers.connectCloudProvider(serverId, provider, kind, credential);
       setCredential('');
       setFilename('');
@@ -155,13 +165,22 @@ function OtherProviderConnectionStep({
           ) : (
             <>
               <p>
-                Sign in locally, then choose the authentication file below. It will be encrypted on
-                Switch and copied only to your worker.
+                {localSubscription
+                  ? 'Sign in to Codex with ChatGPT on this computer. Switch checks for your sign-in automatically.'
+                  : 'Sign in locally, then choose the authentication file below. It will be encrypted on Switch and copied only to your worker.'}
               </p>
               <code className="bg-background-primary block rounded border px-3 py-2 font-mono">
                 {info.command}
               </code>
-              <p className="font-mono text-xs break-all">{info.file}</p>
+              <p className="font-mono text-xs break-all">
+                {localSubscription ? (localSignIn.data?.path ?? info.file) : info.file}
+              </p>
+              {localSubscription && (
+                <p className="text-xs text-foreground-muted">
+                  If Codex uses your system keychain, sign in with file storage using{' '}
+                  <code>codex -c cli_auth_credentials_store='"file"' login</code>.
+                </p>
+              )}
               {provider === 'antigravity' && (
                 <p>
                   Use the ACP login. If you set GEMINI_HOME, choose antigravity-acp/acp_token.json
@@ -179,45 +198,61 @@ function OtherProviderConnectionStep({
             Sign-in instructions
           </Button>
         </div>
-        <Field>
-          <FieldLabel>{kind === 'api-key' ? 'API key' : 'Authentication file'}</FieldLabel>
-          {kind === 'api-key' ? (
-            <Input
-              type="password"
-              autoComplete="off"
-              value={credential}
-              onChange={(event) => setCredential(event.target.value)}
-            />
-          ) : (
-            <input
-              aria-label="Authentication file"
-              type="file"
-              accept=".json,application/json"
-              onChange={async (event) => {
-                setCredential('');
-                setFilename('');
-                const file = event.target.files?.[0];
-                if (!file) return;
-                if (file.size > 16384) {
-                  setError('Choose an authentication file smaller than 16 KiB.');
-                  return;
-                }
-                try {
-                  const value = await file.text();
-                  JSON.parse(value);
-                  setCredential(value);
-                  setFilename(file.name);
-                  setError(null);
-                } catch {
-                  setError('Choose a valid JSON authentication file.');
-                }
-              }}
-            />
-          )}
-          <FieldDescription>
-            {filename || 'Credentials are never shown in chat or stored in the repository.'}
-          </FieldDescription>
-        </Field>
+        {localSubscription ? (
+          <div className="space-y-2 rounded-lg border p-3 text-sm" role="status">
+            <p>
+              {localSignIn.error
+                ? String(localSignIn.error)
+                : localSignIn.data?.status === 'ready'
+                  ? 'Local subscription sign-in found.'
+                  : 'Waiting for a local subscription sign-in…'}
+            </p>
+            <p className="text-xs text-foreground-muted">
+              Use local sign-in saves your credential encrypted on Switch for your cloud workers.
+              The worker verifies it before the agent becomes ready.
+            </p>
+          </div>
+        ) : (
+          <Field>
+            <FieldLabel>{kind === 'api-key' ? 'API key' : 'Authentication file'}</FieldLabel>
+            {kind === 'api-key' ? (
+              <Input
+                type="password"
+                autoComplete="off"
+                value={credential}
+                onChange={(event) => setCredential(event.target.value)}
+              />
+            ) : (
+              <input
+                aria-label="Authentication file"
+                type="file"
+                accept=".json,application/json"
+                onChange={async (event) => {
+                  setCredential('');
+                  setFilename('');
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  if (file.size > 16384) {
+                    setError('Choose an authentication file smaller than 16 KiB.');
+                    return;
+                  }
+                  try {
+                    const value = await file.text();
+                    JSON.parse(value);
+                    setCredential(value);
+                    setFilename(file.name);
+                    setError(null);
+                  } catch {
+                    setError('Choose a valid JSON authentication file.');
+                  }
+                }}
+              />
+            )}
+            <FieldDescription>
+              {filename || 'Credentials are never shown in chat or stored in the repository.'}
+            </FieldDescription>
+          </Field>
+        )}
         {(error || connection.error) && (
           <p role="alert" className="text-sm text-destructive">
             {error || String(connection.error)}
@@ -228,8 +263,16 @@ function OtherProviderConnectionStep({
         <Button variant="outline" onClick={onBack} disabled={pending}>
           Back
         </Button>
-        <Button disabled={pending || !credential.trim()} onClick={() => void run(false)}>
-          {pending ? 'Saving…' : 'Save credential'}
+        <Button
+          disabled={
+            pending ||
+            (localSubscription
+              ? localSignIn.isError || localSignIn.data?.status !== 'ready'
+              : !credential.trim())
+          }
+          onClick={() => void run(false)}
+        >
+          {pending ? 'Saving…' : localSubscription ? 'Use local sign-in' : 'Save credential'}
         </Button>
         <Button
           disabled={pending || !connection.data || connection.data.status === 'not_connected'}
