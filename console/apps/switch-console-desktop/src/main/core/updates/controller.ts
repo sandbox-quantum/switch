@@ -55,13 +55,4 @@ export const updateController = createRPCController({
       return { success: false, error: formatUpdaterError(error) };
     }
   },
-
-  getReleaseNotes: async () => {
-    try {
-      const notes = await updateService.fetchReleaseNotes();
-      return { success: true, data: notes };
-    } catch (error) {
-      return { success: false, error: formatUpdaterError(error) };
-    }
-  },
 });

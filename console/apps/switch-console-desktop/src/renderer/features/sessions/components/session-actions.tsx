@@ -1,4 +1,4 @@
-import { Archive, Copy, MessageSquare, Pencil, Pin, PinOff, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, Copy, Pencil, Pin, PinOff, RotateCcw, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { toast } from '@renderer/lib/hooks/use-toast';
 
@@ -22,8 +22,6 @@ export interface SessionActionsProps {
   onRename: () => void;
   onArchive: () => void;
   onRestore?: () => void;
-  onReconnect?: () => void;
-  onConvertAutomation?: () => void;
   onDelete: () => void;
 }
 
@@ -60,8 +58,6 @@ export function sessionActions({
   onRename,
   onArchive,
   onRestore,
-  onReconnect,
-  onConvertAutomation,
   onDelete,
 }: SessionActionsProps): SessionAction[] {
   const actions: SessionAction[] = [];
@@ -84,22 +80,6 @@ export function sessionActions({
     label: 'Rename',
     run: onRename,
   });
-  if (onReconnect) {
-    actions.push({
-      key: 'reconnect',
-      icon: <RotateCcw className="size-4" />,
-      label: 'Reconnect',
-      run: onReconnect,
-    });
-  }
-  if (onConvertAutomation) {
-    actions.push({
-      key: 'convert',
-      icon: <MessageSquare className="size-4" />,
-      label: 'Convert to regular session',
-      run: onConvertAutomation,
-    });
-  }
   if (!isArchived) {
     actions.push({
       key: 'archive',

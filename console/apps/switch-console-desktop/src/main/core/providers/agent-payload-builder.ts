@@ -25,7 +25,7 @@ import {
 } from '@shared/core/providers/agent-provider-registry';
 import { getDependencyDescriptor } from '../dependencies/registry';
 import { providerOverrideSettings } from '../settings/provider-settings-service';
-import { getPlugin, listPlugins } from './plugin-registry';
+import { getPlugin } from './plugin-registry';
 
 /**
  * Optional callback injected by the controller so the builder can enrich the
@@ -122,10 +122,6 @@ export async function buildAgentPayloads(
     AGENT_PROVIDERS.map((p) => buildOne(p.id, platform, dependencyManager, enrichHostDep))
   );
   return results.filter((r): r is AgentPayload => r !== null);
-}
-
-export function buildAgentMetadataList(): AgentMetadata[] {
-  return listPlugins().map(buildMetadata);
 }
 
 /**

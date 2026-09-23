@@ -23,7 +23,6 @@ import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
-import { promptLibraryService } from './core/prompt-library/service';
 import { initializeHostReachability } from './core/remote-hosts/host-reachability-startup';
 import { hostReachabilityService } from './core/remote-hosts/production-host-reachability';
 import {
@@ -143,7 +142,6 @@ void app.whenReady().then(async () => {
   locationSettingsService.initialize();
   appService.initialize();
   await appSettingsService.initialize();
-  await promptLibraryService.initialize();
 
   // After the settings store, which owns the consent gate every event asks
   // before it is sent, and never before the database it is read from.
