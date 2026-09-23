@@ -65,6 +65,9 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
+from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.outcomes import ApprovalOutcomes
+from switch_core.session_activity.service import SessionActivityService
 from switch_core.sessions.contract import CommandStatus
 from switch_core.sessions.service import (
     SessionAuthority,
@@ -664,6 +667,11 @@ async def _serve(
         bridge_store=session_env.bridge_store,
         session_factory=session_factory,
         config=config,
+        # Never started: the benchmark measures room delivery, not approvals.
+        approval_outcomes=ApprovalOutcomes(
+            SessionActivityListener(lambda: session_env.engine),
+            SessionActivityService(session_factory),
+        ),
         connections=connections,
     )
 

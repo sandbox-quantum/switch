@@ -138,6 +138,11 @@ from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.maintenance import (
+    maintenance_loop as session_activity_maintenance_loop,
+)
+from switch_core.session_activity.outcomes import ApprovalOutcomes
+from switch_core.session_activity.service import SessionActivityService
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -548,6 +553,9 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        approval_outcomes=ApprovalOutcomes(
+            session_activity_listener, SessionActivityService(session_factory)
+        ),
         connections=connections,
         telemetry=telemetry,
     )
@@ -707,6 +715,9 @@ async def run(config: SwitchConfig) -> None:
             )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
+            session_activity_task = asyncio.create_task(
+                session_activity_maintenance_loop(session_factory)
+            )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
@@ -723,6 +734,7 @@ async def run(config: SwitchConfig) -> None:
                 yield
             finally:
                 sweep_task.cancel()
+                session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()

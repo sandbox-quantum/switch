@@ -922,6 +922,7 @@ async def _open_event_stream(
             conn=conn,
             registry=protocol.connections,
             buffer=protocol.event_buffer,
+            approvals=protocol.approval_outcomes,
         ),
         media_type="text/event-stream",
         headers={

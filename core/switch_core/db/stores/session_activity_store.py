@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from switch_core.db.models import ApprovalRequest, SessionActivityEvent
+from switch_core.db.models import Agent, ApprovalRequest, SessionActivityEvent
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +66,18 @@ class ApprovalRequestStore:
                 ApprovalRequest.delivered_at.is_(None),
             )
             .order_by(ApprovalRequest.updated_at)
+        )
+        return list(result.scalars())
+
+    async def open_for_owner(
+        self, session: AsyncSession, owner_id: str
+    ) -> list[ApprovalRequest]:
+        """Open requests of every agent `owner_id` owns, oldest first."""
+        result = await session.execute(
+            select(ApprovalRequest)
+            .join(Agent, Agent.id == ApprovalRequest.agent_id)
+            .where(Agent.owner_id == owner_id, ApprovalRequest.state == "open")
+            .order_by(ApprovalRequest.created_at)
         )
         return list(result.scalars())
 

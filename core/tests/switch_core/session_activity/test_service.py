@@ -7,7 +7,11 @@ from sqlalchemy import update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.db.models import ApprovalRequest
-from switch_core.session_activity.service import ApprovalOption
+from switch_core.session_activity.service import (
+    ApprovalOption,
+    PlatformPerson,
+    SwitchUser,
+)
 from switch_core.sessions.service import SessionError
 
 from .conftest import AGENT, make_agent, make_person, make_room
@@ -153,7 +157,7 @@ async def test_malformed_requests_are_refused(service, overrides):
 async def test_an_answer_is_recorded_and_owed_to_the_agent(service, changes, people):
     await _open(service)
     answered = await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     assert (answered.state, answered.answer, answered.answered_by) == (
         "answered",
@@ -172,10 +176,10 @@ async def test_an_answer_is_recorded_and_owed_to_the_agent(service, changes, peo
 async def test_the_same_answer_twice_is_a_no_op(service, changes, people):
     await _open(service)
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     await changes.expect([("approval.open", "req-1"), ("approval.answered", "req-1")])
 
@@ -183,11 +187,15 @@ async def test_the_same_answer_twice_is_a_no_op(service, changes, people):
 async def test_a_second_answer_is_refused(service, people):
     await _open(service)
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     with pytest.raises(SessionError) as error:
         await service.answer_approval(
-            AGENT, SESSION, "req-1", answer="deny", answered_by=people.owner
+            AGENT,
+            SESSION,
+            "req-1",
+            answer="deny",
+            answerer=PlatformPerson(people.owner),
         )
     assert error.value.code == "REQUEST_CLOSED"
 
@@ -196,7 +204,11 @@ async def test_an_answer_that_is_not_an_option_is_refused(service, people):
     await _open(service)
     with pytest.raises(SessionError) as error:
         await service.answer_approval(
-            AGENT, SESSION, "req-1", answer="maybe", answered_by=people.owner
+            AGENT,
+            SESSION,
+            "req-1",
+            answer="maybe",
+            answerer=PlatformPerson(people.owner),
         )
     assert error.value.code == "INVALID_ANSWER"
 
@@ -204,7 +216,11 @@ async def test_an_answer_that_is_not_an_option_is_refused(service, people):
 async def test_answering_an_unknown_request_is_not_found(service, people):
     with pytest.raises(SessionError) as error:
         await service.answer_approval(
-            AGENT, SESSION, "nope", answer="allow", answered_by=people.owner
+            AGENT,
+            SESSION,
+            "nope",
+            answer="allow",
+            answerer=PlatformPerson(people.owner),
         )
     assert error.value.code == "NOT_FOUND"
 
@@ -226,7 +242,11 @@ async def test_a_late_answer_is_refused_and_the_expiry_is_kept(
 
     with pytest.raises(SessionError) as error:
         await service.answer_approval(
-            AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+            AGENT,
+            SESSION,
+            "req-1",
+            answer="allow",
+            answerer=PlatformPerson(people.owner),
         )
     assert error.value.code == "REQUEST_CLOSED"
 
@@ -258,7 +278,11 @@ async def test_closing_an_open_request_and_a_settled_one(service, changes, peopl
     await _open(service, "open-one")
     await _open(service, "answered-one")
     await service.answer_approval(
-        AGENT, SESSION, "answered-one", answer="deny", answered_by=people.owner
+        AGENT,
+        SESSION,
+        "answered-one",
+        answer="deny",
+        answerer=PlatformPerson(people.owner),
     )
 
     assert (await service.close_approval(AGENT, SESSION, "open-one")).state == "closed"
@@ -282,7 +306,7 @@ async def test_delivery_is_marked_once_and_only_for_an_outcome(service, people):
     assert error.value.code == "REQUEST_OPEN"
 
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     first = await service.mark_delivered(AGENT, SESSION, "req-1")
     again = await service.mark_delivered(AGENT, SESSION, "req-1")
@@ -309,11 +333,11 @@ async def test_outside_a_room_only_the_owner_may_answer(service, people):
     for sender in (people.stranger, "@nobody:example.test"):
         with pytest.raises(SessionError) as error:
             await service.answer_approval(
-                AGENT, SESSION, "req-1", answer="allow", answered_by=sender
+                AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(sender)
             )
         assert error.value.code == "NOT_AUTHORIZED"
     answered = await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     assert answered.state == "answered"
 
@@ -325,7 +349,7 @@ async def test_in_a_room_an_open_policy_lets_anyone_answer(
         room = await make_room(db, member=AGENT)
     await _open(service, room_id=room)
     answered = await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="deny", answered_by=people.stranger
+        AGENT, SESSION, "req-1", answer="deny", answerer=PlatformPerson(people.stranger)
     )
     assert answered.answered_by == people.stranger
 
@@ -348,11 +372,15 @@ async def test_in_a_room_the_agents_policy_decides(service, session_factory):
     )
     with pytest.raises(SessionError) as error:
         await service.answer_approval(
-            "guarded", SESSION, "req-1", answer="allow", answered_by=stranger
+            "guarded",
+            SESSION,
+            "req-1",
+            answer="allow",
+            answerer=PlatformPerson(stranger),
         )
     assert error.value.code == "NOT_AUTHORIZED"
     answered = await service.answer_approval(
-        "guarded", SESSION, "req-1", answer="allow", answered_by=owner
+        "guarded", SESSION, "req-1", answer="allow", answerer=PlatformPerson(owner)
     )
     assert answered.state == "answered"
 
@@ -361,7 +389,11 @@ async def test_a_refused_answerer_leaves_the_request_open(service, people, chang
     await _open(service)
     with pytest.raises(SessionError):
         await service.answer_approval(
-            AGENT, SESSION, "req-1", answer="allow", answered_by=people.stranger
+            AGENT,
+            SESSION,
+            "req-1",
+            answer="allow",
+            answerer=PlatformPerson(people.stranger),
         )
     await changes.expect([("approval.open", "req-1")])
     assert await service.undelivered_outcomes(AGENT) == []
@@ -372,3 +404,56 @@ async def test_a_row_too_large_to_announce_is_announced_by_key(service, changes)
     [change] = await changes.expect([("approval.changed", "req-1")])
     assert change.row is None
     assert (change.agent_id, change.session_id) == (AGENT, SESSION)
+
+
+async def test_a_signed_in_owner_may_answer_outside_a_room(service, session_factory):
+    async with session_factory() as db, db.begin():
+        owner_id = await make_agent(db, "console-agent")
+    await service.open_approval(
+        "console-agent",
+        SESSION,
+        request_id="req-1",
+        question="Deploy?",
+        options=OPTIONS,
+        room_id=None,
+        thread_id=None,
+        expires_at=None,
+    )
+    with pytest.raises(SessionError) as error:
+        await service.answer_approval(
+            "console-agent",
+            SESSION,
+            "req-1",
+            answer="allow",
+            answerer=SwitchUser("someone-else"),
+        )
+    assert error.value.code == "NOT_AUTHORIZED"
+    answered = await service.answer_approval(
+        "console-agent", SESSION, "req-1", answer="allow", answerer=SwitchUser(owner_id)
+    )
+    assert answered.answered_by == f"user:{owner_id}"
+
+
+async def test_a_signed_in_user_is_judged_by_the_rooms_policy(service, session_factory):
+    async with session_factory() as db, db.begin():
+        owner_id = await make_agent(db, "guarded", policy=owner_only_policy([]))
+        room = await make_room(db, member="guarded")
+    await service.open_approval(
+        "guarded",
+        SESSION,
+        request_id="req-1",
+        question="Deploy?",
+        options=OPTIONS,
+        room_id=room,
+        thread_id=None,
+        expires_at=None,
+    )
+    with pytest.raises(SessionError) as error:
+        await service.answer_approval(
+            "guarded", SESSION, "req-1", answer="deny", answerer=SwitchUser("stranger")
+        )
+    assert error.value.code == "NOT_AUTHORIZED"
+    answered = await service.answer_approval(
+        "guarded", SESSION, "req-1", answer="deny", answerer=SwitchUser(owner_id)
+    )
+    assert answered.state == "answered"

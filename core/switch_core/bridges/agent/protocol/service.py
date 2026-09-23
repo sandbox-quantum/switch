@@ -134,6 +134,7 @@ if TYPE_CHECKING:
     from switch_core.gateway.schemas import AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
+    from switch_core.session_activity.outcomes import ApprovalOutcomes
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +267,9 @@ class ProtocolService:
     # `__init__`, and `emit_safely` treats None as "report nothing".
     telemetry: TelemetryService | None = None
     sessions: SessionReporter = SessionReporter(None)
+    # None only for the minimal instances tests assemble; the server always
+    # supplies it, and a stream without it simply carries no approval outcomes.
+    approval_outcomes: ApprovalOutcomes | None = None
 
     def __init__(
         self,
@@ -286,9 +290,11 @@ class ProtocolService:
         bridge_store: CollaborationBridgeStore,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        approval_outcomes: ApprovalOutcomes,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self.telemetry = telemetry
+        self.approval_outcomes = approval_outcomes
         # Pairs session start with session end. Held here because the handler
         # that starts a session and the registry listener that ends one must
         # be the same object — an end is reported only for a start this saw.

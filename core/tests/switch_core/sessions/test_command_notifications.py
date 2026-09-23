@@ -29,7 +29,9 @@ async def test_committed_console_command_wakes_agent_stream_without_a_room(
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
-    stream = event_stream(conn=conn, registry=registry, buffer=EventBuffer())
+    stream = event_stream(
+        conn=conn, registry=registry, buffer=EventBuffer(), approvals=None
+    )
     await anext(stream)
     try:
         waiting = asyncio.create_task(anext(stream))

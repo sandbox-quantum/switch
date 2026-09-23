@@ -35,6 +35,7 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
+from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionError
 from switch_core.telemetry import TelemetryService
@@ -58,6 +59,7 @@ def create_agent_bridge_app(
     bridge_store: CollaborationBridgeStore,
     session_factory: object,
     config: SwitchConfig,
+    approval_outcomes: ApprovalOutcomes,
     connections: ConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, ProtocolService]:
@@ -93,6 +95,7 @@ def create_agent_bridge_app(
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        approval_outcomes=approval_outcomes,
         telemetry=telemetry,
     )
 

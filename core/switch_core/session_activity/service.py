@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.db.models import (
     SESSION_ACTIVITY_TYPES,
     Agent,
@@ -50,18 +51,44 @@ class ApprovalOption:
     label: str
 
 
+@dataclass(frozen=True)
+class PlatformPerson:
+    """Someone answering from a messaging platform, by their room identity (mxid)."""
+
+    mxid: str
+
+    @property
+    def recorded_as(self) -> str:
+        return self.mxid
+
+
+@dataclass(frozen=True)
+class SwitchUser:
+    """A signed-in Switch user answering from Switch Console or the web."""
+
+    user_id: str
+
+    @property
+    def recorded_as(self) -> str:
+        return f"user:{self.user_id}"
+
+
+Answerer = PlatformPerson | SwitchUser
+
+
 class SessionActivityService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
         self._approvals = ApprovalRequestStore()
         self._activity = SessionActivityStore()
         self._rooms = RoomStore()
+        self._external_users = ExternalUserStore()
         self._addressing = AddressingResolver(
             room_store=self._rooms,
             room_role_store=RoomRoleStore(),
             client_store=ClientStore(),
             agent_store=AgentStore(),
-            external_user_store=ExternalUserStore(),
+            external_user_store=self._external_users,
             # Only role mentions consult liveness; a permission check never does.
             live_connection_ids=set,
         )
@@ -220,14 +247,14 @@ class SessionActivityService:
         request_id: str,
         *,
         answer: str,
-        answered_by: str,
+        answerer: Answerer,
     ) -> ApprovalRequest:
         """Record a person's answer. A repeat of the same answer by the same person is a no-op.
 
-        `answered_by` is the answerer's Switch identity (their client's mxid),
-        and they must be someone who may address the agent: answering is
+        The answerer must be someone who may address the agent: answering is
         talking to the agent, so it takes the same permission.
         """
+        answered_by = answerer.recorded_as
         tenant_id = require_tenant_id()
         closed_as: str | None = None
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
@@ -237,7 +264,7 @@ class SessionActivityService:
                 answered_by,
             ):
                 return row
-            await self._require_may_address(db, row, answered_by)
+            await self._require_may_address(db, row, answerer)
             if row.state == "open" and _past(row.expires_at):
                 # Kept even though the answer is refused: the agent is owed the expiry.
                 row.state = "expired"
@@ -269,6 +296,10 @@ class SessionActivityService:
             if row.state == "open":
                 row.state = "closed"
             return row
+
+    async def open_for_owner(self, owner_id: str) -> list[ApprovalRequest]:
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            return await self._approvals.open_for_owner(db, owner_id)
 
     async def undelivered_outcomes(self, agent_id: str) -> list[ApprovalRequest]:
         async with tenant_session(self._sessions, require_tenant_id()) as db:
@@ -311,20 +342,22 @@ class SessionActivityService:
             raise SessionError("NOT_AUTHORIZED", "Agent is not a member of this room.")
 
     async def _require_may_address(
-        self, db: AsyncSession, row: ApprovalRequest, sender: str
+        self, db: AsyncSession, row: ApprovalRequest, answerer: Answerer
     ) -> None:
         agent = await db.get(Agent, row.agent_id)
         if agent is None:
             raise SessionError("NOT_FOUND", f"Agent not found: {row.agent_id}")
-        if row.room_id is not None:
+        if isinstance(answerer, SwitchUser):
+            allowed = await self._switch_user_may_address(db, agent, row, answerer)
+        elif row.room_id is not None:
             decision = await self._addressing.permitted(
-                db, agent=agent, room_id=row.room_id, sender=sender
+                db, agent=agent, room_id=row.room_id, sender=answerer.mxid
             )
             allowed = decision.allowed
         else:
             # Asked outside any room, so no room's policy applies: only the
             # agent's owner may answer.
-            principal = await self._addressing.resolve_sender(db, sender)
+            principal = await self._addressing.resolve_sender(db, answerer.mxid)
             allowed = (
                 principal is not None
                 and agent.owner_id is not None
@@ -335,6 +368,23 @@ class SessionActivityService:
                 "NOT_AUTHORIZED",
                 "You may not address this agent, so you may not answer it.",
             )
+
+    async def _switch_user_may_address(
+        self, db: AsyncSession, agent: Agent, row: ApprovalRequest, user: SwitchUser
+    ) -> bool:
+        """The rule the platform follows when it speaks on a person's behalf."""
+        if row.room_id is None:
+            return agent.owner_id is not None and agent.owner_id == user.user_id
+        room = await self._rooms.get(db, row.room_id)
+        claimed = await self._external_users.get_by_user(db, user.user_id)
+        return allows_on_behalf_of(
+            parse_policy(agent.addressing_policy),
+            room_id=row.room_id,
+            group_id=room.group_id if room is not None else None,
+            user_id=user.user_id,
+            external_user_ids=[account.id for account in claimed],
+            owner_user_id=agent.owner_id,
+        )
 
     async def _require_request(
         self, db: AsyncSession, agent_id: str, session_id: str, request_id: str

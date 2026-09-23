@@ -58,6 +58,7 @@ def _build(telemetry: TelemetryService) -> Any:
         bridge_store=object(),  # type: ignore[arg-type]
         session_factory=object(),
         config=_config(),
+        approval_outcomes=object(),  # type: ignore[arg-type]
         telemetry=telemetry,
     )
     return protocol

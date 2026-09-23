@@ -57,6 +57,10 @@ _ALLOWED_MODULES = {
     # Reconciling every room's client membership at startup fans out over
     # every tenant's rooms before binding each room's own tenant.
     "switch_core.room_service",
+    # Session-activity upkeep expires overdue approval requests and prunes
+    # old activity lines in every tenant: enumerate, then bind each tenant and
+    # work under its own policy, the same shape as the runtime-state sweep.
+    "switch_core.session_activity.maintenance",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.

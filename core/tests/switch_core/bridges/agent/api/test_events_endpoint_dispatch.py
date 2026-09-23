@@ -31,6 +31,8 @@ class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
         self.connections = ConnectionRegistry()
+        # No approval outcomes: these tests are about opening the stream.
+        self.approval_outcomes = None
         # Opening and closing a stream reports a session; a reporter with no
         # telemetry service reports nothing, which is what these tests want.
         self.telemetry = None

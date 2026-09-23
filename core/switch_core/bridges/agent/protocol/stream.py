@@ -18,7 +18,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_LAPSED,
@@ -35,6 +35,9 @@ from switch_core.bridges.agent.protocol.event_buffer import (
 from switch_core.sessions.command_notifications import subscribe
 from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
+
+if TYPE_CHECKING:
+    from switch_core.session_activity.outcomes import ApprovalOutcomes, Outcome
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +108,14 @@ def event_stream(
     conn: Connection,
     registry: ConnectionRegistry,
     buffer: EventBuffer,
+    approvals: ApprovalOutcomes | None,
 ) -> AsyncIterator[bytes]:
     return _event_stream(
-        conn=conn, registry=registry, buffer=buffer, generation=conn.stream_generation
+        conn=conn,
+        registry=registry,
+        buffer=buffer,
+        approvals=approvals,
+        generation=conn.stream_generation,
     )
 
 
@@ -116,6 +124,7 @@ async def _event_stream(
     conn: Connection,
     registry: ConnectionRegistry,
     buffer: EventBuffer,
+    approvals: ApprovalOutcomes | None,
     generation: int,
 ) -> AsyncIterator[bytes]:
     """Yield SSE frames for a connection until its stream is superseded or it dies."""
@@ -141,6 +150,26 @@ async def _event_stream(
         else nullcontext()
     )
     subscription.__enter__()
+
+    # Approval answers and expiries, for the agent's own stream only: the
+    # watcher that routes work to its sessions. Owed ones are read on opening
+    # and on every resync; live ones arrive pushed. Keyed so a resync that
+    # overlaps a live push sends each outcome once per pass.
+    outcomes: dict[tuple[str, str], Outcome] = {}
+    resync = [False]
+    unsubscribe_outcomes = None
+    if approvals is not None and tenant_id is not None and conn.scope == "all":
+
+        def owe(outcome: Outcome) -> None:
+            outcomes[(outcome["session_id"], outcome["request_id"])] = outcome
+            conn.wake.set()
+
+        def recheck() -> None:
+            resync[0] = True
+            conn.wake.set()
+
+        unsubscribe_outcomes = approvals.subscribe(tenant_id, agent_id, owe, recheck)
+        resync[0] = True
     try:
         yield _frame("connection_state", _connection_state(conn))
 
@@ -238,6 +267,16 @@ async def _event_stream(
                 session_ids = sorted(commands)
                 commands.clear()
                 yield _frame("session_commands", {"session_ids": session_ids})
+
+            if resync[0] and approvals is not None:
+                resync[0] = False
+                for outcome in await approvals.undelivered(agent_id):
+                    outcomes[(outcome["session_id"], outcome["request_id"])] = outcome
+            if outcomes:
+                owed = list(outcomes.values())
+                outcomes.clear()
+                for outcome in owed:
+                    yield _frame("approval_outcome", outcome)
 
             if conn.rooms != last_rooms:
                 last_rooms = set(conn.rooms)
@@ -354,6 +393,8 @@ async def _event_stream(
             # and the clear would otherwise wait for the keepalive timeout.
             if (
                 commands
+                or outcomes
+                or resync[0]
                 or buffer.head(agent_id) > conn.cursor
                 or conn.rooms != last_rooms
             ):
@@ -363,6 +404,8 @@ async def _event_stream(
                 yield b": keepalive\n\n"
     finally:
         subscription.__exit__(None, None, None)
+        if unsubscribe_outcomes is not None:
+            unsubscribe_outcomes()
         registry.detach_stream(conn, generation)
 
 

@@ -17,6 +17,7 @@ from switch_core.db.models import (
 )
 from switch_core.session_activity.service import (
     ApprovalOption,
+    PlatformPerson,
     SessionActivityService,
 )
 from switch_core.sessions.service import SessionError
@@ -111,7 +112,11 @@ async def test_one_tenant_cannot_answer_anothers_request(rls_harness):
         )
     with tenant_scope("tenant-b"), pytest.raises(SessionError) as error:
         await b.answer_approval(
-            "tenant-a", "session-demo", "req-1", answer="yes", answered_by="x"
+            "tenant-a",
+            "session-demo",
+            "req-1",
+            answer="yes",
+            answerer=PlatformPerson("x"),
         )
     assert error.value.code == "NOT_FOUND"
     with tenant_scope("tenant-a"):

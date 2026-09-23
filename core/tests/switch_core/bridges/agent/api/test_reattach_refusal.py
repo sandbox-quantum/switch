@@ -33,6 +33,8 @@ class _Protocol:
     def __init__(self) -> None:
         self.event_buffer = EventBuffer()
         self.connections = ConnectionRegistry()
+        # No approval outcomes: these tests are about opening the stream.
+        self.approval_outcomes = None
         self.declarations: list[ClientDeclaration] = []
 
     async def record_client_declaration(

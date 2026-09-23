@@ -11,7 +11,7 @@ from switch_core.bridges.agent.api.activity_routes import router
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory
 from switch_core.db.models import Agent, ApprovalRequest
-from switch_core.session_activity.service import ApprovalOption
+from switch_core.session_activity.service import ApprovalOption, PlatformPerson
 from switch_core.sessions.http import session_error_response
 from switch_core.sessions.service import SessionError
 
@@ -97,7 +97,7 @@ async def test_approval_round_trip_over_http(client, service, people):
     assert outcomes.json() == []
 
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answered_by=people.owner
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
     )
     [owed] = (await client.get("/agent-sessions/approvals/outcomes")).json()
     assert (owed["state"], owed["answer"], owed["answeredBy"]) == (
