@@ -26,7 +26,7 @@ def summary(job: ProviderVerification) -> dict:
         else "failed",
         "verification_id": job.id,
         "kind": job.kind,
-        "verified_at": str(job.created_at),
+        "created_at": str(job.created_at),
         "error": FAILURE if state in ("failed", "cancelled") else None,
     }
 

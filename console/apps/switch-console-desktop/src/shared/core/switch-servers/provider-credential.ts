@@ -5,7 +5,7 @@ export const cloudProviderConnectionSchema = z.discriminatedUnion('status', [
     status: z.enum(['verifying', 'failed']),
     kind: z.enum(['api-key', 'setup-token', 'auth-json']),
     verification_id: z.string(),
-    verified_at: z.string(),
+    created_at: z.string(),
     error: z.string().nullable(),
   }),
   z.object({
