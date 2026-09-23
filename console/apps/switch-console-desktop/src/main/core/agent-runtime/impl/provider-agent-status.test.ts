@@ -27,15 +27,15 @@ describe('toAgentEvent', () => {
   });
 
   it('reports a finished turn as completed', () => {
-    expect(statusOf({ type: 'turn.completed', turnId: 't1', outcome: 'completed' })).toBe(
-      'completed'
-    );
+    expect(
+      statusOf({ type: 'turn.completed', turnId: 't1', outcome: 'completed', usage: [] })
+    ).toBe('completed');
   });
 
   it('reports an interrupted turn as completed, not as a failure', () => {
-    expect(statusOf({ type: 'turn.completed', turnId: 't1', outcome: 'interrupted' })).toBe(
-      'completed'
-    );
+    expect(
+      statusOf({ type: 'turn.completed', turnId: 't1', outcome: 'interrupted', usage: [] })
+    ).toBe('completed');
   });
 
   /**
@@ -44,7 +44,13 @@ describe('toAgentEvent', () => {
    */
   it('reports a failed turn as an error, carrying its reason', () => {
     const agentEvent = toAgentEvent(
-      event({ type: 'turn.completed', turnId: 't1', outcome: 'error', message: 'model refused' }),
+      event({
+        type: 'turn.completed',
+        turnId: 't1',
+        outcome: 'error',
+        message: 'model refused',
+        usage: [],
+      }),
       PARAMS
     );
     expect(agentEvent).toMatchObject({ type: 'error', payload: { message: 'model refused' } });

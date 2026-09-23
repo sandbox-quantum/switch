@@ -25,6 +25,7 @@ export const CODEX_SERVER_NOTIFICATIONS = {
   threadStatusChanged: 'thread/status/changed',
   turnStarted: 'turn/started',
   turnCompleted: 'turn/completed',
+  threadTokenUsageUpdated: 'thread/tokenUsage/updated',
   itemStarted: 'item/started',
   itemCompleted: 'item/completed',
   agentMessageDelta: 'item/agentMessage/delta',
@@ -128,6 +129,31 @@ export interface CodexThreadStatusChangedNotification {
 export interface CodexTurnNotification {
   threadId: string;
   turn: CodexTurn;
+}
+
+/**
+ * Token counts as Codex reports them. `cachedInputTokens` is a part of
+ * `inputTokens`, and `reasoningOutputTokens` a part of `outputTokens`.
+ * `cacheWriteInputTokens` is absent from Codex builds that predate it.
+ */
+export interface CodexTokenUsageBreakdown {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens?: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+/** `total` runs for the whole thread; `last` is the most recent model call. */
+export interface CodexThreadTokenUsageUpdatedNotification {
+  threadId: string;
+  turnId: string;
+  tokenUsage: {
+    total: CodexTokenUsageBreakdown;
+    last: CodexTokenUsageBreakdown;
+    modelContextWindow: number | null;
+  };
 }
 
 export interface CodexItemNotification {
