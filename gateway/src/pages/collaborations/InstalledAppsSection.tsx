@@ -203,10 +203,10 @@ export default function InstalledAppsSection({
 
       <Typography variant="body2" color="text.secondary" mb={2}>
         Installing adds this Switch deployment&apos;s own app to your workspace.
-        The workspace grants it a token that Switch holds and you cannot see or
-        rotate, and the connection it creates receives messages over HTTPS
-        rather than the socket a registered app opens. Removing it has to go
-        through Disconnect, which revokes that token at the platform first.
+        Unlike a registered app, whose token is yours to rotate, an installed app
+        authenticates with credentials this deployment holds and you cannot see
+        or rotate. Removing it has to go through Disconnect rather than deleting
+        its connection.
       </Typography>
 
       {error && (

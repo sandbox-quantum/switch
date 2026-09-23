@@ -164,3 +164,50 @@ async def test_stop_awaits_session_publisher_shutdown() -> None:
     await core.stop()
     assert stopped.is_set()
     assert core._session_publication_task is None
+
+
+async def test_attach_reprovision_does_not_overwrite_a_running_task() -> None:
+    """A shared bridge re-provisions when its connection attaches, but must not
+    replace a start-time run still in flight: the run spends most of its life in
+    the agent read before the per-agent loop, so an attach then would otherwise
+    spawn a second provisioner (two concurrent create_agent_identity calls can
+    double a role) and orphan the handle stop() cancels."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_provision() -> None:
+        started.set()
+        await release.wait()
+
+    core, _ = _core(_slow_provision)
+    core._identity_task = asyncio.create_task(core._run_agent_identities())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    running = core._identity_task
+
+    core._provision_identities_on_attach()
+
+    assert core._identity_task is running  # not overwritten while live
+    release.set()
+    await core.stop()
+
+
+async def test_attach_reprovision_runs_when_no_task_is_live() -> None:
+    """The usual case: the start-time run has finished (it fails fast while the
+    bridge is unattached), so attaching spawns a fresh provisioning run."""
+    runs = 0
+    done = asyncio.Event()
+
+    async def _provision() -> None:
+        nonlocal runs
+        runs += 1
+        done.set()
+
+    core, _ = _core(_provision)
+    core._identity_task = None
+
+    core._provision_identities_on_attach()
+    await asyncio.wait_for(done.wait(), timeout=1)
+
+    assert runs == 1
+    assert core._identity_task is not None
+    await core.stop()
