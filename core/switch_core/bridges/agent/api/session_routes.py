@@ -50,6 +50,30 @@ async def acquire(
     return await SessionAuthority(factory).acquire(agent.id, body)
 
 
+class RestoreLegacyRoom(HostLease):
+    room_id: str = Field(min_length=1)
+
+
+@router.post("/{session_id}/restore-legacy-room")
+async def restore_legacy_room(
+    session_id: str,
+    body: RestoreLegacyRoom,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict[str, bool]:
+    return {
+        "restored": await SessionAuthority(factory).restore_legacy_room(
+            agent.id,
+            session_id,
+            body.host_id,
+            body.epoch,
+            body.room_id,
+            protocol.connections,
+        )
+    }
+
+
 @router.post("/{session_id}/renew")
 async def renew(
     session_id: str, body: HostLease, agent: AuthenticatedAgent, factory: Factory

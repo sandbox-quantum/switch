@@ -527,7 +527,12 @@ function admittingServer() {
   return { admitted };
 }
 
-function startWorker(root: string, adapter: ProviderAdapter, signal: AbortSignal) {
+function startWorker(
+  root: string,
+  adapter: ProviderAdapter,
+  signal: AbortSignal,
+  restoreRoomId?: string
+) {
   return runSharedHost(
     {
       root,
@@ -541,7 +546,7 @@ function startWorker(root: string, adapter: ProviderAdapter, signal: AbortSignal
         env: {},
         mcpServers: {},
       },
-      roomConnection: { connectionId: 'connection' },
+      roomConnection: { connectionId: 'connection', restoreRoomId },
     },
     adapter,
     signal
@@ -1372,3 +1377,39 @@ it('settles its outstanding pull when the host stops, and acts on nothing after'
   expect(server.admitted).toEqual([]);
   expect((await inboxRecords(root)).filter((record) => record.type === 'received')).toEqual([]);
 }, 20000);
+
+it('restores the saved room with the acquired lease before binding, without sending a turn', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-legacy-restore-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  admittingServer();
+  const server = globalThis.fetch;
+  let restored = false;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/restore-legacy-room')) {
+        expect(JSON.parse(options.body as string)).toEqual({
+          host_id: 'host',
+          epoch: 'server-epoch',
+          room_id: 'room',
+        });
+        restored = true;
+        return Response.json({ restored: true });
+      }
+      if (path.endsWith('/room-connection')) expect(restored).toBe(true);
+      return server(url, options);
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal, 'room');
+  try {
+    await vi.waitFor(async () => expect(await boundRooms(root)).toEqual([['room']]));
+    expect(ran).toEqual([]);
+    expect(adapter.sendTurn).not.toHaveBeenCalled();
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});

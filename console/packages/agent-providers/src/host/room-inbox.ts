@@ -41,7 +41,11 @@ export function roomInputId(event: AgentBridgeEvent): string | null {
  * neither is a session's to decide now, and refusing them would leave a
  * session an older app started unopenable by this one.
  */
-export const roomConnectionSchema = z.object({ connectionId: z.string().min(1) });
+export const roomConnectionSchema = z.object({
+  connectionId: z.string().min(1),
+  // A migration hint, never an instruction to take a room from another session.
+  restoreRoomId: z.string().min(1).optional(),
+});
 const gapSchema = z
   .strictObject({
     fromSequence: z.number().int().nonnegative(),

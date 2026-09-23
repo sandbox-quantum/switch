@@ -10,7 +10,7 @@ import {
   snapshotSchema,
 } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
-import type { z } from 'zod';
+import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { declareHandoffCapability, HandoffInbox } from './handoff';
@@ -341,6 +341,14 @@ export async function runSharedHost(
         }
       }
     })();
+    if (options.roomConnection?.restoreRoomId) {
+      const answer = await request(`${sessionPath}/restore-legacy-room`, {
+        ...hostLease,
+        room_id: options.roomConnection.restoreRoomId,
+      });
+      if (!z.object({ restored: z.boolean() }).parse(answer).restored)
+        console.warn('The saved room was not restored; Switch kept its current room ownership.');
+    }
     await state.journal.append({ type: 'running' });
     let rooms: SharedRoomInbox | null = null;
     let handoffs: HandoffInbox | null = null;

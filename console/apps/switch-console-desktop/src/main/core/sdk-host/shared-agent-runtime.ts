@@ -35,6 +35,7 @@ import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
+import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import {
@@ -390,6 +391,7 @@ export async function buildSharedHostConfig(
       : undefined;
   const optionKey = provider === 'opencode' ? 'variant' : 'effort';
   const optionValue = specialization[optionKey];
+  const persistedRoom = await getPersistedRoomConnection(session.id);
   const config: SharedHostConfig = {
     session: {
       sessionId: session.id,
@@ -435,7 +437,12 @@ export async function buildSharedHostConfig(
     // Every session of an agent is reached over that agent's one connection,
     // held by its controller, so the identity is derived rather than minted:
     // a session that restarts binds to the same one it did before.
-    roomConnection: { connectionId: controllerConnectionId(agent.switchAgentId) },
+    roomConnection: {
+      connectionId: controllerConnectionId(agent.switchAgentId),
+      ...(persistedRoom?.switchAgentId === agent.switchAgentId
+        ? { restoreRoomId: persistedRoom.roomId }
+        : {}),
+    },
     execution: {
       credentialsPath: (transport.kind === 'ssh' ? posix.join : join)(
         params.sessionPath,

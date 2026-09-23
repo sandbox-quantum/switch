@@ -714,3 +714,171 @@ async def test_a_stream_reopened_on_the_room_is_refused_and_says_which_refusal(
     )
     admission = await _next_admission(service, "after-the-reopen")
     assert (admission.status, admission.session_id) == ("owner", FIRST_SESSION)
+
+
+async def test_host_restores_legacy_room_after_server_restart(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    restarted = ConnectionRegistry()
+    snapshot = await service.snapshot(FIRST_SESSION, "owner")
+    epoch = snapshot.session.epoch
+    await service.quiesce(AGENT, FIRST_SESSION, FIRST_HOST, epoch)
+    recovered = await service.recover(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, "recover-after-restart", 0
+    )
+    epoch = recovered.session.epoch
+    assert (
+        await service.carry_connection_rooms(AGENT, CONTROLLER, restarted)
+    ).unverifiable == (FIRST_SESSION,)
+
+    assert await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, restarted
+    )
+    assert await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, restarted
+    )
+    assert (
+        await service.carry_connection_rooms(AGENT, CONTROLLER, restarted)
+    ).unverifiable == ()
+    admission = await _next_admission(service, "after-restart")
+    assert admission.session_id == FIRST_SESSION
+
+
+async def test_legacy_restore_does_not_take_a_siblings_room(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    second_epoch = await _second_session(service)
+    await service.bind_room(AGENT, SECOND[0], SECOND[1], second_epoch, ROOM)
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, ConnectionRegistry()
+    )
+    assert (await service.snapshot(SECOND[0], "owner")).session.room_ids == [ROOM]
+
+
+async def test_legacy_restore_does_not_undo_an_eviction(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    await service.bind_room(AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM)
+    second_epoch = await _second_session(service)
+    await service.bind_room(AGENT, SECOND[0], SECOND[1], second_epoch, ROOM)
+    await _finish_session(service, SECOND[0], SECOND[1], second_epoch)
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, ConnectionRegistry()
+    )
+
+
+async def test_legacy_restore_respects_pending_start(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    await _next_admission(service, "pending-start")
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, ConnectionRegistry()
+    )
+
+
+async def test_legacy_restore_requires_current_host(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    with pytest.raises(SessionError):
+        await service.restore_legacy_room(
+            AGENT, FIRST_SESSION, "other-host", epoch, ROOM, ConnectionRegistry()
+        )
+    with pytest.raises(SessionError):
+        await service.restore_legacy_room(
+            AGENT, FIRST_SESSION, FIRST_HOST, "old-epoch", ROOM, ConnectionRegistry()
+        )
+
+
+async def test_legacy_restore_respects_live_legacy_claim(session_factory):
+    service, connections = await _legacy(session_factory, [])
+    _serving(connections, "other-session", [ROOM])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, connections
+    )
+
+
+async def test_legacy_restore_checks_membership(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, "not-a-room", ConnectionRegistry()
+    )
+
+
+async def test_legacy_restore_route_uses_the_host_fence(session_factory):
+    from switch_core.bridges.agent.api.session_routes import (
+        RestoreLegacyRoom,
+        restore_legacy_room,
+    )
+
+    service, _ = await _legacy(session_factory, [ROOM])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    response = await restore_legacy_room(
+        FIRST_SESSION,
+        RestoreLegacyRoom(host_id=FIRST_HOST, epoch=epoch, room_id=ROOM),
+        agent=SimpleNamespace(id=AGENT),
+        factory=session_factory,
+        protocol=SimpleNamespace(connections=ConnectionRegistry()),
+    )
+    assert response == {"restored": True}
+    assert (await service.snapshot(FIRST_SESSION, "owner")).session.room_ids == [ROOM]
+
+
+async def test_legacy_restore_does_not_override_a_live_room_move(session_factory):
+    service, connections = await _legacy(session_factory, [])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, connections
+    )
+
+
+async def test_legacy_restore_after_binding_to_a_shared_controller(session_factory):
+    service, connections = await _legacy(session_factory, [])
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    connections.open(
+        agent_id=AGENT,
+        connection_id=CONTROLLER,
+        scope="all",
+        delivery_filter="addressed",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(),
+        expected_generation=None,
+    )
+    await service.bind_connection(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, CONTROLLER, connections
+    )
+    assert await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, connections
+    )
+
+
+async def test_refused_saved_room_does_not_block_the_agents_controller(session_factory):
+    service, _ = await _legacy(session_factory, [ROOM])
+    second_epoch = await _second_session(service)
+    await service.bind_room(AGENT, SECOND[0], SECOND[1], second_epoch, ROOM)
+    epoch = (await service.snapshot(FIRST_SESSION, "owner")).session.epoch
+    restarted = ConnectionRegistry()
+    assert (
+        await service.carry_connection_rooms(AGENT, CONTROLLER, restarted)
+    ).unverifiable == (FIRST_SESSION,)
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, restarted
+    )
+    assert (
+        await service.carry_connection_rooms(AGENT, CONTROLLER, restarted)
+    ).unverifiable == ()
+    assert (await _notices(session_factory, FIRST_SESSION))[-1][
+        0
+    ] == "ROOM_RESTORE_REFUSED"
+    assert (
+        await _next_admission(service, "after-refused-restore")
+    ).session_id == SECOND[0]
+    # A retry and a second server restart cannot erase the refusal or steal it.
+    assert not await service.restore_legacy_room(
+        AGENT, FIRST_SESSION, FIRST_HOST, epoch, ROOM, ConnectionRegistry()
+    )
+    assert (
+        await service.carry_connection_rooms(AGENT, CONTROLLER, ConnectionRegistry())
+    ).unverifiable == ()
+    assert len(await _notices(session_factory, FIRST_SESSION)) == 2

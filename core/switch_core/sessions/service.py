@@ -2381,6 +2381,116 @@ class SessionAuthority:
                 room_id=rooms[0] if len(rooms) == 1 else None,
             )
 
+    async def restore_legacy_room(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        room_id: str,
+        connections: ConnectionRegistry,
+    ) -> bool:
+        """Recover a pre-room-record session from its host's saved room.
+
+        Unlike an explicit room hop, recovery never evicts another session.
+        The host must still own the session, and a session that has ever had
+        durable room state must use that state instead of a stale local copy.
+        This works before the controller connects, including after a server
+        restart has erased the legacy connection registry.
+        """
+        async with (
+            connections.slots(agent_id),
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            await self._lock_agent(db, agent_id)
+            rows = list(
+                await db.scalars(
+                    select(SdkSession)
+                    .where(
+                        SdkSession.tenant_id == require_tenant_id(),
+                        SdkSession.agent_id == agent_id,
+                    )
+                    .order_by(SdkSession.id)
+                    .with_for_update()
+                )
+            )
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            snapshot = _stored_snapshot(row)
+            if snapshot.session.room_ids:
+                return room_id in snapshot.session.room_ids
+            if (
+                snapshot.session.retired
+                or _session_is_over(row)
+                or row.connection_id is None
+            ):
+                return False
+            recorded = await db.scalar(
+                select(SdkSessionEvent.sequence)
+                .where(
+                    SdkSessionEvent.tenant_id == require_tenant_id(),
+                    SdkSessionEvent.session_id == session_id,
+                    func.jsonb_array_length(
+                        SdkSessionEvent.event["body"]["session"]["roomIds"]
+                    )
+                    > 0,
+                )
+                .limit(1)
+            )
+            if recorded is not None:
+                if await self._last_carry_notice(db, row.id) != "ROOM_RESTORE_REFUSED":
+                    await self._append(
+                        db,
+                        row,
+                        _carry_notice(
+                            [], [RefusedRoom(room_id, "PRIOR_CLAIM_RECORDED")]
+                        ).model_copy(update={"code": "ROOM_RESTORE_REFUSED"}),
+                    )
+                return False
+            now = await _now(db)
+            claimant = connections.claimant_of(agent_id, room_id)
+            previous = connections.get(row.connection_id)
+            if (
+                previous is not None
+                and previous.is_alive(time.monotonic())
+                and (
+                    previous.agent_id != agent_id
+                    or (previous.scope == "single" and room_id not in previous.rooms)
+                )
+            ):
+                return False
+            reason = None
+            if (
+                await db.get(ClientRoom, (await self._client_id(db, agent_id), room_id))
+                is None
+            ):
+                reason = "NOT_MEMBER"
+            elif _room_claimants(rows, room_id, now)[1]:
+                reason = "ROOM_HELD"
+            elif await self._grant_outstanding(db, agent_id, room_id, now):
+                reason = "GRANT_OUTSTANDING"
+            elif claimant is not None and claimant.id != row.connection_id:
+                reason = "ROOM_HELD"
+            if reason is not None:
+                if await self._last_carry_notice(db, row.id) != "ROOM_RESTORE_REFUSED":
+                    await self._append(
+                        db,
+                        row,
+                        _carry_notice([], [RefusedRoom(room_id, reason)]).model_copy(
+                            update={"code": "ROOM_RESTORE_REFUSED"}
+                        ),
+                    )
+                return False
+            await self._append(
+                db,
+                row,
+                SessionUpsert(
+                    type="session.upsert",
+                    session=snapshot.session.model_copy(update={"room_ids": [room_id]}),
+                ),
+            )
+            return True
+
     async def bind_room(
         self, agent_id: str, session_id: str, host_id: str, epoch: str, room_id: str
     ) -> RoomBinding:
@@ -2612,7 +2722,13 @@ class SessionAuthority:
                     or connection.agent_id != agent_id
                     or not connection.is_alive(uptime)
                 ):
-                    if await self._last_carry_notice(db, row.id) != "ROOMS_UNDECIDED":
+                    decision = await self._last_carry_notice(db, row.id)
+                    # A host's saved-room recovery can settle this without a
+                    # live legacy connection. Refused is decided, not unknown:
+                    # blocking here would keep the actual room owner offline.
+                    if decision == "ROOM_RESTORE_REFUSED":
+                        continue
+                    if decision != "ROOMS_UNDECIDED":
                         await self._append(db, row, _undecided_notice())
                     unverifiable.append(row.id)
                     continue
@@ -2682,7 +2798,12 @@ class SessionAuthority:
                 SdkSessionEvent.tenant_id == require_tenant_id(),
                 SdkSessionEvent.session_id == session_id,
                 SdkSessionEvent.event["body"]["code"].astext.in_(
-                    ("ROOMS_CARRIED", "ROOMS_NOT_CARRIED", "ROOMS_UNDECIDED")
+                    (
+                        "ROOMS_CARRIED",
+                        "ROOMS_NOT_CARRIED",
+                        "ROOMS_UNDECIDED",
+                        "ROOM_RESTORE_REFUSED",
+                    )
                 ),
             )
             .order_by(SdkSessionEvent.sequence.desc())

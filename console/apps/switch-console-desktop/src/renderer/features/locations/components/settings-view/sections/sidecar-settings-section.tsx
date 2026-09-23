@@ -35,7 +35,7 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
   const running = watcher?.running ?? false;
   const enabled = watcher?.enabled ?? false;
   // A local agent has no sidecar: Console watches its rooms itself, so there is
-  // no deployed build to compare and nothing to update, restart or stop here.
+  // no deployed build to compare or update. Its connection can still be restarted.
   const deployed = data?.transport === 'ssh';
   const differentBuild =
     deployed && !!watcher?.buildHash && watcher.buildHash !== data?.availableBuildHash;
@@ -158,7 +158,7 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               unanswered.{' '}
               {deployed
                 ? 'Inspect the log before restarting.'
-                : 'Inspect the log below; reopening Console starts it again.'}
+                : 'Inspect the log below, then restart the room watcher.'}
             </p>
           )}
           {watcher?.failure && (
@@ -166,18 +166,20 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               {watcher.failure}
             </p>
           )}
-          {deployed && (
+          {(deployed || !takenOver) && (
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                disabled={
-                  action.isPending ||
-                  !enabled ||
-                  (running && !differentBuild && !!watcher?.buildHash)
-                }
-                onClick={() => action.mutate('update')}
-              >
-                <RefreshCw className="size-3.5" /> Update
-              </Button>
+              {deployed && (
+                <Button
+                  disabled={
+                    action.isPending ||
+                    !enabled ||
+                    (running && !differentBuild && !!watcher?.buildHash)
+                  }
+                  onClick={() => action.mutate('update')}
+                >
+                  <RefreshCw className="size-3.5" /> Update
+                </Button>
+              )}
               <Button
                 variant="outline"
                 disabled={action.isPending}
