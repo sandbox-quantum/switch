@@ -19,6 +19,7 @@ import {
   type ConnectRemoteServerResult,
   type DockerAvailability,
   type RemoteStackProbe,
+  type StackRegister,
   type StartLocalServerResult,
   matrixMigrationFailedMessage,
   switchVersionDowngradeMessage,
@@ -28,6 +29,7 @@ import {
   remoteServerLogChannel,
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
+import { readRegister, recordOnHost } from './console-register';
 import { readVersionStatus } from './deployed-version';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
@@ -163,6 +165,20 @@ class RemoteServerService {
     }
   }
 
+  /** Who uses the stack on `sshHost` and what they last did to it, as the
+   * Consoles sharing it have recorded on the host. Reads only. */
+  async register(sshHost: string): Promise<StackRegister> {
+    hostReachabilityService.requireReachable(sshHost);
+    const live = this.hosts.get(sshHost);
+    if (live) return readRegister(live);
+    const host = await createRemoteServerHost(sshHost);
+    try {
+      return await readRegister(host);
+    } finally {
+      host.dispose();
+    }
+  }
+
   /** Re-establish forwards + status for remote stacks that survived the last
    * quit, so their desktop reachability is restored on launch. Best-effort per
    * host: an unreachable host is left `stopped` rather than failing boot. */
@@ -252,6 +268,7 @@ class RemoteServerService {
         // Only for a running stack: a stopped one sends nothing, so it
         // cannot be out of step with the user's answer.
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
+        await recordOnHost(host, null);
       } else {
         this.setStatus(sshHost, {
           phase: 'stopped',
@@ -365,6 +382,7 @@ class RemoteServerService {
           drift: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
+        await recordOnHost(host, 'started');
       }
       reportManagedServerStart('remote', result);
       return result;
@@ -422,6 +440,7 @@ class RemoteServerService {
         });
         this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
+        await recordOnHost(host, 'connected');
         return result;
       }
       host.dispose();
@@ -457,7 +476,13 @@ class RemoteServerService {
       throw new Error(`An operation is already in progress for ${sshHost}.`);
     this.busy.add(sshHost);
     try {
-      this.releaseHost(sshHost, this.hosts.get(sshHost) ?? null);
+      // Said on the host only when this Console is still connected to it:
+      // leaving must not wait on, or fail for, a host that is out of reach.
+      const live = this.hosts.get(sshHost) ?? null;
+      if (live && !hostReachabilityService.isBlocked(sshHost)) {
+        await recordOnHost(live, 'disconnected');
+      }
+      this.releaseHost(sshHost, live);
       const server = await getRemoteManagedServer(sshHost);
       if (server) await removeServer(server.id);
       await clearSecrets({ secretsKey: remoteSecretsKey(sshHost) });
@@ -491,6 +516,7 @@ class RemoteServerService {
         notice: null,
         deployedTelemetry: null,
       });
+      await recordOnHost(host, 'stopped');
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
@@ -532,6 +558,9 @@ class RemoteServerService {
         notice: null,
         deployedTelemetry: null,
       });
+      // Kept through the reset on purpose: who destroyed a shared server is
+      // exactly what its other users will ask.
+      await recordOnHost(host, 'reset');
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {

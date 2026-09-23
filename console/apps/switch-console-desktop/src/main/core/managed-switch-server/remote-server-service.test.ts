@@ -29,6 +29,8 @@ const readDeployedTelemetry = vi.hoisted(() =>
   vi.fn(() => Promise.resolve({ known: true, enabled: false }))
 );
 const emitted = vi.hoisted(() => [] as RemoteServerStatus[]);
+const recordOnHost = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const readRegister = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
   hostReachabilityService: { requireReachable, isBlocked, on: vi.fn() },
@@ -68,6 +70,7 @@ vi.mock('./secrets', () => ({ clearSecrets }));
 vi.mock('./ports', () => ({ clearPorts }));
 vi.mock('./deployed-version', () => ({ readVersionStatus }));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry }));
+vi.mock('./console-register', () => ({ recordOnHost, readRegister }));
 
 const ports = { gateway: 41000, api: 41001, mattermost: 41002, postgres: 41003 };
 const secrets = {
@@ -152,6 +155,7 @@ describe('connect', () => {
         serverName: 'Team server',
       })
     );
+    expect(recordOnHost).toHaveBeenCalledExactlyOnceWith(host, 'connected');
   });
 
   it('leaves a stopped stack stopped, for Start, and lets the host go', async () => {
@@ -163,6 +167,8 @@ describe('connect', () => {
     expect(await service.connect('vm-1', 'Team server')).toEqual({ kind: 'not-running' });
     expect(service.getStatus('vm-1').phase).toBe('stopped');
     expect(host.dispose).toHaveBeenCalledOnce();
+    // Nothing happened on the host, so there is nothing to record there.
+    expect(recordOnHost).not.toHaveBeenCalled();
   });
 
   it('shows why another account’s unshared stack cannot be joined', async () => {
@@ -199,8 +205,11 @@ describe('disconnect', () => {
     await service.connect('vm-1', 'Team server');
     createRemoteServerHost.mockClear();
 
+    recordOnHost.mockClear();
+
     await service.disconnect('vm-1');
 
+    expect(recordOnHost).toHaveBeenCalledExactlyOnceWith(host, 'disconnected');
     expect(host.dispose).toHaveBeenCalledOnce();
     expect(createRemoteServerHost).not.toHaveBeenCalled();
     expect(removeServer).toHaveBeenCalledExactlyOnceWith('srv-1');
@@ -226,6 +235,23 @@ describe('disconnect', () => {
   });
 });
 
+describe('disconnecting from a host that is out of reach', () => {
+  it('still lets go, without waiting on the host to record it', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    connectStack.mockResolvedValue({ kind: 'connected', serverId: 'srv-1', deployedVersion: null });
+    const service = await loadService();
+    await service.connect('vm-1', 'Team server');
+    recordOnHost.mockClear();
+    isBlocked.mockReturnValue(true);
+
+    await service.disconnect('vm-1');
+
+    expect(recordOnHost).not.toHaveBeenCalled();
+    expect(removeServer).toHaveBeenCalledOnce();
+  });
+});
+
 describe('picking a shared stack back up', () => {
   it('adopts a running stack with the settings the host holds', async () => {
     const host = fakeHost();
@@ -240,6 +266,8 @@ describe('picking a shared stack back up', () => {
     expect(host.dispose).not.toHaveBeenCalled();
     expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', notice: null });
     expect(ensureManagedServer).not.toHaveBeenCalled();
+    // Seen, which refreshes the register, but nothing was done to the stack.
+    expect(recordOnHost).toHaveBeenCalledExactlyOnceWith(host, null);
   });
 
   it('follows a stack another Console restarted on different ports', async () => {
@@ -387,5 +415,33 @@ describe('probe', () => {
       detail: 'no daemon',
     });
     expect(inspectStack).not.toHaveBeenCalled();
+  });
+});
+
+describe('register', () => {
+  it('reads through the live host when this Console holds one', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    connectStack.mockResolvedValue({ kind: 'connected', serverId: 'srv-1', deployedVersion: null });
+    readRegister.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
+    const service = await loadService();
+    await service.connect('vm-1', 'Team server');
+    createRemoteServerHost.mockClear();
+
+    expect(await service.register('vm-1')).toEqual({ self: 'me', consoles: [], activity: [] });
+    expect(readRegister).toHaveBeenCalledWith(host);
+    expect(createRemoteServerHost).not.toHaveBeenCalled();
+  });
+
+  it('opens and closes a host of its own otherwise', async () => {
+    const host = fakeHost();
+    createRemoteServerHost.mockResolvedValue(host);
+    readRegister.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
+    const service = await loadService();
+
+    await service.register('vm-1');
+
+    expect(readRegister).toHaveBeenCalledWith(host);
+    expect(host.dispose).toHaveBeenCalledOnce();
   });
 });

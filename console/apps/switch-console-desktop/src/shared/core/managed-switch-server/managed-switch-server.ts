@@ -223,6 +223,46 @@ export type ConnectRemoteServerResult =
   | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
   | { kind: 'error'; message: string };
 
+/** Something a Console did to a shared remote stack, as recorded on its host. */
+export type StackActivityAction = 'started' | 'connected' | 'stopped' | 'reset' | 'disconnected';
+
+/**
+ * A Console that uses a shared remote stack, as it last recorded itself on the
+ * stack's host (CHOO-2893). Everyone sharing the stack signs in as the one
+ * admin account, so this — not the server — is where the people behind it are
+ * told apart.
+ */
+export type StackConsole = {
+  /** The Console's random id: the same one it sends the server. */
+  consoleId: string;
+  /** `user@host` of the desktop the Console runs on. */
+  name: string;
+  /** The account on the stack's host that Console reaches it as. */
+  hostAccount: string;
+  appVersion: string;
+  /** ISO timestamp of the last time it started, joined or picked up the stack. */
+  lastSeenAt: string;
+};
+
+export type StackActivityEntry = {
+  /** ISO timestamp. */
+  at: string;
+  action: StackActivityAction;
+  consoleId: string;
+  name: string;
+  hostAccount: string;
+};
+
+/** The Consoles recorded on a shared stack's host, and what they last did to it. */
+export type StackRegister = {
+  /** This Console's own id, so it can tell itself apart in the lists. */
+  self: string;
+  /** Most recently seen first. */
+  consoles: StackConsole[];
+  /** Most recent first, and only the latest few. */
+  activity: StackActivityEntry[];
+};
+
 /**
  * What a remote host has of a stack, for the renderer to decide what to offer
  * — Connect, Start, or neither. The main process's reading of the host with
