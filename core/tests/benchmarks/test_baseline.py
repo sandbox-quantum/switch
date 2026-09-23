@@ -22,11 +22,15 @@ scale.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import uuid
 from pathlib import Path
 
 import pytest
 
+from switch_core.sessions.contract import CommandStatus
+from switch_core.sessions.service import SessionError
 from tests.benchmarks.host import (
     BenchWatcher,
     bench_watcher,
@@ -69,6 +73,19 @@ MESSAGES_PER_ROOM = 3
 #: second ownership retry, so a delivery it would have picked up on a later
 #: sweep is not read as one it refused.
 STRANDED_SECONDS = 20.0
+
+#: How many times two sessions are raced into the same vacated room. The
+#: ordering inside the server is not staged, so the property is held over
+#: repeated attempts rather than demonstrated once.
+ROOM_MOVE_ROUNDS = 3
+
+#: How long a session is given to make its own ask for its room work, which is
+#: on its own interval. Several times that interval, so an ask delayed by a
+#: busy loop is waited out rather than read as one never made.
+ASK_HELD_SECONDS = 30.0
+
+#: How long an accepted command is given to reach a session and be applied.
+CONTROL_SECONDS = 30.0
 
 
 #: Environment variable naming a bench host bundle built from a checkout of the
@@ -1048,6 +1065,319 @@ async def test_baseline_upgrades_over_its_own_running_session(
         "first addressed after the upgrade was served normally."
     )
     assert duplicated == {}, duplicated
+
+
+async def test_baseline_settles_two_sessions_taking_one_room(
+    bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
+) -> None:
+    """Two sessions of one agent move into the same vacated room at once.
+
+    They share the agent's one connection, so the room is recorded in two
+    places that have to agree: the session rows, which say who owns it and
+    therefore who a delivery is routed to, and the connection registry, which
+    says the room is claimed on the connection the events travel over. A move
+    is both — the session that arrives takes the room, and the session that
+    leaves gives up the rooms it held — and two of them moving at once is the
+    case where one caller's tidying up can be about the state the other has
+    already replaced.
+
+    What is asserted each round is that the two answers are the same answer:
+    the room has an owner, that owner is one of the two callers, the room is
+    claimed on the agent's connection rather than left on none of them, and
+    exactly one caller is told it took the room off the other. Then a message
+    posted to the room is served once, by the session that owns it, which is
+    the part a disagreement between the two records costs.
+
+    The interleaving itself is not staged. Nothing outside the server can
+    suspend a caller between its bind committing and its registry work, so what
+    a live run can do is race the two callers repeatedly and hold the invariant
+    each time; the ordering is staged deterministically in
+    `tests/switch_core/sessions/test_connect_room_ordering.py`, against the
+    same operation.
+    """
+    target = await bench.register_agent("bench-target-move")
+    poster = await bench.register_agent("bench-poster-move")
+    await bench.start_clients(timeout=60.0)
+    rooms = [
+        await bench.create_room(
+            f"bench-move-{index}", [target.agent_id, poster.agent_id]
+        )
+        for index in range(3)
+    ]
+    home = tmp_path / "home-move"
+    home.mkdir(parents=True)
+
+    async def send(room_id: str, marker: str) -> str:
+        return correlation_for(
+            room_id,
+            await bench.address(
+                sender=poster,
+                room_id=room_id,
+                target=target.name,
+                body=f"@{target.name} {marked(marker)}",
+            ),
+        )
+
+    with bench_watcher(
+        bundle=bundle,
+        home=home,
+        base_url=bench.base_url,
+        agent_id=target.agent_id,
+        api_key=target.api_key,
+        connection_id=controller_connection_id(target.agent_id),
+    ) as watcher:
+        await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
+        markers: dict[str, str] = {}
+        for room_id in rooms[:2]:
+            marker = new_marker()
+            markers[marker] = await send(room_id, marker)
+        assert not await dispatch_wait(watcher, markers, dispatch_timeout(2))
+        assigned = watcher.sessions_by_room()
+        sessions = [assigned[room_id] for room_id in rooms[:2]]
+        assert len(set(sessions)) == 2, assigned
+
+        owner: str | None = None
+        contested = rooms[2]
+        for round_number in range(ROOM_MOVE_ROUNDS):
+            selectors = await bench.session_selectors(target.agent_id)
+            answers = await asyncio.gather(
+                *(
+                    bench.connect_session_to_room(
+                        agent=target, selector=selectors[session], room_id=contested
+                    )
+                    for session in sessions
+                )
+            )
+
+            states = await bench.room_states(target.agent_id)
+            owner = states[contested].owner
+            assert owner in sessions, (round_number, owner, sessions)
+            held = bench.connections.for_agent(target.agent_id)
+            assert len(held) == 1, held
+            claimed = bench.connections.claimant_of(target.agent_id, contested)
+            assert claimed is not None and claimed.id == held[0].id, (
+                round_number,
+                claimed,
+                held,
+            )
+
+            warnings = [answer for answer in answers if answer["warning"] is not None]
+            assert len(warnings) == 1, [answer["warning"] for answer in answers]
+            assert sessions[answers.index(warnings[0])] == owner, warnings[0]
+            displaced = next(session for session in sessions if session != owner)
+            assert displaced in warnings[0]["warning"], warnings[0]["warning"]
+
+            contested = rooms[(rooms.index(contested) + 1) % len(rooms)]
+
+        settled = rooms[(rooms.index(contested) - 1) % len(rooms)]
+        after = new_marker()
+        markers[after] = await send(settled, after)
+        assert not await dispatch_wait(
+            watcher, {after: markers[after]}, dispatch_timeout(1)
+        )
+        assert watcher.sessions_by_room()[settled] == owner, watcher.sessions_by_room()
+        reserved = await bench.reserved_deliveries(target.agent_id)
+        assert _message_of(markers[after]) not in reserved, reserved
+        assert watcher.failure() is None, watcher.failure()
+
+        collector.ingest_jsonl(watcher.trace_path, markers)
+
+    duplicated = collector.subset(set(markers.values())).repeats(PROVIDER_DISPATCH)
+    print(
+        f"two sessions taking one room: {ROOM_MOVE_ROUNDS} rounds of both "
+        "sessions of one agent moving into the same vacated room at the same "
+        "time. Every round left the room with one owning session and the room "
+        "claimed on the agent's single connection, and told exactly one caller "
+        "it had taken the room off the other. The message posted afterwards was "
+        f"served once by the session that owned the room ({owner})."
+    )
+    assert duplicated == {}, duplicated
+
+
+async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
+    bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
+) -> None:
+    """A session's ask for its own room work never answers; the rest carries on.
+
+    The ask is a session's fallback for work its controller did not route to
+    it, and it is made against a server that can be slow or gone. Held open at
+    the socket, before the request reaches a route, it is the same thing a
+    session sees when an answer is never coming: its own request outstanding,
+    and no say in when it ends.
+
+    What must not depend on it is everything the session is reached by
+    otherwise — a delivery its controller pushes, and a command submitted for
+    it. Both are asserted while the ask is still held, and the ask is asserted
+    to be exactly one: a session that started another on each interval would be
+    piling up requests against a server already failing to answer.
+
+    Then the hold is let go, and the work it was holding is not done twice.
+    """
+    target = await bench.register_agent("bench-target-stall")
+    poster = await bench.register_agent("bench-poster-stall")
+    await bench.start_clients(timeout=60.0)
+    room_id = await bench.create_room("bench-stall", [target.agent_id, poster.agent_id])
+    home = tmp_path / "home-stall"
+    home.mkdir(parents=True)
+
+    async def send(marker: str) -> str:
+        return correlation_for(
+            room_id,
+            await bench.address(
+                sender=poster,
+                room_id=room_id,
+                target=target.name,
+                body=f"@{target.name} {marked(marker)}",
+            ),
+        )
+
+    with bench_watcher(
+        bundle=bundle,
+        home=home,
+        base_url=bench.base_url,
+        agent_id=target.agent_id,
+        api_key=target.api_key,
+        connection_id=controller_connection_id(target.agent_id),
+    ) as watcher:
+        await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
+        cold = new_marker()
+        markers = {cold: await send(cold)}
+        assert not await dispatch_wait(watcher, markers, dispatch_timeout(1))
+        session = watcher.sessions_by_room()[room_id]
+
+        bench.stalls.arm()
+        try:
+            await bench.stalls.await_held(ASK_HELD_SECONDS)
+
+            pushed = new_marker()
+            markers[pushed] = await send(pushed)
+            assert not await dispatch_wait(
+                watcher, {pushed: markers[pushed]}, dispatch_timeout(1)
+            )
+
+            receipt = await _control_when_idle(
+                bench,
+                agent_id=target.agent_id,
+                room_id=room_id,
+                message_id=str(uuid.uuid4()),
+                timeout=CONTROL_SECONDS,
+            )
+            assert receipt.status == "accepted", receipt
+            outcome = await _await_command(
+                bench, session, receipt.command_id, CONTROL_SECONDS
+            )
+            assert outcome == "applied", outcome
+            # What the control was for, rather than only its bookkeeping: a
+            # reset is the session's conversation being started again, so a
+            # second conversation on the same session is the work being done.
+            conversations = watcher.provider_conversations(session)
+            assert len(set(conversations)) == 2, conversations
+
+            # Still held, so the two above are not a stall that quietly ended
+            # before they were made; and one, so nothing retried behind it.
+            assert bench.stalls.held == 1, bench.stalls.held
+        finally:
+            bench.stalls.release()
+
+        released = new_marker()
+        markers[released] = await send(released)
+        assert not await dispatch_wait(
+            watcher, {released: markers[released]}, dispatch_timeout(1)
+        )
+        assert watcher.sessions_by_room()[room_id] == session
+        # The ask answers what is outstanding, and what was already served is
+        # not outstanding: a delivery still promised here is one the released
+        # ask is about to offer the session a second time.
+        reserved = await bench.reserved_deliveries(target.agent_id)
+        assert not {_message_of(markers[m]) for m in markers} & set(reserved), reserved
+        held = bench.connections.for_agent(target.agent_id)
+        assert len(held) == 1, held
+        assert watcher.failure() is None, watcher.failure()
+
+        followups = _server_originated_dispatches(watcher.trace_path)
+        assert len(followups) == 1, followups
+        collector.ingest_jsonl(watcher.trace_path, {**markers, **followups})
+
+    scored = set(markers.values()) | set(followups)
+    duplicated = collector.subset(scored).repeats(PROVIDER_DISPATCH)
+    print(
+        "stalled ask: with the session's own ask for its room work held open "
+        "and unanswered, a pushed delivery was served and a room control "
+        f"command was applied to the same session ({session}); exactly one ask "
+        "was outstanding the whole time. The applied reset queued the session "
+        "one follow-up of Switch's own, served once. Letting the ask go "
+        "re-executed nothing, and the room was served normally afterwards."
+    )
+    assert duplicated == {}, duplicated
+
+
+def _server_originated_dispatches(trace_path: Path) -> dict[str, str]:
+    """Labels for dispatches Switch caused itself, each mapped onto itself.
+
+    An applied room control has a consequence of its own: the session is queued
+    a follow-up, and the host serves it like any other work. The driver never
+    sent it, so the host labels it as an unmarked turn, and scoring rejects a
+    label it cannot place — a host dispatching work nobody asked for is exactly
+    what that rule is for. Naming these leaves the rule in force for everything
+    else and scores them under an identity of their own, so a follow-up served
+    twice still reads as a repeat.
+    """
+    if not trace_path.exists():
+        return {}
+    labels = {
+        str(json.loads(line)["correlation"])
+        for line in trace_path.read_text().splitlines()
+        if line.strip()
+    }
+    return {label: label for label in labels if label.startswith("unmarked:")}
+
+
+async def _control_when_idle(
+    bench: BenchServer, *, agent_id: str, room_id: str, message_id: str, timeout: float
+) -> CommandStatus:
+    """Submit a room reset, waiting out a turn the session is still finishing.
+
+    A control is refused while the session is working, which is the server's
+    answer rather than something to be worked around; what is waited for is the
+    turn the scenario itself caused a moment earlier. The message id is the
+    same on every attempt, so a submission that was accepted and then looked
+    refused cannot become two controls.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            return await bench.room_control(
+                agent_id=agent_id,
+                room_id=room_id,
+                action="reset",
+                message_id=message_id,
+            )
+        except SessionError as error:
+            if error.code != "SESSION_BUSY" or loop.time() > deadline:
+                raise
+        await asyncio.sleep(0.2)
+
+
+async def _await_command(
+    bench: BenchServer, session_id: str, command_id: str, timeout: float
+) -> str:
+    """Poll a submitted command until the server confirms it, or time runs out.
+
+    `unknown` is not taken as settled here. A control that takes the session to
+    a new epoch passes through it — an epoch change marks every command not yet
+    confirmed unknown, this one included — and the host's own result for it
+    follows.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        outcome = await bench.control_outcome(
+            session_id=session_id, command_id=command_id
+        )
+        if outcome in ("applied", "rejected") or loop.time() > deadline:
+            return outcome
+        await asyncio.sleep(0.2)
 
 
 def _message_of(correlation: str) -> str:

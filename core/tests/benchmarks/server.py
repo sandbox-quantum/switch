@@ -24,8 +24,9 @@ import socket
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
+import httpx
 import uvicorn
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -61,7 +62,9 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
+from switch_core.sessions.contract import CommandStatus
 from switch_core.sessions.service import (
+    SessionAuthority,
     _host_lapsed,
     _now,
     _room_claimants,
@@ -70,7 +73,11 @@ from switch_core.sessions.service import (
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
-from tests.benchmarks.instrumentation import TracingMiddleware, trace_commits
+from tests.benchmarks.instrumentation import (
+    StallGate,
+    TracingMiddleware,
+    trace_commits,
+)
 from tests.benchmarks.trace import TraceCollector
 from tests.integration.conftest import (
     GATEWAY_ADMIN_EMAIL,
@@ -122,6 +129,28 @@ class RoomState:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionSelector:
+    """What a caller sends to act as one session of an agent.
+
+    The three together are the selector the agent HTTP door reads; any two of
+    them name nothing. Read from the session rows rather than from a host's
+    state directory, because the server is the side that decides whether a
+    selector is current.
+    """
+
+    session_id: str
+    host_id: str
+    epoch: str
+
+    def headers(self) -> dict[str, str]:
+        return {
+            "X-Switch-Session-Id": self.session_id,
+            "X-Switch-Session-Host-Id": self.host_id,
+            "X-Switch-Session-Epoch": self.epoch,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BenchAgent:
     agent_id: str
     name: str
@@ -152,6 +181,7 @@ class BenchServer:
         event_buffer: EventBuffer,
         connections: ConnectionRegistry,
         collector: TraceCollector,
+        stalls: StallGate,
         owner_id: str,
         session_factory: async_sessionmaker[AsyncSession],
         agents: tuple[BenchAgent, ...],
@@ -164,6 +194,7 @@ class BenchServer:
         self.event_buffer = event_buffer
         self.connections = connections
         self.collector = collector
+        self.stalls = stalls
         self.owner_id = owner_id
         self._session_factory = session_factory
         self._agents: list[BenchAgent] = list(agents)
@@ -229,6 +260,82 @@ class BenchServer:
                 .order_by(SdkRoomAdmission.message_id)
             )
         return tuple(rows)
+
+    async def session_selectors(self, agent_id: str) -> dict[str, SessionSelector]:
+        """How each of this agent's sessions would identify itself to the door.
+
+        A session's host and epoch are the server's record of who it is, so a
+        scenario acting as a session reads them from there rather than
+        assembling a selector of its own that the server would be entitled to
+        refuse.
+        """
+        async with self._session_factory() as db:
+            rows = list(
+                await db.scalars(
+                    select(SdkSession).where(
+                        SdkSession.tenant_id == require_tenant_id(),
+                        SdkSession.agent_id == agent_id,
+                    )
+                )
+            )
+        return {
+            row.id: SessionSelector(
+                session_id=row.id, host_id=row.host_id, epoch=row.epoch
+            )
+            for row in rows
+        }
+
+    async def connect_session_to_room(
+        self, *, agent: BenchAgent, selector: SessionSelector, room_id: str
+    ) -> dict[str, Any]:
+        """Call `connect_to_room` over the agent door, as one named session.
+
+        The same request the agent runtime makes when a session's own agent
+        asks to work in a room: the shipped operation, over the socket, with
+        the session selector the runtime sends. The benchmark provider never
+        calls a tool, so this is the only way a scenario reaches the door a
+        room move actually comes through.
+        """
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=30.0) as client:
+            response = await client.post(
+                f"/agents/{agent.agent_id}/ops/connect_to_room",
+                json={"room_id": room_id, "include_general_instructions": False},
+                headers={
+                    "Authorization": f"Bearer {agent.api_key}",
+                    **selector.headers(),
+                },
+            )
+        response.raise_for_status()
+        return cast("dict[str, Any]", response.json()["result"])
+
+    async def room_control(
+        self, *, agent_id: str, room_id: str, action: str, message_id: str
+    ) -> CommandStatus:
+        """Submit a room control command the way a room command arrives.
+
+        The authority's own entry point, so the command is admitted, fenced
+        against the session that holds the room and ordered with everything
+        else that session has been given — not a queue entry written past it.
+        """
+        receipt = await SessionAuthority(self._session_factory).submit_room_control(
+            agent_id,
+            room_id,
+            action,
+            self.owner_id,
+            message_id,
+            None,
+            self.connections,
+        )
+        if receipt is None:
+            raise RuntimeError(f"agent {agent_id} has no session to control")
+        return receipt
+
+    async def control_outcome(self, *, session_id: str, command_id: str) -> str:
+        """What became of a submitted command, as the server records it."""
+        status = await SessionAuthority(self._session_factory).command_status(
+            session_id, command_id, self.owner_id
+        )
+        return status.status
 
     async def register_agent(self, name: str) -> BenchAgent:
         result = await self.protocol.register_agent(
@@ -534,9 +641,11 @@ async def _serve(
     sock.listen(2048)
     served_port = sock.getsockname()[1]
 
+    stalls = StallGate(app)
+
     server = _Server(
         uvicorn.Config(
-            TracingMiddleware(app, collector),
+            TracingMiddleware(stalls, collector),
             log_level="warning",
             access_log=False,
             lifespan="on",
@@ -573,6 +682,7 @@ async def _serve(
         event_buffer=event_buffer,
         connections=connections,
         collector=collector,
+        stalls=stalls,
         owner_id=owner_id,
         session_factory=session_factory,
         agents=agents,

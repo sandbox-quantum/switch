@@ -8,6 +8,7 @@ benchmark run exercises the same server code a deployment runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -32,6 +33,7 @@ Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 _ROOM_MESSAGE = re.compile(r"^/sessions/(?P<session>[^/]+)/room-message$")
 _EVENT_STREAM = re.compile(r"^/agents/(?P<agent>[^/]+)/events$")
+_ROOM_RESERVATIONS = re.compile(r"^/sessions/(?P<session>[^/]+)/room-reservations$")
 
 # The admission request in flight on this task, so an engine-level commit can
 # be attributed to the message that caused it. Set by the ASGI wrapper and read
@@ -146,6 +148,74 @@ class TracingMiddleware:
             await send(message)
 
         await self._app(scope, receive, tracing_send)
+
+
+class StallGate:
+    """Holds a session's ask for its own room work open, on demand.
+
+    A session asks Switch what its rooms owe it; that request can be answered
+    slowly or not at all — a server under load, a connection that has gone away
+    without saying so — and what a scenario needs is for the rest of the
+    session to carry on regardless: what the server pushes it, and the commands
+    it is given, both arrive by other requests.
+
+    The hold is taken here, in front of the application, rather than anywhere
+    inside it. The request never reaches a route, so no transaction, row lock
+    or connection is held open by it, and nothing about the server's own
+    behaviour is altered — from its side the client simply has a request
+    outstanding. That keeps the fault in the harness, where a benchmark's
+    fault injection belongs.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+        self._open: asyncio.Event | None = None
+        self._held = 0
+        self._arrived = asyncio.Event()
+
+    def arm(self) -> None:
+        """Hold every ask that arrives from now until `release`."""
+        if self._open is not None:
+            raise RuntimeError("the stall gate is already armed")
+        self._arrived.clear()
+        self._open = asyncio.Event()
+
+    def release(self) -> None:
+        """Let go of what is held, and stop holding what arrives next."""
+        if self._open is None:
+            raise RuntimeError("the stall gate is not armed")
+        self._open.set()
+        self._open = None
+
+    @property
+    def held(self) -> int:
+        """How many asks are being held right now."""
+        return self._held
+
+    async def await_held(self, timeout: float) -> None:
+        """Wait until an ask is actually being held.
+
+        The scenario that arms the gate has to know the stall it is testing
+        against is real before it does anything else; a session's ask is on its
+        own cadence, so the alternative is a sleep long enough to be a guess.
+        """
+        await asyncio.wait_for(self._arrived.wait(), timeout)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        opened = self._open
+        if (
+            opened is not None
+            and scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and _ROOM_RESERVATIONS.match(scope.get("path", ""))
+        ):
+            self._held += 1
+            self._arrived.set()
+            try:
+                await opened.wait()
+            finally:
+                self._held -= 1
+        await self._app(scope, receive, send)
 
 
 def _admission_correlation(body: bytes) -> str | None:

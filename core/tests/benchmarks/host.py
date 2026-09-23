@@ -47,12 +47,19 @@ _BUNDLE = (
     _CONSOLE / "packages" / "agent-providers" / "dist-bench" / "bench-host-daemon.mjs"
 )
 
+#: What a benchmark session tells Switch it can be asked to do. A host decides
+#: this for itself, and the shipped one declares a reset supported whatever the
+#: provider is — resetting is the host stopping the provider session and
+#: starting another, which every adapter can be put through. Declared the same
+#: way here so a scenario can submit the room control a room command really
+#: submits; the rest stay off, because the benchmark provider answers no
+#: question and takes no approval.
 SESSION_CAPABILITIES = {
     "input": "queue",
     "approvals": False,
     "questions": False,
     "interrupt": False,
-    "reset": False,
+    "reset": True,
     "compact": False,
     "modelChange": False,
     "attachmentMimeTypes": [],
