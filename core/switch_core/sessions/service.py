@@ -1059,6 +1059,46 @@ class SessionAuthority:
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
 
+    async def renew_reporting_room_work(
+        self, agent_id: str, session_id: str, host_id: str, epoch: str
+    ) -> bool:
+        """Renew, and say whether this session's own rooms are owed anything.
+
+        The answer is what `session_room_reservations` would find something
+        in, read without making the call: a worker that hears no can skip
+        asking. It is a reading at this moment and nothing more — work
+        reserved a moment later is only found by the next renewal — so a
+        worker may skip on it but never treat it as having been told there
+        will be no work.
+
+        Expired promises count, because the session is the one left to say
+        they were not kept. Nothing beyond the session row is locked, so a
+        renewal never waits behind the agent's admissions.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
+            state = _stored_snapshot(row).session
+            if state.retired or _session_is_over(row) or not state.room_ids:
+                return False
+            owed = await db.scalar(
+                select(
+                    select(literal(1))
+                    .where(
+                        SdkRoomAdmission.tenant_id == require_tenant_id(),
+                        SdkRoomAdmission.agent_id == agent_id,
+                        SdkRoomAdmission.room_id.in_(state.room_ids),
+                        SdkRoomAdmission.consumed_at.is_(None),
+                        SdkRoomAdmission.discarded_at.is_(None),
+                    )
+                    .exists()
+                )
+            )
+            return bool(owed)
+
     async def ingest(
         self, agent_id: str, host_id: str, event: HostEvent, *, reconcile: bool = False
     ) -> int:

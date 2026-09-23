@@ -76,12 +76,23 @@ async def restore_legacy_room(
 
 @router.post("/{session_id}/renew")
 async def renew(
-    session_id: str, body: HostLease, agent: AuthenticatedAgent, factory: Factory
-) -> dict[str, int]:
-    await SessionAuthority(factory).renew(
+    session_id: str,
+    body: HostLease,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    room_work: bool = False,
+) -> dict[str, int | bool]:
+    # Opted into in the query string: the body is strict, so a field there
+    # would be refused by a server built before it, while an unknown query
+    # parameter is ignored. A worker that does not ask pays nothing for it.
+    authority = SessionAuthority(factory)
+    if not room_work:
+        await authority.renew(agent.id, session_id, body.host_id, body.epoch)
+        return {"leaseSeconds": 30}
+    owed = await authority.renew_reporting_room_work(
         agent.id, session_id, body.host_id, body.epoch
     )
-    return {"leaseSeconds": 30}
+    return {"leaseSeconds": 30, "roomWork": owed}
 
 
 async def read_host_event(request: Request) -> HostEvent:

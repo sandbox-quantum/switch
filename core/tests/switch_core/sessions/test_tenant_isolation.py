@@ -149,6 +149,9 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
         assert await authority.list_sessions("tenant-b") == []
         operations = [
             lambda: authority.renew("tenant-b", "session-demo", "host-demo", epoch),
+            lambda: authority.renew_reporting_room_work(
+                "tenant-b", "session-demo", "host-demo", epoch
+            ),
             lambda: authority.ingest(
                 "tenant-b",
                 "host-demo",

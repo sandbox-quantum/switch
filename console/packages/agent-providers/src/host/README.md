@@ -147,3 +147,10 @@ rather than guess at it.
   falls back to the ordered command endpoint. Removable on the same terms as the
   route above: when no supported server answers the plain receipt. Costs a
   request per delivery until then, and nothing else.
+- **Servers that do not say on renewal whether a session's rooms are owed
+  anything** (`shared-host.ts`, `ROOM_PULL_MS`). The worker asks with
+  `room_work=true` in the query string, which an older server ignores. An
+  answer with no `roomWork` boolean leaves the worker not knowing, so it asks
+  `room-reservations` on the interval as it did before the renewal could say.
+  Removable once the oldest server the app supports answers `roomWork`. Until
+  then an idle session on such a server makes one extra request per interval.

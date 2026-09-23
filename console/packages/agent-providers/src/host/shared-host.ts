@@ -46,16 +46,17 @@ class RequestError extends Error {
 
 /**
  * How often a session asks Switch for the room work its own rooms still owe
- * it, rather than waiting for its controller to hand it over.
+ * it, when the server will not say in its renewal whether there is any.
  *
  * A session whose controller has gone is still the session the server says is
  * in the room, and nothing is left to route to it; this is how it finds that
- * work anyway. The interval is a placeholder to be measured, not a tuned
- * number: it trades how long such a session stays silent against a request per
- * session per interval on a server where every controller is healthy and the
- * answer is almost always empty.
+ * work anyway. A server that answers `roomWork` on renewal is asked only when
+ * it says something is owed; this interval is for one that does not, and
+ * trades how long such a session stays silent against a request per session
+ * per interval whose answer is almost always empty.
  */
 const ROOM_PULL_MS = 5000;
+const roomWorkSchema = z.object({ roomWork: z.boolean() });
 export class SharedHostLeaseExpiredError extends Error {
   constructor() {
     super('HOST_OFFLINE: lease renewal deadline passed.');
@@ -313,10 +314,25 @@ export async function runSharedHost(
         host_id: hostLease.host_id,
         epoch: hostLease.epoch,
       });
+    // What the latest renewal said about this session's own rooms, under the
+    // generation it was said for. Each reading is numbered so that one saying
+    // work is owed starts one ask, and a reading from before a recovery says
+    // nothing about the generation after it. Null is not knowing, which is
+    // what a server that does not answer the question leaves it at.
+    let roomWork: { epoch: string; owed: boolean; reading: number } | null = null;
+    let readings = 0;
+    const renew = async () => {
+      const renewingAt = performance.now();
+      const epoch = hostLease.epoch;
+      const answer = roomWorkSchema.safeParse(
+        await request(`${sessionPath}/renew?room_work=true`, hostLease)
+      );
+      deadline = renewingAt + 25000;
+      readings += 1;
+      roomWork = answer.success ? { epoch, owed: answer.data.roomWork, reading: readings } : null;
+    };
     // Renew before opening a provider, including after a lost acquisition response.
-    const renewingAt = performance.now();
-    await request(`${sessionPath}/renew`, hostLease);
-    deadline = renewingAt + 25000;
+    await renew();
     delivery = await SharedDelivery.load(options.root, session, lease.sourceBase);
     let leaseSerial: Promise<unknown> = Promise.resolve();
     const withLease = <T>(action: () => Promise<T>): Promise<T> => {
@@ -328,11 +344,7 @@ export async function runSharedHost(
       try {
         while (!executionSignal.aborted) {
           await delay(5000, undefined, { signal: executionSignal });
-          await withLease(async () => {
-            const renewingAt = performance.now();
-            await request(`${sessionPath}/renew`, hostLease);
-            deadline = renewingAt + 25000;
-          });
+          await withLease(renew);
         }
       } catch (error) {
         if (!executionSignal.aborted) {
@@ -412,9 +424,10 @@ export async function runSharedHost(
       await host?.roomDeliveryResumed();
     };
     let pulledAt: number | null = null;
+    let pulledReading = 0;
     let pullUnanswered = false;
     let pullFailing = false;
-    let pulled: z.infer<typeof heldDeliveriesSchema> | null = null;
+    let pulled: { epoch: string; owed: z.infer<typeof heldDeliveriesSchema> } | null = null;
     let pullFatal: unknown = null;
     const givenUpOn = new Set<string>();
     /**
@@ -444,16 +457,29 @@ export async function runSharedHost(
      * leaves its answer for the loop to pick up, so one is in flight at a time
      * and one answer is held at a time — a slow one delays the next ask, and
      * nothing else.
+     *
+     * When the server says in its renewals whether anything is owed, the ask
+     * is made once for each renewal that says so and not at all otherwise. A
+     * no is only the moment it was read at, which is why every renewal reads
+     * it again; a server that does not say leaves the ask on its interval.
      */
     const startPull = (): void => {
       if (pulling !== null || pulled !== null || pullUnanswered || pullFatal !== null) return;
-      if (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS) return;
+      const known = roomWork?.epoch === hostLease.epoch ? roomWork : null;
+      if (known) {
+        if (!known.owed || known.reading === pulledReading) return;
+        pulledReading = known.reading;
+      } else if (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS) return;
       pulledAt = performance.now();
+      const epoch = hostLease.epoch;
       pulling = (async () => {
         try {
-          pulled = heldDeliveriesSchema.parse(
-            await attempt(`${sessionPath}/room-reservations`, hostLease)
-          );
+          pulled = {
+            epoch,
+            owed: heldDeliveriesSchema.parse(
+              await attempt(`${sessionPath}/room-reservations`, hostLease)
+            ),
+          };
           pullFailing = false;
         } catch (error) {
           // Abort and lease expiry are the host's business rather than this
@@ -492,10 +518,12 @@ export async function runSharedHost(
      */
     const drainPull = async (inbox: SharedRoomInbox): Promise<void> => {
       if (pullFatal !== null) throw pullFatal;
-      const owed = pulled;
-      if (owed === null) return;
+      const answer = pulled;
+      if (answer === null) return;
       pulled = null;
-      for (const held of owed) {
+      // Asked for under a generation a recovery has since replaced.
+      if (answer.epoch !== hostLease.epoch) return;
+      for (const held of answer.owed) {
         if (held.expired) {
           const key = `${held.room_id}:${held.message_id}`;
           if (givenUpOn.has(key)) continue;
@@ -608,9 +636,7 @@ export async function runSharedHost(
               snapshot.session,
               operation.sourceBase
             );
-            const renewingAt = performance.now();
-            await request(`${sessionPath}/renew`, hostLease);
-            deadline = renewingAt + 25000;
+            await renew();
             return hostLease.epoch;
           }),
       },

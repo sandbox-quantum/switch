@@ -1480,3 +1480,265 @@ it.each([
   expect(await boundRooms(root)).toEqual([]);
   expect(adapter.startSession).not.toHaveBeenCalled();
 });
+
+/**
+ * Answers renewals with whatever the test says the server says about this
+ * session's rooms, and keeps every renewal it was sent so a test can count
+ * them against the asks for owed work they did or did not start.
+ */
+function renewing(answer: (epoch: string) => unknown) {
+  const renewals: { query: string; epoch: string }[] = [];
+  const server = globalThis.fetch;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith('/renew')) {
+        const { epoch } = JSON.parse(options.body as string) as { epoch: string };
+        renewals.push({ query: parsed.search, epoch });
+        return Response.json(answer(epoch));
+      }
+      return server(url, options);
+    })
+  );
+  return renewals;
+}
+
+it('asks for its rooms’ work only while a renewal says some is owed', async () => {
+  // With its controller healthy the answer is almost always nothing, and the
+  // renewal it sends anyway has already said so: asking again would be a
+  // request per session per interval that learns nothing.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-none-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  let owed: Owed[] = [];
+  const server = owingServer({ owed: () => owed, pullStatus: () => 200, blocked: () => false });
+  const renewals = renewing(() => ({ leaseSeconds: 30, roomWork: owed.length > 0 }));
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(3), { timeout: 12000 });
+    expect(server.pulled).toEqual([]);
+    expect(renewals.every((renewal) => renewal.query === '?room_work=true')).toBe(true);
+
+    // Reserved after the last renewal said nothing was: the next one says so,
+    // and that is the ask that finds it.
+    owed = [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }];
+    const saidNothing = renewals.length;
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 8000 });
+    expect(server.pulled.length).toBeGreaterThanOrEqual(1);
+    expect(server.pulled.length).toBeLessThanOrEqual(renewals.length - saidNothing);
+    expect(server.admitted).toEqual(['routed', 'owed']);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 30000);
+
+it('asks once for each renewal that says work is owed, and no more', async () => {
+  // A delivery Switch has stopped promising stays owed until the controller
+  // clears it, so the server can go on saying yes to a session that already
+  // knows. What that costs is bounded by the renewals, not by the loop.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-owed-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter } = roomWorker();
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'lapsed', sequence: 6, expired: true }],
+    pullStatus: () => 200,
+    blocked: () => false,
+  });
+  const renewals = renewing(() => ({ leaseSeconds: 30, roomWork: true }));
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(3), { timeout: 12000 });
+    await vi.waitFor(() => expect(server.pulled.length).toBe(renewals.length), { timeout: 2000 });
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(server.pulled.length).toBeLessThanOrEqual(renewals.length);
+    expect(server.pulled.length).toBeGreaterThanOrEqual(renewals.length - 1);
+    expect(server.notices).toHaveLength(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);
+
+it.each([
+  ['says nothing about it', { leaseSeconds: 30 }],
+  ['answers it with something other than yes or no', { leaseSeconds: 30, roomWork: 'yes' }],
+])(
+  'keeps asking on its interval when the server %s',
+  async (_, answer) => {
+    // A server that predates the question cannot say, and one whose answer is
+    // not an answer has not said; either way only asking finds the work.
+    const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-unknown-'));
+    roots.push(root);
+    const stop = new AbortController();
+    const { adapter, ran } = roomWorker();
+    let owed: Owed[] = [];
+    const server = owingServer({ owed: () => owed, pullStatus: () => 200, blocked: () => false });
+    renewing(() => answer);
+    const outcome = startWorker(root, adapter, stop.signal);
+    try {
+      await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThanOrEqual(2), {
+        timeout: 12000,
+      });
+      owed = [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }];
+      await vi.waitFor(() => expect(ran).toEqual(['owed']), { timeout: 8000 });
+    } finally {
+      stop.abort();
+      expect(await outcome).toBeNull();
+    }
+  },
+  30000
+);
+
+it('keeps renewing and serving handoffs while an ask the renewal started hangs', async () => {
+  // A yes starts one ask. Later yeses while it is still out start nothing more,
+  // and nothing else here waits for it: the ask gives up on its own deadline
+  // and the next yes is what asks again.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-slow-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  let answer: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  const stall = stalling(released);
+  let outstanding = 0;
+  let mostOutstanding = 0;
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
+    pullStatus: async (signal) => {
+      outstanding += 1;
+      mostOutstanding = Math.max(mostOutstanding, outstanding);
+      try {
+        return await stall(signal);
+      } finally {
+        outstanding -= 1;
+      }
+    },
+    blocked: () => false,
+  });
+  const renewals = renewing(() => ({ leaseSeconds: 30, roomWork: true }));
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+    const renewedBefore = renewals.length;
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(renewedBefore + 2), {
+      timeout: 12000,
+    });
+    expect(mostOutstanding).toBe(1);
+    expect(server.pulled.length).toBeLessThanOrEqual(renewals.length);
+
+    answer();
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 8000 });
+    expect(server.admitted).toEqual(['routed', 'owed']);
+    expect(mostOutstanding).toBe(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 30000);
+
+it('acts on nothing a renewal or an ask said about the generation a reset replaced', async () => {
+  // A reset gives the session a new generation. What the server said about its
+  // rooms under the old one, and an answer to an ask made under it, belong to
+  // a lease the session no longer holds.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-reset-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  let answer: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'stale', sequence: 4, expired: false }],
+    pullStatus: stalling(released),
+    blocked: () => false,
+  });
+  const renewals = renewing((epoch) => ({ leaseSeconds: 30, roomWork: epoch === 'server-epoch' }));
+  const snapshot = (epoch: string) =>
+    Response.json({
+      contractVersion: 1,
+      throughSequence: 1,
+      session: {
+        ...startingSession,
+        epoch,
+        capabilities: { ...startingSession.capabilities, reset: true },
+      },
+      turns: [],
+      items: [],
+      requests: [],
+      commandStatuses: [],
+      nextPageToken: null,
+    });
+  let resetting = false;
+  let reset = false;
+  const owing = globalThis.fetch;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim')) return snapshot('server-epoch');
+      if (path.endsWith('/recover')) return snapshot('epoch-2');
+      if (path.endsWith('/commands') && resetting && !reset) {
+        reset = true;
+        return Response.json([
+          {
+            contractVersion: 1,
+            commandId: 'reset',
+            sessionId: 'session',
+            epoch: 'server-epoch',
+            origin: {
+              actorId: '@owner:example.test',
+              surface: 'slack',
+              roomId: 'room',
+              threadId: null,
+              messageId: 'reset',
+            },
+            body: { type: 'session.reset' },
+          },
+        ]);
+      }
+      return owing(url, options);
+    })
+  );
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+    resetting = true;
+    await vi.waitFor(
+      () => expect(renewals.some((renewal) => renewal.epoch === 'epoch-2')).toBe(true),
+      { timeout: 5000 }
+    );
+
+    // The old generation's ask answers now, and a renewal under the new one has
+    // already said nothing is owed.
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(server.admitted).toEqual(['routed']);
+    expect(ran).toEqual(['routed']);
+    expect(
+      (await inboxRecords(root)).filter(
+        (record) => record.type === 'received' && record.messageId === 'stale'
+      )
+    ).toEqual([]);
+    expect(server.pulled).toHaveLength(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);
