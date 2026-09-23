@@ -1011,8 +1011,15 @@ async function inboxRecords(root: string): Promise<{ type: string; messageId?: s
  */
 function owingServer(server: {
   owed: () => Owed[];
-  /** What the pull route answers with: 200 to say, anything else to refuse. */
-  pullStatus: () => number;
+  /**
+   * What the pull route answers with: 200 to say, anything else to refuse.
+   *
+   * Answering late is answering: a route that takes its time is what a session
+   * with a healthy controller and an unhealthy fallback endpoint sees, and the
+   * request's own signal is handed over so a test can hold one open for as
+   * long as the host is willing to.
+   */
+  pullStatus: (signal: AbortSignal) => number | Promise<number>;
   blocked: (messageId: string) => boolean;
 }) {
   const admitted: string[] = [];
@@ -1041,7 +1048,7 @@ function owingServer(server: {
       }
       if (path.endsWith('/room-reservations')) {
         pulled.push(JSON.parse(options.body as string));
-        const status = server.pullStatus();
+        const status = await server.pullStatus(options.signal as AbortSignal);
         if (status === 200) return Response.json(server.owed());
         return Response.json({ detail: `the pull route answered ${status}` }, { status });
       }
@@ -1279,3 +1286,89 @@ it('keeps serving what it is routed while Switch will not say what it is owed', 
     expect(await outcome).toBeNull();
   }
 }, 30000);
+
+/**
+ * A pull route that answers only when the test lets it, or when the host
+ * stops waiting — which is what a real one does when its request is aborted.
+ */
+function stalling(released: Promise<void>) {
+  return (signal: AbortSignal) =>
+    new Promise<number>((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      void released.then(() => resolve(200));
+    });
+}
+
+it('keeps running while the pull hangs, and takes up its answer when it lands', async () => {
+  // The fallback route is the one thing here nothing waits for. A request to it
+  // that never comes back must not stop the handoffs the controller writes, the
+  // deliveries this session submits or the commands it collects — the controls
+  // among them — and must not stack a second ask behind itself while it waits.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-slow-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  let answer: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
+    pullStatus: stalling(released),
+    blocked: () => false,
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+    // The pull is still outstanding, and the pushed message has been run and
+    // submitted anyway.
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+    expect(server.admitted).toEqual(['routed']);
+    const polledWhileWaiting = server.commandPolls.length;
+    await vi.waitFor(() => expect(server.commandPolls.length).toBeGreaterThan(polledWhileWaiting), {
+      timeout: 3000,
+    });
+    expect(server.pulled).toHaveLength(1);
+
+    answer();
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 3000 });
+    expect(server.admitted).toEqual(['routed', 'owed']);
+    expect(server.commandPolls.length).toBeGreaterThan(polledWhileWaiting);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);
+
+it('settles its outstanding pull when the host stops, and acts on nothing after', async () => {
+  // Stopping has to be the end of this route as much as of the others: a
+  // request still in flight would answer into a session that has shut its
+  // provider down and closed the files the answer would be written to.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-shutdown-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  let answer: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
+    pullStatus: stalling(released),
+    blocked: () => false,
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+
+  stop.abort();
+  expect(await outcome).toBeNull();
+
+  // The answer this host never waited for, arriving after it has gone.
+  answer();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(ran).toEqual([]);
+  expect(server.admitted).toEqual([]);
+  expect((await inboxRecords(root)).filter((record) => record.type === 'received')).toEqual([]);
+}, 20000);

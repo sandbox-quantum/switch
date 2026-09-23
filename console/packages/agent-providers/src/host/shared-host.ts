@@ -90,6 +90,10 @@ export async function runSharedHost(
   let lease = state.latest('lease');
   let heartbeat: Promise<void> = Promise.resolve();
   let shutdown: Promise<void> | null = null;
+  // Out here with the heartbeat because the shutdown has to wait for it: the
+  // request is in flight on its own, and leaving it running past the end of
+  // the host would land an answer in a process that has stopped reading.
+  let pulling: Promise<void> | null = null;
   const sessionPath = `/${encodeURIComponent(options.session.sessionId)}`;
   const requestOnce = async (path: string, body: unknown, abort: AbortSignal): Promise<unknown> => {
     let response: Response;
@@ -392,6 +396,8 @@ export async function runSharedHost(
     let pulledAt: number | null = null;
     let pullUnanswered = false;
     let pullFailing = false;
+    let pulled: z.infer<typeof heldDeliveriesSchema> | null = null;
+    let pullFatal: unknown = null;
     const givenUpOn = new Set<string>();
     /**
      * Ask Switch for the deliveries this session's own rooms still owe it.
@@ -412,43 +418,65 @@ export async function runSharedHost(
      * is said once and not asked again; one that refuses is said and asked
      * again next time, and in both cases the controller's route is untouched.
      *
-     * Which is why this asks once and comes back rather than retrying until
-     * it gets an answer. The loop this runs in is also what drains the
-     * handoffs the controller writes and what submits and acknowledges what
-     * it has run: waiting here for a route that is only the second way to the
-     * same work would stop the first one.
+     * Which is why nothing waits here. The loop this serves is also what
+     * drains the handoffs the controller writes and what submits, runs and
+     * acknowledges what it has been given: a server that takes its time
+     * answering the second route to the same work would otherwise hold up the
+     * first one, and the controls with it. The request runs on its own and
+     * leaves its answer for the loop to pick up, so one is in flight at a time
+     * and one answer is held at a time — a slow one delays the next ask, and
+     * nothing else.
      */
-    const pullOwedDeliveries = async (inbox: SharedRoomInbox): Promise<void> => {
-      if (pullUnanswered || (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS))
-        return;
+    const startPull = (): void => {
+      if (pulling !== null || pulled !== null || pullUnanswered || pullFatal !== null) return;
+      if (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS) return;
       pulledAt = performance.now();
-      let owed: z.infer<typeof heldDeliveriesSchema>;
-      try {
-        owed = heldDeliveriesSchema.parse(
-          await attempt(`${sessionPath}/room-reservations`, hostLease)
-        );
-      } catch (error) {
-        if (executionSignal.aborted || error instanceof SharedHostLeaseExpiredError) throw error;
-        if (error instanceof RequestError && error.status === 404) {
-          pullUnanswered = true;
-          console.warn(
-            `This Switch server does not answer a session's own room work, so room messages reach this session only while its controller is routing them: ${error.message}`
+      pulling = (async () => {
+        try {
+          pulled = heldDeliveriesSchema.parse(
+            await attempt(`${sessionPath}/room-reservations`, hostLease)
           );
-          return;
+          pullFailing = false;
+        } catch (error) {
+          // Abort and lease expiry are the host's business rather than this
+          // route's, so they are kept for the loop to raise where every other
+          // one of them is raised. Nothing acts on them here: an answer that
+          // arrives after the host has stopped, or on a lease it no longer
+          // holds, must change nothing.
+          if (executionSignal.aborted || error instanceof SharedHostLeaseExpiredError)
+            pullFatal = error;
+          else if (error instanceof RequestError && error.status === 404) {
+            pullUnanswered = true;
+            console.warn(
+              `This Switch server does not answer a session's own room work, so room messages reach this session only while its controller is routing them: ${error.message}`
+            );
+          } else if (!pullFailing) {
+            // Reported and survived rather than raised. What is owed is also
+            // being pushed wherever a controller is up, and taking a working
+            // session down because the second route to the same work is
+            // unreadable would cost more than the route is worth.
+            pullFailing = true;
+            console.warn(
+              `Switch would not say what room work this session is owed: ${String(error)}`
+            );
+          }
         }
-        // Reported and survived rather than raised. What is owed is also being
-        // pushed wherever a controller is up, and taking a working session
-        // down because the second route to the same work is unreadable would
-        // cost more than the route is worth.
-        if (!pullFailing) {
-          pullFailing = true;
-          console.warn(
-            `Switch would not say what room work this session is owed: ${String(error)}`
-          );
-        }
-        return;
-      }
-      pullFailing = false;
+        pulling = null;
+      })();
+    };
+    /**
+     * Take up what the last ask came back with, in the loop that runs the rest.
+     *
+     * Every effect of a pull lands here rather than in the request: accepting a
+     * delivery into the inbox and saying an expired one is gone are the same
+     * writes the pushed route makes, and they stay on the one thread that
+     * makes them.
+     */
+    const drainPull = async (inbox: SharedRoomInbox): Promise<void> => {
+      if (pullFatal !== null) throw pullFatal;
+      const owed = pulled;
+      if (owed === null) return;
+      pulled = null;
       for (const held of owed) {
         if (held.expired) {
           const key = `${held.room_id}:${held.message_id}`;
@@ -601,7 +629,10 @@ export async function runSharedHost(
         host.snapshot().session.status === 'ready' ||
         host.snapshot().session.status === 'running'
       ) {
-        if (rooms) await pullOwedDeliveries(rooms);
+        if (rooms) {
+          startPull();
+          await drainPull(rooms);
+        }
         if (rooms && handoffs)
           for (const event of await handoffs.drain()) await rooms.accept(event);
         for (const event of rooms?.pending() ?? []) {
@@ -709,6 +740,9 @@ export async function runSharedHost(
   } finally {
     stopped.abort();
     await heartbeat;
+    // Aborted by the line above, and waited for here so the host does not
+    // return with a request of its own still outstanding.
+    if (pulling) await pulling;
     try {
       await finish();
     } catch (error) {
