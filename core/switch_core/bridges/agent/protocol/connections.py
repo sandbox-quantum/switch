@@ -65,6 +65,11 @@ PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts
 # is the way past the check.
 FENCED_PROTOCOL_REVISION = 2
 
+# The revision from which a client understands the `approval_outcome` frame. It
+# is withheld from anything older: those clients route unrecognised frames to
+# their room-event path, and a frame without a `type` breaks it.
+APPROVAL_OUTCOME_PROTOCOL_REVISION = 4
+
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32

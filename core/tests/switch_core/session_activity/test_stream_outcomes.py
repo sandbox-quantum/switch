@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.connections import (
+    APPROVAL_OUTCOME_PROTOCOL_REVISION,
     PROTOCOL_VERSION,
     ClientDeclaration,
     ConnectionRegistry,
@@ -45,7 +46,7 @@ async def approvals(service, postgres_url) -> AsyncIterator[ApprovalOutcomes]:
         await listener.stop()
 
 
-def _open_stream(approvals, *, agent_id=AGENT, scope="all"):
+def _open_stream(approvals, *, agent_id=AGENT, scope="all", speaks=PROTOCOL_VERSION):
     registry = ConnectionRegistry()
     conn = registry.open(
         agent_id=agent_id,
@@ -54,7 +55,7 @@ def _open_stream(approvals, *, agent_id=AGENT, scope="all"):
         delivery_filter="addressed",
         spawn_capable=False,
         cursor=0,
-        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )
     return event_stream(
@@ -201,3 +202,20 @@ async def test_a_stream_without_approvals_carries_none(service, people):
         await _no_frame_within(stream, 0.3)
     finally:
         await stream.aclose()
+
+
+async def test_a_client_older_than_the_outcome_revision_is_sent_none(
+    service, approvals, people
+):
+    # An older client hands unknown frames to its room-event path and breaks.
+    await _open(service)
+    await service.answer_approval(
+        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
+    )
+    for speaks in (APPROVAL_OUTCOME_PROTOCOL_REVISION - 1, None):
+        stream = _open_stream(approvals, speaks=speaks)
+        try:
+            await anext(stream)
+            await _no_frame_within(stream, 0.3)
+        finally:
+            await stream.aclose()

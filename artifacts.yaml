@@ -168,8 +168,15 @@ contracts:
     # additive and `accepts` stays at 1: a client that reads neither behaves as
     # it did, and a server that sends neither leaves the client with no count
     # to render rather than a wrong one.
+    #
+    # Revision 4 adds the `approval_outcome` frame on an agent's own stream
+    # (scope "all"): an answer to, or the expiry of, an approval request the
+    # agent's host opened, owed until the host acknowledges it. It is sent only
+    # to a client that declares this revision — an older client hands frames it
+    # does not recognise to its room-event path, and one without a `type`
+    # breaks it — so `accepts` stays at 1 and nothing changes for them.
     artifacts:
-      switch-core: { speaks: 3, accepts: 1 }
+      switch-core: { speaks: 4, accepts: 1 }
       agent-runtime: { speaks: 3, accepts: 1 }
 
   gateway-api:

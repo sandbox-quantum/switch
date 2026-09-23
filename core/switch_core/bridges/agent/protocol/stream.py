@@ -21,6 +21,7 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.connections import (
+    APPROVAL_OUTCOME_PROTOCOL_REVISION,
     HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
     TAKEN_OVER,
@@ -158,7 +159,14 @@ async def _event_stream(
     outcomes: dict[tuple[str, str], Outcome] = {}
     resync = [False]
     unsubscribe_outcomes = None
-    if approvals is not None and tenant_id is not None and conn.scope == "all":
+    speaks = conn.declaration.speaks
+    if (
+        approvals is not None
+        and tenant_id is not None
+        and conn.scope == "all"
+        and speaks is not None
+        and speaks >= APPROVAL_OUTCOME_PROTOCOL_REVISION
+    ):
 
         def owe(outcome: Outcome) -> None:
             outcomes[(outcome["session_id"], outcome["request_id"])] = outcome
