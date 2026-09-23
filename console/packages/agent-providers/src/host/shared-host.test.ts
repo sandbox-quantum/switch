@@ -359,6 +359,7 @@ it('runs a room message handed back by its admission, and not again when it is r
         return Response.json([roomCommand]);
       }
       if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      if (path.endsWith('/room-reservations')) return Response.json([]);
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -519,6 +520,7 @@ function admittingServer() {
       }
       if (path.endsWith('/commands')) return Response.json([]);
       if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      if (path.endsWith('/room-reservations')) return Response.json([]);
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -664,6 +666,7 @@ it('gives back a delivery the room moved away from, and runs it when the room co
       }
       if (path.endsWith('/commands')) return Response.json([]);
       if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      if (path.endsWith('/room-reservations')) return Response.json([]);
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -817,6 +820,7 @@ it('fetches a room command the admission handed nothing back for', async () => {
       if (path.endsWith('/commands'))
         return Response.json(admitted.length < 2 ? [] : admitted.map(roomCommand));
       if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      if (path.endsWith('/room-reservations')) return Response.json([]);
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -907,6 +911,7 @@ it('starts, and says so, when its controller is not there yet to bind to', async
         return Response.json({ throughHostSequence: event.hostSequence });
       }
       if (path.endsWith('/commands')) return Response.json([]);
+      if (path.endsWith('/room-reservations')) return Response.json([]);
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -969,6 +974,7 @@ it('says in the transcript when its room connection is refused, and when it is b
         return Response.json({ throughHostSequence: event.hostSequence });
       }
       if (path.endsWith('/commands')) return Response.json([]);
+      if (path.endsWith('/room-reservations')) return Response.json([]);
       return Response.json({ leaseSeconds: 30 });
     })
   );
@@ -987,3 +993,242 @@ it('says in the transcript when its room connection is refused, and when it is b
     expect(await outcome).toBeNull();
   }
 }, 30000);
+
+type Owed = { room_id: string; message_id: string; sequence: number; expired: boolean };
+
+/** Every record this session's room inbox has written, in order. */
+async function inboxRecords(root: string): Promise<{ type: string; messageId?: string }[]> {
+  const text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8').catch(() => '');
+  return text
+    .split('\n')
+    .slice(0, -1)
+    .map((line) => JSON.parse(line) as { type: string; messageId?: string });
+}
+
+/**
+ * Admits what it is given, and answers a session asking what its own rooms owe
+ * it with whatever the test is holding at the time.
+ */
+function owingServer(server: {
+  owed: () => Owed[];
+  answersPull: boolean;
+  blocked: (messageId: string) => boolean;
+}) {
+  const admitted: string[] = [];
+  const notices: string[] = [];
+  const pulled: unknown[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/claim'))
+        return Response.json({
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...startingSession, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        });
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        if (event.body.type === 'notice') notices.push(event.body.message);
+        return Response.json({ throughHostSequence: event.hostSequence });
+      }
+      if (path.endsWith('/room-reservations')) {
+        pulled.push(JSON.parse(options.body as string));
+        return server.answersPull
+          ? Response.json(server.owed())
+          : Response.json({ detail: 'Not Found' }, { status: 404 });
+      }
+      if (path.endsWith('/room-message')) {
+        const { message_id: messageId } = JSON.parse(options.body as string) as {
+          message_id: string;
+        };
+        if (server.blocked(messageId))
+          return Response.json(
+            {
+              code: 'ROOM_MESSAGE_OUT_OF_ORDER',
+              detail: 'An earlier delivery for this room has not been made.',
+            },
+            { status: 409 }
+          );
+        admitted.push(messageId);
+        return Response.json({
+          type: 'command.status',
+          commandId: `command-${messageId}`,
+          status: 'accepted',
+          code: null,
+          message: null,
+          command: {
+            contractVersion: 1,
+            commandId: `command-${messageId}`,
+            sessionId: 'session',
+            epoch: 'server-epoch',
+            origin: {
+              actorId: '@owner:example.test',
+              surface: 'slack',
+              roomId: 'room',
+              threadId: null,
+              messageId,
+            },
+            body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+          },
+        });
+      }
+      if (path.endsWith('/commands')) return Response.json([]);
+      if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
+      return Response.json({ leaseSeconds: 30 });
+    })
+  );
+  return { admitted, notices, pulled };
+}
+
+it('asks Switch what its own rooms owe it, and runs what it is told', async () => {
+  // The controller that would route to this session has gone and the server
+  // still has this session serving the room, so nothing else will ever offer
+  // it the message.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
+    answersPull: true,
+    blocked: () => false,
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(ran).toEqual(['owed']), { timeout: 3000 });
+    expect(server.admitted).toEqual(['owed']);
+    // Asked for under the same lease everything else is: a session that cannot
+    // prove it holds the room is told nothing about what the room owes.
+    expect(server.pulled[0]).toEqual({ host_id: 'host', epoch: 'server-epoch' });
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});
+
+it('runs a delivery once, however often it is offered again', async () => {
+  // The same delivery is owed until it is answered, so every poll offers it
+  // again and a controller that comes back routes it as well. Running it twice
+  // is the room hearing the same message twice.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-repeat-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const routed = { sequence: 4, roomId: 'room', messageId: 'owed' };
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }],
+    answersPull: true,
+    blocked: () => false,
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(ran).toEqual(['owed']), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, routed);
+    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), { timeout: 12000 });
+    expect(ran).toEqual(['owed']);
+    expect(server.admitted).toEqual(['owed']);
+    expect(
+      (await inboxRecords(root))
+        .filter((record) => record.type === 'handoff')
+        .map((r) => r.messageId)
+    ).toEqual(['owed']);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);
+
+it('holds a delivery Switch will not take yet and makes it behind the one before it', async () => {
+  // The delivery this session was routed and the delivery it found for itself
+  // reach it in whatever order they reach it in, and the room's own order is
+  // the server's to decide. Being told to wait is a wait, not a failure: the
+  // delivery stays this session's, unacknowledged and not given back.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-order-'));
+  roots.push(root);
+  await writeFile(
+    join(root, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'received', sequence: 2, roomId: 'room', messageId: 'second' }) + '\n'
+  );
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'first', sequence: 1, expired: false }],
+    answersPull: true,
+    blocked: (messageId) => messageId === 'second' && !server.admitted.includes('first'),
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(ran).toEqual(['first', 'second']), { timeout: 5000 });
+    expect(server.admitted).toEqual(['first', 'second']);
+    const records = await inboxRecords(root);
+    expect(records.filter((record) => record.type === 'release')).toEqual([]);
+    expect(records.filter((record) => record.type === 'ack')).toHaveLength(2);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);
+
+it('says once that a delivery Switch stopped promising was never made', async () => {
+  // Switch holds a delivery for a session for a while and then stops. Nobody
+  // else is left to notice: the room was told nothing, and the only party that
+  // can say so is the session that was owed it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-lapsed-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const server = owingServer({
+    owed: () => [{ room_id: 'room', message_id: 'lapsed', sequence: 6, expired: true }],
+    answersPull: true,
+    blocked: () => false,
+  });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(server.notices).toHaveLength(1), { timeout: 3000 });
+    expect(server.notices[0]).toContain('lapsed');
+    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), { timeout: 12000 });
+    expect(server.notices).toHaveLength(1);
+    expect(ran).toEqual([]);
+    expect(server.admitted).toEqual([]);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);
+
+it('stops asking a server that cannot say what a session is owed, and says so once', async () => {
+  // A server built before the pull existed answers nothing here for ever, and
+  // asking it every few seconds for the rest of the session would be noise.
+  // What the loss costs is said plainly: this session hears about a room
+  // message only while its controller is routing to it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-pull-unanswered-'));
+  roots.push(root);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const stop = new AbortController();
+  const { adapter, ran } = roomWorker();
+  const server = owingServer({ owed: () => [], answersPull: false, blocked: () => false });
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
+    await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+    await new Promise((resolve) => setTimeout(resolve, 6000));
+    expect(server.pulled).toHaveLength(1);
+    expect(
+      warn.mock.calls.filter(
+        ([text]) => typeof text === 'string' && text.includes('does not answer')
+      )
+    ).toHaveLength(1);
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);

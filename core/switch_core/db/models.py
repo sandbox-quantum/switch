@@ -2244,6 +2244,12 @@ class SdkRoomAdmission(TenantScoped, Base):
     so the promise survives the replay buffer being trimmed: this row, not the
     buffer, is what the delivery is finally built from.
 
+    `created_at` is what orders the promises for a room. The position they
+    carry belongs to a stream that starts again from one whenever the server
+    does, so two promises made either side of a restart compare backwards,
+    while the moment each row was written does not. Ties break on `message_id`
+    so the order is total wherever it is read.
+
     It carries the grant as well. A room nothing holds is answered by giving
     the agent the right to start one session for it, and that right has to be
     recorded where the next caller asking about the same room can see it, or
@@ -2273,6 +2279,9 @@ class SdkRoomAdmission(TenantScoped, Base):
     message_id: Mapped[str] = mapped_column(Text, nullable=False)
     sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     delivery: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

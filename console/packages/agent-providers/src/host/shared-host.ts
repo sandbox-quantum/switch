@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   commandSchema,
+  heldDeliveriesSchema,
   roomBindingSchema,
   roomMessageReceiptSchema,
   serverEventSchema,
@@ -36,11 +37,25 @@ class TransportError extends Error {}
 class RequestError extends Error {
   constructor(
     readonly code: string,
+    readonly status: number,
     message: string
   ) {
     super(message);
   }
 }
+
+/**
+ * How often a session asks Switch for the room work its own rooms still owe
+ * it, rather than waiting for its controller to hand it over.
+ *
+ * A session whose controller has gone is still the session the server says is
+ * in the room, and nothing is left to route to it; this is how it finds that
+ * work anyway. The interval is a placeholder to be measured, not a tuned
+ * number: it trades how long such a session stays silent against a request per
+ * session per interval on a server where every controller is healthy and the
+ * answer is almost always empty.
+ */
+const ROOM_PULL_MS = 5000;
 export class SharedHostLeaseExpiredError extends Error {
   constructor() {
     super('HOST_OFFLINE: lease renewal deadline passed.');
@@ -110,7 +125,11 @@ export async function runSharedHost(
       } catch {
         /* The response may be plain text. */
       }
-      throw new RequestError(code, `Switch session request failed (${response.status}): ${text}`);
+      throw new RequestError(
+        code,
+        response.status,
+        `Switch session request failed (${response.status}): ${text}`
+      );
     }
     return response.json();
   };
@@ -360,6 +379,77 @@ export async function runSharedHost(
       disclosed = false;
       await host?.roomDeliveryResumed();
     };
+    let pulledAt: number | null = null;
+    let pullUnanswered = false;
+    let pullFailing = false;
+    const givenUpOn = new Set<string>();
+    /**
+     * Ask Switch for the deliveries this session's own rooms still owe it.
+     *
+     * The push is the fast path and stays the fast path: this exists for the
+     * session whose controller is not there to push. It is the same work
+     * either way — the server hands out one delivery per room, the one it
+     * would accept next, and the inbox admits each message once however many
+     * times it is offered, so a delivery that arrives both ways is journaled,
+     * run and acknowledged once.
+     *
+     * A delivery the room has moved away from is not offered here at all: the
+     * answer is filtered by the rooms the server has this session holding, so
+     * one this session gave back does not come round again until the room
+     * does — at which point it has still never been made.
+     *
+     * Asking is an addition, not a dependency. A server that does not answer
+     * is said once and not asked again; one that refuses is said and asked
+     * again next time, and in both cases the controller's route is untouched.
+     */
+    const pullOwedDeliveries = async (inbox: SharedRoomInbox): Promise<void> => {
+      if (pullUnanswered || (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS))
+        return;
+      pulledAt = performance.now();
+      let owed: z.infer<typeof heldDeliveriesSchema>;
+      try {
+        owed = heldDeliveriesSchema.parse(
+          await request(`${sessionPath}/room-reservations`, hostLease)
+        );
+      } catch (error) {
+        if (executionSignal.aborted || error instanceof SharedHostLeaseExpiredError) throw error;
+        if (error instanceof RequestError && error.status === 404) {
+          pullUnanswered = true;
+          console.warn(
+            `This Switch server does not answer a session's own room work, so room messages reach this session only while its controller is routing them: ${error.message}`
+          );
+          return;
+        }
+        // Reported and survived rather than raised. What is owed is also being
+        // pushed wherever a controller is up, and taking a working session
+        // down because the second route to the same work is unreadable would
+        // cost more than the route is worth.
+        if (!pullFailing) {
+          pullFailing = true;
+          console.warn(
+            `Switch would not say what room work this session is owed: ${String(error)}`
+          );
+        }
+        return;
+      }
+      pullFailing = false;
+      for (const held of owed) {
+        if (held.expired) {
+          const key = `${held.room_id}:${held.message_id}`;
+          if (givenUpOn.has(key)) continue;
+          givenUpOn.add(key);
+          await host?.notice(
+            `Room message ${held.message_id} was held for this session longer than Switch promises to hold one, and has not been delivered. Nothing was sent to the room about it.`
+          );
+          continue;
+        }
+        await inbox.accept({
+          sequence: held.sequence,
+          roomId: held.room_id,
+          messageId: held.message_id,
+        });
+      }
+    };
     const discloseRefusal = async (): Promise<void> => {
       if (disclosed || !host) return;
       disclosed = true;
@@ -495,6 +585,7 @@ export async function runSharedHost(
         host.snapshot().session.status === 'ready' ||
         host.snapshot().session.status === 'running'
       ) {
+        if (rooms) await pullOwedDeliveries(rooms);
         if (rooms && handoffs)
           for (const event of await handoffs.drain()) await rooms.accept(event);
         for (const event of rooms?.pending() ?? []) {
@@ -533,6 +624,12 @@ export async function runSharedHost(
               await rooms!.release(event);
               continue;
             }
+            // An earlier message for this room has not been answered yet, so
+            // this one is not this session's to run first. Kept outstanding
+            // and not given back: nothing has changed about whose delivery it
+            // is, only about when. The one in front of it is already held or
+            // arrives with the next pull, and this is tried again behind it.
+            if (error.code === 'ROOM_MESSAGE_OUT_OF_ORDER') continue;
             if (
               [
                 'UNSUPPORTED_CAPABILITY',

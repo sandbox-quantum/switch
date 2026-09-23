@@ -320,6 +320,23 @@ async def room_reservations(
     ]
 
 
+@router.post("/{session_id}/room-reservations")
+async def session_room_reservations(
+    session_id: str, body: HostLease, agent: AuthenticatedAgent, factory: Factory
+) -> list[ReservedDelivery]:
+    return [
+        ReservedDelivery(
+            room_id=reservation.room_id,
+            message_id=reservation.message_id,
+            sequence=reservation.sequence,
+            expired=reservation.expired,
+        )
+        for reservation in await SessionAuthority(factory).session_room_reservations(
+            agent.id, session_id, body.host_id, body.epoch
+        )
+    ]
+
+
 @router.post("/room-reservations/discard")
 async def discard_room_reservation(
     body: RoomDelivery, agent: AuthenticatedAgent, factory: Factory

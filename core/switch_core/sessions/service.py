@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import get_args
 
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import can_address, parse_policy
@@ -101,6 +101,10 @@ ADMISSION_SECONDS = 15 * 60
 # was issued to. Long enough to launch a session and claim it, short enough
 # that a launch that never happened does not hold the room shut.
 GRANT_SECONDS = 120
+
+# How many of a session's rooms one pull answers for. The rooms waiting
+# longest come first, so a room left out of an answer is in the next one.
+PULLED_ROOMS = 32
 
 
 class SessionError(ValueError):
@@ -605,6 +609,44 @@ async def require_recorded_rooms_unmoved(
                 "ROOM_MIGRATED",
                 f"Room {room_id} is recorded to session {served.id}; the connection serving it cannot give it up.",
             )
+
+
+async def _require_oldest_promise(
+    db: AsyncSession, agent_id: str, reservation: SdkRoomAdmission
+) -> None:
+    """Refuse a room delivery while an earlier one for the room is still owed.
+
+    A room is answered in the order its messages arrived, and the only party
+    that can say what that order was is the one that wrote the promises down.
+    A worker asking for its own work and a controller handing work over reach
+    submission by different routes and with different ideas of what is next;
+    this is where the two are held to the same answer.
+
+    The refusal leaves both promises as they were, so the earlier one can still
+    be found and made and this one retried behind it. A promise the server has
+    stopped making no longer holds anything back — otherwise a delivery nobody
+    ever comes for would shut the room until it was given up by hand.
+    """
+    older = await db.scalar(
+        select(SdkRoomAdmission.message_id)
+        .where(
+            SdkRoomAdmission.tenant_id == require_tenant_id(),
+            SdkRoomAdmission.agent_id == agent_id,
+            SdkRoomAdmission.room_id == reservation.room_id,
+            SdkRoomAdmission.consumed_at.is_(None),
+            SdkRoomAdmission.discarded_at.is_(None),
+            SdkRoomAdmission.expires_at > (await _now(db)),
+            tuple_(SdkRoomAdmission.created_at, SdkRoomAdmission.message_id)
+            < tuple_(literal(reservation.created_at), literal(reservation.message_id)),
+        )
+        .order_by(SdkRoomAdmission.created_at, SdkRoomAdmission.message_id)
+        .limit(1)
+    )
+    if older is not None:
+        raise SessionError(
+            "ROOM_MESSAGE_OUT_OF_ORDER",
+            f"An earlier delivery for this room ({older}) has not been made; this one stays reserved.",
+        )
 
 
 class SessionAuthority:
@@ -1332,6 +1374,7 @@ class SessionAuthority:
                         "bridgeId": bridge_id,
                         "surface": surface,
                     },
+                    created_at=now,
                     expires_at=now + timedelta(seconds=ADMISSION_SECONDS),
                 )
                 db.add(reservation)
@@ -1395,7 +1438,7 @@ class SessionAuthority:
                     SdkRoomAdmission.consumed_at.is_(None),
                     SdkRoomAdmission.discarded_at.is_(None),
                 )
-                .order_by(SdkRoomAdmission.sequence)
+                .order_by(SdkRoomAdmission.created_at, SdkRoomAdmission.message_id)
             )
             return [
                 RoomReservation(
@@ -1405,6 +1448,56 @@ class SessionAuthority:
                     expired=row.expires_at <= now,
                 )
                 for row in rows
+            ]
+
+    async def session_room_reservations(
+        self, agent_id: str, session_id: str, host_id: str, epoch: str
+    ) -> list[RoomReservation]:
+        """The deliveries still promised for the rooms this session itself holds.
+
+        A worker whose controller has stopped asking on its behalf comes here
+        for the work it already owns. It is told about its own rooms only, and
+        about the oldest outstanding delivery of each, which is the one
+        submission would take next in any case. Rooms come longest-waiting
+        first and the answer is capped, so a room nobody is answering cannot
+        crowd the rest out of it.
+        """
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            await self._lock_agent(db, agent_id)
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            state = _stored_snapshot(row).session
+            if state.retired or _session_is_over(row):
+                raise SessionError(
+                    "HOST_OFFLINE", "This session has finished and holds no rooms."
+                )
+            if not state.room_ids:
+                return []
+            now = await _now(db)
+            rows = await db.scalars(
+                select(SdkRoomAdmission)
+                .where(
+                    SdkRoomAdmission.tenant_id == require_tenant_id(),
+                    SdkRoomAdmission.agent_id == agent_id,
+                    SdkRoomAdmission.room_id.in_(state.room_ids),
+                    SdkRoomAdmission.consumed_at.is_(None),
+                    SdkRoomAdmission.discarded_at.is_(None),
+                )
+                .order_by(SdkRoomAdmission.created_at, SdkRoomAdmission.message_id)
+            )
+            oldest: dict[str, SdkRoomAdmission] = {}
+            for reservation in rows:
+                oldest.setdefault(reservation.room_id, reservation)
+            return [
+                RoomReservation(
+                    room_id=reservation.room_id,
+                    message_id=reservation.message_id,
+                    sequence=reservation.sequence,
+                    expired=reservation.expires_at <= now,
+                )
+                for reservation in list(oldest.values())[:PULLED_ROOMS]
             ]
 
     async def discard_room_reservation(
@@ -1511,6 +1604,7 @@ class SessionAuthority:
                         "ROOM_MESSAGE_REASSIGNED",
                         "This session no longer holds the room; the delivery stays reserved.",
                     )
+                await _require_oldest_promise(db, agent_id, reservation)
                 payload = MessagePayload.model_validate(reservation.delivery["payload"])
                 bridge_id = reservation.delivery["bridgeId"]
                 surface = reservation.delivery["surface"]

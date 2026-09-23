@@ -6,6 +6,7 @@ export {
   commandStatusSchema,
   sessionSchema,
   eventBytes,
+  heldDeliveriesSchema,
   hostEventSchema,
   parseHostEvent,
   roomBindingSchema,
