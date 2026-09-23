@@ -74,7 +74,12 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
       throw new Error('Shared SDK execution requires a persistent room connection.');
     input.env = { ...inherited, ...input.env, ...switchEnv };
     if (process.env.SWITCH_HOSTED_CONTROL === '1')
-      await materializeHostedProvider(root, input.env, await fetchHostedProvider(config));
+      await materializeHostedProvider(
+        root,
+        input.env,
+        await fetchHostedProvider(config),
+        execution.binaryPath ?? 'claude'
+      );
     const mcpRuntime = mcpRuntimeCommand(execution);
     input.mcpServers.switch = {
       transport: 'stdio',

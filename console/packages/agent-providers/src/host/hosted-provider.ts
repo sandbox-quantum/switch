@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { importOpenCodeConsole } from './opencode-console';
 import { readSharedCredentials, type SharedHostConfig } from './shared-config';
 
 const credentialSchema = z.discriminatedUnion('status', [
@@ -126,7 +127,8 @@ async function writeAuthentication(root: string, relative: string, content: stri
 export async function materializeHostedProvider(
   root: string,
   env: Record<string, string>,
-  credential: HostedCredential
+  credential: HostedCredential,
+  binaryPath: string
 ): Promise<void> {
   applyHostedProvider(env, credential);
   if (credential.status !== 'connected') return;
@@ -147,7 +149,11 @@ export async function materializeHostedProvider(
     await writeAuthentication(env.CODEX_HOME, 'auth.json', content);
   } else if (credential.provider === 'opencode') {
     env.XDG_DATA_HOME = join(root, 'provider-data');
-    await writeAuthentication(env.XDG_DATA_HOME, 'opencode/auth.json', credential.credential);
+    if (JSON.parse(credential.credential).format === 'switch-opencode-console-v1') {
+      await importOpenCodeConsole(env.XDG_DATA_HOME, env, binaryPath, credential.credential);
+    } else {
+      await writeAuthentication(env.XDG_DATA_HOME, 'opencode/auth.json', credential.credential);
+    }
   } else if (credential.provider === 'antigravity') {
     env.GEMINI_HOME = join(root, 'provider-home');
     await writeAuthentication(

@@ -565,7 +565,7 @@ export async function runHostedBootstrap(
           (entry): entry is [string, string] => entry[1] !== undefined
         )
       );
-      await materializeHostedProvider(prepared.root, env, credential);
+      await materializeHostedProvider(prepared.root, env, credential, spec.provider.binaryPath);
       const readiness = await checkProviderReadiness({
         provider: spec.provider.kind,
         binaryPath: spec.provider.binaryPath,

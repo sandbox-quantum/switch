@@ -25,7 +25,8 @@ it('preserves a native token refresh until the owner replaces the source credent
   await materializeHostedProvider(
     root,
     env,
-    credential('{"tokens":{"access_token":"fixture-original"}}')
+    credential('{"tokens":{"access_token":"fixture-original"}}'),
+    'fixture-cli'
   );
   const path = join(env.CODEX_HOME!, 'auth.json');
   expect((await stat(path)).mode & 0o777).toBe(0o600);
@@ -33,29 +34,31 @@ it('preserves a native token refresh until the owner replaces the source credent
   await materializeHostedProvider(
     root,
     env,
-    credential('{"tokens":{"access_token":"fixture-original"}}')
+    credential('{"tokens":{"access_token":"fixture-original"}}'),
+    'fixture-cli'
   );
   expect(await readFile(path, 'utf8')).toContain('fixture-refreshed');
   await materializeHostedProvider(
     root,
     env,
-    credential('{"tokens":{"access_token":"fixture-replaced"}}')
+    credential('{"tokens":{"access_token":"fixture-replaced"}}'),
+    'fixture-cli'
   );
   expect(await readFile(path, 'utf8')).toContain('fixture-replaced');
 });
 
 it('rejects malformed credentials before creating an authentication file', async () => {
-  await expect(materializeHostedProvider(root, {}, credential('not-json'))).rejects.toThrow(
-    'JSON object'
-  );
+  await expect(
+    materializeHostedProvider(root, {}, credential('not-json'), 'fixture-cli')
+  ).rejects.toThrow('JSON object');
   await expect(stat(join(root, 'provider-home'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('does not follow an authentication directory symlink', async () => {
   await symlink(tmpdir(), join(root, 'provider-home'));
-  await expect(materializeHostedProvider(root, {}, credential('{"fixture":true}'))).rejects.toThrow(
-    'symbolic link'
-  );
+  await expect(
+    materializeHostedProvider(root, {}, credential('{"fixture":true}'), 'fixture-cli')
+  ).rejects.toThrow('symbolic link');
 });
 
 it('keeps the different providers in their native authentication locations', async () => {
@@ -64,7 +67,12 @@ it('keeps the different providers in their native authentication locations', asy
     ['antigravity', 'GEMINI_HOME', 'antigravity-acp/acp_token.json'],
   ] as const) {
     const env: Record<string, string> = {};
-    await materializeHostedProvider(root, env, { ...credential('{"fixture":true}'), provider });
+    await materializeHostedProvider(
+      root,
+      env,
+      { ...credential('{"fixture":true}'), provider },
+      'fixture-cli'
+    );
     expect(JSON.parse(await readFile(join(env[variable]!, relative), 'utf8'))).toEqual({
       fixture: true,
     });

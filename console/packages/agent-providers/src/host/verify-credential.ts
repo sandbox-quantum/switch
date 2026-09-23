@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { materializeHostedProvider } from './hosted-provider';
+import { exportOpenCodeConsole } from './opencode-console';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 
@@ -82,19 +83,26 @@ export async function runCredentialVerification(): Promise<void> {
       HOME: input.home,
       PATH: process.env.PATH ?? '/usr/bin:/bin',
     };
-    await materializeHostedProvider(input.home, env, {
-      status: 'connected',
-      provider: input.provider,
-      kind: input.kind,
-      credential: input.credential,
-      revision: randomUUID(),
-      sessions: [],
-    });
+    await materializeHostedProvider(
+      input.home,
+      env,
+      {
+        status: 'connected',
+        provider: input.provider,
+        kind: input.kind,
+        credential: input.credential,
+        revision: randomUUID(),
+        sessions: [],
+      },
+      input.binaryPath
+    );
     const cwd = join(input.home, 'workspace');
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     let model: { id: string } | undefined;
     if (input.provider === 'opencode') {
-      const providers = Object.keys(JSON.parse(input.credential));
+      const parsed = JSON.parse(input.credential);
+      const providers =
+        parsed.format === 'switch-opencode-console-v1' ? ['opencode'] : Object.keys(parsed);
       const readiness = await checkProviderReadiness({
         provider: input.provider,
         binaryPath: input.binaryPath,
@@ -116,7 +124,12 @@ export async function runCredentialVerification(): Promise<void> {
       model,
     });
     let credential = input.credential;
-    if (input.kind === 'auth-json') {
+    if (
+      input.provider === 'opencode' &&
+      JSON.parse(input.credential).format === 'switch-opencode-console-v1'
+    ) {
+      credential = exportOpenCodeConsole(env.XDG_DATA_HOME);
+    } else if (input.kind === 'auth-json') {
       const authPath =
         input.provider === 'codex'
           ? join(env.CODEX_HOME, 'auth.json')

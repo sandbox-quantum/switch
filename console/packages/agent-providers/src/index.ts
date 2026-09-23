@@ -61,3 +61,4 @@ export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
+export { openCodeConsoleCredentialSchema } from './opencode/console-credential';

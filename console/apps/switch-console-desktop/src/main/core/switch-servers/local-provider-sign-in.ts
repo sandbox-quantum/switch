@@ -3,6 +3,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import {
+  getOpenCodeLoginCommand,
+  localOpenCodeDatabasePath,
+  readOpenCodeConsole,
+} from './local-opencode-sign-in';
 
 const subscriptionSchema = z.object({
   auth_mode: z.literal('chatgpt').optional(),
@@ -38,6 +43,10 @@ export function localProviderAuthPath(provider: LocalSignInProvider): string {
 }
 
 export async function readLocalProviderSignIn(provider: LocalSignInProvider, path: string) {
+  if (provider === 'opencode') {
+    const account = readOpenCodeConsole(localOpenCodeDatabasePath());
+    if (account) return account;
+  }
   const name = providerDisplayName(provider);
   let file;
   try {
@@ -79,6 +88,17 @@ export async function readLocalProviderSignIn(provider: LocalSignInProvider, pat
 }
 
 export async function getLocalProviderSignIn(provider: LocalSignInProvider) {
+  if (provider === 'opencode') {
+    const info = await getOpenCodeLoginCommand();
+    const account = readOpenCodeConsole(localOpenCodeDatabasePath());
+    const credential =
+      account ?? (await readLocalProviderSignIn(provider, localProviderAuthPath(provider)));
+    const path =
+      account || (!credential && info.command === 'opencode console login')
+        ? localOpenCodeDatabasePath()
+        : localProviderAuthPath(provider);
+    return { path, status: credential ? ('ready' as const) : ('missing' as const), ...info };
+  }
   const path = localProviderAuthPath(provider);
   const credential = await readLocalProviderSignIn(provider, path);
   return { path, status: credential ? ('ready' as const) : ('missing' as const) };

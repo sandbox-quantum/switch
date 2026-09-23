@@ -53,6 +53,36 @@ export function parseAuthentication(provider: string, output: string): ProviderR
   }
   return result('unknown', 'Could not verify authentication. Check provider setup and try again.');
 }
+export function parseOpenCodeInventory(value: unknown): ProviderReadiness {
+  const inventory = z
+    .object({
+      connected: z.array(z.string()),
+      all: z.array(
+        z.object({
+          id: z.string(),
+          models: z.record(z.string(), z.object({ name: z.string() })),
+        })
+      ),
+    })
+    .parse(value);
+  return {
+    ...result(
+      inventory.connected.length ? 'authenticated' : 'unconfigured',
+      inventory.connected.length
+        ? 'OpenCode has connected backends. Model access depends on the selected backend.'
+        : 'No connected OpenCode backends were reported. Configure a backend; local models may need no sign-in.'
+    ),
+    models: inventory.all
+      .filter((provider) => inventory.connected.includes(provider.id))
+      .flatMap((provider) =>
+        Object.entries(provider.models).map(([id, model]) => ({
+          id: `${provider.id}/${id}`,
+          name: model.name,
+        }))
+      ),
+  };
+}
+
 export async function checkProviderReadiness(input: {
   provider: string;
   binaryPath: string;
@@ -75,13 +105,7 @@ export async function checkProviderReadiness(input: {
           signal: AbortSignal.timeout(15000),
         });
         if (!response.ok) return result('unknown', 'Could not check OpenCode backend connections.');
-        const inventory = z.object({ connected: z.array(z.string()) }).parse(await response.json());
-        return result(
-          inventory.connected.length ? 'authenticated' : 'unconfigured',
-          inventory.connected.length
-            ? 'OpenCode has connected backends. Model access depends on the selected backend.'
-            : 'No connected OpenCode backends were reported. Configure a backend; local models may need no sign-in.'
-        );
+        return parseOpenCodeInventory(await response.json());
       } finally {
         await stopOpencodeServer(server);
       }

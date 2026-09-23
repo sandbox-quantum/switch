@@ -230,7 +230,14 @@ function OtherProviderConnectionStep({
                   {provider === 'codex' ? ' with ChatGPT' : ''} on this computer. Switch checks for
                   your sign-in automatically.
                 </p>
-                <CommandRow command={info.command} action={null} />
+                <CommandRow
+                  command={
+                    localSignIn.data && 'command' in localSignIn.data
+                      ? localSignIn.data.command
+                      : info.command
+                  }
+                  action={null}
+                />
                 <p className="font-mono text-xs break-all">{localSignIn.data?.path ?? info.file}</p>
                 {provider === 'codex' && (
                   <div className="space-y-2">
@@ -267,7 +274,7 @@ function OtherProviderConnectionStep({
                 {localSignIn.error
                   ? String(localSignIn.error)
                   : localSignIn.data?.status === 'ready'
-                    ? 'Local sign-in file found.'
+                    ? 'Local sign-in found.'
                     : 'Waiting for a local sign-in…'}
               </p>
               <p className="text-xs text-foreground-muted">

@@ -147,7 +147,13 @@ async function main(): Promise<void> {
       if (config.start.provider !== 'claude' && process.env.SWITCH_HOSTED_CONTROL !== '1') return;
       const cloudCredential =
         process.env.SWITCH_HOSTED_CONTROL === '1' ? await fetchHostedProvider(config) : null;
-      if (cloudCredential) await materializeHostedProvider(root, input.env, cloudCredential);
+      if (cloudCredential)
+        await materializeHostedProvider(
+          root,
+          input.env,
+          cloudCredential,
+          config.execution?.binaryPath ?? 'claude'
+        );
       const readiness = await checkProviderReadiness({
         provider: config.start.provider,
         binaryPath: config.execution?.binaryPath ?? 'claude',

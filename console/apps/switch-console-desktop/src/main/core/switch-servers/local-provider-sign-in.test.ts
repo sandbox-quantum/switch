@@ -8,6 +8,15 @@ import {
   readLocalProviderSignIn,
 } from './local-provider-sign-in';
 
+vi.mock('./local-opencode-sign-in', () => ({
+  localOpenCodeDatabasePath: () => '/fixture/opencode.db',
+  readOpenCodeConsole: () => null,
+  getOpenCodeLoginCommand: async () => ({
+    version: '2.0.0',
+    command: 'opencode auth login opencode',
+  }),
+}));
+
 let home: string;
 const subscription = {
   auth_mode: 'chatgpt',
@@ -70,11 +79,11 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
     expect(path).toBe(
       join(home, provider === 'opencode' ? 'opencode/auth.json' : 'antigravity-acp/acp_token.json')
     );
-    expect(await getLocalProviderSignIn(provider)).toEqual({ path, status: 'missing' });
+    expect(await getLocalProviderSignIn(provider)).toMatchObject({ path, status: 'missing' });
     await mkdir(dirname(path), { recursive: true });
     const credential = JSON.stringify({ placeholder: 'fixture-only' });
     await writeFile(path, credential);
-    expect(await getLocalProviderSignIn(provider)).toEqual({ path, status: 'ready' });
+    expect(await getLocalProviderSignIn(provider)).toMatchObject({ path, status: 'ready' });
     expect(await readLocalProviderSignIn(provider, path)).toBe(credential);
     await rm(path);
     expect((await getLocalProviderSignIn(provider)).status).toBe('missing');
