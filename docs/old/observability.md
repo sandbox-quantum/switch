@@ -145,7 +145,11 @@ drop every live session to find that out.
 
 **Logs** go to the container's output, with `tenant_id`, `request_id`,
 `agent_id` and `user_id` stamped on every line by a filter on the handler — so
-records from libraries carry them too. Set `LOG_FORMAT=json` to get them as
+records from libraries carry them too. A request from Switch Console also
+carries `console_id` and `console_name`: on a server a Console runs for its
+user, everyone with access to the host signs in as the one seeded account, so
+`user_id` cannot tell them apart and these can. They are attribution the caller
+supplies, not authentication. Set `LOG_FORMAT=json` to get them as
 fields rather than inside the message text; the default is `text`, which is for
 reading in a terminal, so anywhere the logs are actually collected wants the
 JSON form. With `OTLP_LOGS_ENABLED` the same records are *also* posted to the

@@ -40,7 +40,14 @@ from switch_core.tenant_context import current_tenant_id
 # The context fields, in the order they are rendered. Anything logged as
 # context must be listed here, so that a typo in a bind call is an error rather
 # than a field that silently never appears.
-CONTEXT_FIELDS: tuple[str, ...] = ("tenant_id", "request_id", "agent_id", "user_id")
+CONTEXT_FIELDS: tuple[str, ...] = (
+    "tenant_id",
+    "request_id",
+    "agent_id",
+    "user_id",
+    "console_id",
+    "console_name",
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,11 @@ class LogContext:
     request_id: str | None = None
     agent_id: str | None = None
     user_id: str | None = None
+    # Which Switch Console made the request, when one says so. Several people
+    # can share one sign-in on a server a Console runs for them, so `user_id`
+    # alone cannot tell their actions apart; see `request_context.py`.
+    console_id: str | None = None
+    console_name: str | None = None
 
 
 _EMPTY = LogContext()
@@ -151,4 +163,6 @@ class LogContextFilter(logging.Filter):
         record.request_id = context.request_id
         record.agent_id = context.agent_id
         record.user_id = context.user_id
+        record.console_id = context.console_id
+        record.console_name = context.console_name
         return True
