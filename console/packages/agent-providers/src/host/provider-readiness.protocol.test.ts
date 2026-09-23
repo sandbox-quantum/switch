@@ -50,15 +50,38 @@ it('does not classify a transport failure as missing credentials', async () => {
   expect((await checkProviderReadiness({ ...input, provider: 'codex' })).status).toBe('unknown');
   expect(mock.dispose).toHaveBeenCalledOnce();
 });
-it('checks Antigravity authentication on ACP without opening a conversation', async () => {
-  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+// The probe used to answer "are you signed in?" by calling `authenticate` —
+// which does not test the sign-in, it performs it, opening a browser. It then
+// reported success whether or not anything had happened. Asking a question must
+// not be the thing that changes the answer.
+it('answers Antigravity sign-in from the handshake, without signing in', async () => {
+  mock.request.mockResolvedValueOnce({ authMethods: [] });
   const result = await checkProviderReadiness({ ...input, provider: 'antigravity' });
   expect(result.status).toBe('authenticated');
-  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize', 'authenticate']);
+  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize']);
   expect(mock.dispose).toHaveBeenCalledOnce();
 });
-it('reports Antigravity sign-in failures', async () => {
-  mock.request.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('Sign in required'));
+it('never calls authenticate, whatever the agent reports', async () => {
+  mock.request.mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] });
+  await checkProviderReadiness({ ...input, provider: 'antigravity' });
+  expect(mock.request.mock.calls.map((call) => call[0])).not.toContain('authenticate');
+});
+it('reports an outstanding Antigravity sign-in as unauthenticated', async () => {
+  mock.request.mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] });
+  const result = await checkProviderReadiness({ ...input, provider: 'antigravity' });
+  expect(result.status).toBe('unauthenticated');
+  expect(result.message).toContain('antigravity-acp --login');
+  expect(mock.dispose).toHaveBeenCalledOnce();
+});
+// An agent that says nothing about auth is not an agent asking to be signed in.
+it('treats a handshake with no authMethods as nothing outstanding', async () => {
+  mock.request.mockResolvedValueOnce({});
+  expect((await checkProviderReadiness({ ...input, provider: 'antigravity' })).status).toBe(
+    'authenticated'
+  );
+});
+it('reports Antigravity handshake failures', async () => {
+  mock.request.mockRejectedValueOnce(new Error('Sign in required'));
   expect((await checkProviderReadiness({ ...input, provider: 'antigravity' })).status).toBe(
     'unauthenticated'
   );
