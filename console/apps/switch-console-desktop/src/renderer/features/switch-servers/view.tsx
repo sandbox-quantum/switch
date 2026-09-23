@@ -48,6 +48,8 @@ import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
+import { othersRecentlySeen } from './shared-consoles';
+import { SharedConsolesSection } from './shared-consoles-section';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
@@ -258,16 +260,25 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 )}
                 <DropdownMenuSeparator />
                 {/* Only a server Switch Console runs is one it can delete; for
-                    anyone else's, all we can do is let go of it. Both stay red:
-                    either way every agent pointed at this server loses it. */}
+                    anyone else's, all we can do is let go of it. A remote one
+                    offers both, since its host is shared (CHOO-2893). All stay
+                    red: either way every agent pointed at this server loses it. */}
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() =>
                     showDeleteServerModal({ serverId, onSuccess: () => navigate('home') })
                   }
                 >
-                  {server.managed ? <Trash2 className="size-4" /> : <Unplug className="size-4" />}
-                  {server.managed ? 'Delete server…' : 'Disconnect from server…'}
+                  {server.managed && server.managementKind !== 'remote' ? (
+                    <Trash2 className="size-4" />
+                  ) : (
+                    <Unplug className="size-4" />
+                  )}
+                  {!server.managed
+                    ? 'Disconnect from server…'
+                    : server.managementKind === 'remote'
+                      ? 'Disconnect or delete…'
+                      : 'Delete server…'}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -332,6 +343,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             <LocalServerControls />
           ))}
 
+        {server.managed && server.managementKind === 'remote' && server.sshHost && (
+          <SharedConsolesSection sshHost={server.sshHost} />
+        )}
+
         {detailsVisible && !unreachable && (
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 space-y-0.5">
@@ -363,6 +378,12 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               server.managementKind === 'remote' && server.sshHost
                 ? `Reset server on ${server.sshHost}`
                 : 'Reset server on this computer'
+            }
+            shared={server.managementKind === 'remote'}
+            others={
+              server.managementKind === 'remote' && server.sshHost
+                ? othersRecentlySeen(remoteServerStore.registerFor(server.sshHost), new Date())
+                : []
             }
             disabled={stackTransitioning}
             onConfirm={() => {
