@@ -52,7 +52,10 @@ import {
   readAgentStore,
   type ResolvedAgent,
 } from './credentials';
+import { BEAT_SETTLE_LIMIT_MS, EVICTION_TAKEN_OVER, refusalCode, until } from './event-stream';
 import { reapOrphanedRuntimes } from './reap';
+import { ReattachFence } from './reattach-fence';
+import { sessionSelector } from './session-selector';
 import { readSse, type SseFrame } from './sse';
 
 const ENV_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
@@ -452,6 +455,15 @@ type AgentEvent = {
   room_id: string;
   bridge_id: string | null;
   channel_type: string | null;
+  /**
+   * How far behind the agent is on unaddressed chatter in this event's room,
+   * as of this event. Carried only on events the agent is woken for, and only
+   * by a server that counts it.
+   *
+   * `count` is null when nothing can be said and `reason` is why; a reason
+   * beside a number means the number is a floor.
+   */
+  missed?: { count: number | null; reason: string | null };
   payload:
     | MessagePayload
     | CommandPayload
@@ -509,6 +521,11 @@ const BORROWED_CONNECTION_ID = borrowedConnectionId();
 const CONNECTION_ID = BORROWED_CONNECTION_ID ?? randomUUID();
 const OWNS_CONNECTION = BORROWED_CONNECTION_ID === null;
 
+// Where the supervisor says which of its sessions this process is. Unset for
+// every session nobody supervised, and read at call time rather than now —
+// see `session-selector.ts` for why the values cannot be environment.
+const SESSION_FILE = process.env.SWITCH_SESSION_FILE?.trim() || null;
+
 let pollingRoomId: string | null = null;
 let streamAbort: AbortController | null = null;
 let leaseAbort: AbortController | null = null;
@@ -519,27 +536,23 @@ let heartbeatAbort: AbortController | null = null;
 // trim what we have seen.
 let cursor = 0;
 
+// Which incarnation of the connection id the server last told us we are. Sent
+// on every heartbeat so a beat from a client that has since been displaced is
+// refused rather than moving the winner's cursor. Kept across a dropped socket:
+// the connection outlives its stream, so the incarnation is still ours.
+let streamGeneration: number | null = null;
+
+// The barrier between the heartbeat and the socket it beats for. Shut from the
+// moment a socket is attempted until its `connection_state` arrives — every
+// attach makes a new incarnation, so a beat sent inside that window names the
+// one before it and is refused as a takeover. It also disowns a beat that was
+// already in flight when the open began, whose answer was decided about the
+// incarnation the open replaced. Either way the heartbeat sits the window out
+// rather than reading this client's own reconnect as a displacement.
+const streamFence = new ReattachFence();
+
 // Whether the currently open stream declared a room when it opened.
 let streamHasRoom = false;
-
-// Unaddressed room messages are filtered out (never surfaced as a
-// notification), so the agent silently falls behind on room chatter. We tally
-// how many we've dropped since the agent last read context and surface that
-// count on every notification we DO emit, so the agent knows when to call
-// read_context to catch up. Reset to 0 when the agent reads context (signalled
-// by the /read-context hook) and when polling switches rooms.
-let missedSinceRead = 0;
-
-// Reason from the most recent `gap` frame, held until it can ride out on a
-// notification the agent was going to receive anyway.
-//
-// A gap says events were dropped and cannot be replayed. That must never be
-// silent, but it does not warrant a wake of its own: the only available
-// response is to re-read context, and the agent cannot know whether anything
-// it cared about was in the hole. Waking for it spends a turn on a maybe.
-// Deferring costs nothing — the warning still arrives before the agent's next
-// reply, which is the point at which stale context would actually mislead it.
-let pendingGapReason: string | null = null;
 
 // -- MCP server --------------------------------------------------------------
 
@@ -558,14 +571,14 @@ const mcp = new Server(
       '',
       'A room_join event fires when a user or agent joins a room — but you are only notified for rooms where you are configured to receive join events (per-room, per-agent; off by default, set via the join_event_listeners option on create_room / update_room or the gateway). The meta carries member (their matrix id) and member_name (their display name). React if it is relevant — e.g. a welcome agent greets the new arrival and explains the room via post_message, or send_targeted_message to address them directly. Your own join does not produce a room_join event.',
       '',
-      'Every notification carries a `missed_count` in its meta: the number of unaddressed room messages filtered out since you last called read_context. When it is above 0 the one-line body is annotated with it. A growing count means the room is active around you and you have fallen behind — call read_context (widen `since` to cover the gap) to catch up on what you missed. The count resets to 0 when you call read_context.',
+      "A notification carries a `missed_count` in its meta: how far behind you are on unaddressed chatter in that event's room. Switch counts it per room, so reading one room's context clears that room's count and leaves every other room standing at its own. A count above 0 means the room is active around you — call read_context (widen `since` to cover the gap) to catch up. It reads `unknown` when Switch cannot vouch for a number; read rather than assuming zero. A `missed_reason` beside it says why a count is unknown, or why a number is only a floor. The one-line body is annotated whenever there is something to act on, and a count is absent entirely from a server that does not count.",
       '',
       'Delivery is automatic: when you call connect_to_room on the switch MCP server, a PostToolUse hook pushes the room id to this channel over a localhost port. The channel claims that room on its connection and events are pushed to you as they happen. No separate tool call is needed.',
       '',
-      'If a notification carries a gap warning (a `gap` entry in its meta, and a line saying earlier events were dropped), some room events could not be replayed — call read_context before responding rather than assuming you have the full picture. A gap never arrives as a notification of its own; it is attached to the next event you receive.',
+      "Lost history reaches you through that same count rather than as a warning of its own: when the server restarted or events aged out, the affected room's `missed_count` reads `unknown`, or stays a number with a `missed_reason` marking it a floor. It never arrives as a notification of its own — it rides on the next event you are woken for in that room. Call read_context before responding rather than assuming you have the full picture.",
       '',
       'When you receive a message event:',
-      '1. Call read_context ONLY if you are missing context: missed_count is above 0, a gap warning arrived, the message joins a thread or discussion you have not been following, or a long time has passed since your last read. Set since to a few minutes before the event timestamp. When missed_count is 0 and you have been following the room, the event itself is enough — skip the read and answer.',
+      '1. Call read_context ONLY if you are missing context: missed_count is above 0 or unknown, a missed_reason came with it, the message joins a thread or discussion you have not been following, or a long time has passed since your last read. Set since to a few minutes before the event timestamp. When missed_count is 0 and you have been following the room, the event itself is enough — skip the read and answer.',
       '2. Understand what is being asked or discussed.',
       '3. Respond by calling post_message (or send_targeted_message if addressing a specific agent).',
       '',
@@ -921,6 +934,10 @@ async function callOperation(
         'Content-Type': 'application/json',
         // Correlation, supplied by the process that owns the connection.
         'X-Switch-Connection-Id': CONNECTION_ID,
+        // And which session on it, where a supervisor shares one between
+        // several. The two agree by construction: the supervisor publishes the
+        // selector only after binding this same connection to that session.
+        ...sessionSelector(SESSION_FILE),
       },
       body: JSON.stringify(args),
     });
@@ -1185,11 +1202,19 @@ async function handleSendAttachment(rawArgs: Record<string, unknown>) {
 // reopen with the same connection id and Last-Event-ID, and the server resumes
 // from where we stopped — the gap fills itself rather than being lost.
 
+/**
+ * How long an open stream has to last before it counts as a working one, and so
+ * before its backoff is allowed back to the floor. A healthy stream lives for
+ * minutes; one that opens and closes again at once is contested.
+ */
+const STABLE_STREAM_MS = 30_000;
+
 function stopStream() {
   if (streamAbort) {
     streamAbort.abort();
     streamAbort = null;
   }
+  streamFence.closeAdmission();
   pollingRoomId = null;
 }
 
@@ -1207,6 +1232,12 @@ function startStream() {
     let backoff = 1000;
 
     while (!abort.signal.aborted) {
+      let openedAt = 0;
+      // Before the open, not after it lands: it is this open that makes the new
+      // incarnation. A beat already in flight is given a moment to come back
+      // and be believed, and disowned after that.
+      await streamFence.detaching(BEAT_SETTLE_LIMIT_MS);
+      if (abort.signal.aborted) return;
       try {
         const params = new URLSearchParams({
           connection_id: CONNECTION_ID,
@@ -1214,6 +1245,15 @@ function startStream() {
           filter: 'all',
           start_from: cursor > 0 ? String(cursor) : 'head',
         });
+        // Reattaching, so say which incarnation we believe we still are and let
+        // the server refuse us if we are wrong. Attaching is a takeover, and a
+        // client that missed its own eviction would otherwise take the
+        // connection back off whoever legitimately holds it. The first open of
+        // the process sends nothing, which is how a deliberate takeover of a
+        // connection left behind by a dead session still works.
+        if (streamGeneration !== null) {
+          params.set('expected_generation', String(streamGeneration));
+        }
         // Declare the room when opening, not after: catch-up runs immediately,
         // and a room subscribed afterwards would arrive too late for the
         // buffered events this reconnect exists to recover.
@@ -1236,10 +1276,17 @@ function startStream() {
         });
 
         if (!resp.ok || !resp.body) {
-          throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+          const body = await resp.text();
+          if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+            // The reattach was refused: someone else holds the connection, and
+            // refusing left them holding it. Retrying would only ask again.
+            standDown();
+            return;
+          }
+          throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
-        backoff = 1000;
+        openedAt = Date.now();
         process.stderr.write(
           `switch: stream open (connection ${CONNECTION_ID}, cursor ${cursor})\n`
         );
@@ -1248,12 +1295,25 @@ function startStream() {
           if (frame.id) cursor = Math.max(cursor, Number(frame.id) || 0);
           await handleFrame(frame);
         }
+        if (abort.signal.aborted) return;
+        process.stderr.write(`switch: stream closed, reopening in ${backoff / 1000}s\n`);
       } catch (err) {
         if (abort.signal.aborted) return;
         process.stderr.write(`switch: stream error: ${err}, reconnecting in ${backoff / 1000}s\n`);
-        await new Promise((r) => setTimeout(r, backoff));
-        backoff = Math.min(backoff * 2, 30000);
       }
+
+      // Waiting out a clean close as well as an error is the whole point. A
+      // connection another client has taken ends the stream cleanly, and
+      // reopening is itself a takeover — with no pause the two clients trade it
+      // back and forth as fast as the network allows.
+      await new Promise((r) => setTimeout(r, backoff));
+      // Only a stream that lasted proves the endpoint is healthy. A handshake
+      // does not: a contested connection opens and closes again at once, which
+      // would reset the curve on every attempt and hold it on its first step.
+      backoff =
+        openedAt > 0 && Date.now() - openedAt >= STABLE_STREAM_MS
+          ? 1000
+          : Math.min(backoff * 2, 30000);
     }
   })();
 }
@@ -1261,6 +1321,8 @@ function startStream() {
 async function handleFrame(frame: SseFrame): Promise<void> {
   switch (frame.event) {
     case 'connection_state':
+      if (typeof frame.data.generation === 'number') streamGeneration = frame.data.generation;
+      streamFence.attached();
       process.stderr.write(
         `switch: connection established (rooms=${JSON.stringify(frame.data.rooms)})\n`
       );
@@ -1270,15 +1332,19 @@ async function handleFrame(frame: SseFrame): Promise<void> {
       process.stderr.write(`switch: subscription now ${JSON.stringify(frame.data.rooms)}\n`);
       return;
 
-    case 'gap':
-      // Never silent, but never a wake either: logged here and held for the
-      // next notification, rather than spending a turn to say "you may have
-      // missed something you may not care about".
+    case 'gap': {
+      // Never silent, but never a wake either. What the agent is told rides
+      // out on the next notification, in the unread count for the room it
+      // applies to — the server knows which rooms lost events and this
+      // process does not.
+      const named = Array.isArray(frame.data.rooms) ? frame.data.rooms.join(', ') : '';
+      const rooms =
+        frame.data.all_rooms === true ? 'every room' : named === '' ? 'unnamed rooms' : named;
       process.stderr.write(
-        `switch: GAP — missed events before sequence ${frame.data.from_sequence}\n`
+        `switch: GAP in ${rooms} — missed events before sequence ${frame.data.from_sequence}\n`
       );
-      pendingGapReason = String(frame.data.reason ?? 'events were dropped and cannot be replayed');
       return;
+    }
 
     case 'evicted':
       process.stderr.write(`switch: evicted — ${frame.data.reason}\n`);
@@ -1309,7 +1375,13 @@ async function unsubscribeRoom(roomId: string): Promise<void> {
         Authorization: `Bearer ${API_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ connection_id: CONNECTION_ID, room_id: roomId }),
+      // Fenced like every other write to the connection: a client that has
+      // been displaced must not go on releasing the winner's rooms.
+      body: JSON.stringify({
+        connection_id: CONNECTION_ID,
+        room_id: roomId,
+        generation: streamGeneration,
+      }),
     });
   } catch (err) {
     process.stderr.write(`switch: unsubscribe failed for ${roomId}: ${err}\n`);
@@ -1332,8 +1404,6 @@ function setConnectedRoom(target: string | null) {
 
   if (target) {
     pollingRoomId = target;
-    missedSinceRead = 0;
-
     process.stderr.write(
       `switch: joining room ${target}` +
         (OWNS_CONNECTION ? '' : ' (connection shared with the supervisor)') +
@@ -1399,7 +1469,14 @@ function startHeartbeat() {
   heartbeatAbort = abort;
 
   void (async () => {
-    while (!abort.signal.aborted) {
+    let interval = HEARTBEAT_INTERVAL_MS;
+
+    /** One beat, as a value rather than a throw: a beat the fence disowns must
+     * have no outcome at all, and an exception is an outcome. */
+    const beat = async (): Promise<
+      | { answered: true; status: number; ok: boolean; body: string }
+      | { answered: false; error: unknown }
+    > => {
       try {
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/connection/beat`, {
           method: 'POST',
@@ -1407,26 +1484,61 @@ function startHeartbeat() {
             Authorization: `Bearer ${API_TOKEN}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ connection_id: CONNECTION_ID, cursor }),
+          body: JSON.stringify({
+            connection_id: CONNECTION_ID,
+            cursor,
+            generation: streamGeneration,
+          }),
           signal: abort.signal,
         });
-        if (resp.status === 409 || resp.status === 404) {
-          // Either the stream is gone or the connection expired. Both mean we
-          // are not receiving; reopening resumes from the cursor.
+        return { answered: true, status: resp.status, ok: resp.ok, body: await resp.text() };
+      } catch (error) {
+        return { answered: false, error };
+      }
+    };
+
+    while (!abort.signal.aborted) {
+      // Mid-attach the incarnation we hold is the one before the open, so a
+      // tick would be refused as a takeover — and a beat with no stream
+      // attached is refused anyway, so it is worth nothing until the frame
+      // lands. Nothing may be awaited between passing the gate and registering
+      // the flight, or the beat could go out under a later incarnation than
+      // the one the fence recorded for it.
+      await Promise.race([streamFence.reached, until(abort.signal)]);
+      if (abort.signal.aborted) return;
+      const tick = await streamFence.tick(beat);
+      if (abort.signal.aborted) return;
+
+      if (!tick.current) {
+        // A reattach began while this was in flight, so the answer describes an
+        // incarnation we are no longer on and cannot be told apart from one
+        // arriving late about our own reopen. Inert: no stand-down, no reopen,
+        // and no mark against the beat rate either.
+      } else if (!tick.value.answered) {
+        process.stderr.write(`switch: heartbeat error: ${tick.value.error}\n`);
+      } else {
+        const { status, ok, body } = tick.value;
+        if (status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) {
+          standDown();
+          return;
+        }
+        if (status === 409 || status === 404) {
+          // The stream is gone or the connection expired. Both mean we are not
+          // receiving; reopening resumes from the cursor.
           process.stderr.write(
-            `switch: heartbeat rejected (HTTP ${resp.status}) — reopening stream\n`
+            `switch: heartbeat rejected (HTTP ${status}) — reopening stream in ${interval / 1000}s\n`
           );
+          interval = Math.min(interval * 2, 30000);
           stopStreamKeepingRoom();
           startStream();
           // No re-claim here. When we own the connection and serve the room,
           // reopening declares it on the URL; when the supervisor serves it,
           // the slot is the supervisor's and claiming would take it away.
+        } else if (ok) {
+          interval = HEARTBEAT_INTERVAL_MS;
         }
-      } catch (err) {
-        if (abort.signal.aborted) return;
-        process.stderr.write(`switch: heartbeat error: ${err}\n`);
       }
-      await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+      await new Promise((r) => setTimeout(r, interval));
     }
   })();
 }
@@ -1442,12 +1554,38 @@ function stopStreamKeepingRoom() {
   pollingRoomId = room;
 }
 
+/**
+ * Give up the connection to whoever holds it now.
+ *
+ * Reached from either door onto a takeover: a beat refused as superseded, or a
+ * reattach refused because the incarnation moved on. Both are terminal —
+ * attaching is itself a takeover, so coming back would pull the connection off
+ * the client that has it and start the two of us trading it. The room is kept
+ * so the MCP tools go on working; only delivery stops. Said out loud, because
+ * a session that quietly stopped being pushed events is the exact failure this
+ * transport exists to remove.
+ */
+function standDown() {
+  process.stderr.write(
+    'switch: another client took this connection over — no longer receiving events. ' +
+      'Restart this session if it should hold the connection instead.\n'
+  );
+  stopStreamKeepingRoom();
+  stopHeartbeat();
+  stopLeaseRenew();
+}
+
 // -- Role lease renewal ------------------------------------------------------
 //
 // While this session holds a room-role, renew the lease on a fast cadence so an
 // (exclusive) seat stays held. The server frees a lease shortly after renewals
 // stop (TTL), so a crashed/closed session auto-releases. release_role and a
 // clean disconnect stop the loop immediately.
+//
+// Only a process that owns its connection beats. A seat taken over a borrowed
+// connection is held by the SDK session that took it, and the server keeps it
+// alive from that session's own lease; beating for it here would instead keep
+// it alive from this process, which outlives the session it is standing in for.
 
 const LEASE_RENEW_INTERVAL_MS = 2000;
 
@@ -1459,6 +1597,7 @@ function stopLeaseRenew() {
 }
 
 function startLeaseRenew() {
+  if (!OWNS_CONNECTION) return;
   if (leaseAbort) return; // already renewing
   const abort = new AbortController();
   leaseAbort = abort;
@@ -1468,7 +1607,13 @@ function startLeaseRenew() {
       try {
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/leases/renew`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${API_TOKEN}` },
+          headers: {
+            Authorization: `Bearer ${API_TOKEN}`,
+            // Which of the agent's holders is beating. Only the seat this
+            // connection took is renewed; a sibling's is left to expire on
+            // its own terms.
+            'X-Switch-Connection-Id': CONNECTION_ID,
+          },
           signal: abort.signal,
         });
         if (resp.ok) {
@@ -1549,12 +1694,10 @@ async function handleHookRequest(req: Request): Promise<Response> {
   }
 
   if (url.pathname === '/read-context') {
-    // The agent called read_context, so it has caught up on room history —
-    // clear the missed-message backlog we've been tallying, and any deferred
-    // gap warning: re-reading context is exactly the recovery that warning
-    // would have asked for, so repeating it later would be noise.
-    missedSinceRead = 0;
-    pendingGapReason = null;
+    // Nothing to do: catching up is recorded by Switch when the read reaches
+    // it, per room. The route stays because the connector's hook still calls
+    // it, and a 404 here is printed to the session's stderr on every read —
+    // it goes when the connector stops calling it.
     return new Response('ok');
   }
 
@@ -1614,15 +1757,16 @@ function startHookListener() {
 
 async function handleEvent(event: AgentEvent) {
   const { type, room_id, payload } = event;
+  // Every notification this event produces reports what Switch says the agent
+  // is behind by in this event's room.
+  const notify = (content: string, meta: Record<string, string>) =>
+    emitNotification(content, meta, event.missed);
 
   if (type === 'message') {
     const msg = payload as MessagePayload;
-    if (!msg.addressed) {
-      // Unaddressed chatter: filtered out, no notification. Tally it so the
-      // next notification can tell the agent how far behind it has fallen.
-      missedSinceRead++;
-      return;
-    }
+    // Unaddressed chatter is filtered out rather than surfaced; how much of it
+    // went past is counted by Switch and reported on the next notification.
+    if (!msg.addressed) return;
 
     // Surface receipt feedback: tell the room's bridged channel that this
     // agent is "typing" so the human knows the message landed and we're
@@ -1652,7 +1796,7 @@ async function handleEvent(event: AgentEvent) {
     }
 
     const ts = new Date(msg.timestamp).toISOString();
-    await emitNotification(`[${msg.sender_name}]: ${msg.body}`, {
+    await notify(`[${msg.sender_name}]: ${msg.body}`, {
       room_id,
       event_type: type,
       sender: msg.sender,
@@ -1670,7 +1814,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'command') {
     const cmd = payload as CommandPayload;
-    await emitNotification(`Command: ${cmd.command}${cmd.target ? ` target=${cmd.target}` : ''}`, {
+    await notify(`Command: ${cmd.command}${cmd.target ? ` target=${cmd.target}` : ''}`, {
       room_id,
       event_type: type,
       user_id: cmd.user_id,
@@ -1685,7 +1829,7 @@ async function handleEvent(event: AgentEvent) {
     if (!join.listening) {
       return;
     }
-    await emitNotification(`${join.member_name} joined the room`, {
+    await notify(`${join.member_name} joined the room`, {
       room_id,
       event_type: type,
       member: join.member,
@@ -1697,7 +1841,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_delegate') {
     const task = payload as TaskDelegatePayload;
-    await emitNotification(`Task delegated: ${task.summary} — ${task.description}`, {
+    await notify(`Task delegated: ${task.summary} — ${task.description}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1710,7 +1854,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_accept') {
     const task = payload as TaskAcceptPayload;
-    await emitNotification(`Task accepted by ${task.performer_agent_id}`, {
+    await notify(`Task accepted by ${task.performer_agent_id}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1722,7 +1866,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_update') {
     const task = payload as TaskUpdatePayload;
-    await emitNotification(`Task update: ${task.update}`, {
+    await notify(`Task update: ${task.update}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1734,7 +1878,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_finalise') {
     const task = payload as TaskFinalisePayload;
-    await emitNotification(`Task finalised: ${task.outcome ?? '(no outcome provided)'}`, {
+    await notify(`Task finalised: ${task.outcome ?? '(no outcome provided)'}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1746,7 +1890,7 @@ async function handleEvent(event: AgentEvent) {
 
   if (type === 'task_cancel') {
     const task = payload as TaskCancelPayload;
-    await emitNotification(`Task cancelled${task.reason ? `: ${task.reason}` : ''}`, {
+    await notify(`Task cancelled${task.reason ? `: ${task.reason}` : ''}`, {
       room_id,
       event_type: type,
       task_id: task.task_id,
@@ -1825,25 +1969,42 @@ async function setTyping(roomId: string, isTyping: boolean) {
   }
 }
 
-async function emitNotification(content: string, meta: Record<string, string>) {
-  // Surface the unaddressed-message backlog on every notification. meta values
-  // are strings; missed_count is always present (0 when caught up). When it's
-  // non-zero, annotate the one-line body so the agent sees it without having
-  // to inspect meta, and knows to widen read_context's `since` to catch up.
-  const missed = missedSinceRead;
-  const enriched: Record<string, string> = { ...meta, missed_count: String(missed) };
-  let body =
-    missed > 0
-      ? `${content}\n⚠️ ${missed} unread room message${missed === 1 ? '' : 's'} since your last read_context — call read_context (widen \`since\`) to catch up on what you missed.`
-      : content;
+/**
+ * What to append about chatter the agent has not caught up on in this room.
+ *
+ * A known zero says nothing: the point of the line is to move the agent to
+ * read context, and a reassurance it did not ask for costs a line of every
+ * notification. Everything else does say something, including — especially —
+ * not being able to give a number.
+ */
+function unreadNote(unread: NonNullable<AgentEvent['missed']>): string | null {
+  if (unread.count === null)
+    return `⚠️ How far behind you are on unaddressed messages in this room is not known (${unread.reason}) — call read_context before responding.`;
+  const plural = unread.count === 1 ? '' : 's';
+  if (unread.reason)
+    return `⚠️ At least ${unread.count} unaddressed room message${plural} arrived since you last read this room's context, and there may have been more (${unread.reason}) — call read_context (widen \`since\`) before responding.`;
+  if (unread.count > 0)
+    return `⚠️ ${unread.count} unaddressed room message${plural} arrived since you last read this room's context — call read_context (widen \`since\`) to catch up.`;
+  return null;
+}
 
-  // Deliver any deferred gap on the way past. This is the turn the agent was
-  // already being woken for, so the warning is free here, and it lands before
-  // the reply it would otherwise have skewed.
-  if (pendingGapReason !== null) {
-    enriched.gap = pendingGapReason;
-    body = `${body}\n⚠️ Some earlier room events were dropped and cannot be replayed (${pendingGapReason}) — call read_context before responding.`;
-    pendingGapReason = null;
+async function emitNotification(
+  content: string,
+  meta: Record<string, string>,
+  unread: AgentEvent['missed']
+) {
+  // Switch counts this per room from the events it holds, and says so on the
+  // event the agent is being woken for anyway. A count kept here could only
+  // ever describe what this process was sent, which is not the same question.
+  // Absent means the server did not say, so neither do we — a zero invented
+  // here is the one answer an agent would act on without doubting it.
+  const enriched: Record<string, string> = { ...meta };
+  let body = content;
+  if (unread !== undefined) {
+    enriched.missed_count = unread.count === null ? 'unknown' : String(unread.count);
+    if (unread.reason !== null) enriched.missed_reason = unread.reason;
+    const note = unreadNote(unread);
+    if (note) body = `${content}\n${note}`;
   }
   await mcp
     .notification({

@@ -17,10 +17,14 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from typing import Any
 
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
+    TAKEN_OVER,
+    Closure,
     Connection,
     ConnectionRegistry,
 )
@@ -28,6 +32,8 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.sessions.command_notifications import subscribe
+from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
 
 logger = logging.getLogger(__name__)
@@ -65,6 +71,11 @@ def _connection_state(conn: Connection) -> dict[str, Any]:
     return {
         "connection_id": conn.id,
         "agent_id": conn.agent_id,
+        # Which incarnation of the id this stream is. The client sends it back
+        # on every heartbeat, which is what lets the server tell the holder of
+        # a connection from a client that has been displaced from it — the two
+        # are otherwise identical on the wire.
+        "generation": conn.stream_generation,
         "scope": conn.scope,
         "filter": conn.delivery_filter,
         "spawn_capable": conn.spawn_capable,
@@ -77,6 +88,15 @@ def _connection_state(conn: Connection) -> dict[str, Any]:
         # have said — a declaration that silently failed to parse is worse
         # than one never sent, because both sides think it landed.
         "client": conn.declaration.as_dict(),
+    }
+
+
+def _eviction(closure: Closure) -> dict[str, Any]:
+    """The evicted frame: a code to act on, prose to read, a room when one applies."""
+    return {
+        "code": closure.code,
+        "reason": closure.message,
+        "room_id": closure.room_id,
     }
 
 
@@ -108,6 +128,19 @@ async def _event_stream(
     # reported when it resumes.
     last_rooms = set(conn.rooms)
 
+    commands: set[str] = set()
+
+    def wake_commands(session_id: str) -> None:
+        commands.add(session_id)
+        conn.wake.set()
+
+    tenant_id = current_tenant_id()
+    subscription = (
+        subscribe(tenant_id, agent_id, wake_commands)
+        if tenant_id is not None and conn.scope == "all"
+        else nullcontext()
+    )
+    subscription.__enter__()
     try:
         yield _frame("connection_state", _connection_state(conn))
 
@@ -126,28 +159,40 @@ async def _event_stream(
                 head,
             )
             conn.cursor = head
+            # Every room of this agent loses its baseline with the buffer that
+            # held it, not only the rooms this connection has named — it may
+            # have named none, and its sessions claim theirs later. Starting a
+            # fresh baseline for any of them would answer the next "how far
+            # behind am I in this room" with a zero the agent has no reason to
+            # doubt.
+            buffer.mark_restarted(agent_id)
             yield _frame(
                 "gap",
                 {
                     "from_sequence": head,
                     "resumed_at": head,
+                    "rooms": sorted(conn.rooms),
+                    "all_rooms": True,
                     "reason": "the server restarted since your last connection; "
                     "sequence numbers have been reset and events from before "
-                    "the restart are gone — re-read room context",
+                    "the restart are gone in every room, including any this "
+                    "connection has yet to claim — re-read room context",
                 },
             )
 
         # A cursor the buffer can no longer serve is reported, not silently
         # moved to head. The client re-reads room context to recover.
-        if buffer.has_gap_before(agent_id, conn.cursor):
+        lost = buffer.rooms_dropped_after(agent_id, conn.cursor)
+        if lost:
             oldest = buffer.oldest_retained(agent_id)
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from expired cursor %s "
-                "(oldest retained %s)",
+                "(oldest retained %s, rooms %s)",
                 agent_id,
                 conn.id,
                 conn.cursor,
                 oldest,
+                ", ".join(lost),
             )
             resumed_at = max(oldest - 1, 0)
             conn.cursor = resumed_at
@@ -156,6 +201,8 @@ async def _event_stream(
                 {
                     "from_sequence": conn.cursor,
                     "resumed_at": resumed_at,
+                    "rooms": list(lost),
+                    "all_rooms": False,
                     "reason": "events older than the retention window were "
                     "dropped; re-read room context",
                 },
@@ -164,13 +211,10 @@ async def _event_stream(
         while True:
             if conn.stream_generation != generation:
                 # Another stream took this connection over.
-                yield _frame(
-                    "evicted",
-                    {"reason": "another stream attached to this connection"},
-                )
+                yield _frame("evicted", _eviction(TAKEN_OVER))
                 return
-            if conn.closed_reason is not None:
-                yield _frame("evicted", {"reason": conn.closed_reason})
+            if conn.closure is not None:
+                yield _frame("evicted", _eviction(conn.closure))
                 return
             if not conn.is_alive(time.monotonic()):
                 # Delivering to a connection whose heartbeat has lapsed is the
@@ -186,15 +230,14 @@ async def _event_stream(
                     agent_id,
                     conn.id,
                 )
-                registry.close(conn.id, "heartbeat lapsed")
-                yield _frame(
-                    "evicted",
-                    {
-                        "reason": "heartbeat lapsed; reopen the stream and resume "
-                        "from your cursor"
-                    },
-                )
+                registry.close(conn.id, HEARTBEAT_LAPSED)
+                yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
+
+            if commands:
+                session_ids = sorted(commands)
+                commands.clear()
+                yield _frame("session_commands", {"session_ids": session_ids})
 
             if conn.rooms != last_rooms:
                 last_rooms = set(conn.rooms)
@@ -222,6 +265,15 @@ async def _event_stream(
                     yield b": keepalive\n\n"
                 continue
 
+            # Where counting starts for a room nothing is counting yet. It is
+            # the cursor rather than head because the backlog this connection
+            # is about to work through is backlog it genuinely has not seen; a
+            # room covered later starts from wherever the cursor has reached by
+            # then, which is the same rule. Covering is not taking: the room
+            # slot changes hands at the doors, not on every pass of this loop.
+            for room_id in conn.rooms:
+                buffer.ensure_counting(agent_id, conn.id, room_id, conn.cursor)
+
             try:
                 pending = buffer.read_from(
                     agent_id,
@@ -235,6 +287,8 @@ async def _event_stream(
                     {
                         "from_sequence": exc.requested,
                         "resumed_at": max(exc.oldest - 1, 0),
+                        "rooms": list(exc.rooms),
+                        "all_rooms": False,
                         "reason": str(exc),
                     },
                 )
@@ -253,6 +307,11 @@ async def _event_stream(
                 # event loop, so no heartbeat is processed, so every connection
                 # in the process is declared dead and reconnects, forever.
                 #
+                # Nothing is lost by moving past them: the cursor records what
+                # has been written out, not what the agent has caught up on.
+                # The events stay in the buffer and each room's watermark stays
+                # where it was, so what was skipped here is still countable.
+                #
                 # An empty result means the scan reached the end without hitting
                 # the batch limit, so head is exactly how far we have looked.
                 head = buffer.head(agent_id)
@@ -269,6 +328,16 @@ async def _event_stream(
                     continue
                 payload = item.event.model_dump(mode="json")
                 payload["sequence"] = item.seq
+                if item.notifiable:
+                    # Told on the way past, on the one event the agent is being
+                    # woken for anyway. A count of its own would be a wake
+                    # spent on "you may have missed something you may not care
+                    # about".
+                    unread = buffer.unread(agent_id, item.room_id, item.seq)
+                    payload["missed"] = {
+                        "count": unread.count,
+                        "reason": unread.reason,
+                    }
                 # Advance before yielding: the cursor tracks what the server has
                 # written out. What the client has actually processed comes back
                 # on its heartbeat, which is the value that governs resume.
@@ -283,12 +352,17 @@ async def _event_stream(
             conn.wake.clear()
             # Re-check after clearing: an event appended between the read above
             # and the clear would otherwise wait for the keepalive timeout.
-            if buffer.head(agent_id) > conn.cursor or conn.rooms != last_rooms:
+            if (
+                commands
+                or buffer.head(agent_id) > conn.cursor
+                or conn.rooms != last_rooms
+            ):
                 continue
 
             if not await _wait_for_work(bell, conn):
                 yield b": keepalive\n\n"
     finally:
+        subscription.__exit__(None, None, None)
         registry.detach_stream(conn, generation)
 
 

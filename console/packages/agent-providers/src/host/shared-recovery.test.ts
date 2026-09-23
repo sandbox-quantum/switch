@@ -118,6 +118,7 @@ async function fixture() {
     if (expired && path.endsWith('/commands'))
       return Response.json({ code: 'HOST_OFFLINE' }, { status: 409 });
     if (path.endsWith('/commands')) return Response.json(epoch === 'epoch-1' ? [command] : []);
+    if (path.endsWith('/room-connection')) return Response.json({ rooms: ['room'] });
     if (path.endsWith('/events') || path.endsWith('/reconcile')) {
       const event = JSON.parse(options.body as string) as HostEvent;
       events.push(event);
@@ -231,7 +232,7 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   const outcome = runSharedHost(f.options, f.adapter, stop.signal).catch((error) => error);
   await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
   f.setExpired(true);
-  expect(await outcome).toMatchObject({ name: 'SharedHostLeaseExpiredError' });
+  expect(await outcome).toMatchObject({ name: 'SharedHostUnavailableError' });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
   f.setExpired(false);
   await unlink(join(f.root, 'shared-owner.lock'));
@@ -335,10 +336,9 @@ it('retains an unverified room event when server replay evidence is unavailable'
     join(f.root, 'room-inbox.jsonl'),
     JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
   );
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const original = f.fetchMock.getMockImplementation()!;
   f.fetchMock.mockImplementation(async (url, options) => {
-    if (url.endsWith('/room-message'))
+    if (new URL(url).pathname.endsWith('/room-message'))
       return Response.json(
         { code: 'ROOM_EVENT_UNAVAILABLE', message: 'Room event is no longer retained' },
         { status: 409 }
@@ -347,7 +347,7 @@ it('retains an unverified room event when server replay evidence is unavailable'
   });
   await expect(
     runSharedHost(
-      { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+      { ...f.options, roomConnection: { connectionId: 'connection' } },
       f.adapter,
       new AbortController().signal
     )
@@ -409,7 +409,6 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
     join(f.root, 'room-inbox.jsonl'),
     line({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' })
   );
-  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
   const submitted: Array<{ messageId: string; announced: boolean }> = [];
   let decision: Command | null = null;
   const original = f.fetchMock.getMockImplementation()!;
@@ -437,13 +436,14 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
         status: 'applied',
         code: null,
         message: null,
+        command: null,
       });
     }
     return original(url, options);
   });
   const stop = new AbortController();
   const running = runSharedHost(
-    { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+    { ...f.options, roomConnection: { connectionId: 'connection' } },
     f.adapter,
     stop.signal
   );

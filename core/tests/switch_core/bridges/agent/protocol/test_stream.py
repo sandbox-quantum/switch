@@ -11,10 +11,12 @@ import pytest
 from switch_core import version as version_module
 from switch_core.bridges.agent.protocol import stream as stream_module
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     ClientDeclaration,
+    Closure,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -79,6 +81,7 @@ def _open(registry: ConnectionRegistry, **kw: Any):
         "spawn_capable": False,
         "cursor": 0,
         "declaration": ClientDeclaration(speaks=PROTOCOL_VERSION),
+        "expected_generation": None,
     }
     params.update(kw)
     return registry.open(**params)
@@ -98,6 +101,9 @@ async def test_first_frame_is_the_connection_state() -> None:
     assert data["scope"] == "single"
     assert data["rooms"] == [ROOM_A]
     assert data["protocol"] == PROTOCOL_VERSION
+    # The client returns this on every heartbeat; without it the server cannot
+    # tell the holder of a connection from a client displaced from it.
+    assert data["generation"] == conn.stream_generation
 
 
 async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
@@ -300,6 +306,9 @@ async def test_a_superseded_stream_is_told_it_was_evicted() -> None:
 
     frames = await _take(stream, 1)
     assert frames[0][0] == "evicted"
+    # The code is what the displaced client acts on: reopening would itself be
+    # a takeover, so this ending is terminal and must not be read as prose.
+    assert frames[0][1]["code"] == "taken_over"
 
 
 async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
@@ -311,11 +320,34 @@ async def test_closing_the_connection_ends_the_stream_with_a_reason() -> None:
     stream = event_stream(conn=conn, registry=registry, buffer=buffer)
     await _take(stream, 1)
 
-    registry.close(conn.id, "heartbeat lapsed")
+    registry.close(conn.id, HEARTBEAT_LAPSED)
 
     frames = await _take(stream, 1)
     assert frames[0][0] == "evicted"
-    assert frames[0][1]["reason"] == "heartbeat lapsed"
+    assert frames[0][1]["code"] == "heartbeat_lapsed"
+    assert "heartbeat lapsed" in frames[0][1]["reason"]
+    assert frames[0][1]["room_id"] is None
+
+
+async def test_a_close_about_a_room_names_the_room_it_was_about() -> None:
+    """A client that loses a connection over a room it declared must be told which."""
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry)
+    registry.claim_room(conn, ROOM_A)
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    await _take(stream, 1)
+
+    registry.close(
+        conn.id,
+        Closure(code="closed", message="the room is already held", room_id=ROOM_A),
+    )
+
+    ((name, data),) = await _take(stream, 1)
+    assert name == "evicted"
+    assert data["code"] == "closed"
+    assert data["room_id"] == ROOM_A
 
 
 async def test_subscription_change_is_announced() -> None:
@@ -328,7 +360,13 @@ async def test_subscription_change_is_announced() -> None:
     await _take(stream, 1)
 
     registry.claim_room(conn, ROOM_B)
+    frames = await _take(stream, 1)
+    assert frames[0][0] == "subscription_changed"
+    assert sorted(frames[0][1]["rooms"]) == sorted([ROOM_A, ROOM_B])
 
+    # And on the way out, which is how a supervisor learns a session left a
+    # room rather than inferring it from a set that only ever grows.
+    registry.release_room(conn, ROOM_A)
     frames = await _take(stream, 1)
     assert frames[0][0] == "subscription_changed"
     assert frames[0][1]["rooms"] == [ROOM_B]
@@ -361,6 +399,7 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     registry.claim_room(session, ROOM_A)
 
@@ -372,6 +411,7 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     registry.claim_room(other_agent, ROOM_A)
 
@@ -478,6 +518,7 @@ class TestALapsedHeartbeatStopsDelivery:
         ((name, data),) = await _take(stream, 1)
 
         assert name == "evicted"
+        assert data["code"] == "heartbeat_lapsed"
         assert "heartbeat" in data["reason"]
 
     async def test_the_connection_is_closed_not_merely_ignored(self) -> None:
@@ -495,7 +536,7 @@ class TestALapsedHeartbeatStopsDelivery:
         await _take(stream, 1)
 
         assert registry.claimant_of(AGENT, ROOM_A) is None
-        assert conn.closed_reason is not None
+        assert conn.closure is not None
 
 
 class TestFilteredEventsDoNotSpinTheLoop:
@@ -633,7 +674,7 @@ async def test_replaced_stream_cannot_capture_its_successors_generation() -> Non
     old = event_stream(conn=conn, registry=registry, buffer=buffer)
     _open(registry)
     assert await _take(old, 1) == []
-    assert registry.beat(AGENT, conn.id, 0).stream_attached
+    assert registry.beat(AGENT, conn.id, 0, conn.stream_generation).stream_attached
 
 
 async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
@@ -642,11 +683,13 @@ async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
     conn = _open(registry)
     old = event_stream(conn=conn, registry=registry, buffer=buffer)
     await anext(old)
-    registry.close(conn.id, "heartbeat lapsed")
+    registry.close(conn.id, HEARTBEAT_LAPSED)
     replacement = _open(registry)
     assert replacement is not conn
     await old.aclose()
-    assert registry.beat(AGENT, replacement.id, 0).stream_attached
+    assert registry.beat(
+        AGENT, replacement.id, 0, replacement.stream_generation
+    ).stream_attached
 
 
 async def test_a_resumed_stream_does_not_replay_a_room_the_agent_was_removed_from() -> (
@@ -713,3 +756,179 @@ async def test_a_last_event_id_reconnect_does_not_replay_a_removed_room() -> Non
 
     assert frames[1][0] == "message"
     assert frames[1][1]["payload"]["body"] == "in the room it kept"
+
+
+class TestWhatADeliveredEventSaysAboutItsRoom:
+    """An agent is woken for addressed traffic; the chatter rides along with it.
+
+    The count is per room and comes off the buffer, so the client renders what
+    it is told rather than tallying what it happened to filter out.
+    """
+
+    async def test_a_delivered_event_carries_the_chatter_of_its_own_room(
+        self,
+    ) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        conn = _open(registry, delivery_filter="addressed")
+        registry.claim_room(conn, ROOM_A)
+        registry.claim_room(conn, ROOM_B)
+
+        buffer.enqueue(AGENT, ROOM_A, _message("chatter-1"))
+        buffer.enqueue(AGENT, ROOM_A, _message("chatter-2"))
+        buffer.enqueue(AGENT, ROOM_B, _message("elsewhere", room=ROOM_B))
+        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+        buffer.enqueue(AGENT, ROOM_B, _message("also you", addressed=True, room=ROOM_B))
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 3)
+        await stream.aclose()
+
+        assert frames[1][1]["missed"] == {"count": 2, "reason": None}
+        assert frames[2][1]["missed"] == {"count": 1, "reason": None}
+
+    async def test_chatter_the_stream_walked_past_is_still_counted(self) -> None:
+        """The fast-forward moves the cursor, not the reader's watermark.
+
+        Skipping unnotifiable events is what keeps the generator from spinning;
+        it must not double as a claim that the agent has seen them.
+        """
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        conn = _open(registry, delivery_filter="addressed")
+        registry.claim_room(conn, ROOM_A)
+        chatter = buffer.enqueue(AGENT, ROOM_A, _message("chatter"))
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        await _take(stream, 1)
+
+        waiting = asyncio.ensure_future(_take(stream, 1))
+        await asyncio.sleep(0.05)
+        assert conn.cursor == chatter  # walked past rather than delivered
+
+        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+        ((_, data),) = await waiting
+        await stream.aclose()
+
+        assert data["missed"]["count"] == 1
+
+    async def test_a_room_claimed_after_the_connection_opened_counts_from_there(
+        self,
+    ) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        conn = _open(registry, delivery_filter="addressed")
+        registry.claim_room(conn, ROOM_A)
+
+        buffer.enqueue(AGENT, ROOM_B, _message("before the claim", room=ROOM_B))
+        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        await _take(stream, 2)  # connection_state, then the message in room A
+
+        registry.claim_room(conn, ROOM_B)
+        buffer.enqueue(AGENT, ROOM_B, _message("chatter", room=ROOM_B))
+        buffer.enqueue(AGENT, ROOM_B, _message("for you", addressed=True, room=ROOM_B))
+        frames = await _take(stream, 2)  # subscription_changed, then the message
+        await stream.aclose()
+
+        assert frames[1][1]["missed"] == {"count": 1, "reason": None}
+
+    async def test_a_count_is_absent_rather_than_zero_after_a_restart(self) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        conn = _open(registry, cursor=4812)  # from a previous life
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        assert (await _take(stream, 2))[1][0] == "gap"
+
+        buffer.enqueue(AGENT, ROOM_A, _message("for you", addressed=True))
+        ((_, data),) = await _take(stream, 1)
+        await stream.aclose()
+
+        assert data["missed"]["count"] is None
+        assert "restarted" in data["missed"]["reason"]
+
+
+class TestAGapNamesTheRoomsThatLostEvents:
+    """ "Something was dropped" is unactionable across a dozen rooms."""
+
+    async def test_an_expired_cursor_names_them(self) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer(max_events_per_agent=2)
+        buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
+        buffer.enqueue(AGENT, ROOM_B, _message("dropped", room=ROOM_B))
+        buffer.enqueue(AGENT, ROOM_A, _message("kept"))
+        buffer.enqueue(AGENT, ROOM_B, _message("kept", room=ROOM_B))
+
+        conn = _open(registry, cursor=0)
+        registry.claim_room(conn, ROOM_A)
+        registry.claim_room(conn, ROOM_B)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "gap"
+        assert sorted(frames[1][1]["rooms"]) == [ROOM_A, ROOM_B]
+
+    async def test_a_restart_names_the_rooms_the_connection_covers(self) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+
+        conn = _open(registry, cursor=4812)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "gap"
+        assert frames[1][1]["rooms"] == [ROOM_A]
+        assert frames[1][1]["all_rooms"] is True
+
+    async def test_a_restart_says_the_loss_is_not_confined_to_them(self) -> None:
+        """A watcher of every room names none, and its rooms arrive afterwards.
+
+        Reporting only what the connection had claimed would leave every room
+        its sessions go on to claim answering with a fresh zero, which is the
+        restart made invisible in exactly the rooms the agent works in.
+        """
+        registry = ConnectionRegistry()
+        buffer = EventBuffer()
+        buffer.enqueue(AGENT, ROOM_A, _message("after the restart"))
+        conn = _open(registry, scope="all", cursor=4812)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 2)
+
+        assert frames[1][0] == "gap"
+        assert frames[1][1]["rooms"] == []
+        assert frames[1][1]["all_rooms"] is True
+
+        registry.claim_room(conn, ROOM_B)
+        buffer.enqueue(AGENT, ROOM_B, _message("chatter", room=ROOM_B))
+        buffer.enqueue(AGENT, ROOM_B, _message("for you", addressed=True, room=ROOM_B))
+        delivered = await _take(stream, 3)  # subscription_changed, then both
+        await stream.aclose()
+
+        assert delivered[-1][1]["missed"]["count"] is None
+        assert "restarted" in delivered[-1][1]["missed"]["reason"]
+
+    async def test_a_dropped_event_gap_is_confined_to_the_rooms_it_names(self) -> None:
+        registry = ConnectionRegistry()
+        buffer = EventBuffer(max_events_per_agent=1)
+        buffer.enqueue(AGENT, ROOM_A, _message("dropped"))
+        buffer.enqueue(AGENT, ROOM_A, _message("kept"))
+
+        conn = _open(registry, cursor=0)
+        registry.claim_room(conn, ROOM_A)
+
+        stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+        frames = await _take(stream, 2)
+        await stream.aclose()
+
+        assert frames[1][0] == "gap"
+        assert frames[1][1]["all_rooms"] is False

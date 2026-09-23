@@ -75,6 +75,7 @@ from switch_core.events import (
     TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.sessions.service import agents_present_in, rooms_occupied
 from switch_core.transport import (
     InboundMedia,
     InboundMembership,
@@ -270,7 +271,7 @@ class AgentClient(ClientBase[ClientConfig]):
             client_store=self.client_store,
             agent_store=agent_store,
             external_user_store=external_user_store,
-            live_agent_ids=connections.live_agent_ids,
+            live_connection_ids=connections.live_connection_ids,
         )
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
@@ -923,28 +924,32 @@ class AgentClient(ClientBase[ClientConfig]):
             return _STARTING_SESSION_MESSAGE
 
         if connection_model == "auto_session":
+            # The heartbeat arm only: a client still running the
+            # /watch/heartbeat loop declares no capability, and that loop meant
+            # willingness. A connection declares its own, which the check above
+            # has already asked — reading a connection as willing because it
+            # exists promises a session over a session worker that will never
+            # spawn one, or over a controller with auto-start switched off.
             watching = await self._agent_session_store.get_live_agent_ids(
                 session, [self.agent.id], None
             )
-            if self.agent.id in watching or self._connections.is_live(self.agent.id):
+            if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
+        occupied = await rooms_occupied(session, self.agent.id, self._connections)
         room_ids = await self._agent_session_store.live_connected_rooms(
             session, self.agent.id
         )
-        # A connection covering a room is a session in it, whether or not
-        # anything wrote an agent_sessions row for it.
-        room_ids = sorted(
-            set(room_ids)
-            | {
-                room
-                for conn in self._connections.for_agent(self.agent.id)
-                for room in conn.rooms
-            }
+        # Where the agent actually is, which is not what its connections cover:
+        # a shared one covers every room the agent belongs to, and offering the
+        # user "it is busy in these rooms" from that names rooms nothing is in.
+        room_ids = sorted(set(room_ids) | occupied)
+        bound_here = (
+            await self._agent_session_store.has_room_binding(
+                session, self.agent.id, meta.room_id
+            )
+            or meta.room_id in occupied
         )
-        bound_here = await self._agent_session_store.has_room_binding(
-            session, self.agent.id, meta.room_id
-        ) or self._connections.has_session_in(self.agent.id, meta.room_id)
         names: list[str] = []
         holds_role_here = False
         other_room_ids = [rid for rid in room_ids if rid != meta.room_id]
@@ -959,7 +964,7 @@ class AgentClient(ClientBase[ClientConfig]):
                     session,
                     meta.room_id,
                     self.agent.id,
-                    self._connections.live_agent_ids(),
+                    self._connections.live_connection_ids(),
                 )
                 is not None
             )
@@ -1088,14 +1093,18 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         if connection_model == "session_passive":
             return False
-        # Union of the two presence sources while both kinds of client exist
+        # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
-        # connection, one still polling keeps only the heartbeat row.
+        # connection, one still polling keeps only the heartbeat row, and a
+        # session Switch has a record of is answered from that record.
         if connection_model == "always_on":
             if self._connections.is_live(self.agent.id):
                 return True
-        elif self._connections.has_session_in(self.agent.id, room_id):
-            # A claimed room slot, not mere coverage: an `all`-scope watcher
+        elif self.agent.id in await agents_present_in(
+            session, [self.agent.id], room_id, self._connections
+        ):
+            # A session in the room, or a claimed room slot no session of this
+            # agent accounts for — not mere coverage: an `all`-scope watcher
             # covering this room is not a session that can answer.
             return True
 

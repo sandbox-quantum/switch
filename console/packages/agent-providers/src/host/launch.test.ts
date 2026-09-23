@@ -95,11 +95,11 @@ it.skipIf(process.platform === 'win32')(
   }
 );
 
-it('refreshes renamed agent configuration without changing the saved session or room', async () => {
+it('refreshes renamed agent configuration without changing the saved session', async () => {
   const input = await fixture();
   input.restart = false;
   input.config.start.input.agentName = 'old-name';
-  input.config.roomConnection = { connectionId: 'connection', rooms: ['room'] };
+  input.config.roomConnection = { connectionId: 'connection' };
   await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
   await mkdir(join(input.root, 'supervisor'));
   await writeFile(
@@ -109,15 +109,30 @@ it('refreshes renamed agent configuration without changing the saved session or 
   input.config = structuredClone(input.config);
   input.config.start.input.agentName = 'new-name';
   input.config.session.hostId = 'proposed-new-host';
-  input.config.roomConnection = { connectionId: 'new-connection', rooms: [] };
+  input.config.roomConnection = { connectionId: 'new-connection' };
   expect(await ensureSharedProcess(input)).toEqual({ created: false });
   const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
   expect(saved.start.input.agentName).toBe('new-name');
   expect(saved.session.hostId).toBe('host');
-  expect(saved.roomConnection).toEqual({
-    connectionId: 'connection',
-    rooms: ['room'],
-  });
+  expect(saved.roomConnection).toEqual({ connectionId: 'new-connection' });
+});
+
+it('gives a controller the connection it was asked for rather than the one on disk', async () => {
+  const input = await fixture();
+  input.restart = false;
+  input.watcher = true;
+  input.config.roomConnection = { connectionId: 'written-at-first-launch' };
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await mkdir(join(input.root, 'supervisor'));
+  await writeFile(
+    join(input.root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: process.pid, build: input.supervision.build })
+  );
+  input.config = structuredClone(input.config);
+  input.config.roomConnection = { connectionId: 'derived-from-the-agent' };
+  expect(await ensureSharedProcess(input)).toEqual({ created: false });
+  const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
+  expect(saved.roomConnection).toEqual({ connectionId: 'derived-from-the-agent' });
 });
 
 it.skipIf(process.platform === 'win32')(

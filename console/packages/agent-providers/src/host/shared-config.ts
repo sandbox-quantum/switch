@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
@@ -15,6 +15,17 @@ export const sharedConfigSchema = z.strictObject({
   resumeOperationId: z.string().uuid().optional(),
   start: startSchema,
   roomConnection: roomConnectionSchema.optional(),
+  /**
+   * The room delivery this session was started to answer, and the right the
+   * server issued to start it.
+   *
+   * Sent with the session's first claim, so the session is created already
+   * holding the room instead of created empty and then binding it: between
+   * those two writes the room is free, and the next delivery for it would be
+   * answered by starting a second session. Absent from a session nobody
+   * addressed a room message to.
+   */
+  grant: z.strictObject({ roomId: z.string().min(1), messageId: z.string().min(1) }).optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),
@@ -32,6 +43,49 @@ export const sharedConfigSchema = z.strictObject({
     .optional(),
 });
 export type SharedHostConfig = z.infer<typeof sharedConfigSchema>;
+
+/**
+ * Where this host tells its runtime which session is calling.
+ *
+ * The path has to exist before either side has the values: it goes into the
+ * spawn environment when the config is prepared, and is written from the host
+ * loop once the session has claimed an epoch and bound a connection. Deriving
+ * it from the session's own state directory keeps two sessions of one agent
+ * out of each other's, with no shared namespace to collide in.
+ */
+export function sessionSelectorPath(root: string): string {
+  return join(resolve(root), 'session-selector.json');
+}
+
+/**
+ * Publish the selector the runtime sends on every operations call.
+ *
+ * Written whole or not at all, because the runtime reads it without
+ * coordination: a torn file would be a parse error on a live tool call. Only
+ * once the session has bound a connection, because the server refuses a
+ * selector naming a session that has not — until then the runtime's connection
+ * id is the right answer and the file's absence is what tells it so.
+ */
+export async function writeSessionSelector(
+  root: string,
+  selector: { session_id: string; host_id: string; epoch: string }
+): Promise<void> {
+  const path = sessionSelectorPath(root);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  await writeFile(temporary, JSON.stringify(selector), { mode: 0o600 });
+  await rename(temporary, path);
+}
+
+/**
+ * Drop a selector left by an earlier worker for this session.
+ *
+ * Its epoch is superseded the moment this one claims or recovers, and a
+ * runtime reading it would have every call refused as stale. Nothing has
+ * replaced it yet, so the file has to go rather than wait to be overwritten.
+ */
+export async function clearSessionSelector(root: string): Promise<void> {
+  await rm(sessionSelectorPath(root), { force: true });
+}
 
 export async function prepareSharedConfig(root: string, config: SharedHostConfig) {
   if (config.session.provider !== config.start.provider)
@@ -62,6 +116,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
     const switchEnv = {
       ...credentials,
       SWITCH_CONNECTION_ID: config.roomConnection?.connectionId ?? '',
+      SWITCH_SESSION_FILE: sessionSelectorPath(root),
       SWITCH_CHANNEL_DISABLE_POLL: '1',
     };
     if (!switchEnv.SWITCH_CONNECTION_ID)

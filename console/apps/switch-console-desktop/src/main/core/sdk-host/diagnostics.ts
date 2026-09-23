@@ -19,6 +19,12 @@ const watcherSchema = z.object({
   pid: z.number().int().positive().nullable(),
   supervisorPid: z.number().int().positive().nullable(),
   buildHash: z.string().nullable(),
+  /**
+   * Set while the watcher is standing down because another client took this
+   * agent's connection. It is still enabled and deliberately not running, which
+   * is otherwise indistinguishable from having crashed.
+   */
+  takenOver: z.object({ at: z.string(), reason: z.string() }).nullable(),
 });
 
 async function agentHost(agentId: string) {
@@ -54,6 +60,9 @@ export async function sharedAgentDiagnostics(agentId: string) {
       .map((watcher) => ({
         ...watcher,
         failure: watcher.failure ? redactSecrets(watcher.failure) : null,
+        takenOver: watcher.takenOver
+          ? { ...watcher.takenOver, reason: redactSecrets(watcher.takenOver.reason) }
+          : null,
       })),
     sessions: remote.sessions?.filter((session) => session.agentId === agent.switchAgentId) ?? null,
     sessionError: remote.error,
@@ -64,4 +73,11 @@ export async function sharedAgentLogs(agentId: string): Promise<string> {
   const { agent, ctx } = await agentHost(agentId);
   const result = await ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'logs']);
   return redactSecrets(z.string().parse(JSON.parse(result.stdout)));
+}
+
+/** A lightweight host-only check. The shared health poll reads server sessions once per server. */
+export async function remoteWatcherStatus(agentId: string) {
+  const { agent, ctx } = await agentHost(agentId);
+  const host = await ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'status']);
+  return watcherSchema.array().parse(JSON.parse(host.stdout))[0] ?? null;
 }

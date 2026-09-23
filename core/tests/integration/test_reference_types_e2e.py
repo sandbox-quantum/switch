@@ -49,7 +49,7 @@ async def _acting_as(harness: Harness, agent_id: str) -> AsyncIterator[None]:
     """
     init_operations_protocol(harness.protocol)
     token = set_call_context(
-        CallContext(agent_id=agent_id, session_key=f"session-{agent_id}")
+        CallContext(agent_id=agent_id, session_key=f"session-{agent_id}", session=None)
     )
     try:
         yield

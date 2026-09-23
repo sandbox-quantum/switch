@@ -50,6 +50,15 @@ class _Protocol:
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         return None
 
+    async def require_recorded_rooms_unmoved(
+        self,
+        agent_id: str,
+        connection: Any,
+        claiming: frozenset[str],
+        dropping: frozenset[str],
+    ) -> None:
+        """No session of this agent is recorded anywhere, so nothing is fenced."""
+
 
 def _agent() -> Any:
     # `metadata_` carries the agent's runtime, which opening a stream reports.
@@ -319,6 +328,7 @@ class TestDeclaringARoomAtOpenTakesOver:
             spawn_capable=False,
             cursor=0,
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
         )
         protocol.connections.claim_room(incumbent, "room-1")
 

@@ -1609,12 +1609,18 @@ class RoleLease(TenantScoped, Base):
     `RoomRoleStore.LEASE_TTL`); a stale lease is logically free, so the next
     agent can assume the role without a background reaper.
 
-    Liveness is keyed to the agent's session (room-agnostic): the long-running
-    channel process renews the lease on a fast cadence while the session is
-    alive, so hopping to another room keeps the seat. One lease per agent is
-    enforced by the unique index on `agent_id`; `release_role` (or session death
-    + TTL) frees it. `transport_session_id` records which MCP transport assumed
-    the role.
+    Liveness belongs to the holder, not the agent (room-agnostic, so hopping
+    rooms keeps the seat). A holder that owns its inbound connection renews the
+    lease on a fast cadence and is live by `last_seen_at`; an SDK session
+    supervised by something else renews nothing, and is live for as long as
+    `session_id` names a session whose host lease is current. An agent's
+    permanent controller connection is neither, and so keeps no role alive.
+
+    One lease per agent is enforced by the unique index on `agent_id`;
+    `release_role` (or holder death + TTL) frees it, and release stays open to
+    any of the agent's sessions. `transport_session_id` records the connection
+    or MCP transport that assumed the role, and identifies the holder when
+    there is no `session_id`.
     """
 
     __tablename__ = "role_leases"
@@ -1646,6 +1652,7 @@ class RoleLease(TenantScoped, Base):
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     acquired_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2155,9 +2162,6 @@ class SdkSession(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "id"),
         UniqueConstraint("id", "tenant_id", name="uq_sdk_sessions_id_tenant"),
-        UniqueConstraint(
-            "tenant_id", "connection_id", name="uq_sdk_sessions_connection_id"
-        ),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -2229,6 +2233,68 @@ class SdkSessionCommand(TenantScoped, Base):
     command: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[dict] = mapped_column(JSONB, nullable=False)
     room_control_followup: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SdkRoomAdmission(TenantScoped, Base):
+    """One room delivery an agent's controller has been promised it may make.
+
+    Keyed on the delivery rather than on a position, because the stream the
+    controller reads can be renumbered while the delivery waits and the same
+    sequence then stands for another message. The verified event is kept here
+    so the promise survives the replay buffer being trimmed: this row, not the
+    buffer, is what the delivery is finally built from.
+
+    `created_at` is what orders the promises for a room. The position they
+    carry belongs to a stream that starts again from one whenever the server
+    does, so two promises made either side of a restart compare backwards,
+    while the moment each row was written does not. Ties break on `message_id`
+    so the order is total wherever it is read.
+
+    It carries the grant as well. A room nothing holds is answered by giving
+    the agent the right to start one session for it, and that right has to be
+    recorded where the next caller asking about the same room can see it, or
+    two deliveries seconds apart each start a session for the same room.
+
+    A controller giving a delivery up leaves `discarded_at` behind rather than
+    removing the row. The row is the fence as well as the copy: a session was
+    told to make this delivery before the controller stopped waiting for it,
+    and without the tombstone the delivery would read as one no admission was
+    ever asked for — the oldest shape of caller, which is not fenced at all.
+    """
+
+    __tablename__ = "sdk_room_admissions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", "room_id", "message_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_sdk_room_admissions_agent",
+            ondelete="CASCADE",
+        ),
+        Index("ix_sdk_room_admissions_room", "tenant_id", "agent_id", "room_id"),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    delivery: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    grant_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    granted_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    discarded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

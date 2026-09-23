@@ -4,6 +4,7 @@ import type { Session } from '@shared/core/sessions/sessions';
 
 const mocks = vi.hoisted(() => ({
   agent: vi.fn(),
+  persistedRoom: vi.fn(),
   server: vi.fn(),
   snapshot: vi.fn(),
   commandStatus: vi.fn(),
@@ -30,6 +31,9 @@ vi.mock('@switch-console/shared/session-v1', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   snapshotSchema: { parse: (value: unknown) => value },
   commandStatusSchema: { parse: (value: unknown) => value },
+}));
+vi.mock('@main/core/switch-rooms/session-room-store', () => ({
+  getPersistedRoomConnection: mocks.persistedRoom,
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
@@ -98,6 +102,7 @@ function runtime() {
 }
 
 beforeEach(() => {
+  mocks.persistedRoom.mockResolvedValue(null);
   vi.clearAllMocks();
   mocks.specialization.mockResolvedValue({});
   mocks.agent.mockResolvedValue({
@@ -229,8 +234,7 @@ it.each([false, true])(
     const config = await buildSharedHostConfig(
       savedSession,
       { sessionPath: '/work', sessionEnvVars: {} },
-      { kind: 'local' } as LocationTransport,
-      { rooms: [] }
+      { kind: 'local' } as LocationTransport
     );
     expect(config.start.input.runtimeMode).toBe(enabled ? 'full-access' : 'approval-required');
   }
@@ -249,12 +253,9 @@ it('reads updated model, effort and instructions for each launch', async () => {
       instructions: 'Updated instructions',
     });
   const launch = () =>
-    buildSharedHostConfig(
-      session,
-      { sessionPath: '/work', sessionEnvVars: {} },
-      { kind: 'local' } as LocationTransport,
-      { rooms: [] }
-    );
+    buildSharedHostConfig(session, { sessionPath: '/work', sessionEnvVars: {} }, {
+      kind: 'local',
+    } as LocationTransport);
   const first = await launch();
   const second = await launch();
   expect(first.start.input.model).toEqual({ id: 'first-model', options: { effort: 'low' } });
@@ -353,4 +354,24 @@ it('reports restart progress through host replacement and authentication until r
   await pending;
   expect(agent.startupStatus()).toEqual({ status: 'ready', message: null });
   expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it('passes the existing conversation room as a guarded migration hint', async () => {
+  mocks.persistedRoom.mockResolvedValue({ roomId: 'saved-room', switchAgentId: 'switch-agent' });
+  mocks.agent.mockResolvedValue({
+    id: 'agent-1',
+    switchAgentId: 'switch-agent',
+    providerId: 'claude',
+  });
+  const config = await buildSharedHostConfig(
+    session,
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(config.roomConnection?.restoreRoomId).toBe('saved-room');
+  mocks.persistedRoom.mockResolvedValue({ roomId: 'saved-room', switchAgentId: 'other-agent' });
+  const other = await buildSharedHostConfig(session, { sessionPath: '/work', sessionEnvVars: {} }, {
+    kind: 'local',
+  } as LocationTransport);
+  expect(other.roomConnection?.restoreRoomId).toBeUndefined();
 });

@@ -42,12 +42,12 @@ class _FakeRoomRoleStore:
         return None
 
     async def live_leases_for_room(
-        self, _session: Any, _room_id: str, _alive: Any = ()
+        self, _session: Any, _room_id: str, _live_conns: Any = ()
     ) -> dict[str, list[Any]]:
         return {k: list(v) for k, v in self._leases.items()}
 
     async def get_agent_live_lease(
-        self, _session: Any, _agent_id: str, _alive: Any = ()
+        self, _session: Any, _agent_id: str, _live_conns: Any = ()
     ) -> Any | None:
         return self._my_lease
 
@@ -61,15 +61,23 @@ class _FakeAgentStore:
 
 
 class _FakeAgentSessionStore:
-    """Maps transport_session_id -> (agent_id, room_id) it is connected to."""
+    """Where each kind of session is: transport by binding, SDK by its room."""
 
-    def __init__(self, bindings: dict[str, tuple[str, str]]) -> None:
+    def __init__(
+        self, bindings: dict[str, tuple[str, str]], sdk_rooms: dict[str, str]
+    ) -> None:
         self._bindings = bindings
+        self._sdk_rooms = sdk_rooms
 
     async def get_connected_room(
         self, _session: Any, transport_session_id: str
     ) -> tuple[str, str] | None:
         return self._bindings.get(transport_session_id)
+
+    async def get_sdk_session_room(
+        self, _session: Any, sdk_session_id: str
+    ) -> str | None:
+        return self._sdk_rooms.get(sdk_session_id)
 
 
 class _FakeRoomStore:
@@ -99,10 +107,16 @@ def _role(name: str, exclusive: bool, instructions: str) -> SimpleNamespace:
 
 
 def _lease(
-    role_id: str, agent_id: str, transport_session_id: str | None
+    role_id: str,
+    agent_id: str,
+    transport_session_id: str | None,
+    session_id: str | None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        role_id=role_id, agent_id=agent_id, transport_session_id=transport_session_id
+        role_id=role_id,
+        agent_id=agent_id,
+        transport_session_id=transport_session_id,
+        session_id=session_id,
     )
 
 
@@ -123,6 +137,7 @@ def _build_service(
     leases: dict[str, list[Any]],
     agents: dict[str, Any],
     bindings: dict[str, tuple[str, str]],
+    sdk_rooms: dict[str, str],
     rooms: dict[str, Any],
     members: dict[str, list[str]],
     my_lease: Any | None = None,
@@ -134,7 +149,7 @@ def _build_service(
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]
-    svc.agent_session_store = _FakeAgentSessionStore(bindings)  # type: ignore[assignment]
+    svc.agent_session_store = _FakeAgentSessionStore(bindings, sdk_rooms)  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore(rooms, members)  # type: ignore[assignment]
     return svc
 
@@ -148,6 +163,7 @@ class TestGetRoomRole:
             leases={},
             agents={},
             bindings={},
+            sdk_rooms={},
             rooms={"room-1": _room("room-1", "This Room")},
             members={"room-1": ["viewer"]},
         )
@@ -166,8 +182,8 @@ class TestGetRoomRole:
         role = _role("worker", False, "do the work")
         leases = {
             "role-worker": [
-                _lease("role-worker", "a-here", "tx-here"),
-                _lease("role-worker", "a-elsewhere", "tx-elsewhere"),
+                _lease("role-worker", "a-here", "tx-here", None),
+                _lease("role-worker", "a-elsewhere", "tx-elsewhere", None),
             ]
         }
         svc = _build_service(
@@ -181,6 +197,7 @@ class TestGetRoomRole:
                 "tx-here": ("a-here", "room-1"),
                 "tx-elsewhere": ("a-elsewhere", "room-2"),
             },
+            sdk_rooms={},
             rooms={
                 "room-1": _room("room-1", "This Room"),
                 "room-2": _room("room-2", "Other Room"),
@@ -208,6 +225,7 @@ class TestGetRoomRole:
             leases={},
             agents={},
             bindings={},
+            sdk_rooms={},
             rooms={"room-1": _room("room-1", "This Room")},
             members={"room-1": ["viewer"]},
         )
@@ -221,6 +239,7 @@ class TestGetRoomRole:
             leases={},
             agents={},
             bindings={},
+            sdk_rooms={},
             rooms={"room-1": _room("room-1", "This Room")},
             members={"room-1": ["someone-else"]},
         )

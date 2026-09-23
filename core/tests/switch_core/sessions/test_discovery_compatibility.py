@@ -82,3 +82,27 @@ async def test_deleting_agent_cascades_sdk_history(session_factory):
         await AgentStore().delete(db, "agent-demo")
         for model in (SdkSession, SdkSessionEvent, SdkSessionCommand, MediaBlob):
             assert await db.scalar(select(func.count()).select_from(model)) == 0
+
+
+async def test_discovery_and_presence_read_metadata_without_loading_transcript(
+    session_factory,
+):
+    from switch_core.sessions.service import _sessions_of
+
+    authority, _ = await setup(session_factory)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
+        payload = copy.deepcopy(row.snapshot)
+        # A future transcript shape must not break metadata-only reads.
+        payload["items"] = [{"type": "future-item", "data": "x" * 100_000}]
+        row.snapshot = payload
+    sessions = await authority.list_sessions("owner")
+    assert sessions[0].session_id == "session-demo"
+    async with session_factory() as db:
+        presence = await _sessions_of(db, ["agent-demo"])
+        assert presence[0].state.session_id == "session-demo"
+        # Metadata reads must not leave a partial ORM snapshot for later writes.
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
+        assert row.snapshot == payload
+    with pytest.raises(SessionError, match="invalid stored data"):
+        await authority.snapshot("session-demo", "owner")

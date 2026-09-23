@@ -14,7 +14,9 @@ import {
   reconcileSdkCommand,
   retireSdkSession,
 } from '../switch-servers/gateway-client';
+import { reconnectSdkRoom } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
+import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { syncSdkSessionActivity } from './session-activity';
 import { manageAgentSidecar } from './sidecar-management';
@@ -35,6 +37,21 @@ export const sdkHostController = createRPCController({
     retireSdkSession(await sharedServer(serverId), sessionId, epoch),
   uploadAttachment: async (serverId: string, sessionId: string, file: AttachmentUpload) =>
     uploadSdkAttachment(await sharedServer(serverId), sessionId, file),
+  connectionHealth,
+  reconnectRoom: async (
+    serverId: string,
+    sessionId: string,
+    epoch: string,
+    roomId: string,
+    expectedOwner: string | null
+  ) =>
+    snapshotSchema.parse(
+      await reconnectSdkRoom(await sharedServer(serverId), sessionId, {
+        epoch,
+        room_id: roomId,
+        expected_owner: expectedOwner,
+      })
+    ),
   agentDiagnostics: sharedAgentDiagnostics,
   agentLogs: sharedAgentLogs,
   manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>

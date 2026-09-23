@@ -205,7 +205,7 @@ void app.whenReady().then(async () => {
   // user reopening its terminal. Wait for the hook server and dependency probe
   // first — a spawned session needs both to deliver hooks and resolve its CLI.
   // Restore first so already-live sessions register their room connections,
-  // then start the auto_session watchers — the watcher's "is a session already
+  // then start the agents' controllers — the controller's "is a session already
   // attending this room?" check relies on those connections being present.
   void Promise.all([agentHookReady, dependenciesReady, migrationReady]).then(async () => {
     try {

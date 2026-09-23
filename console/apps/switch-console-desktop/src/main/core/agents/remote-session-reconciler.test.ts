@@ -1,8 +1,9 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { remoteSessionReconciler } from './remote-session-reconciler';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
+  server: vi.fn(async () => ({ id: 'server', gatewayUrl: 'https://example.test' })),
   snapshot: vi.fn(),
   room: vi.fn(),
   create: vi.fn(async () => ({ success: true })),
@@ -25,7 +26,7 @@ vi.mock('./getAgentById', () => ({
   }),
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+  getServer: mocks.server,
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchSdkSessions: mocks.list,
@@ -75,12 +76,19 @@ const session = {
     attachmentMimeTypes: [],
   },
 };
+let now = 0;
+beforeEach(() => {
+  now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+});
 async function tick() {
+  now += 2000;
   await (remoteSessionReconciler as unknown as { tick(id: string): Promise<void> }).tick('local');
 }
 afterEach(() => {
   remoteSessionReconciler.dispose();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   mocks.rows = [];
 });
 it('adopts an authorized shared session without starting execution', async () => {
@@ -187,7 +195,7 @@ it('names a newly adopted room session after its room', async () => {
   mocks.list.mockResolvedValue([{ ...session, roomIds: ['room'] }]);
   mocks.room.mockResolvedValue({ id: 'room', name: 'Release planning' });
   await tick();
-  expect(mocks.room).toHaveBeenCalledWith({ id: 'server' }, 'room');
+  expect(mocks.room).toHaveBeenCalledWith(expect.objectContaining({ id: 'server' }), 'room');
   expect(mocks.create).toHaveBeenCalledWith(
     expect.objectContaining({ id: 'shared', title: 'Session for Release planning' })
   );
@@ -242,4 +250,48 @@ it('does not adopt a retired session, whose work will never resume', async () =>
   ]);
   await tick();
   expect(mocks.create).not.toHaveBeenCalled();
+});
+
+it('shares one server list across overlapping and staggered agent discovery', async () => {
+  let resolve!: (value: unknown[]) => void;
+  mocks.list.mockReturnValueOnce(
+    new Promise<unknown[]>((done) => {
+      resolve = done;
+    })
+  );
+  const reconciler = remoteSessionReconciler as unknown as { tick(id: string): Promise<void> };
+  const first = reconciler.tick('one');
+  const second = reconciler.tick('two');
+  await vi.waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(1));
+  resolve([]);
+  await Promise.all([first, second]);
+  now += 500;
+  await reconciler.tick('three');
+  expect(mocks.list).toHaveBeenCalledTimes(1);
+  now += 2000;
+  mocks.list.mockResolvedValue([]);
+  await reconciler.tick('one');
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+});
+
+it('does not reuse a failed server read', async () => {
+  mocks.list.mockRejectedValueOnce(new Error('Temporarily unavailable'));
+  const reconciler = remoteSessionReconciler as unknown as { tick(id: string): Promise<void> };
+  await reconciler.tick('one');
+  expect(remoteSessionReconciler.errors()).toHaveLength(1);
+  mocks.list.mockResolvedValueOnce([]);
+  await reconciler.tick('one');
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  expect(remoteSessionReconciler.errors()).toEqual([]);
+});
+
+it('keeps server lists separate and invalidates a changed gateway URL', async () => {
+  mocks.list.mockResolvedValue([]);
+  const reconciler = remoteSessionReconciler as unknown as { tick(id: string): Promise<void> };
+  await reconciler.tick('one');
+  mocks.server.mockResolvedValueOnce({ id: 'other', gatewayUrl: 'https://other.example.test' });
+  await reconciler.tick('two');
+  mocks.server.mockResolvedValueOnce({ id: 'server', gatewayUrl: 'https://changed.example.test' });
+  await reconciler.tick('one');
+  expect(mocks.list).toHaveBeenCalledTimes(3);
 });

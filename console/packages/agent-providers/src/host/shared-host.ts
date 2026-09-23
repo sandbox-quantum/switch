@@ -3,17 +3,21 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   commandSchema,
-  commandStatusSchema,
+  heldDeliveriesSchema,
+  roomBindingSchema,
+  roomMessageReceiptSchema,
   serverEventSchema,
   snapshotSchema,
 } from '@switch-console/shared/session-v1';
-import type { Session } from '@switch-console/shared/session-v1';
-import type { z } from 'zod';
+import type { Command, Session } from '@switch-console/shared/session-v1';
+import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { declareHandoffCapability, HandoffInbox } from './handoff';
 import { Journal } from './journal';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import { HostedSession } from './session-host';
+import { clearSessionSelector, writeSessionSelector } from './shared-config';
 import { SharedDelivery } from './shared-delivery';
 import { SharedState } from './shared-state';
 
@@ -26,18 +30,40 @@ export type SharedHostOptions = {
   session: Session;
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
+  grant?: { roomId: string; messageId: string };
 };
 
 class TransportError extends Error {}
 class RequestError extends Error {
   constructor(
     readonly code: string,
+    readonly status: number,
     message: string
   ) {
     super(message);
   }
 }
-export class SharedHostLeaseExpiredError extends Error {
+
+/**
+ * How often a session asks Switch for the room work its own rooms still owe
+ * it, when the server will not say in its renewal whether there is any.
+ *
+ * A session whose controller has gone is still the session the server says is
+ * in the room, and nothing is left to route to it; this is how it finds that
+ * work anyway. A server that answers `roomWork` on renewal is asked only when
+ * it says something is owed; this interval is for one that does not, and
+ * trades how long such a session stays silent against a request per session
+ * per interval whose answer is almost always empty.
+ */
+const ROOM_PULL_MS = 5000;
+const roomWorkSchema = z.object({ roomWork: z.boolean() });
+export class SharedHostUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SharedHostUnavailableError';
+  }
+}
+export class SharedHostLeaseExpiredError extends SharedHostUnavailableError {
   constructor() {
     super('HOST_OFFLINE: lease renewal deadline passed.');
     this.name = 'SharedHostLeaseExpiredError';
@@ -71,6 +97,10 @@ export async function runSharedHost(
   let lease = state.latest('lease');
   let heartbeat: Promise<void> = Promise.resolve();
   let shutdown: Promise<void> | null = null;
+  // Out here with the heartbeat because the shutdown has to wait for it: the
+  // request is in flight on its own, and leaving it running past the end of
+  // the host would land an answer in a process that has stopped reading.
+  let pulling: Promise<void> | null = null;
   const sessionPath = `/${encodeURIComponent(options.session.sessionId)}`;
   const requestOnce = async (path: string, body: unknown, abort: AbortSignal): Promise<unknown> => {
     let response: Response;
@@ -98,7 +128,9 @@ export async function runSharedHost(
           body = null;
         }
         if (body && typeof body === 'object' && 'code' in body && body.code === 'HOST_OFFLINE')
-          throw new SharedHostLeaseExpiredError();
+          throw new SharedHostUnavailableError(
+            `Switch rejected ${path} (${response.status}): ${text}`
+          );
       }
       let code = '';
       try {
@@ -106,22 +138,36 @@ export async function runSharedHost(
       } catch {
         /* The response may be plain text. */
       }
-      throw new RequestError(code, `Switch session request failed (${response.status}): ${text}`);
+      throw new RequestError(
+        code,
+        response.status,
+        `Switch session request failed (${response.status}): ${text}`
+      );
     }
     return response.json();
+  };
+  /**
+   * One attempt, behind the same fences as a retried one.
+   *
+   * Abort and the lease deadline are checked here rather than in the retry
+   * loop, so a caller that would rather come back later than wait still
+   * cannot talk to Switch on a lease this host no longer holds.
+   */
+  const attempt = async (path: string, body: unknown): Promise<unknown> => {
+    executionSignal.throwIfAborted();
+    if (performance.now() >= deadline) {
+      if (lease) throw new SharedHostLeaseExpiredError();
+      throw new Error(
+        'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
+      );
+    }
+    return requestOnce(path, body, executionSignal);
   };
   const request = async (path: string, body: unknown): Promise<unknown> => {
     let disconnected = false;
     while (true) {
-      executionSignal.throwIfAborted();
-      if (performance.now() >= deadline) {
-        if (lease) throw new SharedHostLeaseExpiredError();
-        throw new Error(
-          'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
-        );
-      }
       try {
-        const result = await requestOnce(path, body, executionSignal);
+        const result = await attempt(path, body);
         if (disconnected) console.info('Shared host connection restored.');
         return result;
       } catch (error) {
@@ -144,6 +190,7 @@ export async function runSharedHost(
     });
   };
   executionSignal.addEventListener('abort', onAbort, { once: true });
+  const acknowledged: { session: { epoch: string; status: string } | null } = { session: null };
   const upload = async (reconcile: boolean) => {
     for (const event of delivery!.pending()) {
       const receipt = await request(
@@ -159,6 +206,8 @@ export async function runSharedHost(
       )
         throw new Error('Switch returned an invalid host event receipt.');
       await delivery!.acknowledge(receipt.throughHostSequence);
+      if (event.body.type === 'session.upsert')
+        acknowledged.session = { epoch: event.epoch, status: event.body.session.status };
     }
   };
   const validateSession = (snapshot: unknown) => {
@@ -174,12 +223,12 @@ export async function runSharedHost(
     return parsed;
   };
   const finish = async () => {
+    await stopExecution();
     if (starting) {
       starting = false;
-      if (adapter.hasSession(options.session.sessionId))
+      if (!host && adapter.hasSession(options.session.sessionId))
         await adapter.stopSession(options.session.sessionId);
     }
-    await stopExecution();
     if (host && delivery)
       for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);
     await state.journal.append({ type: 'quiesced' });
@@ -201,6 +250,7 @@ export async function runSharedHost(
     // Retain its owner record so a replacement supervisor can fence it too.
   };
   try {
+    await clearSessionSelector(options.root);
     // Complete a recovery whose response may have been lost before doing anything else.
     const recovery = state.latest('recover');
     if (recovery && (!lease || recovery.epoch === lease.snapshot.session.epoch)) {
@@ -247,6 +297,14 @@ export async function runSharedHost(
         await request('/claim', {
           session: state.identity.session,
           operation_id: state.identity.operationId,
+          // The room this session was started to answer, so the server creates
+          // it already holding that room. Spent once: a grant the server has
+          // since given to another session, or let lapse, refuses the claim
+          // rather than producing a second session for one room.
+          grant: options.grant && {
+            room_id: options.grant.roomId,
+            message_id: options.grant.messageId,
+          },
         })
       );
       await state.journal.append({ type: 'lease', snapshot, sourceBase: 0 });
@@ -254,10 +312,38 @@ export async function runSharedHost(
     lease = state.latest('lease')!;
     const session = structuredClone(lease.snapshot.session);
     const hostLease = { host_id: session.hostId, epoch: session.epoch };
+    // The room set the session is bound to, as the server last answered it,
+    // and null until it has been told at all. The selector the runtime sends
+    // resolves through that binding, so nothing is published before it exists.
+    let roomBinding: string | null = null;
+    let boundAt = 0;
+    let unreachable = false;
+    let disclosed = false;
+    const publishSelector = () =>
+      writeSessionSelector(options.root, {
+        session_id: options.session.sessionId,
+        host_id: hostLease.host_id,
+        epoch: hostLease.epoch,
+      });
+    // What the latest renewal said about this session's own rooms, under the
+    // generation it was said for. Each reading is numbered so that one saying
+    // work is owed starts one ask, and a reading from before a recovery says
+    // nothing about the generation after it. Null is not knowing, which is
+    // what a server that does not answer the question leaves it at.
+    let roomWork: { epoch: string; owed: boolean; reading: number } | null = null;
+    let readings = 0;
+    const renew = async () => {
+      const renewingAt = performance.now();
+      const epoch = hostLease.epoch;
+      const answer = roomWorkSchema.safeParse(
+        await request(`${sessionPath}/renew?room_work=true`, hostLease)
+      );
+      deadline = renewingAt + 25000;
+      readings += 1;
+      roomWork = answer.success ? { epoch, owed: answer.data.roomWork, reading: readings } : null;
+    };
     // Renew before opening a provider, including after a lost acquisition response.
-    const renewingAt = performance.now();
-    await request(`${sessionPath}/renew`, hostLease);
-    deadline = renewingAt + 25000;
+    await renew();
     delivery = await SharedDelivery.load(options.root, session, lease.sourceBase);
     let leaseSerial: Promise<unknown> = Promise.resolve();
     const withLease = <T>(action: () => Promise<T>): Promise<T> => {
@@ -269,11 +355,7 @@ export async function runSharedHost(
       try {
         while (!executionSignal.aborted) {
           await delay(5000, undefined, { signal: executionSignal });
-          await withLease(async () => {
-            const renewingAt = performance.now();
-            await request(`${sessionPath}/renew`, hostLease);
-            deadline = renewingAt + 25000;
-          });
+          await withLease(renew);
         }
       } catch (error) {
         if (!executionSignal.aborted) {
@@ -282,19 +364,225 @@ export async function runSharedHost(
         }
       }
     })();
+    if (options.roomConnection?.restoreRoomId) {
+      let answer: unknown = null;
+      try {
+        answer = await request(`${sessionPath}/restore-legacy-room`, {
+          ...hostLease,
+          room_id: options.roomConnection.restoreRoomId,
+        });
+      } catch (error) {
+        // An uncoded 404 is a server that predates the route rather than a
+        // refusal from it; one naming a code is the route answering.
+        if (!(error instanceof RequestError) || error.status !== 404 || error.code) throw error;
+        console.warn(
+          'This Switch server cannot restore a saved room; the session keeps the room ownership Switch already records.'
+        );
+      }
+      if (answer !== null && !z.object({ restored: z.boolean() }).parse(answer).restored)
+        console.warn('The saved room was not restored; Switch kept its current room ownership.');
+    }
     await state.journal.append({ type: 'running' });
     let rooms: SharedRoomInbox | null = null;
-    if (options.roomConnection) {
-      rooms = await SharedRoomInbox.open(options.root);
-      await rooms.connect(
-        { agentId: session.agentId, apiEndpoint: options.agentApiUrl, token: options.token },
-        options.roomConnection,
-        executionSignal,
-        (error) => {
-          failure = error;
-          stopped.abort(error);
+    let handoffs: HandoffInbox | null = null;
+    // Names the connection this session's room events arrive over, and answers
+    // with the rooms the server has it serving. Re-asserted while the session
+    // runs, because the connection belongs to the agent's controller, which can
+    // go away and come back under the same identity while this session keeps
+    // running — the binding is how the session finds out either way.
+    const roomConnection = options.roomConnection;
+    const bindRoomConnection = async () => {
+      boundAt = performance.now();
+      const served = roomBindingSchema.parse(
+        await request(`${sessionPath}/room-connection`, {
+          ...hostLease,
+          connection_id: roomConnection!.connectionId,
+        })
+      ).rooms;
+      const current = JSON.stringify(served);
+      if (current === roomBinding) return;
+      await rooms!.serves(served);
+      roomBinding = current;
+      await publishSelector();
+    };
+    /**
+     * Binds, and survives a refusal rather than taking the session down with
+     * it.
+     *
+     * The events are held by the server until something reaches them, and the
+     * identity this binding names is derived from the agent rather than minted
+     * per run, so a controller that comes back is the same one and delivery
+     * resumes on its own. What is not allowed is going quietly deaf, so the
+     * refusal is said in the transcript — and said there even when it happened
+     * before there was a transcript to say it in, which is the ordinary case
+     * when a restore brings a session up before its controller.
+     */
+    const assertRoomBinding = async (): Promise<void> => {
+      try {
+        await bindRoomConnection();
+      } catch (error) {
+        if (!(error instanceof RequestError) || error.code !== 'NOT_AUTHORIZED') throw error;
+        if (!unreachable) {
+          unreachable = true;
+          console.warn(error.message);
         }
+        await discloseRefusal();
+        return;
+      }
+      if (!unreachable) return;
+      unreachable = false;
+      disclosed = false;
+      await host?.roomDeliveryResumed();
+    };
+    let pulledAt: number | null = null;
+    let pulledReading = 0;
+    let pullUnanswered: string | null = null;
+    let pullFailing = false;
+    let pulled: { epoch: string; owed: z.infer<typeof heldDeliveriesSchema> } | null = null;
+    let pullFatal: { epoch: string | null; error: unknown } | null = null;
+    const givenUpOn = new Set<string>();
+    /**
+     * Ask Switch for the deliveries this session's own rooms still owe it.
+     *
+     * The push is the fast path and stays the fast path: this exists for the
+     * session whose controller is not there to push. It is the same work
+     * either way — the server hands out one delivery per room, the one it
+     * would accept next, and the inbox admits each message once however many
+     * times it is offered, so a delivery that arrives both ways is journaled,
+     * run and acknowledged once.
+     *
+     * A delivery the room has moved away from is not offered here at all: the
+     * answer is filtered by the rooms the server has this session holding, so
+     * one this session gave back does not come round again until the room
+     * does — at which point it has still never been made.
+     *
+     * Asking is an addition, not a dependency. A server that does not answer
+     * is said once and not asked again under that lease generation; one that
+     * refuses is said and asked again next time, and in both cases the
+     * controller's route is untouched.
+     *
+     * Which is why nothing waits here. The loop this serves is also what
+     * drains the handoffs the controller writes and what submits, runs and
+     * acknowledges what it has been given: a server that takes its time
+     * answering the second route to the same work would otherwise hold up the
+     * first one, and the controls with it. The request runs on its own and
+     * leaves its answer for the loop to pick up, so one is in flight at a time
+     * and one answer is held at a time — a slow one delays the next ask, and
+     * nothing else.
+     *
+     * When the server says in its renewals whether anything is owed, the ask
+     * is made once for each renewal that says so and not at all otherwise. A
+     * no is only the moment it was read at, which is why every renewal reads
+     * it again; a server that does not say leaves the ask on its interval.
+     */
+    const startPull = (): void => {
+      if (
+        pulling !== null ||
+        pulled !== null ||
+        pullUnanswered === hostLease.epoch ||
+        pullFatal !== null
+      )
+        return;
+      const known = roomWork?.epoch === hostLease.epoch ? roomWork : null;
+      if (known) {
+        if (!known.owed || known.reading === pulledReading) return;
+        pulledReading = known.reading;
+      } else if (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS) return;
+      pulledAt = performance.now();
+      const epoch = hostLease.epoch;
+      pulling = (async () => {
+        try {
+          pulled = {
+            epoch,
+            owed: heldDeliveriesSchema.parse(
+              await attempt(`${sessionPath}/room-reservations`, hostLease)
+            ),
+          };
+          pullFailing = false;
+        } catch (error) {
+          // Abort and lease expiry are the host's business rather than this
+          // route's, so they are kept for the loop to raise where every other
+          // one of them is raised. Nothing acts on them here: an answer that
+          // arrives after the host has stopped, or on a lease it no longer
+          // holds, must change nothing. Abort stops the host whatever lease it
+          // came under; anything else said about a generation a recovery has
+          // replaced was about a lease this host no longer runs on.
+          if (executionSignal.aborted) pullFatal = { epoch: null, error };
+          else if (epoch !== hostLease.epoch) {
+            /* Asked for under a generation a recovery has since replaced. */
+          } else if (error instanceof SharedHostUnavailableError) pullFatal = { epoch, error };
+          else if (error instanceof RequestError && error.status === 404) {
+            pullUnanswered = epoch;
+            console.warn(
+              `This Switch server does not answer a session's own room work, so room messages reach this session only while its controller is routing them: ${error.message}`
+            );
+          } else if (!pullFailing) {
+            // Reported and survived rather than raised. What is owed is also
+            // being pushed wherever a controller is up, and taking a working
+            // session down because the second route to the same work is
+            // unreadable would cost more than the route is worth.
+            pullFailing = true;
+            console.warn(
+              `Switch would not say what room work this session is owed: ${String(error)}`
+            );
+          }
+        }
+        pulling = null;
+      })();
+    };
+    /**
+     * Take up what the last ask came back with, in the loop that runs the rest.
+     *
+     * Every effect of a pull lands here rather than in the request: accepting a
+     * delivery into the inbox and saying an expired one is gone are the same
+     * writes the pushed route makes, and they stay on the one thread that
+     * makes them.
+     */
+    const drainPull = async (inbox: SharedRoomInbox): Promise<void> => {
+      if (pullFatal !== null) {
+        if (pullFatal.epoch === null || pullFatal.epoch === hostLease.epoch) throw pullFatal.error;
+        // Kept under a generation a recovery has since replaced.
+        pullFatal = null;
+      }
+      const answer = pulled;
+      if (answer === null) return;
+      pulled = null;
+      // Asked for under a generation a recovery has since replaced.
+      if (answer.epoch !== hostLease.epoch) return;
+      for (const held of answer.owed) {
+        if (held.expired) {
+          const key = `${held.room_id}:${held.message_id}`;
+          if (givenUpOn.has(key)) continue;
+          givenUpOn.add(key);
+          await host?.notice(
+            `Room message ${held.message_id} was held for this session longer than Switch promises to hold one, and has not been delivered. Nothing was sent to the room about it.`
+          );
+          continue;
+        }
+        await inbox.accept({
+          sequence: held.sequence,
+          roomId: held.room_id,
+          messageId: held.message_id,
+        });
+      }
+    };
+    const discloseRefusal = async (): Promise<void> => {
+      if (disclosed || !host) return;
+      disclosed = true;
+      await host.notice(
+        "This session is not bound to its agent's room connection, so messages addressed to it in Switch are not reaching it. Delivery resumes by itself once that connection is back; if it does not, restart the agent's room watcher."
       );
+    };
+    if (roomConnection) {
+      rooms = await SharedRoomInbox.open(options.root);
+      // Before the binding, which is what answers a room this session already
+      // holds: an event its controller routes here as soon as that answer
+      // lands waits in the inbox, rather than being written to a worker that
+      // had not yet said it reads one.
+      await declareHandoffCapability(options.root);
+      handoffs = new HandoffInbox(options.root);
+      handoffs.listen(executionSignal);
+      await assertRoomBinding();
     }
     starting = true;
     host = await HostedSession.start(
@@ -368,14 +656,13 @@ export async function runSharedHost(
             });
             lease = state.latest('lease')!;
             hostLease.epoch = snapshot.session.epoch;
+            if (roomBinding !== null) await publishSelector();
             delivery = await SharedDelivery.load(
               options.root,
               snapshot.session,
               operation.sourceBase
             );
-            const renewingAt = performance.now();
-            await request(`${sessionPath}/renew`, hostLease);
-            deadline = renewingAt + 25000;
+            await renew();
             return hostLease.epoch;
           }),
       },
@@ -386,20 +673,14 @@ export async function runSharedHost(
       for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
       await upload(false);
     };
-    let roomBinding: string | null = null;
     let heldForDecision = false;
+    let commandsCheckedAt = -Infinity;
+    // A refusal from before the provider existed had no transcript to be said
+    // in; this is the first moment there is one.
+    if (unreachable) await discloseRefusal();
     while (!executionSignal.aborted) {
       await flush();
-      if (rooms && options.roomConnection) {
-        const current = JSON.stringify(rooms.currentRooms());
-        if (current !== roomBinding) {
-          await request(`${sessionPath}/room-connection`, {
-            ...hostLease,
-            connection_id: options.roomConnection.connectionId,
-          });
-          roomBinding = current;
-        }
-      }
+      if (roomConnection && performance.now() - boundAt >= 5000) await assertRoomBinding();
       if (host.snapshot().session.status === 'stopped') break;
       if (host.snapshot().session.status === 'error' && !host.resetDecisionPending)
         throw new Error(
@@ -414,41 +695,96 @@ export async function runSharedHost(
           await flush();
         }
       }
+      const admitted: Command[] = [];
       if (
-        host.snapshot().session.status === 'ready' ||
-        host.snapshot().session.status === 'running'
+        acknowledged.session?.epoch === hostLease.epoch &&
+        ['ready', 'running'].includes(acknowledged.session.status) &&
+        ['ready', 'running'].includes(host.snapshot().session.status)
       ) {
+        if (rooms) {
+          startPull();
+          await drainPull(rooms);
+        }
+        if (rooms && handoffs)
+          for (const event of await handoffs.drain()) await rooms.accept(event);
         for (const event of rooms?.pending() ?? []) {
           try {
-            const receipt = commandStatusSchema.parse(
-              await request(`${sessionPath}/room-message`, {
+            const receipt = roomMessageReceiptSchema.parse(
+              // Asked for in the query string: a server built before this
+              // existed ignores an unknown parameter there, while the request
+              // body is strict and an unknown field in it is a 422 the host
+              // cannot recover from. Such a server answers the plain receipt,
+              // which carries no command, and this falls back to the fetch.
+              await request(`${sessionPath}/room-message?include_command=true`, {
                 ...hostLease,
                 room_id: event.roomId,
                 message_id: event.messageId,
                 sequence: event.sequence,
-                missed_count: event.missed,
-                gap_reason: event.gap?.reason ?? null,
               })
             );
+            if (receipt.command) admitted.push(receipt.command);
+            else commandsCheckedAt = -Infinity;
             if (receipt.status === 'unknown' || receipt.status === 'rejected')
               await host.notice(
                 `Room message ${event.messageId}: ${receipt.message ?? receipt.status}. It was not resent.`
               );
           } catch (error) {
+            if (!(error instanceof RequestError)) throw error;
+            // The room moved to another session of this agent while the event
+            // was on its way here. Switch keeps the delivery and hands it to
+            // whoever holds the room now, so this session lets it go rather
+            // than retrying something it is no longer entitled to submit.
+            // Given back rather than acknowledged: the delivery was never
+            // made, the room can come back here, and an acknowledgement would
+            // refuse it the second time as though it had been.
+            if (error.code === 'ROOM_MESSAGE_REASSIGNED') {
+              await host.notice(
+                `Room message ${event.messageId} is no longer this session's to answer; the room moved to another session of this agent, and Switch is delivering the message there.`
+              );
+              await rooms!.release(event);
+              continue;
+            }
+            // An earlier message for this room has not been answered yet, so
+            // this one is not this session's to run first. Kept outstanding
+            // and not given back: nothing has changed about whose delivery it
+            // is, only about when. The one in front of it is already held or
+            // arrives with the next pull, and this is tried again behind it.
+            if (error.code === 'ROOM_MESSAGE_OUT_OF_ORDER') continue;
             if (
-              !(error instanceof RequestError) ||
-              !['UNSUPPORTED_CAPABILITY', 'ROOM_MESSAGE_RESERVED'].includes(error.code)
+              [
+                'UNSUPPORTED_CAPABILITY',
+                'ROOM_MESSAGE_RESERVED',
+                'ROOM_MESSAGE_ABANDONED',
+              ].includes(error.code)
             )
-              throw error;
-            await host.notice(
-              `Room message ${event.messageId} was not submitted: ${error.message}`
-            );
+              await host.notice(
+                `Room message ${event.messageId} was not submitted: ${error.message}`
+              );
+            else throw error;
           }
           await rooms!.acknowledge(event);
         }
       }
-      const commands = await request(`${sessionPath}/commands`, hostLease);
+      // A command handed back by its own admission needs no fetching. The
+      // server hands one back only while nothing else is queued for the
+      // session, so running it here cannot put it ahead of a stop, a reset or
+      // an interrupt that was waiting: with any of those pending the receipt
+      // carries no command and this falls through to the ordered endpoint.
+      // Anything queued after the admission is served by the next pass, as a
+      // command arriving just after a fetch always has been.
+      // Room handoffs and Console controls share the durable command queue.
+      // The watcher wakes us for committed commands; a slow check recovers
+      // missed notifications, older watchers and disconnected controllers.
+      const commandWake = handoffs?.takeCommandWake() ?? false;
+      const checkCommands = commandWake || performance.now() - commandsCheckedAt >= 5000;
+      let commands: unknown = admitted;
+      if (admitted.length === 0 && checkCommands) {
+        commandsCheckedAt = performance.now();
+        commands = await request(`${sessionPath}/commands`, hostLease);
+      }
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
+      // Drain queued work promptly; only an empty response starts the idle interval.
+      if (commands.length > 0) commandsCheckedAt = -Infinity;
       for (const value of commands) {
         executionSignal.throwIfAborted();
         if (performance.now() >= deadline) {
@@ -479,13 +815,17 @@ export async function runSharedHost(
         }
         await flush();
       }
-      await delay(250, undefined, { signal: executionSignal });
+      if (handoffs) await handoffs.idle(250, executionSignal);
+      else await delay(250, undefined, { signal: executionSignal });
     }
   } catch (error) {
     if (!signal.aborted) failure ??= error;
   } finally {
     stopped.abort();
     await heartbeat;
+    // Aborted by the line above, and waited for here so the host does not
+    // return with a request of its own still outstanding.
+    if (pulling) await pulling;
     try {
       await finish();
     } catch (error) {

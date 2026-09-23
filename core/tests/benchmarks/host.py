@@ -1,0 +1,647 @@
+"""Runs the real Node host topology against the benchmark's own server.
+
+What the connection model costs is decided almost entirely on this side: the
+watcher, the per-session supervisors and the session workers are what open the
+inbound connections and occupy the processes being counted. So the benchmark
+runs the shipped ones. The only substitution is the provider adapter, made in
+the benchmark's own entrypoint under
+`console/packages/agent-providers/src/host/bench/`.
+
+Two isolations matter, and both are load-bearing rather than tidiness:
+
+`HOME` is redirected
+    A watcher restarts every session of its agent that is running a superseded
+    build. Sessions are found by scanning `$HOME/.local/state/switch`, so a
+    benchmark watcher sharing a home directory with a real Switch Console
+    would restart that user's live sessions.
+the agent is registered per run
+    A watcher acts on its agent id. A fresh id per run means a benchmark can
+    never reach a session it did not create, whatever the state on disk.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import signal
+import subprocess
+import time
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+from tests.benchmarks.metrics import descendants
+from tests.benchmarks.trace import PROVIDER_DISPATCH
+
+#: Prefix of the token the driver embeds in each message body, matched by
+#: `benchMarker` in the benchmark adapter. The two must agree.
+MARKER_PREFIX = "switch-bench:"
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CONSOLE = _REPO_ROOT / "console"
+_BUNDLE = (
+    _CONSOLE / "packages" / "agent-providers" / "dist-bench" / "bench-host-daemon.mjs"
+)
+
+#: What a benchmark session tells Switch it can be asked to do. A host decides
+#: this for itself, and the shipped one declares a reset supported whatever the
+#: provider is — resetting is the host stopping the provider session and
+#: starting another, which every adapter can be put through. Declared the same
+#: way here so a scenario can submit the room control a room command really
+#: submits; the rest stay off, because the benchmark provider answers no
+#: question and takes no approval.
+SESSION_CAPABILITIES = {
+    "input": "queue",
+    "approvals": False,
+    "questions": False,
+    "interrupt": False,
+    "reset": True,
+    "compact": False,
+    "modelChange": False,
+    "attachmentMimeTypes": [],
+}
+
+
+#: Namespace Switch Console derives a controller's connection id under. It is
+#: mirrored here rather than read from the app because the watcher takes the id
+#: from the template it is handed, so a harness that minted its own would test a
+#: connection identity no Console ever opens.
+CONTROLLER_CONNECTION_NAMESPACE = uuid.UUID("c3f2b0de-2e5a-5a1e-9d4a-1f7c2a6b8e05")
+
+
+def controller_connection_id(agent_id: str) -> str:
+    """The connection a controller for this agent opens, as Console derives it.
+
+    Derived from the agent rather than minted, so two controllers started for
+    one agent collide on the server and one takes the connection from the
+    other, and so a controller that is restarted reopens the connection it had
+    instead of leaving a second one to be swept.
+    """
+    return str(uuid.uuid5(CONTROLLER_CONNECTION_NAMESPACE, agent_id))
+
+
+def minted_connection_id() -> str:
+    """A connection identity the way the app this topology replaced chose one.
+
+    That app minted a fresh id for every watcher and every session it started,
+    so nothing about the identity tied it to the agent. A scenario standing in
+    for that app has to mint too: derive the id and the older build would
+    collide with the newer one on the server, which is a takeover rather than
+    the upgrade being measured.
+    """
+    return str(uuid.uuid4())
+
+
+def new_marker() -> str:
+    """A token identifying one benchmark message, as the host will report it."""
+    return str(uuid.uuid4())
+
+
+def marked(marker: str) -> str:
+    """The marker as it must appear in a message body for a host to find it."""
+    return f"{MARKER_PREFIX}{marker}"
+
+
+def build_bench_bundle() -> Path:
+    """Bundle the benchmark host entrypoint, returning the bundle path.
+
+    Bundled rather than run from source because a host is a child process and
+    the entrypoint imports its package by extensionless specifier, which Node's
+    own TypeScript support does not resolve. Built every run so a benchmark can
+    never score a revision against a bundle left over from another one.
+    """
+    if not _CONSOLE.is_dir():
+        raise RuntimeError(
+            f"{_CONSOLE} is missing; the benchmark needs the Console workspace to "
+            "build its host entrypoint"
+        )
+    result = subprocess.run(
+        [
+            "pnpm",
+            "--filter",
+            "@switch-console/agent-providers",
+            "exec",
+            "tsdown",
+            "--config",
+            "tsdown.bench.config.ts",
+        ],
+        cwd=_CONSOLE,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "building the benchmark host entrypoint failed. Run `pnpm install` in "
+            f"{_CONSOLE} first.\n{result.stdout}\n{result.stderr}"
+        )
+    if not _BUNDLE.is_file():
+        raise RuntimeError(f"the bundler reported success but {_BUNDLE} is not there")
+    return _BUNDLE
+
+
+def successor_bundle(bundle: Path) -> Path:
+    """The same build again under a second identity, for an upgrade to it.
+
+    A bench host names the path it was started from as its build, so one bundle
+    at two paths is two builds running identical code — which is what an
+    upgrade between consecutive releases of one topology does to a machine, and
+    it needs no second checkout to stage.
+
+    The copy goes beside the original because the bundle resolves its
+    dependencies from the workspace it was built in; anywhere else it fails to
+    load rather than running as an older build would.
+    """
+    successor = bundle.with_name(f"{bundle.stem}-successor{bundle.suffix}")
+    shutil.copy2(bundle, successor)
+    return successor
+
+
+@dataclass(slots=True)
+class BenchWatcher:
+    """A running watcher and everything spawned beneath it.
+
+    `supervisor_pid` is not fixed for the life of the run: a controller can be
+    killed and another started on the same state, and everything that reads the
+    process tree has to follow it to the one that is running now.
+    """
+
+    root: Path
+    home: Path
+    trace_path: Path
+    bundle: Path
+    connection_id: str
+    template_path: Path
+    environment: Mapping[str, str]
+    supervisor_pid: int
+
+    def process_tree(self) -> list[int]:
+        return descendants(self.supervisor_pid)
+
+    def failure(self) -> str | None:
+        """The message a host wrote before dying, if one did.
+
+        Hosts are detached and their output goes to log files, so a failure is
+        otherwise visible only as a workload that never completes.
+        """
+        for path in sorted(self.home.rglob("failure.json")):
+            return str(json.loads(path.read_text())["message"])
+        return None
+
+    def taken_over(self) -> dict[str, str] | None:
+        """The record this controller left if another took its connection.
+
+        Written when the server evicts it in favour of a second controller for
+        the same agent, and kept: standing down is durable, so a controller
+        that has this file is one that will not reopen the connection on its
+        own.
+        """
+        record = self.root / "taken-over.json"
+        if not record.exists():
+            return None
+        return {str(k): str(v) for k, v in json.loads(record.read_text()).items()}
+
+    def controller_running(self) -> bool:
+        """Whether this controller's supervisor is still up."""
+        return _alive(self.supervisor_pid)
+
+    def sessions_by_room(self) -> dict[str, str]:
+        """Which session the watcher assigned to each room.
+
+        Read from the watcher's own durable journal rather than inferred, so
+        the recovery case acts on the session that is really serving a room.
+        """
+        journal = self.root / "assignments.jsonl"
+        if not journal.exists():
+            return {}
+        assigned: dict[str, str] = {}
+        for line in journal.read_text().splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            # The journal also carries sequence bookkeeping — a numbering
+            # restart, a routed sequence, a held delivery and its release —
+            # and none of those name a session. An assignment is the record
+            # that carries the session's configuration.
+            if "config" not in record:
+                continue
+            assigned[record["roomId"]] = record["config"]["session"]["sessionId"]
+        return assigned
+
+    def session_root(self, session_id: str) -> Path:
+        """Where a session of this watcher keeps its state on disk."""
+        digest = hashlib.sha256(session_id.encode()).hexdigest()
+        return self.home / ".local" / "state" / "switch" / "sdk-sessions" / digest
+
+    def provider_conversations(self, session_id: str) -> list[str]:
+        """The provider conversations this session has run, in order.
+
+        One entry per time the provider named its conversation, which a start
+        does both by announcing and by returning, so a single start can appear
+        twice. What the identity says is what matters: a host that recovered a
+        session resumes the identity it had, so an entry differing from the
+        first is a session that came back as a new conversation rather than
+        the one it was.
+        """
+        inbox = self.session_root(session_id) / "inbox.jsonl"
+        if not inbox.exists():
+            raise RuntimeError(f"session {session_id} has no inbox at {inbox}")
+        native: list[str] = []
+        for line in inbox.read_text().splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("type") == "native":
+                native.append(record["nativeSessionId"])
+        return native
+
+    def session_tree(self, session_id: str) -> list[int]:
+        """The processes serving one session, supervisor first."""
+        owner = self.session_root(session_id) / "supervisor" / "owner.json"
+        if not owner.exists():
+            raise RuntimeError(f"session {session_id} has no supervisor at {owner}")
+        return descendants(int(json.loads(owner.read_text())["pid"]))
+
+    def kill_session(self, session_id: str) -> int:
+        """Kill a session's processes outright, returning how many were hit.
+
+        SIGKILL, not SIGTERM: the case being measured is a host lost without
+        warning, and a graceful stop writes a `stopped` record that tells the
+        watcher never to start that session again.
+        """
+        tree = self.session_tree(session_id)
+        for pid in reversed(tree):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        return len(tree)
+
+    def kill_worker(self, session_id: str) -> int:
+        """Kill a session's worker, leaving the supervisor that owns it alive.
+
+        The supervisor is what brings a worker back, so killing the whole tree
+        measures a host lost and killing only what the supervisor started
+        measures the relaunch. SIGKILL for the same reason as the tree: a
+        worker given the chance to stop cleanly is not one that was lost.
+        """
+        tree = self.session_tree(session_id)
+        if len(tree) < 2:
+            raise RuntimeError(
+                f"session {session_id} has no worker under its supervisor: {tree}"
+            )
+        for pid in reversed(tree[1:]):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        return len(tree) - 1
+
+    def session_pids(self) -> set[int]:
+        """Every process serving a session this controller assigned.
+
+        A session whose supervisor record is missing contributes nothing rather
+        than raising: the journal names every session the controller ever
+        assigned, including ones whose processes are already gone.
+        """
+        pids: set[int] = set()
+        for session_id in set(self.sessions_by_room().values()):
+            try:
+                pids.update(self.session_tree(session_id))
+            except RuntimeError:
+                continue
+        return pids
+
+    def kill_sessions(self) -> int:
+        """Kill every process still serving a session this controller assigned.
+
+        A controller that stands down leaves its workers running and detached,
+        so they outlive the tree this harness stops on the way out. Returns how
+        many processes were hit.
+        """
+        pids = sorted(self.session_pids(), reverse=True)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        return len(pids)
+
+    def stop_controller(self) -> None:
+        """Kill the controller outright, leaving its sessions running.
+
+        What this reproduces is the controller being lost — a Console killed —
+        and taking its workers down with it would be the worker-recovery case
+        instead.
+
+        SIGKILL, so nothing is written on the way out. A controller given the
+        chance to record what it was holding would be measuring a graceful
+        stop, and the state a restart has to recover from is the state a
+        killed one left behind: a stale owner record, a journal, and whatever
+        the server is still holding for it.
+        """
+        sessions = self.session_pids()
+        doomed = [pid for pid in self.process_tree() if pid not in sessions]
+        for pid in sorted(doomed, reverse=True):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+        deadline = time.monotonic() + 15.0
+        while any(_alive(pid) for pid in doomed):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"{len([pid for pid in doomed if _alive(pid)])} controller "
+                    "process(es) survived SIGKILL, so whatever is started next "
+                    "would be the agent's second controller rather than its only one"
+                )
+            time.sleep(0.05)
+
+    def start_controller(self, bundle: Path, connection_id: str) -> None:
+        """Start a controller on this root again, after one was stopped.
+
+        The state it starts from is whatever the last one left on disk, which
+        after a kill includes its own owner record: reclaiming that is part of
+        what a restart has to do.
+
+        `bundle` is the build to start it from — the same one to restart the
+        controller that was there, a different one to put the machine through
+        the upgrade a user performs by updating the app over its own state.
+        `connection_id` is the identity that build opens with, rewritten into
+        the template the same way an upgraded app rewrites what it wrote
+        before: the build decides the connection, so a restart that kept the
+        old one would measure an upgrade no release performs.
+        """
+        superseded = self.supervisor_pid
+        self.bundle = bundle
+        self.connection_id = connection_id
+        template = json.loads(self.template_path.read_text())
+        template["roomConnection"] = {"connectionId": connection_id, "rooms": []}
+        self.template_path.write_text(json.dumps(template))
+        _start_watcher(
+            bundle=bundle,
+            root=self.root,
+            template_path=self.template_path,
+            environment=self.environment,
+        )
+        self.supervisor_pid = _await_supervisor(self.root, superseded)
+
+
+def _template(
+    *,
+    agent_id: str,
+    credentials_path: Path,
+    cwd: Path,
+    connection_id: str,
+) -> dict[str, object]:
+    session_id = str(uuid.uuid4())
+    return {
+        "session": {
+            "sessionId": session_id,
+            "agentId": agent_id,
+            "provider": "claude",
+            "hostId": str(uuid.uuid4()),
+            "epoch": str(uuid.uuid4()),
+            "status": "starting",
+            "connectivity": "online",
+            "capabilities": SESSION_CAPABILITIES,
+            "pendingRequestIds": [],
+        },
+        "start": {
+            "provider": "claude",
+            "input": {
+                "sessionId": session_id,
+                "cwd": str(cwd),
+                "runtimeMode": "approval-required",
+                "env": {},
+                "mcpServers": {},
+            },
+        },
+        "roomConnection": {"connectionId": connection_id, "rooms": []},
+        "execution": {
+            "credentialsPath": str(credentials_path),
+            "inheritEnv": [],
+            "mcpRuntime": "@sandboxaq/switch-agent-runtime",
+            "codexConfig": "",
+            "skill": "",
+            "context": "",
+        },
+    }
+
+
+@contextmanager
+def bench_watcher(
+    *,
+    bundle: Path,
+    home: Path,
+    base_url: str,
+    agent_id: str,
+    api_key: str,
+    connection_id: str,
+) -> Iterator[BenchWatcher]:
+    """Start a watcher for one agent and stop its whole tree afterwards.
+
+    `connection_id` is the connection identity the controller opens with.
+    `controller_connection_id` is the one Switch Console derives, and is what a
+    scenario measuring today's app passes; a scenario standing in for an older
+    app passes the id that app would have minted for itself.
+    """
+    root = home / "watch"
+    root.mkdir(parents=True)
+    trace_path = home / "host-trace.jsonl"
+    trace_path.touch()
+    credentials_path = home / "credentials.json"
+    credentials_path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "SWITCH_API_ENDPOINT": base_url,
+                    "SWITCH_API_TOKEN": api_key,
+                    "SWITCH_AGENT_ID": agent_id,
+                }
+            }
+        )
+    )
+    # Connected and allowed to start sessions: the workload addresses rooms
+    # nothing is running for, so a controller that may not spawn would measure
+    # a topology with no sessions in it.
+    (root / "watch.json").write_text(json.dumps({"enabled": True, "spawn": True}))
+    template_path = home / "template.json"
+    template_path.write_text(
+        json.dumps(
+            _template(
+                agent_id=agent_id,
+                credentials_path=credentials_path,
+                cwd=home,
+                connection_id=connection_id,
+            )
+        )
+    )
+
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "SWITCH_BENCH_TRACE": str(trace_path),
+    }
+    _start_watcher(
+        bundle=bundle, root=root, template_path=template_path, environment=environment
+    )
+    watcher = BenchWatcher(
+        root=root,
+        home=home,
+        trace_path=trace_path,
+        bundle=bundle,
+        connection_id=connection_id,
+        template_path=template_path,
+        environment=environment,
+        supervisor_pid=_await_supervisor(root, None),
+    )
+    try:
+        yield watcher
+    finally:
+        _terminate(watcher.process_tree)
+
+
+def _start_watcher(
+    *,
+    bundle: Path,
+    root: Path,
+    template_path: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Ask for a watcher on this root, whether or not one has run here before."""
+    started = subprocess.run(
+        ["node", str(bundle), str(root), str(template_path), "--ensure-watch"],
+        capture_output=True,
+        text=True,
+        env=dict(environment),
+        timeout=120,
+    )
+    if started.returncode != 0:
+        raise RuntimeError(
+            f"the benchmark watcher did not start.\n{started.stdout}\n{started.stderr}"
+        )
+
+
+def _await_supervisor(root: Path, superseded: int | None) -> int:
+    """The pid of the detached supervisor that now owns this root.
+
+    Read from its own owner record rather than from the process that launched
+    it: that process spawns the supervisor detached and exits, so the
+    supervisor is reparented and is not in the driver's process tree.
+
+    `superseded` is the controller this one replaces, if there was one. A
+    killed controller leaves its owner record behind, so without it the caller
+    would be handed the pid of the process it has just killed.
+    """
+    owner = root / "supervisor" / "owner.json"
+    failure = root / "supervisor" / "failure.json"
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if failure.exists():
+            raise RuntimeError(
+                f"the benchmark watcher failed at startup: "
+                f"{json.loads(failure.read_text())['message']}"
+            )
+        if owner.exists():
+            pid = int(json.loads(owner.read_text())["pid"])
+            if pid != superseded:
+                return pid
+        time.sleep(0.05)
+    raise RuntimeError(f"no watcher supervisor claimed {root} within 30s")
+
+
+def _terminate(tree: Callable[[], list[int]]) -> None:
+    """Stop a detached host tree, children first, and wait for it to be gone.
+
+    The tree is re-read on every pass and accumulated rather than snapshotted
+    once. A watcher spawns hosts continuously, so a single scan misses any host
+    started between the scan and the signal; and once the supervisor dies its
+    children are reparented, so they stop being reachable from it and a later
+    scan would report the tree empty while they were still running.
+
+    A survivor is not untidiness. The workloads share a machine and run one
+    after another, so a host left serving the previous workload is CPU, memory
+    and an inbound connection that the next workload's figures would be quietly
+    charged for.
+    """
+    known: set[int] = set()
+    for signum, grace in ((signal.SIGTERM, 15.0), (signal.SIGKILL, 10.0)):
+        deadline = time.monotonic() + grace
+        while True:
+            known.update(tree())
+            # Highest pid first, so a worker is signalled before the supervisor
+            # that would otherwise notice it die and start a replacement.
+            alive = sorted((pid for pid in known if _alive(pid)), reverse=True)
+            if not alive:
+                return
+            for pid in alive:
+                try:
+                    os.kill(pid, signum)
+                except ProcessLookupError:
+                    continue
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+    remaining = [pid for pid in known if _alive(pid)]
+    if remaining:
+        raise RuntimeError(
+            f"{len(remaining)} benchmark host process(es) survived SIGKILL: "
+            f"{sorted(remaining)}. Anything measured after this would be sharing "
+            "the machine with a workload that was supposed to be over."
+        )
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def await_dispatches(
+    watcher: BenchWatcher, markers: Mapping[str, str], timeout: float
+) -> frozenset[str]:
+    """Block until every marker has been dispatched, or the deadline passes.
+
+    Returns the correlations that were never dispatched, rather than raising on
+    them. Undelivered messages are a measurement here, not only a fault: past a
+    certain session count the server refuses the agent further connections, and
+    the rooms behind those connections are never served. A benchmark that
+    aborted there would report nothing about the ceiling it had just hit.
+
+    The caller decides what the loss means. Where every message is expected to
+    arrive, the caller asserts the result is empty, so nothing is measured over
+    a silently partial population.
+    """
+    outstanding = set(markers)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        outstanding -= dispatched(watcher, markers)
+        if not outstanding:
+            break
+        time.sleep(0.05)
+    return frozenset(markers[marker] for marker in outstanding)
+
+
+def dispatched(watcher: BenchWatcher, markers: Mapping[str, str]) -> frozenset[str]:
+    """Which of `markers` a provider has already been handed, read right now.
+
+    Asked rather than waited for, so a scenario that interrupts a delivery can
+    say whether it interrupted anything.
+    """
+    served = {
+        record["correlation"]
+        for line in watcher.trace_path.read_text().splitlines()
+        if line.strip()
+        for record in (json.loads(line),)
+        if record["point"] == PROVIDER_DISPATCH
+    }
+    return frozenset(marker for marker in markers if marker in served)

@@ -1641,3 +1641,24 @@ export async function retireSdkSession(
     })
   ).json();
 }
+
+export async function fetchRoomHealth(server: SwitchServer): Promise<unknown> {
+  return (await gatewayFetch(server, '/sessions/room-health', { authenticated: true })).json();
+}
+export async function reconnectSdkRoom(
+  server: SwitchServer,
+  sessionId: string,
+  body: {
+    epoch: string;
+    room_id: string;
+    expected_owner: string | null;
+  }
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/reconnect-room`, {
+      authenticated: true,
+      method: 'POST',
+      body,
+    })
+  ).json();
+}

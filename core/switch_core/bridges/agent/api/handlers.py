@@ -80,12 +80,19 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
+    Closure,
+    Connection,
     ConnectionError_,
     DeliveryFilter,
     NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
     Scope,
+    SupersededConnectionError,
+    SupersededControlError,
+    SupersededReattachError,
+    UnfencedBeatError,
+    UnfencedControlError,
     UnknownConnectionError,
     evicted_session_warning,
 )
@@ -101,6 +108,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.sessions.service import SessionError
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -571,15 +579,21 @@ async def renew_role_lease(
     agent_id: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    connection_id: Annotated[str | None, Header(alias="x-switch-connection-id")] = None,
 ) -> dict[str, bool]:
-    """Refresh the agent's role-lease heartbeat (room-agnostic).
+    """Refresh the caller's role-lease heartbeat (room-agnostic).
 
-    Called on a fast cadence by the channel process while the agent holds a
-    role, so an exclusive seat stays held while the session is alive and
-    auto-releases shortly after it stops renewing. `held` is False when the
-    agent holds no lease (the caller may then stop renewing).
+    Called on a fast cadence by a process that owns its connection while it
+    holds a role, so an exclusive seat stays held while that process is alive
+    and auto-releases shortly after it stops renewing. `held` is False when
+    the caller holds no lease, and it may then stop renewing.
+
+    `X-Switch-Connection-Id` says which of the agent's holders is beating.
+    Only a self-renewing holder beats at all — a seat held by an SDK session
+    is kept alive by that session's own host lease — so the connection is the
+    whole of the identity needed here, and no session selector is read.
     """
-    held = await protocol.touch_role_lease(agent.id)
+    held = await protocol.touch_role_lease(agent.id, connection_id)
     return {"ok": True, "held": held}
 
 
@@ -691,6 +705,7 @@ async def poll_events(
     spawn_capable: Annotated[bool, Query()] = False,
     protocol_version: Annotated[int | None, Query(alias="protocol")] = None,
     protocol_accepts: Annotated[int | None, Query()] = None,
+    expected_generation: Annotated[int | None, Query()] = None,
     client: Annotated[str | None, Query()] = None,
     client_version: Annotated[str | None, Query()] = None,
     rooms: Annotated[str | None, Query()] = None,
@@ -726,6 +741,7 @@ async def poll_events(
             ),
             rooms=rooms,
             last_event_id=last_event_id,
+            expected_generation=expected_generation,
         )
 
     events = await protocol.poll_events(agent.id, timeout=timeout)
@@ -769,6 +785,7 @@ async def _open_event_stream(
     declaration: ClientDeclaration,
     rooms: str | None,
     last_event_id: str | None,
+    expected_generation: int | None,
 ) -> StreamingResponse:
     if not connection_id:
         raise HTTPException(
@@ -798,7 +815,16 @@ async def _open_event_stream(
             spawn_capable=spawn_capable,
             cursor=cursor,
             declaration=declaration,
+            expected_generation=expected_generation,
         )
+    except SupersededReattachError as exc:
+        # Structured, like the refused heartbeat: this is the same ending, and
+        # the client acts on the code rather than the prose. It is also the
+        # last thing this client will be told — a refused reattach means it has
+        # no stream and no beat that will be answered.
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
     except ProtocolVersionError as exc:
         # The refused client never receives a connection_state frame, so this
         # body is the only chance to tell it what the server speaks. Structured
@@ -844,12 +870,40 @@ async def _open_event_stream(
             # Without this, a session started before its supervisor learned to
             # share connections keeps the slot, and the supervisor's restored
             # stream 409s and retries forever.
-            protocol.connections.claim_room(conn, room_id, takeover=True)
+            async with protocol.connections.slots(agent.id):
+                await protocol.require_recorded_rooms_unmoved(
+                    agent.id, conn, frozenset({room_id}), frozenset()
+                )
+                protocol.connections.claim_room(conn, room_id, takeover=True)
+            # The room's unread count follows the slot: whoever is told how far
+            # behind the room is has to be the one whose reading clears it.
+            protocol.event_buffer.take_counting(agent.id, conn.id, room_id, conn.cursor)
+        except SessionError as exc:
+            # Caught ahead of the ValueError it is one of: a room the record
+            # gives to another session is a refusal in its own right, and the
+            # client acts on its code rather than reading a membership failure.
+            protocol.connections.close(
+                conn.id,
+                Closure(code="closed", message=str(exc), room_id=room_id),
+            )
+            raise HTTPException(
+                status_code=409, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
         except (ValueError, PermissionError) as exc:
-            protocol.connections.close(conn.id, "invalid room subscription")
+            protocol.connections.close(
+                conn.id,
+                Closure(
+                    code="closed",
+                    message=f"the room declared on connect cannot be served: {exc}",
+                    room_id=room_id,
+                ),
+            )
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ConnectionError_ as exc:
-            protocol.connections.close(conn.id, "room already claimed")
+            protocol.connections.close(
+                conn.id,
+                Closure(code="closed", message=str(exc), room_id=room_id),
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Every claim succeeded and the stream is about to be returned, so this is
@@ -889,9 +943,11 @@ async def connection_beat(
     """The single per-connection heartbeat.
 
     Proves the client is alive and reports its cursor. Rejected when the
-    connection is unknown, dead, or has no stream attached — an agent that can
-    still make calls but is receiving nothing must be told, not left believing
-    it is connected.
+    connection is unknown, dead, has no stream attached, or belongs to another
+    incarnation — an agent that can still make calls but is receiving nothing
+    must be told, not left believing it is connected. A refusal carries a code
+    beside its prose, because the remedies differ: `taken_over` is terminal for
+    the client that receives it, and the rest are recovered by reopening.
     """
     # A cursor above the buffer's head belongs to a previous life of this
     # process: the buffer is in memory, so a restart resets the sequence while
@@ -904,14 +960,48 @@ async def connection_beat(
     cursor = min(req.cursor, head)
 
     try:
-        conn = protocol.connections.beat(agent.id, req.connection_id, cursor)
-    except NoStreamAttachedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        conn = protocol.connections.beat(
+            agent.id, req.connection_id, cursor, req.generation
+        )
+    except (
+        NoStreamAttachedError,
+        SupersededConnectionError,
+        UnfencedBeatError,
+    ) as exc:
+        # All three refuse the tick, and one of them means something the others
+        # do not: a superseded tick is terminal for the client that sent it,
+        # because reopening is itself a takeover and would pull the connection
+        # back off the client that now holds it. Prose alone could not tell
+        # them apart, so every refusal was answered with a reopen.
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     protocol.event_buffer.confirm(agent.id, conn.id, cursor)
     return {"ok": True, "rooms": sorted(conn.rooms), "cursor": conn.cursor}
+
+
+def _current_connection(
+    protocol: ProtocolService, agent_id: str, req: ConnectionSubscribeRequest
+) -> Connection:
+    """The connection this request may write to, or the refusal saying why not.
+
+    A connection id survives a takeover, so it names the connection rather than
+    the client on it. Asked again after any wait, because what a caller was
+    admitted on is not what it is still holding.
+    """
+    try:
+        return protocol.connections.require_current(
+            agent_id, req.connection_id, generation=req.generation
+        )
+    except (SupersededControlError, UnfencedControlError) as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from exc
+    except UnknownConnectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{agent_id}/connection/subscribe")
@@ -927,11 +1017,14 @@ async def connection_subscribe(
     already belongs to: subscribing is not joining. On a `single`-scope
     connection this also drops whichever room it held before, which is how
     "one room at a time" stops being a convention and becomes a guarantee.
+
+    That replacement is done here rather than in `claim_room`, because the
+    registry can no longer tell whose room it would be dropping: a connection
+    carrying several sessions holds the union of their rooms. A caller at this
+    door names no session, so the connection is the whole of what it is, and
+    replacing is what it has always been promised.
     """
-    try:
-        conn = protocol.connections.require(agent.id, req.connection_id)
-    except UnknownConnectionError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn = _current_connection(protocol, agent.id, req)
 
     try:
         await protocol.require_room_member(agent.id, req.room_id)
@@ -940,12 +1033,33 @@ async def connection_subscribe(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    try:
-        evicted = protocol.connections.claim_room(
-            conn, req.room_id, takeover=req.takeover
+    async with protocol.connections.slots(agent.id):
+        departing = (
+            frozenset(conn.rooms - {req.room_id})
+            if conn.scope == "single"
+            else frozenset()
         )
-    except RoomOccupiedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await protocol.require_recorded_rooms_unmoved(
+            agent.id, conn, frozenset({req.room_id}), departing
+        )
+        # Named again now the wait for the slots is over, and with nothing
+        # awaited between here and the write: a client displaced while it waited
+        # would otherwise move a room on the connection its successor holds.
+        conn = _current_connection(protocol, agent.id, req)
+        try:
+            evicted = protocol.connections.claim_room(
+                conn, req.room_id, takeover=req.takeover
+            )
+        except RoomOccupiedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        for departed in departing:
+            protocol.connections.release_room(conn, departed)
+
+    # A room slot changes hands here as much as it does on the stream URL or in
+    # connect_to_room, and the room's unread count follows it: the holder being
+    # told how far behind the room is has to be the one whose reading clears it.
+    protocol.event_buffer.take_counting(agent.id, conn.id, req.room_id, conn.cursor)
 
     if evicted is not None:
         logger.warning(
@@ -961,7 +1075,7 @@ async def connection_subscribe(
         "rooms": sorted(conn.rooms),
         "evicted_connection_id": evicted.id if evicted else None,
         "warning": (
-            evicted_session_warning(req.room_id, evicted.id)
+            evicted_session_warning(req.room_id, f"connection {evicted.id}")
             if evicted is not None
             else None
         ),
@@ -976,12 +1090,14 @@ async def connection_unsubscribe(
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict[str, Any]:
     """Release a room, returning coverage to any all-scope connection."""
-    try:
-        conn = protocol.connections.require(agent.id, req.connection_id)
-    except UnknownConnectionError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn = _current_connection(protocol, agent.id, req)
 
-    protocol.connections.release_room(conn, req.room_id)
+    async with protocol.connections.slots(agent.id):
+        await protocol.require_recorded_rooms_unmoved(
+            agent.id, conn, frozenset(), frozenset({req.room_id})
+        )
+        conn = _current_connection(protocol, agent.id, req)
+        protocol.connections.release_room(conn, req.room_id)
     return {"ok": True, "rooms": sorted(conn.rooms)}
 
 

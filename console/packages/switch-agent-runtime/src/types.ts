@@ -81,6 +81,16 @@ export interface AgentBridgeEvent {
    * message the session was started to answer is behind it.
    */
   sequence?: number;
+  /**
+   * How far behind the agent is on unaddressed chatter in this event's room,
+   * as of this event. Carried only on events the agent is woken for, and only
+   * by a server that counts it — absent on the legacy poll and against an
+   * older server.
+   *
+   * `count` is null when nothing can be said: a zero would be believed, and
+   * `reason` is why. A reason alongside a number means the number is a floor.
+   */
+  missed?: { count: number | null; reason: string | null };
 }
 
 export interface AgentBridgeEventResponse {

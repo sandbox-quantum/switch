@@ -51,6 +51,7 @@ def _open(registry: ConnectionRegistry, connection_id: str, agent_id: str = AGEN
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
 
 
@@ -248,4 +249,4 @@ def test_a_fault_that_is_not_occupancy_is_logged_and_not_raised(
         claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
 
     assert any("could not claim room" in r.getMessage() for r in caplog.records)
-    assert conn.closed_reason is None
+    assert conn.closure is None

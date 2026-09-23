@@ -82,7 +82,7 @@ artifacts:
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.4.3
+    version: 0.6.1
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -149,9 +149,28 @@ contracts:
       The wire protocol between switch-core's agent bridge and an agent
       runtime: the event stream, its frame shapes, the resume cursor, and the
       tool-call channel.
+    # Revision 2 adds the connection incarnation: the server publishes it on
+    # `connection_state`, the client returns it on every heartbeat, and a tick
+    # bearing a superseded one — or, from a client that declares this revision,
+    # none at all — is refused. The same revision gives the `evicted` frame a
+    # stable `code` and the room it applies to, and gives a refused heartbeat
+    # the same treatment (`taken_over`, `no_stream`, `unfenced`), so a client
+    # no longer decides recoverable-or-fatal by matching prose. `taken_over` is
+    # the one ending a client must not answer by reopening: reopening is itself
+    # a takeover. All of it is additive and `accepts` stays at 1: a revision-1
+    # client sends no incarnation and is recorded as unfenceable rather than
+    # refused.
+    #
+    # Revision 3 moves unread accounting onto the wire. A delivered frame may
+    # carry `missed` — how far behind the reader is on unaddressed chatter in
+    # that frame's room, as a count that may be null with a reason — and a gap
+    # frame may carry `rooms`, naming which rooms lost events. Both are
+    # additive and `accepts` stays at 1: a client that reads neither behaves as
+    # it did, and a server that sends neither leaves the client with no count
+    # to render rather than a wrong one.
     artifacts:
-      switch-core: { speaks: 1, accepts: 1 }
-      agent-runtime: { speaks: 1, accepts: 1 }
+      switch-core: { speaks: 3, accepts: 1 }
+      agent-runtime: { speaks: 3, accepts: 1 }
 
   gateway-api:
     description: >-

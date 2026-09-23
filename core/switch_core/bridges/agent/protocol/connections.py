@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -56,13 +58,28 @@ _SERVER_AGENT_PROTOCOL = contract_range("agent-protocol", "switch-core")
 PROTOCOL_VERSION = _SERVER_AGENT_PROTOCOL.speaks
 PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts
 
+# The revision from which a client carries the connection incarnation on every
+# heartbeat and every room request. A client that declares it and then sends one
+# without an incarnation is refused rather than trusted: naming nothing is only
+# honest from a client that never had an incarnation to name, and otherwise it
+# is the way past the check.
+FENCED_PROTOCOL_REVISION = 2
+
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
 
 
 class ConnectionError_(Exception):
-    """Base for connection faults that a client must be told about."""
+    """Base for connection faults that a client must be told about.
+
+    `code` travels beside the prose so a client decides what to do from a
+    stable token rather than by matching words. The refusals a heartbeat can
+    receive share a status and differ only here, and they call for opposite
+    responses — reopen, or stand down.
+    """
+
+    code = "connection_error"
 
 
 class UnknownConnectionError(ConnectionError_):
@@ -75,6 +92,8 @@ class UnknownConnectionError(ConnectionError_):
 
 
 class NoStreamAttachedError(ConnectionError_):
+    code = "no_stream"
+
     def __init__(self, connection_id: str) -> None:
         super().__init__(
             f"connection {connection_id} has no stream attached; reopen the "
@@ -93,20 +112,179 @@ class RoomOccupiedError(ConnectionError_):
         self.holder_id = holder_id
 
 
-def evicted_session_warning(room_id: str, evicted_connection_id: str) -> str:
+class SupersededConnectionError(ConnectionError_):
+    """A tick for an incarnation of the connection that is no longer current.
+
+    Carries the same code as the eviction a displaced stream is sent, because
+    it is the same ending reaching the client by the other door: a client whose
+    socket dropped before that frame arrived learns it here instead. Reopening
+    is a takeover, so this is terminal for whoever receives it — treating it as
+    recoverable is how the loser takes the connection back from the winner.
+    """
+
+    code = "taken_over"
+
+    def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
+        super().__init__(
+            f"connection {connection_id} was reopened since incarnation "
+            f"{presented} and is now at {current}; another client holds it, so "
+            "this heartbeat was refused and its cursor was not applied"
+        )
+        self.connection_id = connection_id
+        self.presented = presented
+        self.current = current
+
+
+class SupersededReattachError(ConnectionError_):
+    """A reattach claiming an incarnation of the connection that has moved on.
+
+    Attaching is a takeover, so a client that reattaches unconditionally takes
+    the connection back off whoever holds it — and a client that missed its own
+    eviction, because the socket died before the frame or the heartbeat refusal
+    never arrived, cannot know it is doing so. A reattach that names the
+    incarnation it believes it still holds can be refused instead, and refusing
+    it changes nothing: the holder keeps the stream, the incarnation does not
+    move, and the client that asked is told, in the one exchange it has left.
+    """
+
+    code = "taken_over"
+
+    def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
+        super().__init__(
+            f"connection {connection_id} has been reopened since incarnation "
+            f"{presented} and is now at {current}; another client holds it, so "
+            "this reattach was refused and the connection was left untouched"
+        )
+        self.connection_id = connection_id
+        self.presented = presented
+        self.current = current
+
+
+class SupersededControlError(ConnectionError_):
+    """A room-control request from a client that no longer holds the connection.
+
+    Claiming and releasing rooms resolve the connection by id, and an id
+    survives a takeover — so the loser of one can still reach the connection and
+    rewrite the winner's room set, evicting whoever holds the room it claims.
+    The fenced open cannot help: this happens before it, and refusing the open
+    afterwards does not undo it. So the room surface is fenced on the same
+    incarnation, and refused before the membership check and before any change.
+    """
+
+    code = "taken_over"
+
+    def __init__(self, connection_id: str, *, presented: int, current: int) -> None:
+        super().__init__(
+            f"connection {connection_id} has been reopened since incarnation "
+            f"{presented} and is now at {current}; another client holds it, so "
+            "this room request was refused and no room was claimed or released"
+        )
+        self.connection_id = connection_id
+        self.presented = presented
+        self.current = current
+
+
+class UnfencedControlError(ConnectionError_):
+    """A room request carrying no incarnation, from a holder that sends one.
+
+    Accepting silence is only honest for a client too old to have an
+    incarnation to send. A client speaking the fenced revision has one by the
+    first frame of its stream, so an unfenced request from it is either one sent
+    before that frame arrived or one that withheld it — and the first is exactly
+    the window a displaced client's repoint would slip through, claiming nothing
+    and so being checked against nothing.
+    """
+
+    code = "unfenced"
+
+    def __init__(self, connection_id: str, *, speaks: int) -> None:
+        super().__init__(
+            f"connection {connection_id} is held by a client speaking "
+            f"agent-protocol {speaks}, which names the connection incarnation on "
+            "every room request; this one named none, so it could not be fenced "
+            "and no room was claimed or released — wait for the first frame of "
+            "the stream and send the incarnation it gives you"
+        )
+        self.connection_id = connection_id
+        self.speaks = speaks
+
+
+class UnfencedBeatError(ConnectionError_):
+    """A tick carrying no incarnation, from a client whose holder sends one."""
+
+    code = "unfenced"
+
+    def __init__(self, connection_id: str, *, speaks: int) -> None:
+        super().__init__(
+            f"connection {connection_id} is held by a client speaking "
+            f"agent-protocol {speaks}, which carries the connection incarnation "
+            "on every heartbeat; this tick carried none, so it could not be "
+            "fenced and was refused — reopen the stream and beat with the "
+            "incarnation its first frame gives you"
+        )
+        self.connection_id = connection_id
+        self.speaks = speaks
+
+
+CloseCode = Literal["taken_over", "heartbeat_lapsed", "closed"]
+
+
+@dataclass(frozen=True, slots=True)
+class Closure:
+    """Why a connection ended, in a form both sides can act on.
+
+    The prose alone was not enough. Three producers phrased the same three
+    endings six different ways, and the clients that had to tell a recoverable
+    ending from a fatal one did it by comparing those strings — so one of them
+    matched the short heartbeat-lapse wording, missed the long one, and killed
+    a watcher that only needed to reconnect. `code` is the part that is
+    promised and compared; `message` is for a human reading a log and may be
+    reworded freely.
+
+    `room_id` names the room the ending was about, and is null when it was not
+    about one. A client that loses a connection over a room it declared cannot
+    otherwise tell which room, and so cannot stop declaring it.
+    """
+
+    code: CloseCode
+    message: str
+    room_id: str | None
+
+
+#: The connection's client stopped ticking. Recoverable: reopen and resume.
+HEARTBEAT_LAPSED = Closure(
+    code="heartbeat_lapsed",
+    message="heartbeat lapsed; reopen the stream and resume from your cursor",
+    room_id=None,
+)
+
+#: Another stream attached to this id. Terminal for the displaced client:
+#: reopening is itself a takeover, so retrying is how two clients trade the
+#: connection back and forth forever.
+TAKEN_OVER = Closure(
+    code="taken_over",
+    message="another stream attached to this connection and took it over",
+    room_id=None,
+)
+
+
+def evicted_session_warning(room_id: str, evicted: str) -> str:
     """What to tell a caller that took a room off another live session.
 
     One wording for every door that can evict, so a client does not have to
     recognise the same event phrased two ways. Reported rather than logged
     quietly: an unannounced takeover looks identical to the duplicate-session
     bug it resolves — a session stops receiving a room and nothing says why.
+
+    `evicted` names what was put out, as the caller can best identify it: the
+    session where one is known, and otherwise the connection its events were
+    travelling over.
     """
     return (
         f"You evicted another session of this agent from room {room_id} "
-        f"(connection {evicted_connection_id}). Only one session of an agent "
-        "may act in a room, so that session has been disconnected from it and "
-        "will stop receiving its events. If that session was doing work here, "
-        "it no longer is."
+        f"({evicted}). Only one session of an agent may act in a room, so that "
+        "session has been disconnected from it and will stop receiving its "
+        "events. If that session was doing work here, it no longer is."
     )
 
 
@@ -210,20 +388,22 @@ class Connection:
     # difference between a client that never started beating and one that beat
     # and then stopped, which the timestamp alone cannot tell you.
     beats: int = 0
-    # Bumped when a new stream attaches, so a superseded stream can notice it
-    # has been replaced and stop writing.
+    # Which incarnation of this connection the attached stream is. Taken from
+    # the registry's sequence on every attach, so a superseded stream can
+    # notice it has been replaced and stop writing, and so a client can name
+    # the incarnation it holds and be refused if it has moved on. Never derived
+    # from the connection's own history: an id can be closed and opened again,
+    # and a per-connection counter would restart and make the new incarnation
+    # indistinguishable from the old one to a client holding a stale number.
     stream_generation: int = 0
-    closed_reason: str | None = None
+    closure: Closure | None = None
     # What the client said about itself on connect (CHOO-1865). Defaults to an
     # empty declaration, which means unknown — never "current".
     declaration: ClientDeclaration = field(default_factory=lambda: ClientDeclaration())
     wake: asyncio.Event = field(default_factory=asyncio.Event)
 
     def is_alive(self, now: float) -> bool:
-        return (
-            self.closed_reason is None
-            and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
-        )
+        return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
 
 
 class ConnectionRegistry:
@@ -238,6 +418,25 @@ class ConnectionRegistry:
         self._on_close: Callable[[Connection], None] = lambda conn: None
         self._by_id: dict[str, Connection] = {}
         self._by_agent: dict[str, set[str]] = {}
+        self._slot_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        # Incarnations are drawn from here, never from the connection, so a
+        # number is never handed out twice in one process — including to a
+        # connection id that was closed and opened again. The seed is random so
+        # that a number does not mean something different after a restart: a
+        # client holding one from a previous boot is refused rather than
+        # matching whatever this boot has reached.
+        self._next_incarnation = secrets.randbits(32)
+
+    def _new_incarnation(self) -> int:
+        """The next never-before-used incarnation number.
+
+        Monotonic so it is readable in a log and orderable in a comparison, and
+        registry-wide rather than per-connection so that closing an id and
+        opening it again cannot reissue a number a departed client still holds.
+        """
+        incarnation = self._next_incarnation
+        self._next_incarnation += 1
+        return incarnation
 
     # ------------------------------------------------------------------
     # Opening and closing
@@ -253,6 +452,7 @@ class ConnectionRegistry:
         spawn_capable: bool,
         cursor: int,
         declaration: ClientDeclaration,
+        expected_generation: int | None,
     ) -> Connection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -261,6 +461,17 @@ class ConnectionRegistry:
         live id takes it over — "the same client returning" and "the same
         client duplicated" are indistinguishable, and takeover is right for
         both.
+
+        `expected_generation` is what makes that takeover deliberate. A client
+        reattaching names the incarnation it believes it still holds, and is
+        refused without mutation if the connection has moved past it. The
+        heartbeat fence alone cannot cover this: the loser of a takeover may
+        never receive its eviction or its refused tick — a partition drops
+        both — and would then reopen and take the connection straight back off
+        the winner, which is the reversal the fence exists to prevent. `None`
+        means no claim is being made, which is a first open, a deliberate
+        takeover, or a client built before the check, and keeps the
+        unconditional attach all three have always had.
 
         A client that declares an `agent-protocol` range with no overlap is
         refused. A client that declares nothing is recorded as unknown and
@@ -282,14 +493,25 @@ class ConnectionRegistry:
             if existing.agent_id != agent_id:
                 # Never let one agent attach to another's connection.
                 raise UnknownConnectionError(connection_id)
+            if (
+                expected_generation is not None
+                and expected_generation != existing.stream_generation
+            ):
+                # Nothing above this line has changed the connection, and
+                # nothing below it runs. The holder is undisturbed.
+                raise SupersededReattachError(
+                    connection_id,
+                    presented=expected_generation,
+                    current=existing.stream_generation,
+                )
             existing.scope = scope
             existing.delivery_filter = delivery_filter
             existing.spawn_capable = spawn_capable
             existing.cursor = cursor
             existing.last_beat = time.monotonic()
-            existing.closed_reason = None
+            existing.closure = None
             existing.stream_attached = True
-            existing.stream_generation += 1
+            existing.stream_generation = self._new_incarnation()
             # A reattach can come from an upgraded client, so the declaration
             # is replaced rather than kept. The connection outlives the socket;
             # what is on the other end of it need not.
@@ -318,6 +540,7 @@ class ConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
+            stream_generation=self._new_incarnation(),
             declaration=declaration,
         )
         self._by_id[connection_id] = conn
@@ -363,7 +586,7 @@ class ConnectionRegistry:
         """
         self._on_close = listener
 
-    def close(self, connection_id: str, reason: str) -> Connection | None:
+    def close(self, connection_id: str, closure: Closure) -> Connection | None:
         conn = self._by_id.pop(connection_id, None)
         if conn is None:
             return None
@@ -372,7 +595,7 @@ class ConnectionRegistry:
             owned.discard(connection_id)
             if not owned:
                 self._by_agent.pop(conn.agent_id, None)
-        conn.closed_reason = reason
+        conn.closure = closure
         conn.stream_attached = False
         conn.wake.set()
         # `beats` and the age separate the two ways a connection dies, which
@@ -381,10 +604,13 @@ class ConnectionRegistry:
         # one that beat and then stopped (beats>0 — it went away, or the server
         # was too busy to process ticks).
         logger.info(
-            "[CONN] closed agent=%s connection=%s reason=%s beats=%d last_beat_age=%.1fs",
+            "[CONN] closed agent=%s connection=%s code=%s room=%s reason=%s "
+            "beats=%d last_beat_age=%.1fs",
             conn.agent_id,
             connection_id,
-            reason,
+            closure.code,
+            closure.room_id or "-",
+            closure.message,
             conn.beats,
             time.monotonic() - conn.last_beat,
         )
@@ -413,7 +639,7 @@ class ConnectionRegistry:
         ]
         closed = []
         for conn in stale:
-            gone = self.close(conn.id, "heartbeat lapsed")
+            gone = self.close(conn.id, HEARTBEAT_LAPSED)
             if gone is not None:
                 closed.append(gone)
         if closed:
@@ -426,14 +652,47 @@ class ConnectionRegistry:
     # Liveness
     # ------------------------------------------------------------------
 
-    def beat(self, agent_id: str, connection_id: str, cursor: int) -> Connection:
+    def beat(
+        self,
+        agent_id: str,
+        connection_id: str,
+        cursor: int,
+        generation: int | None,
+    ) -> Connection:
         """Record a client tick and its cursor.
 
         Rejects a tick for a connection with no stream: the client is alive but
         receiving nothing, and must be told to reopen rather than left believing
         it is connected.
+
+        `generation` fences the tick against the incarnation the client is
+        actually attached to. Sharing an id is what makes takeover work, and it
+        is also what makes a displaced client's tick indistinguishable from the
+        winner's — same id, same token. Unfenced, the loser keeps the
+        connection alive on the winner's behalf and, because a higher cursor is
+        adopted, drags the winner past events it was never sent. Nothing is
+        mutated before the check, so a refused tick costs the winner nothing.
+
+        `None` is a tick that cannot be fenced, and it is accepted only from a
+        connection whose holder is a client built before the fence existed.
+        That client is unknown rather than current, and accepting it is the
+        honest answer until the protocol floor rises past it. Once the holder
+        has declared a revision that carries the incarnation, a tick without
+        one is refused: that client is told its incarnation on the first frame
+        of its stream, so an unfenced tick is either one that never received a
+        frame or one that withheld it, and neither may keep the holder's
+        connection alive. Both answers follow from the declaration on the
+        connection, so who cannot be fenced stays answerable.
         """
         conn = self.require(agent_id, connection_id)
+        if generation is None:
+            speaks = self._fenced_holder(conn)
+            if speaks is not None:
+                raise UnfencedBeatError(connection_id, speaks=speaks)
+        elif generation != conn.stream_generation:
+            raise SupersededConnectionError(
+                connection_id, presented=generation, current=conn.stream_generation
+            )
         if not conn.stream_attached:
             raise NoStreamAttachedError(connection_id)
         conn.last_beat = time.monotonic()
@@ -447,9 +706,55 @@ class ConnectionRegistry:
         if conn is None or conn.agent_id != agent_id:
             raise UnknownConnectionError(connection_id)
         if not conn.is_alive(time.monotonic()):
-            self.close(connection_id, "heartbeat lapsed")
+            self.close(connection_id, HEARTBEAT_LAPSED)
             raise UnknownConnectionError(connection_id)
         return conn
+
+    def require_current(
+        self, agent_id: str, connection_id: str, *, generation: int | None
+    ) -> Connection:
+        """Resolve a connection the caller must still be the client on.
+
+        `require` answers "does this connection exist", which is the wrong
+        question for anything that mutates it: a connection id is stable across
+        a takeover, so a displaced client still resolves the connection that was
+        taken from it and would go on changing the winner's state. Naming the
+        incarnation turns the lookup into a claim, refused if it has moved on.
+
+        `None` makes no claim, and is read the same way an unfenced tick is:
+        accepted from a holder too old to have an incarnation to send, refused
+        once the holder speaks a revision that carries one. Claiming nothing
+        would otherwise be the way past the claim — a displaced client that
+        never saw its first frame has no incarnation to name, and that is
+        precisely when its repoint would reach the winner's rooms.
+
+        Callers must use this before touching the connection, and before any
+        other check, so a refusal costs the holder nothing.
+        """
+        conn = self.require(agent_id, connection_id)
+        if generation is None:
+            speaks = self._fenced_holder(conn)
+            if speaks is not None:
+                raise UnfencedControlError(connection_id, speaks=speaks)
+        elif generation != conn.stream_generation:
+            raise SupersededControlError(
+                connection_id, presented=generation, current=conn.stream_generation
+            )
+        return conn
+
+    @staticmethod
+    def _fenced_holder(conn: Connection) -> int | None:
+        """The holder's revision, when it is one that carries the incarnation.
+
+        The declaration on the connection is the holder's, not the caller's, so
+        this answers "should this connection's client have named an
+        incarnation" — which is the question, since the caller may not be that
+        client at all.
+        """
+        speaks = conn.declaration.speaks
+        if speaks is not None and speaks >= FENCED_PROTOCOL_REVISION:
+            return speaks
+        return None
 
     def get(self, connection_id: str) -> Connection | None:
         return self._by_id.get(connection_id)
@@ -466,14 +771,46 @@ class ConnectionRegistry:
     # Room slots
     # ------------------------------------------------------------------
 
+    @asynccontextmanager
+    async def slots(self, agent_id: str) -> AsyncIterator[None]:
+        """Hold this agent's room slots still.
+
+        The registry is in memory and every move through it is synchronous, so
+        within one step nothing can change underneath a reader. What needs more
+        than that is a decision recorded elsewhere: a reader that writes what a
+        connection is serving into the database is suspended at the commit, and
+        a claim moving in that window leaves the two disagreeing with no later
+        read able to notice. Whoever moves a slot takes this first, so a move is
+        ordered either wholly before such a decision or wholly after it.
+
+        Per agent, because that is the scope a room slot is contested in. It
+        does not stand in for the database locks: a caller that takes both takes
+        this one first, and no holder of a row lock waits here.
+        """
+        lock, users = self._slot_locks.get(agent_id, (asyncio.Lock(), 0))
+        self._slot_locks[agent_id] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, remaining = self._slot_locks[agent_id]
+            if remaining == 1:
+                del self._slot_locks[agent_id]
+            else:
+                self._slot_locks[agent_id] = (lock, remaining - 1)
+
     def claim_room(
         self, conn: Connection, room_id: str, *, takeover: bool = False
     ) -> Connection | None:
         """Subscribe a connection to a room, claiming its slot.
 
-        At most one connection per agent may act in a room. A `single`
-        connection subscribing to a new room drops the previous one, so "one
-        room at a time" is enforced here rather than left to the client.
+        At most one connection per agent may act in a room, which is what the
+        eviction below enforces. "One room at a time" is *not* enforced here:
+        it is a property of a session, and a connection may carry several
+        sessions working in different rooms, so a connection's rooms are the
+        union of its sessions'. Whoever moves a session out of a room calls
+        `release_room` for it — see `connect_to_room`, and `connection_subscribe`
+        for the door where the caller is the whole connection.
 
         Returns the connection that was evicted, if any.
         """
@@ -486,8 +823,6 @@ class ConnectionRegistry:
             claimant.wake.set()
             evicted = claimant
 
-        if conn.scope == "single":
-            conn.rooms.clear()
         conn.rooms.add(room_id)
         conn.wake.set()
         return evicted
@@ -574,25 +909,10 @@ class ConnectionRegistry:
 
         Covers, not claims: an `all`-scope daemon is genuinely reachable in the
         rooms it has not yielded to a session. This is the *delivery* question.
-        For "is a session attending this room", use `has_session_in`.
+        For "is a session in this room", ask `sessions.service.rooms_occupied`,
+        which weighs a claim against the sessions that could account for it.
         """
         return any(self.covers(conn, room_id) for conn in self.for_agent(agent_id))
-
-    def has_session_in(self, agent_id: str, room_id: str) -> bool:
-        """Whether a connection has **claimed** this room — i.e. a session is in it.
-
-        Distinct from `live_in_room`, and the distinction matters. An
-        `all`-scope watcher covers every room no session has taken, so `covers`
-        answers "would this connection receive the room's events" — true for a
-        daemon that is merely watching. Presence for a session-shaped agent asks
-        something narrower: is a session actually attending? Only an explicit
-        claim answers that.
-
-        Conflating the two reports an agent LIVE in a room where nothing is
-        listening but a watcher, which suppresses both the "no session" reply
-        and the `auto_session` promise to start one.
-        """
-        return self.claimant_of(agent_id, room_id) is not None
 
     def can_spawn_for(self, agent_id: str, room_id: str) -> bool:
         """Whether something live will start a session for this room on demand.
@@ -623,25 +943,32 @@ class ConnectionRegistry:
         return sum(1 for conn in self._by_id.values() if conn.is_alive(now))
 
     def live_agent_ids(self) -> set[str]:
-        """Every agent with at least one live connection.
-
-        Passed to the role-lease predicates: a connection keeps a role held,
-        so a client that has stopped sending `/leases/renew` because it moved
-        to the single heartbeat does not silently lose its seat.
-        """
+        """Every agent with at least one live connection."""
         now = time.monotonic()
         return {conn.agent_id for conn in self._by_id.values() if conn.is_alive(now)}
+
+    def live_connection_ids(self) -> set[str]:
+        """Every connection currently alive, by id.
+
+        Passed to the role-lease predicates: a seat taken over a connection is
+        held for as long as that connection is, so a client that has stopped
+        sending `/leases/renew` because it moved to the single heartbeat does
+        not silently lose it. The connection, not the agent — an agent's other
+        connections say nothing about a seat this one took.
+        """
+        now = time.monotonic()
+        return {conn.id for conn in self._by_id.values() if conn.is_alive(now)}
 
     def live_agents_in_room(self, agent_ids: Iterable[str], room_id: str) -> set[str]:
         return {aid for aid in agent_ids if self.live_in_room(aid, room_id)}
 
-    def agents_with_session_in(
-        self, agent_ids: Iterable[str], room_id: str
-    ) -> set[str]:
-        return {aid for aid in agent_ids if self.has_session_in(aid, room_id)}
-
     def live_agents(self, agent_ids: Iterable[str]) -> set[str]:
         return {aid for aid in agent_ids if self.is_live(aid)}
+
+    def agents_that_can_spawn_for(
+        self, agent_ids: Iterable[str], room_id: str
+    ) -> set[str]:
+        return {aid for aid in agent_ids if self.can_spawn_for(aid, room_id)}
 
     def rooms_covered(self, agent_id: str, candidate_rooms: Iterable[str]) -> set[str]:
         """Which of `candidate_rooms` this agent is reachable in right now."""

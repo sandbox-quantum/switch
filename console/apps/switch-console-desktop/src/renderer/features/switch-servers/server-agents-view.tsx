@@ -6,6 +6,7 @@ import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-co
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -129,6 +130,10 @@ const AgentCard = observer(function AgentCard({
             </div>
           )}
         </div>
+      </div>
+
+      <div className="relative self-start px-3.5 pb-3">
+        <AgentConnectionIndicator agent={agent} showLabel />
       </div>
 
       {/* Open in gateway, Reset and Remove, on hover. Kept rather than dropped

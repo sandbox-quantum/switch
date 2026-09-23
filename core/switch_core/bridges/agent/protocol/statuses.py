@@ -6,6 +6,7 @@ from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_session_store import AgentSessionStore
+from switch_core.sessions.service import agents_present_in
 
 
 async def compute_agent_statuses(
@@ -17,19 +18,23 @@ async def compute_agent_statuses(
 ) -> dict[str, AgentStatus]:
     """Derive each agent's presence status in a room, keyed by agent id.
 
-    Presence is the **union of two sources** during the transport migration
+    Presence is the **union of three sources** during the transport migration
     (CHOO-1857):
 
     - the ``agent_sessions`` rows, maintained by clients still polling and
       still sending ``/connection/renew`` and ``/watch/heartbeat``;
     - the live connection registry, which is all a client on the push
-      transport maintains — it sends one heartbeat and no renews.
+      transport maintains — it sends one heartbeat and no renews;
+    - the sessions Switch holds a record of, whose binding and host lease say
+      where they are working. Their connection cannot: it is shared with their
+      siblings, so its rooms are the union of theirs and it stays up while any
+      one of them does.
 
-    Neither alone is correct while both kinds of client exist: without the
-    connection arm a migrated client reads DISCONNECTED while demonstrably
-    alive on its stream, and without the DB arm an un-migrated one does. When
-    the old clients are gone the DB arm goes with them, and what remains is the
-    connection arm — this is the shape the code keeps, minus one branch.
+    No one of them alone is correct while all three kinds of client exist:
+    without the connection arm a migrated client reads DISCONNECTED while
+    demonstrably alive on its stream, and without the DB arm an un-migrated one
+    does. When the old clients are gone both of those go with them, and what
+    remains is the session arm.
 
     ``connections`` is required rather than defaulted: a call site that forgot
     it would report a migrated agent as offline, and that failure is invisible
@@ -40,7 +45,8 @@ async def compute_agent_statuses(
     - ``always_on``: LIVE if reachable at all, else DISCONNECTED.
     - ``session_addressable``: LIVE if reachable in this room, else NO_SESSION.
     - ``auto_session``: LIVE if reachable in this room; else DORMANT if a
-      connector is watching and will spawn on demand; else DISCONNECTED.
+      connector is watching and will spawn on demand; else NO_SESSION if the
+      agent is connected but nothing will start one; else DISCONNECTED.
     - ``session_passive``: always AWAITING_MANUAL_POLL (no heartbeat).
 
     Shared by ProtocolService (room detail / participants) and the in-room
@@ -80,17 +86,38 @@ async def compute_agent_statuses(
     # always_on has no separate notion of a session: any live connection is the
     # agent being up, and its scope is room-agnostic.
     live_always_on |= connections.live_agents(always_on_ids)
-    # For the session-shaped models, LIVE means a session is *attending* the
-    # room — a claimed room slot. An `all`-scope watcher covers rooms it has
-    # not yielded, which is the delivery rule, not presence: treating it as
-    # LIVE would report an agent as present in a room where nothing but a
-    # watcher is listening, suppressing both the "no session" reply and the
-    # auto_session promise to start one.
-    live_auto_room |= connections.agents_with_session_in(auto_session_ids, room_id)
-    live_addressable |= connections.agents_with_session_in(addressable_ids, room_id)
-    # …whereas watching is exactly "has any live connection": that is what the
-    # /watch/heartbeat loop used to assert, and what DORMANT means.
-    watching_auto |= connections.live_agents(auto_session_ids)
+    # For the session-shaped models, LIVE means a session is *present* in the
+    # room, which is two different facts about two kinds of client. A session
+    # Switch holds a record of says so by the room it is bound to and the lease
+    # its host is still renewing; a client Switch has no record of leaves only
+    # the room slot its connection claimed.
+    #
+    # Neither is coverage. An `all`-scope watcher covers rooms it has not
+    # yielded, which is the delivery rule, not presence: treating it as LIVE
+    # would report an agent as present in a room where nothing but a watcher is
+    # listening, suppressing both the "no session" reply and the auto_session
+    # promise to start one.
+    live_auto_room |= await agents_present_in(
+        session, auto_session_ids, room_id, connections
+    )
+    live_addressable |= await agents_present_in(
+        session, addressable_ids, room_id, connections
+    )
+    # …whereas DORMANT is a promise that a session is coming, so what it asks
+    # of a connection is willingness, not mere connectivity. The client says so
+    # when it opens the stream, and one connection of an agent says nothing
+    # about another: a session worker is connected and will never spawn, and a
+    # controller with auto-start off is connected and has declined to. Reading
+    # either as watching promises "Starting a session…" over a room nothing
+    # will ever join. The heartbeat rows keep their own arm: a client still on
+    # /watch/heartbeat declares nothing, and that loop meant willingness.
+    watching_auto |= connections.agents_that_can_spawn_for(auto_session_ids, room_id)
+    # An agent whose client is connected but will start nothing is not
+    # disconnected. It is reachable and has no session here, which is what
+    # NO_SESSION says and what the room needs to hear: DISCONNECTED over a live
+    # controller with automatic starts off tells a user the agent is away, and
+    # the reply they get if they address it anyway contradicts that.
+    connected_auto = connections.live_agents(auto_session_ids)
     # A spawn-capable connection covering the room will start a session on
     # demand, whatever the agent was configured as. DORMANT rather than
     # NO_SESSION is the honest report: nothing is attending yet, but something
@@ -122,6 +149,8 @@ async def compute_agent_statuses(
                 statuses[agent.id] = AgentStatus.LIVE
             elif agent.id in watching_auto:
                 statuses[agent.id] = AgentStatus.DORMANT
+            elif agent.id in connected_auto:
+                statuses[agent.id] = AgentStatus.NO_SESSION
             else:
                 statuses[agent.id] = AgentStatus.DISCONNECTED
         else:

@@ -109,3 +109,74 @@ without compaction in this experimental implementation.
 
 Shared commands currently support queued text and request answers. SSH deployment
 and production session routing remain outside this experimental path.
+
+## Compatibility paths and when they can go
+
+One inbound connection per agent is reached by upgrading parts that are not
+upgraded together — a Console, the worker bundles already installed in its state
+roots, and a Switch server that may be older than both. Each path below exists
+for one of those gaps. None is removed here; each is written down with the
+condition that makes removing it safe, so a later change can check the condition
+rather than guess at it.
+
+- **Workers that have not said they read handoffs** (`handoff.ts`,
+  `HANDOFF_PROTOCOL`). A controller routes only to a worker whose state root
+  declares the protocol, and the declaration is left in place when the worker
+  stops. Removable once no state root in use can have been written by a bundle
+  older than the one that first declared it — in practice, when the oldest
+  Console that may still be running against these roots is at or past that
+  release, remote hosts included. Removing it sooner routes deliveries into a
+  worker that never reads them, and they wait for the session's own ask.
+- **Sessions holding a room connection of their own** (`carryLegacyRooms`,
+  `replaceSupersededSessions`). A watcher start asks Switch what each session
+  predating the agent connection is serving, carries those rooms across and
+  replaces the session. Removable once no start finds a session whose
+  `roomConnection.connectionId` is not the agent's — which is one watcher
+  restart after the last host is upgraded, and is observable from the absence of
+  the carry request. Removing it sooner replaces a working session with nothing
+  recorded, which is the one failure here that cannot be undone.
+- **Servers with no route for a session's own room work** (`shared-host.ts`, the
+  404 answer to `room-reservations`). Asked once, said once in the log, and not
+  asked again for the life of the session. Removable once the oldest server the
+  app supports answers the route. Until then a session on such a server hears
+  about a room message only while its controller is routing to it, which is what
+  the log line says.
+- **Servers that ignore `include_command=true` on `room-message`**
+  (`shared-host.ts`). The parameter rides in the query string precisely so an
+  older server can ignore it; the plain receipt carries no command and the host
+  falls back to the ordered command endpoint. Removable on the same terms as the
+  route above: when no supported server answers the plain receipt. Costs a
+  request per delivery until then, and nothing else.
+- **Servers that do not say on renewal whether a session's rooms are owed
+  anything** (`shared-host.ts`, `ROOM_PULL_MS`). The worker asks with
+  `room_work=true` in the query string, which an older server ignores. An
+  answer with no `roomWork` boolean leaves the worker not knowing, so it asks
+  `room-reservations` on the interval as it did before the renewal could say.
+  Removable once the oldest server the app supports answers `roomWork`. Until
+  then an idle session on such a server makes one extra request per interval.
+
+
+### Command delivery
+
+Core sends `session_commands` hints over the agent watcher’s existing all-scope
+SSE connection after command acceptance commits. The watcher signals the matching
+local worker through `commands.wake`; the worker then reads the durable, ordered
+command queue. These hints do not claim rooms or start sessions.
+
+Workers also check commands on startup and every five seconds to recover missed
+hints, support older watchers or servers, and work while the watcher is offline.
+The 250 ms local loop still flushes provider events, but no longer requests
+commands on every pass. A room admission that cannot return its command directly
+triggers an immediate queue check. Notifications are process-local in Core;
+commands handled by another server process rely on the fallback check.
+
+
+Host cleanup stops the provider process without publishing a terminal session
+status. The unfinished session keeps its room claim while its supervisor recovers
+it. An explicit `session.stop` remains terminal and allows a later room message
+to start a new session. Server rejections retain their endpoint and reason in
+host logs. Only a locally elapsed renewal deadline is labelled lease expiry.
+
+Room messages are admitted only after Core acknowledges a ready or running
+state in the current lease epoch. Local provider readiness alone does not imply
+that Core has received that state.

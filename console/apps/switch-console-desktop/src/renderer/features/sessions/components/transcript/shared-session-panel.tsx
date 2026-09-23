@@ -1,5 +1,6 @@
 import { SessionChatClient } from '@switch-console/shared/session-v1';
 import { useEffect, useState } from 'react';
+import { SessionRoomConnection } from '@renderer/features/switch-rooms/session-room-connection';
 import { rpc } from '@renderer/lib/ipc';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionV1Chat } from './session-v1-chat';
@@ -71,6 +72,11 @@ export function SharedSessionPanel({
     );
   return client ? (
     <div className="flex h-full min-h-0 flex-col">
+      <SessionRoomConnection
+        sessionId={sessionId}
+        agentId={agentId}
+        startupStatus={startup?.status}
+      />
       <SessionV1Chat
         client={client}
         startup={startup}

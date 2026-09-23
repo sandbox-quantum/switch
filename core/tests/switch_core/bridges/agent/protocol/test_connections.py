@@ -7,16 +7,22 @@ import time
 import pytest
 
 from switch_core.bridges.agent.protocol.connections import (
+    FENCED_PROTOCOL_REVISION,
+    HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     ClientDeclaration,
+    Closure,
     ConnectionRegistry,
     NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
+    SupersededConnectionError,
+    SupersededReattachError,
     TooManyConnectionsError,
+    UnfencedBeatError,
     UnknownConnectionError,
 )
 
@@ -35,6 +41,8 @@ def _open(
     delivery_filter: str = "all",
     spawn_capable: bool = False,
     cursor: int = 0,
+    speaks: int | None = PROTOCOL_VERSION,
+    expected_generation: int | None = None,
 ):
     return registry.open(
         agent_id=agent_id,
@@ -43,7 +51,8 @@ def _open(
         delivery_filter=delivery_filter,  # type: ignore[arg-type]
         spawn_capable=spawn_capable,
         cursor=cursor,
-        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        declaration=ClientDeclaration(speaks=speaks),
+        expected_generation=expected_generation,
     )
 
 
@@ -84,6 +93,7 @@ def test_incompatible_protocol_is_refused() -> None:
             spawn_capable=False,
             cursor=0,
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION + 1),
+            expected_generation=None,
         )
 
 
@@ -98,6 +108,7 @@ def _open_declaring(
         spawn_capable=False,
         cursor=0,
         declaration=declaration,
+        expected_generation=None,
     )
 
 
@@ -208,7 +219,7 @@ def test_a_beat_without_a_stream_is_rejected() -> None:
     # The client is alive but receiving nothing. It must be told, not left
     # believing it is connected.
     with pytest.raises(NoStreamAttachedError):
-        registry.beat(AGENT, "c1", 5)
+        registry.beat(AGENT, "c1", 5, conn.stream_generation)
 
 
 def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
@@ -236,22 +247,131 @@ def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
 
 def test_beat_advances_the_cursor_but_never_rewinds_it() -> None:
     registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    current = conn.stream_generation
+
+    assert registry.beat(AGENT, "c1", 7, current).cursor == 7
+    assert registry.beat(AGENT, "c1", 3, current).cursor == 7
+
+
+def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    displaced = conn.stream_generation
+
+    _open(registry, "c1")  # the winner attaches; incarnation bumps
+
+    with pytest.raises(SupersededConnectionError) as caught:
+        registry.beat(AGENT, "c1", 0, displaced)
+
+    assert caught.value.presented == displaced
+    assert caught.value.current == displaced + 1
+
+
+def test_a_refused_beat_leaves_the_winners_cursor_where_it_was() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    displaced = conn.stream_generation
+    winner = _open(registry, "c1")
+    registry.beat(AGENT, "c1", 7, winner.stream_generation)
+
+    before = winner.cursor
+    assert before == 7
+
+    # The displaced client is further ahead than the winner — it was sent
+    # events the winner never saw. Adopting that cursor would skip them.
+    with pytest.raises(SupersededConnectionError):
+        registry.beat(AGENT, "c1", 99, displaced)
+
+    assert winner.cursor == before
+    assert winner.beats == 1
+
+
+def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    displaced = conn.stream_generation
+    winner = _open(registry, "c1")
+    aging = time.monotonic() - (HEARTBEAT_TTL_SECONDS / 2)
+    winner.last_beat = aging
+
+    with pytest.raises(SupersededConnectionError):
+        registry.beat(AGENT, "c1", 0, displaced)
+
+    # The loser cannot hold the winner's connection open on its behalf: the
+    # clock keeps running, so a winner that has gone quiet still lapses.
+    assert winner.last_beat == aging
+
+
+def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
+    registry = ConnectionRegistry()
+    _open(registry, "c1", speaks=None)
+    _open(registry, "c1", speaks=None)
+
+    # A client that declares nothing sends no incarnation. Unknown is not
+    # superseded.
+    assert registry.beat(AGENT, "c1", 4, None).cursor == 4
+
+
+def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> None:
+    registry = ConnectionRegistry()
+    _open(registry, "c1", speaks=FENCED_PROTOCOL_REVISION - 1)
+
+    # The server still accepts revision 1, and that revision has no incarnation
+    # to return, so its tick is taken as it always was. Refusing it would break
+    # every client released before the fence rather than fencing it.
+    assert registry.beat(AGENT, "c1", 4, None).cursor == 4
+
+
+def test_a_holder_that_carries_an_incarnation_may_not_tick_without_one() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    conn.cursor = 4
+
+    # Otherwise the fence is a formality: a displaced client that never saw its
+    # own incarnation — or one that would rather not be fenced — sends null and
+    # is treated as the holder, which is what the incarnation exists to stop.
+    with pytest.raises(UnfencedBeatError) as caught:
+        registry.beat(AGENT, "c1", 99, None)
+
+    assert caught.value.speaks == PROTOCOL_VERSION
+    assert conn.cursor == 4
+    assert conn.beats == 0
+
+
+def test_what_a_connection_cannot_be_fenced_by_follows_its_current_holder() -> None:
+    registry = ConnectionRegistry()
+    _open(registry, "c1", speaks=None)
+
+    # A reattach replaces the declaration, so an id first opened by a client
+    # that could not be fenced stops being unfenceable the moment one that can
+    # takes it over. Reading the fence off the id's history instead would leave
+    # a permanent hole behind every old client that ever used it.
     _open(registry, "c1")
 
-    assert registry.beat(AGENT, "c1", 7).cursor == 7
-    assert registry.beat(AGENT, "c1", 3).cursor == 7
+    with pytest.raises(UnfencedBeatError):
+        registry.beat(AGENT, "c1", 4, None)
 
 
 # ── Room slots ──────────────────────────────────────────────────────────────
 
 
-def test_single_scope_holds_one_room_at_a_time() -> None:
+def test_a_connection_accumulates_the_rooms_claimed_on_it() -> None:
+    """A connection holds the union of its sessions' rooms, and only drops one
+    when the session in it says so.
+
+    "One room at a time" belongs to a session, not to the connection carrying
+    it: clearing here would mean a second session connecting silently
+    unsubscribed the first.
+    """
     registry = ConnectionRegistry()
     conn = _open(registry, "c1", scope="single")
 
     registry.claim_room(conn, ROOM_A)
     registry.claim_room(conn, ROOM_B)
+    assert conn.rooms == {ROOM_A, ROOM_B}
 
+    registry.release_room(conn, ROOM_A)
     assert conn.rooms == {ROOM_B}
 
 
@@ -305,7 +425,9 @@ def test_coverage_returns_to_the_daemon_when_the_session_goes() -> None:
     registry.claim_room(session, ROOM_A)
     assert not registry.covers(daemon, ROOM_A)
 
-    registry.close("session", "session ended")
+    registry.close(
+        "session", Closure(code="closed", message="session ended", room_id=None)
+    )
 
     assert registry.covers(daemon, ROOM_A)
     assert registry.holder_of(AGENT, ROOM_A) is daemon
@@ -367,3 +489,137 @@ def test_rooms_of_one_agent_do_not_block_another() -> None:
 
     assert registry.holder_of(AGENT, ROOM_A) is mine
     assert registry.holder_of(OTHER_AGENT, ROOM_A) is theirs
+
+
+class TestAReattachCanBeFenced:
+    """A client returning must be able to prove it is still the holder.
+
+    The heartbeat fence stops a displaced client keeping the connection alive,
+    but it cannot stop one reattaching: the loser of a takeover may never
+    receive its eviction frame or its refused tick — a partition drops both —
+    and reopening is itself a takeover, so it would silently pull the
+    connection back off the winner. Naming the incarnation on the way in is
+    what makes that reversal impossible.
+    """
+
+    def test_the_holder_reattaches_and_the_incarnation_moves_on(self) -> None:
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+
+        before = conn.stream_generation
+        _open(registry, "c1", expected_generation=before)
+
+        assert conn.stream_generation != before
+
+    def test_a_claim_on_a_superseded_incarnation_is_refused(self) -> None:
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        displaced = conn.stream_generation
+        _open(registry, "c1")
+
+        with pytest.raises(SupersededReattachError) as refused:
+            _open(registry, "c1", expected_generation=displaced)
+
+        assert refused.value.presented == displaced
+        assert refused.value.current == conn.stream_generation
+
+    def test_a_refused_reattach_leaves_the_holder_untouched(self) -> None:
+        """The whole point: refusing costs the winner nothing.
+
+        A refusal that detached the stream, moved the incarnation or replaced
+        the declaration would hand the loser a way to disrupt the winner
+        without ever taking the connection from it.
+        """
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        displaced = conn.stream_generation
+        _open(registry, "c1", speaks=PROTOCOL_VERSION)
+        before = (conn.stream_generation, conn.stream_attached, conn.declaration)
+
+        with pytest.raises(SupersededReattachError):
+            _open(registry, "c1", expected_generation=displaced, speaks=None)
+
+        assert (
+            conn.stream_generation,
+            conn.stream_attached,
+            conn.declaration,
+        ) == before
+        assert registry.beat(AGENT, "c1", 7, conn.stream_generation).cursor == 7
+
+    def test_claiming_nothing_still_takes_the_connection_over(self) -> None:
+        """A deliberate takeover makes no claim, and keeps working.
+
+        It is how a supervisor adopts a session's connection, and how every
+        client built before the check attaches. Both are unconditional.
+        """
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        _open(registry, "c1")
+
+        before = conn.stream_generation
+        _open(registry, "c1", expected_generation=None)
+
+        assert conn.stream_generation != before
+
+    def test_a_claim_against_a_connection_the_server_never_had_opens_it(self) -> None:
+        """A restarted server has no incarnation to compare against.
+
+        Refusing here would strand every client that outlived the process:
+        there is no holder to protect, so there is nothing to take away.
+        """
+        registry = ConnectionRegistry()
+
+        conn = _open(registry, "c1", expected_generation=4)
+
+        assert conn.stream_attached
+
+    def test_an_incarnation_is_not_reissued_after_the_connection_is_recreated(
+        self,
+    ) -> None:
+        """The number must not mean "first attach"; it must mean *this* attach.
+
+        A per-connection counter restarts whenever the id is closed and opened
+        again, and the id is chosen by the client, so it is the same id. A
+        client that partitioned while holding the first incarnation would then
+        come back, match the number a brand-new connection happens to have, and
+        evict the client that legitimately opened it — the takeover the fence
+        exists to refuse, let through by arithmetic.
+        """
+        registry = ConnectionRegistry()
+        stale = _open(registry, "c1").stream_generation
+        registry.close("c1", HEARTBEAT_LAPSED)
+
+        # Someone else opens the same id from scratch.
+        fresh = _open(registry, "c1")
+        assert fresh.stream_generation != stale
+
+        with pytest.raises(SupersededReattachError):
+            _open(registry, "c1", expected_generation=stale)
+
+        assert registry.require(AGENT, "c1") is fresh
+
+
+class TestLiveConnectionIds:
+    """What the registry hands the role-lease predicates.
+
+    A seat is taken over one connection and must be held by that one only, so
+    the answer has to name connections. Answering with agent ids collapses
+    every connection an agent has into one indistinguishable fact, and a seat
+    whose holder died would be kept open by a sibling that never touched it.
+    """
+
+    def test_reports_connection_ids_not_agent_ids(self) -> None:
+        registry = ConnectionRegistry()
+        _open(registry, "c1")
+        _open(registry, "c2")
+
+        assert registry.live_connection_ids() == {"c1", "c2"}
+
+    def test_a_dead_connection_is_not_reported(self) -> None:
+        registry = ConnectionRegistry()
+        conn = _open(registry, "c1")
+        _open(registry, "c2")
+
+        conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+
+        assert registry.live_connection_ids() == {"c2"}

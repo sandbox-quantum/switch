@@ -28,9 +28,14 @@ export {
 } from './artifacts';
 export {
   BEAT_INTERVAL_MS,
+  EVICTION_CLOSED,
+  EVICTION_CREDENTIALS_REJECTED,
+  EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_TAKEN_OVER,
   SwitchEventStream,
   type DeliveryFilter,
   type EventStreamLogger,
+  type Eviction,
   type StreamScope,
   type SwitchEventStreamDeps,
 } from './event-stream';
@@ -42,6 +47,15 @@ export {
   type ProcessRow,
   type ReapOutcome,
 } from './reap';
+export {
+  RoomAdmissionError,
+  SwitchRoomAdmissions,
+  type CarriedRooms,
+  type RefusedRoom,
+  type RoomAdmission,
+  type RoomDelivery,
+  type RoomReservation,
+} from './room-admission';
 export { readSse, type SseFrame } from './sse';
 export type {
   AgentBridgeEvent,

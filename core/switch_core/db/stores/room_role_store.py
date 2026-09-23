@@ -1,9 +1,11 @@
 """Per-room roles and their assumption leases.
 
 A `RoomRole` is a named, room-scoped instruction bundle (see models). A
-`RoleLease` records the current holder of a role; a lease is *live* while its
-`last_seen_at` is within `LEASE_TTL`. Liveness is computed at read time — a
-stale lease is logically free, so no background reaper is needed.
+`RoleLease` records the current holder of a role, and is *live* while that
+holder is — either because it renewed within `LEASE_TTL`, or because the SDK
+session it names is still running (see `_live`). Liveness is computed at read
+time, so a lease whose holder is gone is logically free and no background
+reaper is needed.
 
 The store is stateless: every method takes the `AsyncSession` as its first
 argument and never commits (the caller owns the transaction), mirroring
@@ -13,21 +15,21 @@ argument and never commits (the caller owns the transaction), mirroring
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, false, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from switch_core.db.models import RoleLease, RoomRole
+from switch_core.db.models import RoleLease, RoomRole, SdkSession
 
 
 class RoomRoleStore:
     """CRUD for room roles plus lease acquire/renew/release."""
 
-    # A lease counts as live while its heartbeat is within this window. The
-    # channel process renews it every 2s while the assuming session is alive,
-    # so 6s gives 3x headroom (tolerates two fully-missed renews): a
-    # crashed/departed holder frees the seat within ~6s, while a healthy holder
-    # stays put across renews.
+    # How long a self-renewing holder's heartbeat stays good for. It renews
+    # every 2s, so 6s gives 3x headroom (tolerates two fully-missed renews): a
+    # crashed or departed holder frees the seat within ~6s, while a healthy one
+    # stays put across renews. A holder identified by its SDK session does not
+    # renew and is not judged by this window — see `_live`.
     LEASE_TTL = timedelta(seconds=6)
 
     # ── Role definitions ──────────────────────────────────────────────────
@@ -114,29 +116,54 @@ class RoomRoleStore:
     def _cutoff(self) -> datetime:
         return datetime.now(UTC) - self.LEASE_TTL
 
-    def _live(self, alive_agent_ids: Collection[str]) -> ColumnElement[bool]:
+    def _live(self, live_connection_ids: Collection[str]) -> ColumnElement[bool]:
         """SQL predicate for "this lease is still held".
 
-        A lease is live if its heartbeat is fresh **or** its agent has a live
-        connection (CHOO-1857 stage B). Both arms are needed while both kinds
-        of client exist: a client on the push transport sends one connection
-        heartbeat and no `/leases/renew`, so the freshness arm alone would drop
-        its role within the TTL; a client still polling has only that arm.
+        Three arms, every one of them scoped to the holder rather than to the
+        agent — which is the whole point, because an agent outlives the
+        sessions and connections that take seats in its name.
 
-        `alive_agent_ids` comes from the connection registry and defaults to
-        empty, which means "freshness only" — today's behaviour for any caller
-        that has no registry to hand.
+        A holder that renews says so: `last_seen_at` is fresh. A holder that
+        named its SDK session is live while that session's host lease is
+        current, and needs no heartbeat of its own. A holder that named
+        neither is live while the connection it took the seat over still is.
+
+        What is deliberately absent is the arm these replace: "the agent has
+        some live connection". It was satisfied by *any* connection the agent
+        happened to have, so an agent holding one permanent connection would
+        never free a seat at all — a crashed session's role, which frees
+        within seconds today, would have been held forever.
         """
-        fresh = RoleLease.last_seen_at > self._cutoff()
-        if not alive_agent_ids:
-            return fresh
-        return or_(fresh, RoleLease.agent_id.in_(list(alive_agent_ids)))
+        # The host lease is written against the database clock, so it is
+        # compared against the database clock.
+        holder_session_live = (
+            select(SdkSession.id)
+            .where(
+                SdkSession.tenant_id == RoleLease.tenant_id,
+                SdkSession.id == RoleLease.session_id,
+                SdkSession.lease_expires_at > func.now(),
+                func.coalesce(
+                    SdkSession.recovery["quiesced"].as_boolean(), false()
+                ).is_(False),
+            )
+            .exists()
+        )
+        holder_connection_live = RoleLease.session_id.is_(None) & (
+            RoleLease.transport_session_id.in_(live_connection_ids)
+            if live_connection_ids
+            else false()
+        )
+        return or_(
+            RoleLease.last_seen_at > self._cutoff(),
+            holder_session_live,
+            holder_connection_live,
+        )
 
     async def get_live_lease(
         self,
         session: AsyncSession,
         role_id: str,
-        alive_agent_ids: Collection[str] = (),
+        live_connection_ids: Collection[str],
     ) -> RoleLease | None:
         """Return the live lease on an *exclusive* `role_id`, or None if free.
 
@@ -148,7 +175,7 @@ class RoomRoleStore:
         result = await session.execute(
             select(RoleLease)
             .where(RoleLease.role_id == role_id)
-            .where(self._live(alive_agent_ids))
+            .where(self._live(live_connection_ids))
         )
         return result.scalar_one_or_none()
 
@@ -156,13 +183,13 @@ class RoomRoleStore:
         self,
         session: AsyncSession,
         role_id: str,
-        alive_agent_ids: Collection[str] = (),
+        live_connection_ids: Collection[str],
     ) -> bool:
         """True if at least one live lease holds `role_id` (any exclusivity)."""
         result = await session.execute(
             select(RoleLease.id)
             .where(RoleLease.role_id == role_id)
-            .where(self._live(alive_agent_ids))
+            .where(self._live(live_connection_ids))
             .limit(1)
         )
         return result.first() is not None
@@ -171,13 +198,13 @@ class RoomRoleStore:
         self,
         session: AsyncSession,
         agent_id: str,
-        alive_agent_ids: Collection[str] = (),
+        live_connection_ids: Collection[str],
     ) -> RoleLease | None:
         """Return the agent's live lease (across any room), or None."""
         result = await session.execute(
             select(RoleLease)
             .where(RoleLease.agent_id == agent_id)
-            .where(self._live(alive_agent_ids))
+            .where(self._live(live_connection_ids))
         )
         return result.scalar_one_or_none()
 
@@ -198,7 +225,7 @@ class RoomRoleStore:
         self,
         session: AsyncSession,
         room_id: str,
-        alive_agent_ids: Collection[str] = (),
+        live_connection_ids: Collection[str],
     ) -> dict[str, list[str]]:
         """Map role_id → live holder agent_ids for the room.
 
@@ -208,7 +235,7 @@ class RoomRoleStore:
         result = await session.execute(
             select(RoleLease.role_id, RoleLease.agent_id)
             .where(RoleLease.room_id == room_id)
-            .where(self._live(alive_agent_ids))
+            .where(self._live(live_connection_ids))
         )
         holders: dict[str, list[str]] = {}
         for role_id, agent_id in result.all():
@@ -219,7 +246,7 @@ class RoomRoleStore:
         self,
         session: AsyncSession,
         room_id: str,
-        alive_agent_ids: Collection[str] = (),
+        live_connection_ids: Collection[str],
     ) -> dict[str, list[RoleLease]]:
         """Map role_id → live lease rows for the room.
 
@@ -230,7 +257,7 @@ class RoomRoleStore:
         result = await session.execute(
             select(RoleLease)
             .where(RoleLease.room_id == room_id)
-            .where(self._live(alive_agent_ids))
+            .where(self._live(live_connection_ids))
         )
         leases: dict[str, list[RoleLease]] = {}
         for lease in result.scalars().all():
@@ -242,7 +269,7 @@ class RoomRoleStore:
         session: AsyncSession,
         room_id: str,
         agent_id: str,
-        alive_agent_ids: Collection[str] = (),
+        live_connection_ids: Collection[str],
     ) -> str | None:
         """Return the role NAME the agent currently (live) holds in the room."""
         result = await session.execute(
@@ -250,7 +277,7 @@ class RoomRoleStore:
             .join(RoleLease, RoleLease.role_id == RoomRole.id)
             .where(RoleLease.room_id == room_id)
             .where(RoleLease.agent_id == agent_id)
-            .where(self._live(alive_agent_ids))
+            .where(self._live(live_connection_ids))
         )
         return result.scalar_one_or_none()
 
@@ -260,7 +287,8 @@ class RoomRoleStore:
         role: RoomRole,
         agent_id: str,
         transport_session_id: str | None,
-        alive_agent_ids: Collection[str] = (),
+        session_id: str | None,
+        live_connection_ids: Collection[str],
     ) -> RoleLease:
         """Acquire the lease on `role` for `agent_id`.
 
@@ -268,11 +296,18 @@ class RoomRoleStore:
         live holder. Raises ValueError on conflict. A stale lease (the agent's
         own, or an exclusive role's previous holder) is cleared first so it does
         not block a legitimate (re)acquisition.
+
+        `session_id` names the SDK session taking the role, when the caller
+        identified itself as one. It is what `_live` and `touch_lease` key the
+        holder on, so a lease recorded without it is held by the connection
+        that assumed it and must renew its own heartbeat to stay alive.
         """
         now = datetime.now(UTC)
 
         # Reject if the agent already holds a *live* lease (one lease per session).
-        existing = await self.get_agent_live_lease(session, agent_id, alive_agent_ids)
+        existing = await self.get_agent_live_lease(
+            session, agent_id, live_connection_ids
+        )
         if existing is not None:
             if existing.role_id == role.id:
                 # Idempotent re-assume of the same role: just refresh.
@@ -282,6 +317,7 @@ class RoomRoleStore:
                     .values(
                         last_seen_at=now,
                         transport_session_id=transport_session_id,
+                        session_id=session_id,
                     )
                 )
                 await session.flush()
@@ -291,7 +327,7 @@ class RoomRoleStore:
             )
 
         if role.exclusive:
-            holder = await self.get_live_lease(session, role.id, alive_agent_ids)
+            holder = await self.get_live_lease(session, role.id, live_connection_ids)
             if holder is not None and holder.agent_id != agent_id:
                 raise ValueError(
                     f"Role '{role.name}' is exclusive and currently held by another agent"
@@ -311,6 +347,7 @@ class RoomRoleStore:
             room_id=role.room_id,
             agent_id=agent_id,
             transport_session_id=transport_session_id,
+            session_id=session_id,
             acquired_at=now,
             last_seen_at=now,
         )
@@ -318,16 +355,37 @@ class RoomRoleStore:
         await session.flush()
         return lease
 
-    async def touch_lease(self, session: AsyncSession, agent_id: str) -> bool:
-        """Refresh the agent's lease heartbeat (room-agnostic).
+    async def touch_lease(
+        self, session: AsyncSession, agent_id: str, holder: str | None
+    ) -> bool:
+        """Refresh the lease `holder` holds for `agent_id` (room-agnostic).
+
+        Only the holder may renew. Keying this on the agent alone would let a
+        sibling session — or the agent's controller, which holds no role at all
+        — keep a dead session's seat occupied indefinitely, which is the same
+        defect as an agent-wide liveness arm arriving by a different route.
+
+        `holder` is None when the caller sent no identity, which a client
+        older than the holder-scoped lease can still do. Such a caller may
+        only renew a lease that names no session, because that is the only
+        kind it can have taken: a session-held seat is never renewable by an
+        anonymous beat.
 
         Returns True if a lease row was refreshed, False if the agent holds
-        none. Refreshes regardless of staleness so a brief renew gap does not
-        permanently drop a still-connected session.
+        none or this caller is not its holder. Refreshes regardless of
+        staleness, so a brief renew gap does not permanently drop a live
+        holder.
         """
+        owner = (
+            RoleLease.session_id.is_(None)
+            if holder is None
+            else func.coalesce(RoleLease.session_id, RoleLease.transport_session_id)
+            == holder
+        )
         result = await session.execute(
             update(RoleLease)
             .where(RoleLease.agent_id == agent_id)
+            .where(owner)
             .values(last_seen_at=datetime.now(UTC))
         )
         rowcount = result.rowcount  # type: ignore[attr-defined]

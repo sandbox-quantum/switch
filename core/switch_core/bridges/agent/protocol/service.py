@@ -33,6 +33,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
+    Connection,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -78,6 +79,7 @@ from switch_core.db.models import (
     Task,
     Tool,
     User,
+    require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
@@ -100,6 +102,10 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.sessions.attachments import normalise_mime_type
+from switch_core.sessions.service import (
+    require_recorded_rooms_unmoved,
+    rooms_occupied,
+)
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -1007,6 +1013,23 @@ class ProtocolService:
             raise PermissionError("Agent is not a member of this room")
         return _describe_room(room)
 
+    async def require_recorded_rooms_unmoved(
+        self,
+        agent_id: str,
+        connection: Connection,
+        claiming: frozenset[str],
+        dropping: frozenset[str],
+    ) -> None:
+        """Refuse a room slot move that contradicts what the room is recorded to.
+
+        Read under the caller's hold on the agent's room slots, which is what
+        makes the answer good for the write that follows it.
+        """
+        async with tenant_session(self.session_factory, require_tenant_id()) as db:
+            await require_recorded_rooms_unmoved(
+                db, agent_id, connection, claiming, dropping
+            )
+
     async def list_rooms(
         self, agent_id: str, *, include_archived: bool = False
     ) -> list[RoomDescriptor]:
@@ -1037,7 +1060,7 @@ class ProtocolService:
             # holds at most one role (unique agent_id), so the inverse map is
             # well-defined even for shared roles with several holders.
             live_holders = await self.room_role_store.live_holders_for_room(
-                session, room_id, self.connections.live_agent_ids()
+                session, room_id, self.connections.live_connection_ids()
             )
             roles = await self.room_role_store.list_roles(session, room_id)
             role_name_by_id = {r.id: r.name for r in roles}
@@ -1450,7 +1473,7 @@ class ProtocolService:
                     )
                 role_by_id = {role.id: role.name for role in defined_roles}
                 holders = await self.room_role_store.live_holders_for_room(
-                    session, room_id, self.connections.live_agent_ids()
+                    session, room_id, self.connections.live_connection_ids()
                 )
                 for role_id, agent_ids in holders.items():
                     if role_by_id.get(role_id) not in roles:
@@ -1701,11 +1724,14 @@ class ProtocolService:
 
         Liveness is the same union every other reader takes (CHOO-1857): the
         heartbeat rows for clients still polling, the live connections for
-        clients on the push transport. Checking only the rows made this sweep
-        clear the state of a perfectly live session on every pass — and because
-        the bridge deletes the "working on it…" message on idle and posts a new
-        one on the next update, the visible effect was the status message being
-        deleted and recreated on every refresh rather than edited in place.
+        clients on the push transport, and the binding and host lease for a
+        session Switch has a record of — whose connection says nothing about
+        which room it is in once its siblings share it. Checking only the rows
+        made this sweep clear the state of a perfectly live session on every
+        pass — and because the bridge deletes the "working on it…" message on
+        idle and posts a new one on the next update, the visible effect was the
+        status message being deleted and recreated on every refresh rather than
+        edited in place.
         """
         # This sweep spans every tenant by nature — it is the one place that
         # decides whether *any* stale row anywhere needs resetting — so it
@@ -1721,19 +1747,28 @@ class ProtocolService:
         # the upsert and leaving the tail outside it would put exactly the
         # visible half of the work back on whatever was ambient.
         rows: list[AgentRuntimeState] = []
+        occupied: set[tuple[str, str]] = set()
         for tenant_id in await all_tenant_ids(self.session_factory):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 # Filtered on the row's own tenant, not left to the policy: on an
                 # owner connection no policy narrows this read, and the fan-out
                 # would act on every tenant's rows once per tenant. See
                 # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                rows.extend(
+                active = [
                     row
                     for row in await self.agent_runtime_state_store.get_active(session)
                     if row.tenant_id == tenant_id
-                )
+                ]
+                rows.extend(active)
+                for agent_id in {row.agent_id for row in active}:
+                    occupied.update(
+                        (agent_id, room)
+                        for room in await rooms_occupied(
+                            session, agent_id, self.connections
+                        )
+                    )
         for row in rows:
-            if self.connections.has_session_in(row.agent_id, row.room_id):
+            if (row.agent_id, row.room_id) in occupied:
                 continue
             with tenant_scope(row.tenant_id):
                 await self._sweep_one_runtime_state(row.agent_id, row.room_id)
@@ -2769,12 +2804,12 @@ class ProtocolService:
         could `assume_role` it right now: the caller holds no other live lease,
         and the role is either non-exclusive or not live-held by someone else.
         """
-        alive = self.connections.live_agent_ids()
+        live_connection_ids = self.connections.live_connection_ids()
         leases = await self.room_role_store.live_leases_for_room(
-            session, room_id, alive
+            session, room_id, live_connection_ids
         )
         my_lease = await self.room_role_store.get_agent_live_lease(
-            session, agent_id, alive
+            session, agent_id, live_connection_ids
         )
         # Resolve holder agent ids → names.
         holder_names: dict[str, str] = {}
@@ -2788,32 +2823,46 @@ class ProtocolService:
         # Locate each holder's assuming session (cache room id → name).
         room_name_cache: dict[str, str] = {}
 
-        async def _locate(lease: RoleLease) -> tuple[bool, str | None]:
-            """Return (present_here, session_room_name) for a lease."""
+        async def _holder_room(lease: RoleLease) -> str | None:
+            """The room the lease's holder is attending, if it can be told.
+
+            Asked of the holder in the same order liveness is: the SDK session
+            that took the seat knows its own room, and is the only thing that
+            does once one connection carries several sessions — the
+            connection's rooms are then the union of theirs, and naming one
+            would be a guess. A seat taken without a session falls back to its
+            connection, and to the binding row for callers predating
+            connections.
+            """
+            if lease.session_id is not None:
+                return await self.agent_session_store.get_sdk_session_room(
+                    session, lease.session_id
+                )
             if lease.transport_session_id is None:
-                return False, None
-            # A live connection knows its own rooms and has no binding row; the
-            # row is only there for callers that predate connections.
+                return None
             connection = self.connections.get(lease.transport_session_id)
             if connection is not None:
-                if len(connection.rooms) != 1:
-                    return False, None
-                conn_room_id = next(iter(connection.rooms))
-            else:
-                conn = await self.agent_session_store.get_connected_room(
-                    session, lease.transport_session_id
+                return (
+                    next(iter(connection.rooms)) if len(connection.rooms) == 1 else None
                 )
-                if conn is None:
-                    return False, None
-                conn_room_id = conn[1]
-            if conn_room_id == room_id:
+            conn = await self.agent_session_store.get_connected_room(
+                session, lease.transport_session_id
+            )
+            return conn[1] if conn is not None else None
+
+        async def _locate(lease: RoleLease) -> tuple[bool, str | None]:
+            """Return (present_here, session_room_name) for a lease."""
+            holder_room_id = await _holder_room(lease)
+            if holder_room_id is None:
+                return False, None
+            if holder_room_id == room_id:
                 return True, None
-            if conn_room_id not in room_name_cache:
-                room = await self.room_store.get(session, conn_room_id)
-                room_name_cache[conn_room_id] = (
-                    room.name if room is not None else conn_room_id
+            if holder_room_id not in room_name_cache:
+                room = await self.room_store.get(session, holder_room_id)
+                room_name_cache[holder_room_id] = (
+                    room.name if room is not None else holder_room_id
                 )
-            return False, room_name_cache[conn_room_id]
+            return False, room_name_cache[holder_room_id]
 
         holders_by_role: dict[str, list[dict[str, Any]]] = {}
         for role_id, lease_list in leases.items():
@@ -2897,11 +2946,17 @@ class ProtocolService:
         room_id: str,
         role_name: str,
         transport_session_id: str | None,
+        session_id: str | None,
     ) -> dict[str, Any]:
         """Assume a role, acquiring its lease. Returns the role instruction delta.
 
         Requires room membership. Rejects if the caller already holds a lease,
         or if the role is exclusive and live-held by another agent.
+
+        `session_id` is the caller's SDK session when it named one. It becomes
+        the lease's holder: what keeps it alive, and who may renew it. Without
+        one the holder is `transport_session_id`, which must renew its own
+        heartbeat to keep the seat.
         """
         async with self.session_factory() as session:
             # Membership check (assume is open to any member; exclusivity is the
@@ -2910,13 +2965,18 @@ class ProtocolService:
             role = await self.room_role_store.get_role(session, room_id, role_name)
             if role is None:
                 raise ValueError(f"Role '{role_name}' not found in this room")
-            alive = self.connections.live_agent_ids()
+            live_connection_ids = self.connections.live_connection_ids()
             prior = await self.room_role_store.get_agent_live_lease(
-                session, agent_id, alive
+                session, agent_id, live_connection_ids
             )
             already_held = prior is not None and prior.role_id == role.id
             await self.room_role_store.acquire_lease(
-                session, role, agent_id, transport_session_id, alive
+                session,
+                role,
+                agent_id,
+                transport_session_id,
+                session_id,
+                live_connection_ids,
             )
             await session.commit()
             result = {"role": role.name, "instructions": role.instructions}
@@ -2933,14 +2993,15 @@ class ProtocolService:
         If a live lease is dropped, announce the release in its room.
         """
         async with self.session_factory() as session:
+            live_connection_ids = self.connections.live_connection_ids()
             live = await self.room_role_store.get_agent_live_lease(
-                session, agent_id, self.connections.live_agent_ids()
+                session, agent_id, live_connection_ids
             )
             released_role: str | None = None
             matrix_room_id: str | None = None
             if live is not None:
                 released_role = await self.room_role_store.agent_room_role(
-                    session, live.room_id, agent_id, self.connections.live_agent_ids()
+                    session, live.room_id, agent_id, live_connection_ids
                 )
                 room = await self.room_store.get(session, live.room_id)
                 matrix_room_id = room.matrix_room_id if room is not None else None
@@ -2951,10 +3012,17 @@ class ProtocolService:
                 agent_id, matrix_room_id, f"released the `{released_role}` role"
             )
 
-    async def touch_role_lease(self, agent_id: str) -> bool:
-        """Refresh the caller's role-lease heartbeat. Returns False if none held."""
+    async def touch_role_lease(self, agent_id: str, holder: str | None) -> bool:
+        """Refresh `holder`'s role-lease heartbeat. False if it holds none.
+
+        `holder` is the caller's SDK session id, or the connection it called
+        on when it named no session. A caller that identified itself as
+        neither renews only a lease no session owns.
+        """
         async with self.session_factory() as session:
-            refreshed = await self.room_role_store.touch_lease(session, agent_id)
+            refreshed = await self.room_role_store.touch_lease(
+                session, agent_id, holder
+            )
             await session.commit()
             return refreshed
 

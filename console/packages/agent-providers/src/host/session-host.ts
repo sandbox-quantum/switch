@@ -126,6 +126,15 @@ export class HostedSession {
     this.projector = new ChatProjector(config.session);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
+      // Process cleanup leaves this conversation available for recovery.
+      // An explicit session.stop is handled before shutdown and remains terminal.
+      if (
+        this.shuttingDown &&
+        !this.stopped &&
+        (event.type === 'session.exited' ||
+          (event.type === 'session.state.changed' && event.status === 'stopped'))
+      )
+        return;
       this.eventSerial = this.eventSerial
         .then(() => this.providerEvent(event))
         .catch((error: unknown) => this.fail(error));
@@ -330,6 +339,15 @@ export class HostedSession {
 
   notice(message: string): Promise<void> {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
+  }
+
+  roomDeliveryResumed(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'ROOM_DELIVERY_RESUMED',
+      message: 'Room messages are reaching this session again.',
+    });
   }
 
   roomBacklogDelivered(count: number): Promise<void> {

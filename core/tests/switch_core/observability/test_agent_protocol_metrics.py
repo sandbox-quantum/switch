@@ -97,6 +97,7 @@ def test_expired_connections_are_counted(registry, monkeypatch):
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
 
     # Push the clock past the heartbeat TTL rather than sleeping through it.
@@ -121,6 +122,7 @@ def test_a_quiet_sweep_counts_nothing(registry):
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
 
     assert connections.sweep() == []

@@ -878,3 +878,25 @@ it('reports model discovery failures without losing the usable session', async (
   );
   expect(host.snapshot().session.status).toBe('ready');
 });
+
+it.each(['session.exited', 'session.state.changed'] as const)(
+  'keeps the room claim recoverable when host cleanup emits %s',
+  async (type) => {
+    const { host, adapter, emit } = await start('claude');
+    adapter.stopSession = vi.fn(async () => {
+      if (type === 'session.exited') emit({ type, reason: 'Stopped' });
+      else emit({ type, status: 'stopped' });
+    });
+    await host.command(message('working'));
+    await host.shutdown();
+    expect(adapter.stopSession).toHaveBeenCalled();
+    expect(host.snapshot().session.status).not.toBe('stopped');
+    expect(
+      host
+        .replay(0)
+        .events.some(
+          (event) => event.body.type === 'session.upsert' && event.body.session.status === 'stopped'
+        )
+    ).toBe(false);
+  }
+);

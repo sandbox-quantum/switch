@@ -149,6 +149,9 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
         assert await authority.list_sessions("tenant-b") == []
         operations = [
             lambda: authority.renew("tenant-b", "session-demo", "host-demo", epoch),
+            lambda: authority.renew_reporting_room_work(
+                "tenant-b", "session-demo", "host-demo", epoch
+            ),
             lambda: authority.ingest(
                 "tenant-b",
                 "host-demo",
@@ -178,8 +181,7 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
                 "room",
                 "message",
                 1,
-                0,
-                None,
+                False,
                 EventBuffer(),
             ),
             lambda: authority.bind_connection(
@@ -189,6 +191,9 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
                 epoch,
                 "connection",
                 ConnectionRegistry(),
+            ),
+            lambda: authority.session_binding(
+                "tenant-b", "session-demo", "host-demo", epoch
             ),
             lambda: authority.snapshot("session-demo", "tenant-b"),
             lambda: authority.events("session-demo", "tenant-b", 0),
