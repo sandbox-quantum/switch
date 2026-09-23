@@ -26,7 +26,11 @@ export function ProviderConnectionStatus({
   const query = useQuery({
     queryKey: ['provider-readiness', providerId, sshHost, dir],
     queryFn: () => rpc.agents.providerReadiness({ providerId, sshHost, dir }),
-    staleTime: 30_000,
+    // Signing in is not something that changes minute to minute, and this
+    // component is rendered once per provider tile and once per agent row —
+    // so a short window turned opening a page into a burst of probes, each of
+    // which starts a provider process on the execution machine.
+    staleTime: 5 * 60_000,
     retry: false,
   });
   const copy = useMutation({

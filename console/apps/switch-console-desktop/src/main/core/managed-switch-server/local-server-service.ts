@@ -32,6 +32,7 @@ import { readVersionStatus } from './deployed-version';
 import { LocalServerHost } from './host/local-host';
 import type { ServerHost } from './host/types';
 import { resetStack, startStack, stopStack } from './pipeline';
+import { readDeployedTelemetry } from './telemetry-consent';
 
 /**
  * Supervises the managed local Switch stack via the shared {@link startStack}
@@ -51,6 +52,7 @@ class LocalServerService {
     deployedVersion: null,
     drift: null,
     checkoutBuild: null,
+    deployedTelemetry: null,
     message: null,
     error: null,
   };
@@ -128,6 +130,9 @@ class LocalServerService {
       if (!managed) return;
       if (await isStackRunning(host)) {
         this.setStatus({ phase: 'running', serverId: managed.id, message: null, error: null });
+        // Only for a running stack: a stopped one sends nothing, so it cannot
+        // be out of step with the user's answer.
+        this.setStatus({ deployedTelemetry: await readDeployedTelemetry(host) });
       }
       const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
       // A checkout build is deliberately not a comparable version, so the pin
@@ -191,6 +196,7 @@ class LocalServerService {
           error: null,
           deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
           drift: null,
+          deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
       }
       reportManagedServerStart('local', result);
@@ -215,7 +221,7 @@ class LocalServerService {
     try {
       this.setStatus({ phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host);
-      this.setStatus({ phase: 'stopped', message: null, error: null });
+      this.setStatus({ phase: 'stopped', message: null, error: null, deployedTelemetry: null });
       reportManagedServerOutcome('stop', 'local', 'success');
     } catch (error) {
       this.setStatus({
@@ -247,7 +253,7 @@ class LocalServerService {
       if (server) await deleteAgentsForServer(server.id);
       this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
       await resetStack(host);
-      this.setStatus({ phase: 'stopped', message: null, error: null });
+      this.setStatus({ phase: 'stopped', message: null, error: null, deployedTelemetry: null });
       reportManagedServerOutcome('reset', 'local', 'success');
     } catch (error) {
       this.setStatus({

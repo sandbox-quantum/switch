@@ -241,6 +241,14 @@ services:
       OTLP_HEADERS:
       OTLP_EXPORT_INTERVAL_SECONDS:
       OTLP_TIMEOUT_SECONDS:
+      # Product usage telemetry, forwarded for the same reason and in the same
+      # bare-key form. Switch Console writes TELEMETRY_ENABLED into the `.env`
+      # from the user's "Share usage data" choice, so one consent decision
+      # governs the app and the server it runs for them (CHOO-2890). On a stack
+      # brought up by hand, an operator sets it here the same way.
+      TELEMETRY_ENABLED:
+      TELEMETRY_ENDPOINT:
+      TELEMETRY_SNAPSHOT_INTERVAL_HOURS:
     depends_on:
       postgres:
         condition: service_healthy

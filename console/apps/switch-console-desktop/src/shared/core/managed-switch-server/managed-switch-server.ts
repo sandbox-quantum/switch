@@ -110,6 +110,20 @@ export type CheckoutBuild = {
   enabled: boolean;
 };
 
+/**
+ * Whether the running managed stack is sharing usage data — read off the host,
+ * not assumed from what the Console last wrote (CHOO-2890).
+ *
+ * The Console's "Share usage data" toggle governs the server it manages as well
+ * as itself, but the server reads that choice once, when it starts. So a
+ * running stack can be out of step with the current answer, and the only
+ * honest way to know is to look. `known: false` carries what stopped us: an
+ * unread host must not render as one that agrees.
+ */
+export type DeployedTelemetry =
+  | { known: true; enabled: boolean }
+  | { known: false; reason: string };
+
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
@@ -127,6 +141,10 @@ export type LocalServerStatus = {
    * Null in a released build, and in a dev build that is not running from a
    * checkout — there is nothing to offer then. */
   checkoutBuild: CheckoutBuild | null;
+  /** What the running stack is doing about usage data, or null when no stack is
+   * up — a stopped server reports nothing, so there is nothing to be out of
+   * step with. */
+  deployedTelemetry: DeployedTelemetry | null;
   /** Human-readable current step (e.g. "Pulling images…"), or null. */
   message: string | null;
   /** Populated only when `phase === 'error'`. */
@@ -168,7 +186,14 @@ export function managedServerStoppedReason(serverName: string, phase: LocalServe
  * starting Docker, or explain why an older build refuses to take over a stack
  * that has already migrated forward. */
 export type StartLocalServerResult =
-  | { kind: 'started'; serverId: string }
+  | {
+      kind: 'started';
+      serverId: string;
+      /** The consent this start applied to the stack, so the supervisor can
+       * record what the server is now doing without probing for what it just
+       * wrote. */
+      telemetryEnabled: boolean;
+    }
   | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
   | { kind: 'version-downgrade'; deployed: string; expected: string }
   // The upgrade would have removed the message server before this stack's

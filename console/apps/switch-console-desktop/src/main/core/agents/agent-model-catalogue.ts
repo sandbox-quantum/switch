@@ -48,6 +48,14 @@ export async function getAgentModelCatalogue(params: {
   dir: string;
 }): Promise<AgentModelCatalogue> {
   if (['claude', 'codex', 'cursor', 'antigravity'].includes(params.providerId)) {
+    // Listing Antigravity's models means starting a real ACP session, and
+    // starting one signs in — which opens a browser when there is no cached
+    // token. Opening the agent form is not a request to sign in, so ask the
+    // read-only probe first and stop here when the answer is no.
+    if (params.providerId === 'antigravity') {
+      const probe = await getProviderReadiness(params, false);
+      if (probe.status !== 'authenticated') return { kind: 'unavailable', reason: probe.message };
+    }
     const readiness = await getProviderReadiness(params, true);
     return readiness.models.length
       ? { kind: 'available', models: readiness.models.map((model) => ({ ...model, variants: [] })) }

@@ -319,6 +319,8 @@ class SwitchSetupService {
             process.platform === 'win32'
               ? 'SDK sessions require a POSIX SSH execution host.'
               : 'This provider has no SDK session adapter.',
+          // Neither is an install away — there is nothing to install.
+          blockedKind: 'unsupported',
         });
         continue;
       }
@@ -334,17 +336,19 @@ class SwitchSetupService {
             : cursor
               ? 'Install Cursor CLI on this computer to use ACP sessions.'
               : 'Install Antigravity ACP on this computer to use SDK sessions.',
+          blockedKind: installed ? null : 'not-installed',
         });
         continue;
       }
       const status = await this.getStatus(agentId);
       availability.push(
         status.installed
-          ? { agentId, available: true, blockedReason: null }
+          ? { agentId, available: true, blockedReason: null, blockedKind: null }
           : {
               agentId,
               available: false,
               blockedReason: 'Its Switch connector is not installed on this computer.',
+              blockedKind: 'not-installed',
             }
       );
     }

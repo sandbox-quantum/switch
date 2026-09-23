@@ -31,7 +31,7 @@ function baseArgs(host: ServerHost, globalFlags: string[], extraFiles: string[] 
   ];
 }
 
-async function runCompose(host: ServerHost, args: string[], timeout: number): Promise<string> {
+async function runDocker(host: ServerHost, args: string[], timeout: number): Promise<string> {
   const full = [host.dockerBin, ...args];
   try {
     const { stdout } = await host.ctx.exec(host.dockerBin, args, {
@@ -129,7 +129,7 @@ export function dockerRunOneOff(
  * data volumes (the reset path) — irreversible. */
 export async function composeDown(host: ServerHost, removeVolumes: boolean): Promise<void> {
   log.info(`local-switch-server: docker compose down${removeVolumes ? ' -v' : ''} (${host.label})`);
-  await runCompose(
+  await runDocker(
     host,
     [...baseArgs(host, []), 'down', ...(removeVolumes ? ['-v'] : [])],
     5 * 60 * 1000
@@ -139,7 +139,7 @@ export async function composeDown(host: ServerHost, removeVolumes: boolean): Pro
 /** Service names currently in the `running` state for the managed project. */
 export async function runningServices(host: ServerHost): Promise<string[]> {
   try {
-    const stdout = await runCompose(
+    const stdout = await runDocker(
       host,
       [...baseArgs(host, []), 'ps', '--status', 'running', '--services'],
       60_000
@@ -169,7 +169,7 @@ export async function isStackRunning(host: ServerHost): Promise<boolean> {
  * "nothing is running" from "could not ask".
  */
 export async function runningImages(host: ServerHost): Promise<Map<string, string>> {
-  const stdout = await runCompose(
+  const stdout = await runDocker(
     host,
     [...baseArgs(host, []), 'ps', '--status', 'running', '--format', 'json'],
     60_000
@@ -181,7 +181,50 @@ export async function runningImages(host: ServerHost): Promise<Map<string, strin
   return images;
 }
 
-type ComposePsEntry = { Service?: string; Image?: string };
+/**
+ * Environment of the running container for `service`, keyed by variable name.
+ *
+ * This is what the process is ACTUALLY running with, which the `.env` on disk
+ * is not: that file is rewritten at the top of every start, so between a
+ * rewrite and a `compose up` that failed it describes an intention rather than
+ * a fact. For a setting the user has consented to, the difference is the whole
+ * point of asking.
+ *
+ * Null when the service has no running container. Failures are not swallowed,
+ * for the reason {@link runningImages} does not swallow them: "not running" and
+ * "could not ask" are different answers.
+ */
+export async function runningServiceEnv(
+  host: ServerHost,
+  service: string
+): Promise<Map<string, string> | null> {
+  const listed = await runDocker(
+    host,
+    [...baseArgs(host, []), 'ps', '--status', 'running', '--format', 'json'],
+    60_000
+  );
+  const id = parseComposePs(listed).find((entry) => entry.Service === service)?.ID;
+  if (!id) return null;
+
+  const inspected = await runDocker(
+    host,
+    ['inspect', '--format', '{{json .Config.Env}}', id],
+    60_000
+  );
+  const parsed: unknown = JSON.parse(inspected.trim());
+  if (!Array.isArray(parsed)) {
+    throw new Error(`docker inspect ${service}: .Config.Env was not a list`);
+  }
+  const env = new Map<string, string>();
+  for (const entry of parsed) {
+    if (typeof entry !== 'string') continue;
+    const split = entry.indexOf('=');
+    if (split > 0) env.set(entry.slice(0, split), entry.slice(split + 1));
+  }
+  return env;
+}
+
+type ComposePsEntry = { Service?: string; Image?: string; ID?: string };
 
 /** Compose emits `ps --format json` as a JSON array on some versions and as
  * one JSON object per line on others; accept both. */

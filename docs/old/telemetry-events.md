@@ -504,6 +504,16 @@ having been made, and re-read on every event so revoking takes effect
 immediately. **The server takes the same position**: telemetry is off unless
 switched on, it is one setting, and when it is off no request is made at all.
 
+Who sets that one setting depends on who deployed the server. On a stack an
+operator brought up themselves, they set `TELEMETRY_ENABLED` — in the `.env` for
+the standalone compose file, or in the chart's values. On a stack **Switch
+Console runs for a user**, the Console sets it from that user's "Share usage
+data" answer at every start, in both directions, so the person running the
+server and the person answering are the same person and answer once
+(`CHOO-2890`). Because the gate is read at boot, a change to the answer reaches
+a running server only when it restarts; the Console says so on the server's page
+and offers the restart rather than taking it.
+
 This interacts with the milestone events in a way worth stating: a deployment
 that enables telemetry three months in has already passed most of its
 activation funnel. Milestones are emitted only when they actually occur, never

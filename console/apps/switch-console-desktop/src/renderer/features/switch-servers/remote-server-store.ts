@@ -4,6 +4,7 @@ import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reac
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
+  DeployedTelemetry,
   DockerAvailability,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -31,6 +32,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     // A remote stack always runs the pinned released images — the dev checkout
     // build is a local-only option.
     checkoutBuild: null,
+    deployedTelemetry: null,
     message: null,
     error: null,
   };
@@ -125,6 +127,12 @@ export class RemoteServerStore {
   /** Set when the host's switch-core differs from the version this build pins. */
   driftFor(sshHost: string): SwitchVersionDrift | null {
     return this.statusFor(sshHost).drift;
+  }
+
+  /** What the host's running stack is doing about usage data, or null when
+   * nothing is up there to be doing anything. */
+  deployedTelemetryFor(sshHost: string): DeployedTelemetry | null {
+    return this.statusFor(sshHost).deployedTelemetry;
   }
 
   logsFor(sshHost: string): string[] {
