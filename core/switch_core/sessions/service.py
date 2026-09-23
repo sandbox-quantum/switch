@@ -23,6 +23,7 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
+    Reader,
     Unread,
 )
 from switch_core.bridges.agent.protocol.types import MessagePayload
@@ -2490,6 +2491,182 @@ class SessionAuthority:
                 ),
             )
             return True
+
+    async def room_associations(self, user_id: str) -> dict[str, str]:
+        """Last recorded room for display only, never used to route deliveries."""
+        last_room = (
+            select(SdkSessionEvent.event["body"]["session"]["roomIds"][0].astext)
+            .where(
+                SdkSessionEvent.tenant_id == require_tenant_id(),
+                SdkSessionEvent.session_id == SdkSession.id,
+                func.jsonb_array_length(
+                    SdkSessionEvent.event["body"]["session"]["roomIds"]
+                )
+                > 0,
+            )
+            .order_by(SdkSessionEvent.sequence.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            rows = await db.execute(
+                select(
+                    SdkSession.id,
+                    func.coalesce(
+                        SdkSession.snapshot["session"]["roomIds"][0].astext, last_room
+                    ),
+                )
+                .join(
+                    Agent,
+                    (Agent.id == SdkSession.agent_id)
+                    & (Agent.tenant_id == SdkSession.tenant_id),
+                )
+                .where(
+                    SdkSession.tenant_id == require_tenant_id(),
+                    Agent.owner_id == user_id,
+                )
+            )
+            return {
+                session_id: room_id
+                for session_id, room_id in rows
+                if room_id is not None
+            }
+
+    async def live_room_connections(
+        self, user_id: str, connections: ConnectionRegistry
+    ) -> dict[str, list[str]]:
+        """Only the requesting owner's agents, including agents with no sessions."""
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            agents = await db.scalars(
+                select(Agent.id).where(
+                    Agent.tenant_id == require_tenant_id(), Agent.owner_id == user_id
+                )
+            )
+            return {
+                agent_id: [
+                    connection.id for connection in connections.for_agent(agent_id)
+                ]
+                for agent_id in agents
+            }
+
+    async def reconnect_room(
+        self,
+        session_id: str,
+        user_id: str,
+        epoch: str,
+        room_id: str,
+        expected_owner: str | None,
+        connections: ConnectionRegistry,
+        buffer: EventBuffer,
+    ) -> Snapshot:
+        # Establish the agent before taking its slot lock. Recheck permission
+        # and epoch under the write locks; the preliminary read grants nothing.
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            row = await self._locked(db, session_id)
+            await self._owner(db, row, user_id)
+            agent_id = row.agent_id
+        async with connections.slots(agent_id):
+            async with (
+                tenant_session(self._sessions, require_tenant_id()) as db,
+                db.begin(),
+            ):
+                await self._lock_agent(db, agent_id)
+                rows = list(
+                    await db.scalars(
+                        select(SdkSession)
+                        .where(
+                            SdkSession.tenant_id == require_tenant_id(),
+                            SdkSession.agent_id == agent_id,
+                        )
+                        .order_by(SdkSession.id)
+                        .with_for_update()
+                    )
+                )
+                row = next(row for row in rows if row.id == session_id)
+                await self._owner(db, row, user_id)
+                if row.epoch != epoch:
+                    raise SessionError(
+                        "STALE_EPOCH",
+                        "The session restarted. Refresh before reconnecting.",
+                    )
+                now = await _now(db)
+                if (
+                    _stored_snapshot(row).session.retired
+                    or _session_is_over(row)
+                    or not _host_holds(row, now)
+                ):
+                    raise SessionError(
+                        "SESSION_OFFLINE",
+                        "Start this session before reconnecting its room.",
+                    )
+                connection = (
+                    connections.get(row.connection_id) if row.connection_id else None
+                )
+                if (
+                    connection is None
+                    or connection.agent_id != agent_id
+                    or not connection.is_alive(time.monotonic())
+                ):
+                    raise SessionError(
+                        "CONNECTION_OFFLINE",
+                        "Restore the agent's room connection first.",
+                    )
+                if (
+                    await db.get(
+                        ClientRoom, (await self._client_id(db, agent_id), room_id)
+                    )
+                    is None
+                ):
+                    raise SessionError(
+                        "NOT_AUTHORIZED", "The agent is not a member of this room."
+                    )
+                snapshot = _stored_snapshot(row)
+                if room_id in snapshot.session.room_ids:
+                    return snapshot
+                holders = _room_claimants(rows, room_id, now)[1]
+                owner = holders[0].id if holders else None
+                if owner != expected_owner:
+                    raise SessionError(
+                        "ROOM_OWNER_CHANGED",
+                        "Room ownership changed. Refresh and confirm again.",
+                    )
+                if await self._grant_outstanding(db, agent_id, room_id, now):
+                    raise SessionError(
+                        "ROOM_STARTING",
+                        "A session is starting for this room. Wait for it before reconnecting.",
+                    )
+                claimant = connections.claimant_of(agent_id, room_id)
+                if (
+                    claimant is not None
+                    and claimant.id != connection.id
+                    and not _spoken_for(rows, claimant, room_id)
+                ):
+                    raise SessionError(
+                        "ROOM_OWNER_CHANGED",
+                        "Another connection holds this room. Refresh before reconnecting.",
+                    )
+                vacated = snapshot.session.room_ids
+                await self._evict_siblings(db, agent_id, session_id, room_id)
+                await self._append(
+                    db,
+                    row,
+                    SessionUpsert(
+                        type="session.upsert",
+                        session=snapshot.session.model_copy(
+                            update={"room_ids": [room_id]}
+                        ),
+                    ),
+                )
+                result = _stored_snapshot(row)
+            # The slot lock spans commit and routing, just as connect_to_room does.
+            connections.claim_room(connection, room_id, takeover=True)
+            for previous in vacated:
+                if previous != room_id:
+                    connections.release_room(connection, previous)
+            buffer.hand_counting_to(
+                agent_id, Reader(id=session_id, is_session=True), room_id
+            )
+            return result
 
     async def bind_room(
         self, agent_id: str, session_id: str, host_id: str, epoch: str, room_id: str

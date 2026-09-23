@@ -34,6 +34,7 @@ const {
   fetchMe,
   ownsOwnerAddressedAgent,
   registerKnownAgent,
+  reconnectSdkRoom,
   updateBridge,
 } = await import('./gateway-client');
 
@@ -757,4 +758,28 @@ describe('deleteBridge', () => {
 
     await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
   });
+});
+
+describe('reconnectSdkRoom', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+    fetchMock.mockResolvedValue(jsonResponse({ session: { roomIds: ['room-demo'] } }) as never);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([null, 'previous-session'])(
+    'sends an object with expected owner %s, serialized once',
+    async (expectedOwner) => {
+      const body = { epoch: 'epoch-demo', room_id: 'room-demo', expected_owner: expectedOwner };
+      await reconnectSdkRoom(SERVER, 'session/demo', body);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe('https://switch.example.com/gateway/sessions/session%2Fdemo/reconnect-room');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+      expect(JSON.parse(String(init.body))).toEqual(body);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  );
 });

@@ -286,3 +286,28 @@ export async function disposeLocalHosts(): Promise<void> {
   consoleLifetime.abort();
   await Promise.allSettled([...watchers.values(), ...sessions.values()].map((entry) => entry.done));
 }
+
+/** Read local watcher state without spawning a diagnostic process for each sidebar row. */
+export async function localWatcherStatus(identity: string) {
+  const root = localWatcherRoot(identity);
+  const read = async (path: string): Promise<unknown> => {
+    try {
+      return JSON.parse(await readFile(path, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  };
+  const failure = await readLocalHostFailure(root);
+  return {
+    running: watchers.has(root),
+    takenOver: await read(join(root, 'taken-over.json')),
+    failure:
+      failure &&
+      typeof failure === 'object' &&
+      'message' in failure &&
+      typeof failure.message === 'string'
+        ? failure.message
+        : null,
+  };
+}

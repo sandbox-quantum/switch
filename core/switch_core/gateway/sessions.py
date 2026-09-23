@@ -7,12 +7,17 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.db.models import User
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
+from switch_core.gateway.dependencies import (
+    get_collab_lifecycle,
+    get_protocol,
+    get_session_factory,
+)
 from switch_core.sessions.attachments import MAX_ATTACHMENT_BYTES
 from switch_core.sessions.contract import (
     Attachment,
@@ -47,6 +52,48 @@ class SubmitCommand(BaseModel):
 class RetireSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
     epoch: str = Field(min_length=1)
+
+
+@router.get("/room-health")
+async def room_health(
+    user: CurrentUser,
+    factory: Factory,
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict:
+    authority = SessionAuthority(factory)
+    return {
+        "connections": await authority.live_room_connections(
+            user.id, protocol.connections
+        ),
+        "sessions": await authority.list_sessions(user.id),
+        "associations": await authority.room_associations(user.id),
+    }
+
+
+class ReconnectRoom(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    epoch: str = Field(min_length=1)
+    room_id: str = Field(min_length=1)
+    expected_owner: str | None
+
+
+@router.post("/{session_id}/reconnect-room")
+async def reconnect_room(
+    session_id: str,
+    body: ReconnectRoom,
+    user: CurrentUser,
+    factory: Factory,
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> Snapshot:
+    return await SessionAuthority(factory).reconnect_room(
+        session_id,
+        user.id,
+        body.epoch,
+        body.room_id,
+        body.expected_owner,
+        protocol.connections,
+        protocol.event_buffer,
+    )
 
 
 @router.post("/{session_id}/retire")

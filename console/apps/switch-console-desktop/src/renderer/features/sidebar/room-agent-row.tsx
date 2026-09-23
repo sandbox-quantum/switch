@@ -2,6 +2,7 @@ import { Bot, ChevronRight, DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
+import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
@@ -117,7 +118,10 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                 className="-mx-[1.5px] bg-transparent"
               />
             </span>
-            <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
+            <SidebarMenuAction
+              aria-label={`Open agent ${label}`}
+              className="flex-initial truncate select-none"
+            >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{label}</span>
                 {/* Mirrors the agent-grouped row: the same agent must not carry
@@ -138,6 +142,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                 />
               </span>
             </SidebarMenuAction>
+            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger

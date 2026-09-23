@@ -12,6 +12,7 @@ import {
   hasDiscardableSessionError,
   hasSessionError,
 } from '@renderer/features/sessions/stores/session-selectors';
+import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
@@ -119,7 +120,10 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                 className="-mx-[1.5px] bg-transparent"
               />
             </span>
-            <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
+            <SidebarMenuAction
+              aria-label={`Open agent ${label}`}
+              className="flex-initial truncate select-none"
+            >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{label}</span>
                 {/* What the agent runs on. The avatar took the leading slot, so
@@ -183,6 +187,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                   ))}
               </span>
             </SidebarMenuAction>
+            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger

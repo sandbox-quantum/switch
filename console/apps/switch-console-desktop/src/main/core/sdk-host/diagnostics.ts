@@ -74,3 +74,10 @@ export async function sharedAgentLogs(agentId: string): Promise<string> {
   const result = await ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'logs']);
   return redactSecrets(z.string().parse(JSON.parse(result.stdout)));
 }
+
+/** A lightweight host-only check. The shared health poll reads server sessions once per server. */
+export async function remoteWatcherStatus(agentId: string) {
+  const { agent, ctx } = await agentHost(agentId);
+  const host = await ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'status']);
+  return watcherSchema.array().parse(JSON.parse(host.stdout))[0] ?? null;
+}

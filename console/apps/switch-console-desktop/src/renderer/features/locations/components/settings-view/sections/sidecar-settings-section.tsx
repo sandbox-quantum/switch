@@ -1,12 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Loader2, Power, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import {
+  useAgentConnection,
+  roomHealthKey,
+} from '@renderer/features/switch-rooms/connection-health';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
+import {
+  connectionLabels,
+  connectionNeedsAttention,
+} from '@shared/core/switch-rooms/connection-health';
 
 export function SidecarSettingsSection({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient();
+  const agent = agentsStore.agentById(agentId);
+  const connection = useAgentConnection(agent);
   const queryKey = ['shared-host', agentId];
   const [showLogs, setShowLogs] = useState(false);
   const query = useQuery({
@@ -25,6 +36,7 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
     onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({ queryKey: roomHealthKey(agent?.serverId ?? null) }),
         queryClient.invalidateQueries({ queryKey: ['agent-auto-session', agentId] }),
         queryClient.invalidateQueries({ queryKey: ['shared-host-logs', agentId] }),
       ]);
@@ -42,17 +54,7 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
   // Standing down is a decision, not a fault, and reporting it as one would send
   // people looking through the log for a crash that never happened.
   const takenOver = !running && watcher?.takenOver ? watcher.takenOver : null;
-  const status = running
-    ? differentBuild
-      ? 'Different build'
-      : watcher?.buildHash
-        ? 'Up to date'
-        : 'Running'
-    : takenOver
-      ? 'Taken over'
-      : enabled
-        ? 'Unavailable'
-        : 'Stopped';
+  const status = connection.state ? connectionLabels[connection.state] : 'Checking connection…';
 
   return (
     <div className="flex flex-col gap-4">
@@ -88,7 +90,13 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
       {data && (
         <>
           <div className="flex flex-wrap items-center gap-3 rounded-md bg-foreground/5 px-3 py-2 text-sm">
-            <span className={enabled && !running && !takenOver ? 'text-destructive' : ''}>
+            <span
+              className={
+                connection.state && connectionNeedsAttention(connection.state)
+                  ? 'text-destructive'
+                  : ''
+              }
+            >
               {status}
             </span>
             {watcher?.buildHash && (
@@ -152,16 +160,22 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               </Button>
             </div>
           )}
-          {enabled && !running && !takenOver && (
+          {connection.state === 'failed' && (
             <p role="alert" className="text-sm text-destructive">
-              This agent is not holding its room connection, so messages addressed to it go
-              unanswered.{' '}
+              This agent’s room connection is unavailable, so its sessions may not receive room
+              messages.{' '}
               {deployed
                 ? 'Inspect the log before restarting.'
                 : 'Inspect the log below, then restart the room watcher.'}
             </p>
           )}
-          {watcher?.failure && (
+          {connection.state === 'unknown' && (
+            <p role="alert" className="text-sm text-destructive">
+              Could not verify the room connection.{' '}
+              {connection.health?.detail ?? String(connection.query.error ?? '')}
+            </p>
+          )}
+          {watcher?.failure && connection.state === 'failed' && (
             <p role="alert" className="text-sm break-words text-destructive">
               {watcher.failure}
             </p>
