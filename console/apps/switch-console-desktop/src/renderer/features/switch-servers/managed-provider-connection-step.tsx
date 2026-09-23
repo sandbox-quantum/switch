@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
+import { CommandRow } from '@renderer/features/settings/agents-page/install-command-row';
 import { rpc } from '@renderer/lib/ipc';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
@@ -209,15 +210,18 @@ function OtherProviderConnectionStep({
                   {provider === 'codex' ? ' with ChatGPT' : ''} on this computer. Switch checks for
                   your sign-in automatically.
                 </p>
-                <code className="bg-background-primary block rounded border px-3 py-2 font-mono">
-                  {info.command}
-                </code>
+                <CommandRow command={info.command} action={null} />
                 <p className="font-mono text-xs break-all">{localSignIn.data?.path ?? info.file}</p>
                 {provider === 'codex' && (
-                  <p className="text-xs text-foreground-muted">
-                    If Codex uses your system keychain, sign in with file storage using{' '}
-                    <code>codex -c cli_auth_credentials_store='"file"' login</code>.
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-xs text-foreground-muted">
+                      If Codex uses your system keychain, sign in with file storage:
+                    </p>
+                    <CommandRow
+                      command={`codex -c cli_auth_credentials_store='"file"' login`}
+                      action={null}
+                    />
+                  </div>
                 )}
                 {provider === 'antigravity' && (
                   <p>
