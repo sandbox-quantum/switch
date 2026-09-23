@@ -68,6 +68,7 @@ def _probes(**overrides) -> RuntimeProbes:
     defaults = dict(
         listener_connected=lambda: True,
         bridges_running=lambda: 2,
+        bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
         bridges_configured=lambda: 2,
         clients_running=lambda: 5,
         connectors_running=lambda: 2,
@@ -164,9 +165,17 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
         assert values["switch.agents.connected"] == 3.0
         assert values["switch.clients.running"] == 5.0
         assert values["switch.connectors.running"] == 2.0
-        assert values["switch.bridges.running"] == 2.0
         assert values["switch.db.pool.in_use"] == 4.0
         assert values["switch.db.pool.size"] == 30.0
+
+        # Bridges are reported per platform, so there is no unattributed
+        # series to pick up above. Which platform is down is the first thing
+        # anyone asks, and a bare total cannot answer it.
+        running = {
+            point.attributes["platform"]: point.value
+            for point in payloads["switch.bridges.running"].numbers
+        }
+        assert running == {"slack": 1.0, "mattermost": 1.0}
     finally:
         await observability.aclose()
 

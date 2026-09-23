@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
 from switch_core.db.session_scope import tenant_session
+from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
 from switch_core.observability.catalogue import (
@@ -287,22 +288,26 @@ class PostgresTransport:
             self._delivering = True
             try:
                 for room_id in rooms:
-                    try:
-                        await self._drain_room(room_id)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        # One room's failure is not the other rooms' problem,
-                        # and this loop is the only delivery this client has.
-                        # Counted as well as logged: swallowing it is what
-                        # makes a stalled room invisible.
-                        metrics().increment(DELIVERY_FAILURES, {})
-                        logger.error(
-                            "Delivery failed for client %s in room %s",
-                            self.user_id,
-                            room_id,
-                            exc_info=True,
-                        )
+                    # Bound around the drain rather than named in the message
+                    # below, so every line this room's delivery produces —
+                    # including the handlers' own — can be filtered to it.
+                    with log_context(room_id=room_id):
+                        try:
+                            await self._drain_room(room_id)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # One room's failure is not the other rooms'
+                            # problem, and this loop is the only delivery this
+                            # client has. Counted as well as logged: swallowing
+                            # it is what makes a stalled room invisible.
+                            metrics().increment(DELIVERY_FAILURES, {})
+                            logger.error(
+                                "Delivery failed for client %s in room %s",
+                                self.user_id,
+                                room_id,
+                                exc_info=True,
+                            )
             finally:
                 self._delivering = False
 

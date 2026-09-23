@@ -68,6 +68,31 @@ DEFAULT_LATENCY_BOUNDS_MS: tuple[float, ...] = (
     10000.0,
 )
 
+# For what a single database round trip costs, which is a different scale
+# entirely: measured against Postgres 16 on this schema, an ordinary statement
+# is 0.1–0.2 ms, so every one of it lands in the first bucket above and a p95
+# reads "≤5 ms" until something is already badly wrong. Bounds that cannot
+# resolve the normal case cannot show it degrading, which is the whole job.
+# Extends to the same ceiling, because a statement that takes ten seconds is
+# the thing you most want to see.
+SUB_MILLISECOND_BOUNDS_MS: tuple[float, ...] = (
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    25.0,
+    50.0,
+    100.0,
+    250.0,
+    500.0,
+    1000.0,
+    5000.0,
+    10000.0,
+)
+
 AttributeValue = str | bool | int | float
 
 

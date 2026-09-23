@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from switch_core.artifacts import contract_range
+from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_EXPIRED
 from switch_core.observability.metrics import metrics
 
@@ -380,14 +381,21 @@ class ConnectionRegistry:
         # (beats=0 — it is not running the heartbeat, or cannot reach us) versus
         # one that beat and then stopped (beats>0 — it went away, or the server
         # was too busy to process ticks).
-        logger.info(
-            "[CONN] closed agent=%s connection=%s reason=%s beats=%d last_beat_age=%.1fs",
-            conn.agent_id,
-            connection_id,
-            reason,
-            conn.beats,
-            time.monotonic() - conn.last_beat,
-        )
+        # `agent_id` as a field, not only in the message: a connection expiring
+        # is swept by the registry's own reaper rather than by anything the
+        # agent called, so there is no request context for it to inherit — and
+        # this is the line somebody goes looking for when one agent will not
+        # stay connected.
+        with log_context(agent_id=conn.agent_id):
+            logger.info(
+                "[CONN] closed agent=%s connection=%s reason=%s beats=%d "
+                "last_beat_age=%.1fs",
+                conn.agent_id,
+                connection_id,
+                reason,
+                conn.beats,
+                time.monotonic() - conn.last_beat,
+            )
         # After the bookkeeping and the log, so an observer sees the closed
         # state. Guarded because the registry's own contract — the connection
         # is closed and the caller gets it back — must not depend on whoever

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
 import httpx
@@ -76,6 +76,7 @@ class RuntimeProbes:
 
     listener_connected: Callable[[], bool]
     bridges_running: Callable[[], int]
+    bridges_running_by_platform: Callable[[], Mapping[str, int]]
     bridges_configured: Callable[[], int]
     clients_running: Callable[[], int]
     connectors_running: Callable[[], int]
@@ -119,7 +120,8 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
     def readings() -> Iterator[GaugeReading]:
         yield GaugeReading(AGENTS_CONNECTED, float(probes.agents_connected()), {})
         yield GaugeReading(CLIENTS_RUNNING, float(probes.clients_running()), {})
-        yield GaugeReading(BRIDGES_RUNNING, float(probes.bridges_running()), {})
+        for platform, running in probes.bridges_running_by_platform().items():
+            yield GaugeReading(BRIDGES_RUNNING, float(running), {"platform": platform})
         yield GaugeReading(CONNECTORS_RUNNING, float(probes.connectors_running()), {})
 
         stats = probes.pool_stats()

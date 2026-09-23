@@ -26,6 +26,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Client, Tenant
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.logging_context import current_log_context, log_context
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 
@@ -39,6 +40,7 @@ class _RecordingClient:
 
     async def start(self) -> None:
         self._seen.append(current_tenant_id())
+        self.room_seen = current_log_context().room_id
 
     async def stop(self) -> None:
         return None
@@ -75,6 +77,21 @@ async def test_a_client_task_runs_with_no_tenant_bound(
         "the client's task kept the tenant of whatever created it; a puppet "
         "reused in a second room would act as the first room's tenant"
     )
+
+
+async def test_a_client_task_does_not_keep_the_room_it_was_created_in(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The bridge's inbound handler binds its room as log context, and a
+    puppet minted there must not log as that room for the rest of its life."""
+    client = _RecordingClient([])
+    service = _service(session_factory, MagicMock())
+
+    with log_context(room_id="room-where-it-was-minted"):
+        service._start_task("client-1", client)  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+
+    assert client.room_seen is None
 
 
 @pytest.mark.no_ambient_tenant

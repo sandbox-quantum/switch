@@ -159,7 +159,25 @@ describe('latching — the difference between a one-shot and a standing job', ()
     });
     await catchUpConnectorsToCurrentVersion();
 
-    expect(update).toHaveBeenCalledWith('codex');
+    expect(update).toHaveBeenCalledWith('codex', 'catch_up');
     expect(kvSet).toHaveBeenCalledWith('state', { generation: 0, attempts: 1 });
+  });
+
+  /**
+   * This is not somebody pressing Update.
+   *
+   * It goes through the same service method, unattended, at launch, across every
+   * installed connector at once. Reported as `user` it would put its latencies
+   * and its failures into the numbers that answer "how well does the Update
+   * button work" — and it is the sweep, not the button, that runs on a machine
+   * nobody is watching.
+   */
+  it('reports its updates as the catch-up rather than as the Update button', async () => {
+    checkForUpdates.mockImplementation((id: string) => Promise.resolve(behind(id)));
+
+    await catchUpConnectorsToCurrentVersion();
+
+    expect(update.mock.calls.every(([, trigger]) => trigger === 'catch_up')).toBe(true);
+    expect(update).not.toHaveBeenCalledWith(expect.anything(), 'user');
   });
 });
