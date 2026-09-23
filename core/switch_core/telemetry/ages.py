@@ -1,17 +1,13 @@
 """How old a row is, for the events that report it.
 
-One implementation, because there were eight. Every deletion event carries the
-lifespan of what was deleted — deleted after an hour and after a year mean
-opposite things — and each of the modules that emits one had grown its own
-private copy. They were identical in arithmetic and disagreed on the one case
-that matters: what to report when the timestamp cannot be read. Half said
-``-1`` and half said ``0.0``, and two of them sat eight lines apart in the same
-file.
+Every deletion event carries the lifespan of what was deleted — deleted after
+an hour and after a year mean opposite things — and all of them use this one
+helper, so they agree on what to report when the timestamp cannot be read.
 
-``0.0`` is the answer to reject. It is a real value a real row can have, so it
-makes "we could not tell" indistinguishable from "created a moment ago" — and
-the second is the far more common reading, which is how a lookup failure gets
-counted as a burst of churn. ``-1`` is a number no age can take, so a reader
+That value is ``-1``, not ``0.0``. ``0.0`` is a real value a real row can
+have, so it makes "we could not tell" indistinguishable from "created a moment
+ago" — and the second is the far more common reading, which is how a lookup
+failure gets counted as a burst of churn. ``-1`` is a number no age can take, so a reader
 that does not know about it still cannot mistake it for data.
 
 None of this is reachable today: every ``created_at`` in the schema is

@@ -41,7 +41,7 @@ from switch_core.telemetry.deployment import (
     milestone_claimed,
     seconds_since_install,
 )
-from switch_core.telemetry.snapshot import normalise_platform
+from switch_core.telemetry.snapshot import PLATFORMS, normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
@@ -176,10 +176,9 @@ def _slack_failure_reason(exc: SlackApiError) -> str:
     arrive as the same `SlackApiError`, so the code inside the response — not
     the exception's type — is what tells them apart.
 
-    Getting this right is the point of the whole rewrite: a revoked or rotated
-    bot token is the most common bridge failure in the field, and reporting it
-    as `platform_error` sends an operator to check Slack's status page instead
-    of their own token.
+    A revoked or rotated bot token is the most common bridge failure in the
+    field, and reporting it as `platform_error` would send an operator to
+    Slack's status page instead of their own token.
     """
     # `.response` is not always a mapping. On the async client slack_sdk
     # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
@@ -747,7 +746,14 @@ class CollaborationBridgeLifecycleService:
                 bridge = await self._bridge_store.get(session, bridge_id)
             if bridge is None:
                 raise ValueError(f"Bridge not found: {bridge_id}")
-            platform = normalise_platform(bridge.type)
+            # A type the catalogue has no name for is still a bridge on some
+            # platform, so it is `unknown` here, not the `none` the normaliser
+            # gives it.
+            platform = (
+                normalise_platform(bridge.type)
+                if bridge.type in PLATFORMS
+                else "unknown"
+            )
 
             adapter_cls = self._adapter_registry.get(bridge.type)
             config_cls = self._config_registry.get(bridge.type)

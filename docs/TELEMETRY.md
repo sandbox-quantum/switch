@@ -151,9 +151,9 @@ unattended at launch — without the field its latencies and its failures would 
 read as ones somebody sat through.
 
 `duration_ms` is how long the operation took, in whole milliseconds, measured on
-a monotonic clock around the operation itself. It is the only field in the
-catalogue that is not drawn from a fixed set of values, so to be explicit: it is
-an elapsed time and nothing else. It names no path, host, command or repository,
+a monotonic clock around the operation itself. Like `agent_count` and
+`result_count` it is a number rather than a value from a fixed set, so to be
+explicit: it is an elapsed time and nothing else. It names no path, host, command or repository,
 and at this resolution it does not distinguish one machine from another.
 
 **Servers and sign-in**

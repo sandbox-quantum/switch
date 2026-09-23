@@ -56,7 +56,9 @@ def _operation(statement: str) -> str:
     not worth a series of its own, and anything cleverer would have to parse
     SQL to find out — on the hot path, for a label.
     """
-    stripped = statement.lstrip()
+    # Sliced before stripping: this runs on every statement, and a batched
+    # insert can be long.
+    stripped = statement[:128].lstrip()
     head = stripped[:16].split(None, 1)
     if not head:
         return "other"

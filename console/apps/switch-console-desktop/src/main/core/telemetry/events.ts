@@ -201,7 +201,8 @@ export type TelemetryConnectorUpdateTrigger = 'user' | 'catch_up';
 /**
  * How long an operation took, in whole milliseconds, on a monotonic clock.
  *
- * The one dimension here not drawn from a fixed set, so how to read it matters.
+ * A number rather than a value from a fixed set, like `agent_count` and
+ * `result_count`, so how to read it matters.
  * Nothing is bucketed and nothing is clamped: take percentiles, not means —
  * some of these legitimately include a password prompt left on screen.
  *
@@ -565,10 +566,8 @@ export type TelemetryEventMap = {
    * getting slower is the kind of regression nobody reports because it never
    * fails.
    *
-   * Known gap: the dependency manager returns a result rather than throwing, but
-   * if it ever does throw the controller reports nothing, so the denominator is
-   * attempts that got far enough to produce one. The connector events close this
-   * with an `error` code; this path has no equivalent yet.
+   * A dependency manager that throws instead of returning a result is reported
+   * as `error` by `reportedCliAction`, so every attempt is in the denominator.
    */
   agent_cli_action: {
     agent_type: TelemetryAgentType;

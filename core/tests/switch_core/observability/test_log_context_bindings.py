@@ -16,7 +16,16 @@ from typing import Any
 
 import pytest
 
-from switch_core.logging_context import LogContextFilter
+from switch_core.bridges.agent.protocol.connections import (
+    PROTOCOL_VERSION,
+    ClientDeclaration,
+    ConnectionRegistry,
+)
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.logging_context import LogContextFilter, current_log_context
+from switch_core.transport.postgres import PostgresTransport
 
 
 class _Capture(logging.Handler):
@@ -53,8 +62,6 @@ class TestTheDeliveryLoopBindsItsRoom:
     a stalled room produces."""
 
     async def test_a_failing_drain_carries_the_room(self, captured: _Capture) -> None:
-        from switch_core.transport.postgres import PostgresTransport
-
         transport = object.__new__(PostgresTransport)
         transport.user_id = "@someone:test"  # type: ignore[attr-defined]
         transport._wake = asyncio.Event()  # type: ignore[attr-defined]
@@ -83,9 +90,6 @@ class TestTheDeliveryLoopBindsItsRoom:
     ) -> None:
         """A `ContextVar` set and never reset would leak one room's id onto
         every later line in the same task."""
-        from switch_core.logging_context import current_log_context
-        from switch_core.transport.postgres import PostgresTransport
-
         transport = object.__new__(PostgresTransport)
         transport.user_id = "@someone:test"  # type: ignore[attr-defined]
         transport._wake = asyncio.Event()  # type: ignore[attr-defined]
@@ -114,12 +118,6 @@ class TestTheProtocolBindsItsAgent:
     connected or keeps missing events."""
 
     def test_a_closing_connection_carries_the_agent(self, captured: _Capture) -> None:
-        from switch_core.bridges.agent.protocol.connections import (
-            PROTOCOL_VERSION,
-            ClientDeclaration,
-            ConnectionRegistry,
-        )
-
         registry = ConnectionRegistry()
         registry.open(
             agent_id="agent-42",
@@ -138,9 +136,6 @@ class TestTheProtocolBindsItsAgent:
         assert all(getattr(r, "agent_id", None) == "agent-42" for r in closed)
 
     def test_an_overflowing_buffer_carries_the_agent(self, captured: _Capture) -> None:
-        from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-        from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-
         buffer = EventBuffer(max_events_per_agent=2, retention_seconds=3600)
         for index in range(5):
             buffer.enqueue(
@@ -218,8 +213,6 @@ def _bridge_core(bridge_type: str, *, channel_to_room: dict[str, list[str]]):
     Through `__new__` for the reason the outbound one is: the real constructor
     wants an adapter and six stores, none of which this path touches.
     """
-    from switch_core.bridges.collaboration.bridge_core import BridgeCore
-
     core = object.__new__(BridgeCore)
     core._bridge_type = bridge_type  # type: ignore[attr-defined]
     core._bridge_tenant_id = "tenant-1"  # type: ignore[attr-defined]

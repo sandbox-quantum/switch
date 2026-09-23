@@ -27,6 +27,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.lifecycle_service import (
@@ -240,6 +241,37 @@ class TestEachStartFailurePointReportsAndReraises:
         assert events == [
             {
                 "bridge_platform": "mattermost",
+                "outcome": "failure",
+                "failure_reason": "config_invalid",
+            }
+        ]
+
+    async def test_a_bridge_type_the_catalogue_has_no_name_for(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`none` is reserved for a room with no bridge, so a bridge whose type
+        cannot be named is `unknown`."""
+        tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            await _make_tenant(session, tenant)
+            bridge_id, _ = await _make_bridge(session, tenant_id=tenant)
+            await session.execute(
+                update(CollaborationBridge)
+                .where(CollaborationBridge.id == bridge_id)
+                .values(type="irc")
+            )
+            await session.commit()
+
+        service, sink = _service_with_telemetry(session_factory)
+
+        with pytest.raises(ValueError, match="Unknown bridge type"):
+            await service.start(bridge_id)
+        await service._telemetry.aclose()  # type: ignore[union-attr]
+
+        events = await _bridge_connected_events(sink)
+        assert events == [
+            {
+                "bridge_platform": "unknown",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
             }

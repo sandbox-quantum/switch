@@ -340,8 +340,8 @@ and the relay Switch reports to does not serve `/v1/traces` — a POST there
 returns 404. Two things have to happen: the collector must accept the signal,
 and the server must produce spans.
 
-This is the one item of CHOO-1414 that is not built, and it is the one that
-ticket marks *optional*. The order matters: spans built against a collector
+Tracing is the one observability item not built, and it was always scoped as
+optional. The order matters: spans built against a collector
 that 404s cannot be turned on, cannot be verified, and would be reviewed
 against nothing. The collector side is tracked with the infrastructure work
 (an agent that accepts OTLP traces directly is one of the two ways it closes);

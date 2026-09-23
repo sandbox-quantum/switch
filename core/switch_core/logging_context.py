@@ -45,8 +45,7 @@ from switch_core.tenant_context import current_tenant_id
 # unbounded and belongs to one tenant, which is disqualifying for a dashboard
 # label (see `observability/catalogue.py`) and is exactly what a log line is
 # for. A room is the unit almost every support question arrives in — "this room
-# stopped relaying" — and until it was a field the only way to follow one was
-# to grep for an id that appeared in some messages' text and not others.
+# stopped relaying" — so it has to be something a log search can filter on.
 CONTEXT_FIELDS: tuple[str, ...] = (
     "tenant_id",
     "request_id",

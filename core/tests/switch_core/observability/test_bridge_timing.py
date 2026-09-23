@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
 from switch_core.observability.catalogue import BRIDGE_CALL_DURATION
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
@@ -52,8 +56,6 @@ class _Bridge:
     """
 
     def __new__(cls, bridge_type: str):
-        from switch_core.bridges.collaboration.bridge_core import BridgeCore
-
         core = object.__new__(BridgeCore)
         core._bridge_type = bridge_type  # type: ignore[attr-defined]
         return core
@@ -107,11 +109,7 @@ class TestAnOutboundRelayIsTimed:
 
 class TestTheRunningGaugeSaysWhichPlatform:
     def test_it_counts_each_platform_separately(self) -> None:
-        from switch_core.bridges.collaboration.lifecycle_service import (
-            CollaborationBridgeLifecycleService as Service,
-        )
-
-        service = object.__new__(Service)
+        service = object.__new__(CollaborationBridgeLifecycleService)
         service._started = {"a", "b", "c"}  # type: ignore[attr-defined]
         service._platforms_seen = set()  # type: ignore[attr-defined]
         service._bridges = {"a": object(), "b": object()}  # type: ignore[attr-defined]
@@ -132,11 +130,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
         """The whole signal. A series that stops being reported looks on a
         dashboard exactly like one nobody is looking at — "Teams went from one
         to zero" is the alert, and it cannot fire on an absence."""
-        from switch_core.bridges.collaboration.lifecycle_service import (
-            CollaborationBridgeLifecycleService as Service,
-        )
-
-        service = object.__new__(Service)
+        service = object.__new__(CollaborationBridgeLifecycleService)
         service._started = {"c"}  # type: ignore[attr-defined]
         service._platforms_seen = {"teams"}  # type: ignore[attr-defined]
         service._bridges = {}  # type: ignore[attr-defined]
@@ -149,11 +143,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
         """`_started` drops a bridge that was stopped deliberately, so reading
         only that would end the series at the moment it has something to say —
         a dashboard cannot tell an ended series from one nobody is watching."""
-        from switch_core.bridges.collaboration.lifecycle_service import (
-            CollaborationBridgeLifecycleService as Service,
-        )
-
-        service = object.__new__(Service)
+        service = object.__new__(CollaborationBridgeLifecycleService)
         service._started = set()  # type: ignore[attr-defined]
         service._platforms_seen = {"slack"}  # type: ignore[attr-defined]
         service._bridges = {}  # type: ignore[attr-defined]
@@ -166,11 +156,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
         """Not zero: there is no bridge here to be up or down, and five
         platforms sitting at zero would invite an alert on one nobody
         configured."""
-        from switch_core.bridges.collaboration.lifecycle_service import (
-            CollaborationBridgeLifecycleService as Service,
-        )
-
-        service = object.__new__(Service)
+        service = object.__new__(CollaborationBridgeLifecycleService)
         service._started = set()  # type: ignore[attr-defined]
         service._platforms_seen = set()  # type: ignore[attr-defined]
         service._bridges = {}  # type: ignore[attr-defined]
@@ -182,11 +168,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
     def test_it_agrees_with_the_total_it_replaces(self) -> None:
         """The per-platform readings must sum to `running_count`, or two panels
         built from the same fact disagree."""
-        from switch_core.bridges.collaboration.lifecycle_service import (
-            CollaborationBridgeLifecycleService as Service,
-        )
-
-        service = object.__new__(Service)
+        service = object.__new__(CollaborationBridgeLifecycleService)
         service._started = {"a", "b", "c"}  # type: ignore[attr-defined]
         service._platforms_seen = set()  # type: ignore[attr-defined]
         service._bridges = {"a": object(), "b": object()}  # type: ignore[attr-defined]
