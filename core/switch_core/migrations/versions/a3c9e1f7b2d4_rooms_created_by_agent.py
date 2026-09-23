@@ -1,7 +1,7 @@
 """record which agent created a room, and how deep in a chain of agent-created rooms it is
 
 Revision ID: a3c9e1f7b2d4
-Revises: b8f2d0c41e57
+Revises: c4d8e2a1f6b3
 Create Date: 2026-09-17 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a3c9e1f7b2d4"
-down_revision: str | None = "b8f2d0c41e57"
+down_revision: str | None = "c4d8e2a1f6b3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
