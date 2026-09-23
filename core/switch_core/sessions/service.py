@@ -1124,8 +1124,8 @@ class SessionAuthority:
         will be no work.
 
         Expired promises count, because the session is the one left to say
-        they were not kept. Nothing beyond the session row is locked, so a
-        renewal never waits behind the agent's admissions.
+        they were not kept. It locks the session row as every renewal does,
+        and takes no agent lock on top of it.
         """
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
@@ -1133,7 +1133,7 @@ class SessionAuthority:
         ):
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
-            state = _stored_snapshot(row).session
+            state = _stored_session(row)
             if state.retired or _session_is_over(row) or not state.room_ids:
                 return False
             owed = await db.scalar(
