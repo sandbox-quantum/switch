@@ -536,6 +536,42 @@ class WorkerTests(unittest.TestCase):
         mounted = next(call for call in commands.calls if call[0].endswith("mount"))
         self.assertEqual(mounted[-2], "/dev/nvme1n1")
 
+    def test_new_filesystem_waits_for_device_metadata_before_mount(self):
+        blank = worker.StorageObservation("/dev/nvme1n1", VOLUME, None, None, False, ())
+        formatted = worker.StorageObservation(
+            "/dev/nvme1n1", VOLUME, "ext4", FS_UUID, False, ()
+        )
+        settled = False
+        calls = []
+
+        def run(arguments, capture=True):
+            nonlocal settled
+            calls.append(arguments)
+            if arguments[:2] == ["/usr/bin/udevadm", "settle"]:
+                settled = True
+            return ""
+
+        commands = mock.Mock()
+        commands.run.side_effect = run
+        commands.result.return_value = subprocess.CompletedProcess([], 1, "", "")
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(worker, "DATA_MOUNT", Path(temporary) / "data"),
+                mock.patch.object(worker, "ROOT_UID", os.getuid()),
+                mock.patch.object(
+                    worker,
+                    "inspect_storage",
+                    side_effect=lambda *_: formatted if settled else blank,
+                ),
+            ):
+                observation, did_format = worker.prepare_storage(commands, config())
+        self.assertTrue(did_format)
+        self.assertEqual(observation.filesystem_uuid, FS_UUID)
+        self.assertEqual(sum(call[0].endswith("mkfs.ext4") for call in calls), 1)
+        self.assertIn(
+            ["/usr/bin/udevadm", "trigger", "--action=change", blank.device_path], calls
+        )
+
     def test_same_instance_new_boot_quarantines_only_proven_owners(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"

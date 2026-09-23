@@ -28,7 +28,7 @@ if not re.fullmatch(re.escape(package) + r"[0-9]+[.][0-9]+[.][0-9]+", sys.argv[1
     raise SystemExit("MCP runtime must be an exact stable package version")
 PY
 
-for command in python3 setpriv lsblk wipefs mkfs.ext4 mount findmnt sha256sum git gh; do
+for command in python3 setpriv lsblk wipefs udevadm mkfs.ext4 mount findmnt sha256sum git gh; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "missing required AMI command: $command" >&2
     exit 1

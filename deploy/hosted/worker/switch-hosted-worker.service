@@ -30,7 +30,7 @@ ProtectHostname=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_SETPCAP
 # Retained across launcher exec; setpriv clears all capabilities for the agent.
 AmbientCapabilities=CAP_SETUID

@@ -574,6 +574,7 @@ export async function runHostedBootstrap(
       });
       if (credential.status !== 'connected')
         throw new Error('Reconnect the provider before starting the worker.');
+      if (readiness.status === 'unknown') throw new Error(readiness.message);
       await hostedRequest(prepared.config, '/provider-status', {
         authenticated: readiness.status === 'authenticated',
         revision: credential.revision,

@@ -124,7 +124,7 @@ export async function checkProviderReadiness(input: {
       void client
         ?.dispose()
         .catch(() => console.warn('Provider readiness process cleanup failed.'));
-    }, 20000);
+    }, 60000);
     await client.request('initialize', {
       clientInfo: { name: 'switch-console', version: '0.1.0' },
     });

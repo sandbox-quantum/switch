@@ -721,6 +721,10 @@ def prepare_storage(
             ],
             capture=False,
         )
+        commands.run(
+            ["/usr/bin/udevadm", "trigger", "--action=change", observation.device_path]
+        )
+        commands.run(["/usr/bin/udevadm", "settle", "--timeout=30"])
         observation = inspect_storage(commands, config.device_path, config.volume_id)
         formatted = True
     if (

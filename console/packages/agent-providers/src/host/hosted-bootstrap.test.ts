@@ -542,3 +542,41 @@ it('enables managed controls for a retained watcher from an older worker image',
   expect(upgraded.providerEnvironment.SWITCH_HOSTED_CONTROL).toBe('1');
   expect(upgraded.providerEnvironment.SWITCH_HOSTED_AUTO_SESSION).toBe('true');
 });
+
+it('does not invalidate credentials when provider readiness is inconclusive', async () => {
+  const input = await fixture();
+  input.spec.provider.credential.refresh = true;
+  await writeFile(input.specPath, JSON.stringify(input.spec));
+  const request = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          status: 'connected',
+          revision: 'test-revision',
+          provider: 'claude',
+          kind: 'api-key',
+          credential: 'provider-secret-value',
+          sessions: [],
+        })
+      )
+  );
+  vi.stubGlobal('fetch', request);
+  const supervise = vi.fn();
+  await expect(
+    runHostedBootstrap(
+      {
+        stateDirectory: input.state,
+        specPath: input.specPath,
+        sharedDaemonEntrypoint: '/opt/switch/shared-host-daemon.mjs',
+        signal: new AbortController().signal,
+      },
+      { supervise, fenceDeadWorker: async () => {} }
+    )
+  ).rejects.toThrow('Could not verify authentication');
+  expect(request).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledWith(
+    expect.stringContaining('/hosted/provider-credential'),
+    expect.anything()
+  );
+  expect(supervise).not.toHaveBeenCalled();
+});
