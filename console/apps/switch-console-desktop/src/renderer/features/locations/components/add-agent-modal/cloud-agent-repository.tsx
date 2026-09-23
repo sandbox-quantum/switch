@@ -98,6 +98,16 @@ export function CloudAgentRepository({
                   : 'Not connected'
               : 'Checking connection'}
           </span>
+          {data?.claude.status === 'not_connected' && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={`Connect ${providerDisplayName(providerId)}`}
+              onClick={onConnectProvider}
+            >
+              Connect
+            </Button>
+          )}
         </div>
       </Field>
       {isPending && (
@@ -110,16 +120,6 @@ export function CloudAgentRepository({
           <p>{failureText(error, 'Could not load cloud connections.')}</p>
           <Button variant="outline" onClick={() => void refetch()}>
             Retry
-          </Button>
-        </div>
-      )}
-      {data && data.claude.status === 'not_connected' && (
-        <div className="space-y-2">
-          <p role="status" className="text-sm text-foreground-muted">
-            Connect {providerDisplayName(providerId)} to use it in the cloud.
-          </p>
-          <Button variant="outline" onClick={onConnectProvider}>
-            Connect {providerDisplayName(providerId)}
           </Button>
         </div>
       )}
