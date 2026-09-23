@@ -171,5 +171,14 @@ finally:
         pass
 PY
 
+if [ -x /opt/switch/provider-runtime/codex/codex-resources/bwrap ] && [ -d /sys/kernel/security/apparmor ]; then
+  command -v apparmor_parser >/dev/null 2>&1 || {
+    echo "Codex sandbox requires apparmor_parser on an AppArmor host" >&2
+    exit 1
+  }
+  install -o root -g root -m 0644 "$source_dir/switch-codex-bwrap.apparmor" /etc/apparmor.d/switch-codex-bwrap
+  apparmor_parser --replace /etc/apparmor.d/switch-codex-bwrap
+fi
+
 systemctl daemon-reload
 systemctl enable switch-hosted-worker.service

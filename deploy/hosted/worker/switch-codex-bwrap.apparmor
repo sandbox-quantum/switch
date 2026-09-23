@@ -1,0 +1,6 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+profile switch-codex-bwrap /opt/switch/provider-runtime/codex/codex-resources/bwrap flags=(unconfined) {
+  userns,
+}

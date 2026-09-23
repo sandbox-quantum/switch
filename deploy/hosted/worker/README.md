@@ -30,7 +30,10 @@ optional baked path continues to launch the exact version through `npx`.
 
 The installer creates the unprivileged
 `switch-agent` account, installs the launcher and systemd unit, checks the
-preinstalled artifacts and enables the unit. It does not install mutable
+preinstalled artifacts and enables the unit. On AppArmor hosts, a Codex installation
+also installs a profile for its bundled `bwrap` executable so it can create user
+namespaces. The worker allows `AF_NETLINK` for sandbox network setup; the agent
+still runs without host capabilities. It does not install mutable
 latest-version packages. The image pipeline must pin and verify every artifact before running it. The
 checked-in `runtime.json` shows the generated schema; its zero digests are
 examples and are never installed.
