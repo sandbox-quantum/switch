@@ -1317,6 +1317,37 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.35.0] - 2026-09-23
+
+#### Added
+- **Templates.** Create a new agent from a template, with a dedicated
+  create-from-template view (#405).
+- **Load and manage agents on a remote host** (#364).
+
+#### Changed
+- **Usage telemetry is now opt-out.** The setting defaults to on and the
+  first-run dialog is a notice rather than a question — it still states what is
+  shared, is not dismissible, and carries the off switch (pre-set to on).
+  Consent is re-read before every event, so turning it off stops the next event.
+  A migration preserves anyone who had already opted out (#490). The managed
+  server honours the same single telemetry answer (#529).
+- **Watchers are console-parented locally and sidecar-parented remotely**, so a
+  watcher's lifecycle follows the process that should own it (#507).
+- Local-server mode now bundles **switch-core 0.27.0** (was 0.25.0), and the
+  refreshed agent-runtime 0.4.3, sidecar 1.9.8, and connectors (Claude Code
+  0.9.16, Codex 0.3.17, OpenCode 0.1.12).
+
+#### Fixed
+- An unusable remote working directory is reported before an identity is minted,
+  rather than failing later (#373).
+- The managed stack provisions the database roles it now needs and records why
+  it sets no messaging-app variables; the bundled standalone compose is
+  re-synced.
+
+#### Security
+- Untrusted room-message bodies are fenced in the prompt delivered to a session,
+  matching the switch-core hardening (#527).
+
 ### [0.34.0] - 2026-09-06
 
 #### Changed
@@ -2799,6 +2830,18 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.4.3] - 2026-09-23
+
+#### Added
+- Support for reading any room the agent is a member of without connecting to it,
+  and the create-from-template flow (#628, #405).
+
+#### Changed
+- Watcher ownership follows the console/sidecar split (#507).
+
+#### Security
+- Untrusted room-message bodies are fenced in the delivered prompt (#527).
+
 ### [0.4.1] - 2026-09-03
 
 #### Fixed
@@ -2942,10 +2985,16 @@ reconstructed here: an invented history reads exactly like a real one.
 ## sidecar
 
 The remote runtime Switch Console deploys to an agent host. Versioned in
-`console/apps/switch-console-desktop/src/sidecar/sidecar-version.ts` and deployed
-by Switch Console rather than published on its own.
+[`artifacts.yaml`](artifacts.yaml) and deployed by Switch Console rather than
+published on its own.
 
 ### [Unreleased]
+
+### [1.9.8] - 2026-09-23
+
+#### Changed
+- Watcher ownership follows the console/sidecar split — remote watchers are
+  parented by the sidecar (#507). Rebuilt on agent-runtime 0.4.3.
 
 ### [1.9.7] - 2026-09-03
 
@@ -3052,6 +3101,13 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.16] - 2026-09-23
+
+#### Changed
+- Skill updated for the recent room-workflow changes (reading a room you belong
+  to without connecting, templates). Pinned agent-runtime moves to 0.4.3; the
+  plugin version bumps so installs re-download (#628, #527).
 
 ### [0.9.14] - 2026-09-06
 #### Changed
@@ -3300,6 +3356,13 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.17] - 2026-09-23
+
+#### Changed
+- Skill updated for the recent room-workflow changes (reading a room you belong
+  to without connecting, templates). Pinned agent-runtime moves to 0.4.3; the
+  plugin version bumps so installs re-download (#628, #527).
+
 ### [0.3.15] - 2026-09-06
 #### Changed
 - Skill updated: Matrix references removed to match the Postgres-backed message
@@ -3501,6 +3564,13 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.12] - 2026-09-23
+
+#### Changed
+- Skill updated for the recent room-workflow changes (reading a room you belong
+  to without connecting, templates). The embedded agent-runtime pin moves to
+  0.4.3; the version bumps so Switch Console re-writes the connector (#628, #527).
 
 ### [0.1.10] - 2026-09-06
 #### Changed
