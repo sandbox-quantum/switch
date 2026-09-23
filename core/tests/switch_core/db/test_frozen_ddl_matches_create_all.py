@@ -53,6 +53,9 @@ import switch_core.db.models  # noqa: F401 — registers every table, and the RL
 from switch_core.db.base import Base
 from switch_core.db.notify_ddl import NOTIFY_FUNCTION_NAME, NOTIFY_TRIGGER_NAME
 from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
+from switch_core.db.session_activity_notify_ddl import (
+    SESSION_ACTIVITY_NOTIFY_FUNCTION,
+)
 from switch_core.db.tenant_lookup import TENANT_LOOKUPS
 
 _CORE = Path(__file__).resolve().parents[3]
@@ -218,6 +221,13 @@ def _trigger_def(connection: Connection, table: str, trigger: str) -> str:
     return row.definition
 
 
+_SESSION_ACTIVITY_TRIGGERS = (
+    ("session_activity_events", "session_activity_events_notify"),
+    ("approval_requests", "approval_requests_notify_insert"),
+    ("approval_requests", "approval_requests_notify_state"),
+)
+
+
 @dataclass(frozen=True)
 class _DDLSnapshot:
     policies: dict[str, tuple[str | None, str | None]]
@@ -227,6 +237,8 @@ class _DDLSnapshot:
     security_definer_functions: set[str]
     notify_function_body: str
     notify_trigger_def: str
+    session_activity_function_body: str
+    session_activity_trigger_defs: dict[str, str]
 
 
 def _snapshot(connection: Connection) -> _DDLSnapshot:
@@ -238,6 +250,13 @@ def _snapshot(connection: Connection) -> _DDLSnapshot:
         security_definer_functions=_security_definer_functions(connection),
         notify_function_body=_function_body(connection, NOTIFY_FUNCTION_NAME),
         notify_trigger_def=_trigger_def(connection, "messages", NOTIFY_TRIGGER_NAME),
+        session_activity_function_body=_function_body(
+            connection, SESSION_ACTIVITY_NOTIFY_FUNCTION
+        ),
+        session_activity_trigger_defs={
+            name: _trigger_def(connection, table, name)
+            for table, name in _SESSION_ACTIVITY_TRIGGERS
+        },
     )
 
 
@@ -352,4 +371,19 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         "matches db/notify_ddl.py's live copy:\n"
         f"  migration:  {migrated.notify_trigger_def!r}\n"
         f"  create_all: {live.notify_trigger_def!r}"
+    )
+    assert _without_comments(
+        migrated.session_activity_function_body
+    ) == _without_comments(live.session_activity_function_body), (
+        "the migration's frozen session-activity notify function no longer "
+        "matches db/session_activity_notify_ddl.py's live copy"
+    )
+    assert (
+        migrated.session_activity_trigger_defs == live.session_activity_trigger_defs
+    ), (
+        "the migration's frozen session-activity triggers no longer match "
+        "db/session_activity_notify_ddl.py's live copy:\n"
+        + _diff(
+            migrated.session_activity_trigger_defs, live.session_activity_trigger_defs
+        )
     )

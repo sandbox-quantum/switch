@@ -137,6 +137,7 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -335,6 +336,11 @@ async def run(config: SwitchConfig) -> None:
     # the pool. Nothing subscribes yet; it starts with the server so that the
     # subscription exists before the first consumer needs it.
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    # The same arrangement for session activity and approval requests: their
+    # tables announce each change with the row attached, and this pushes it on.
+    session_activity_listener = SessionActivityListener(
+        lambda: create_unpooled_engine(config)
+    )
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
@@ -668,6 +674,7 @@ async def run(config: SwitchConfig) -> None:
 
     probes = RuntimeProbes(
         listener_connected=message_listener.connected.is_set,
+        session_activity_listener_connected=session_activity_listener.connected.is_set,
         bridges_running=collab_lifecycle.running_count,
         bridges_configured=collab_lifecycle.expected_count,
         clients_running=client_lifecycle.running_count,
@@ -711,6 +718,7 @@ async def run(config: SwitchConfig) -> None:
                 else None
             )
             await message_listener.start()
+            await session_activity_listener.start()
             try:
                 yield
             finally:
@@ -719,6 +727,7 @@ async def run(config: SwitchConfig) -> None:
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()
+                await session_activity_listener.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.

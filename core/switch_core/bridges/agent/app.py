@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from switch_core.bridges.agent.api.activity_routes import router as activity_router
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.api.session_routes import router as sessions_router
@@ -134,6 +135,7 @@ def create_agent_bridge_app(
 
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(sessions_router, tags=["sessions"])
+    app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])

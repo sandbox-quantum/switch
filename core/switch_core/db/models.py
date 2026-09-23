@@ -31,6 +31,12 @@ from switch_core.db.notify_ddl import (
     DROP_NOTIFY_TRIGGER,
 )
 from switch_core.db.rls_ddl import attach_row_level_security
+from switch_core.db.session_activity_notify_ddl import (
+    CREATE_ACTIVITY_TRIGGER,
+    CREATE_APPROVAL_INSERT_TRIGGER,
+    CREATE_APPROVAL_STATE_TRIGGER,
+    CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION,
+)
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
 
@@ -2295,6 +2301,161 @@ class SdkRoomAdmission(TenantScoped, Base):
     discarded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+# ── Session activity ──────────────────────────────────────────────────────────
+#
+# What an agent's session reports about itself so messaging platforms can show
+# it. The session and its transcript belong to the agent's host (Switch Console
+# or a remote sidecar); these tables hold only what a platform renders and what
+# the server must check when a person answers. Every write is one small row.
+
+APPROVAL_REQUEST_STATES = ("open", "answered", "expired", "closed")
+SESSION_ACTIVITY_TYPES = (
+    "turn.started",
+    "tool.called",
+    "tool.finished",
+    "turn.finished",
+    "notice",
+)
+
+
+class ApprovalRequest(TenantScoped, Base):
+    """A question a session is waiting on, and the answer it gets.
+
+    The host opens it; a person answers it from any platform; the server checks
+    the answer against this row (still open, a real option, not expired) and
+    owes it to the agent until `delivered_at` is set. `request_id` is the
+    host's, unique within its session, so a host that retries an open reaches
+    the same row.
+    """
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", "session_id", "request_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_approval_requests_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_approval_requests_room",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('open', 'answered', 'expired', 'closed')",
+            name="ck_approval_requests_state",
+        ),
+        Index(
+            "ix_approval_requests_open_expiry",
+            "expires_at",
+            postgresql_where=text("state = 'open' AND expires_at IS NOT NULL"),
+        ),
+        Index(
+            "ix_approval_requests_undelivered",
+            "tenant_id",
+            "agent_id",
+            postgresql_where=text(
+                "state IN ('answered', 'expired') AND delivered_at IS NULL"
+            ),
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    # [{"id": ..., "label": ...}, ...] in the order the host offered them.
+    options: Mapped[list] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="open")
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answered_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SessionActivityEvent(TenantScoped, Base):
+    """One thing a session did, as a short line a platform can show.
+
+    Append-only and deliberately small: a summary, not tool output. `seq` is the
+    host's own counter for the session, so a retried report lands on the same
+    key instead of repeating a line.
+    """
+
+    __tablename__ = "session_activity_events"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", "session_id", "seq"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_session_activity_events_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_session_activity_events_room",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "type IN ('turn.started', 'tool.called', 'tool.finished', "
+            "'turn.finished', 'notice')",
+            name="ck_session_activity_events_type",
+        ),
+        Index("ix_session_activity_events_created_at", "created_at"),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# As for messages: `create_all` has to build the announcing triggers too, or the
+# push tests would exercise tables that announce nothing. The function is
+# `CREATE OR REPLACE`, so creating it with each table is harmless.
+for _table, _triggers in (
+    (
+        ApprovalRequest.__table__,
+        (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
+    ),
+    (SessionActivityEvent.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+):
+    for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the
