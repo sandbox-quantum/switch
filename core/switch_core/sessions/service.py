@@ -9,11 +9,23 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import get_args
+from typing import Any, get_args
 
-from pydantic import ValidationError
-from sqlalchemy import Row, delete, func, literal, select, tuple_
+from pydantic import TypeAdapter, ValidationError
+from sqlalchemy import (
+    ColumnElement,
+    Row,
+    delete,
+    func,
+    inspect,
+    literal,
+    literal_column,
+    select,
+    tuple_,
+)
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import defer
 
 from switch_core.addressing import can_address, parse_policy
 from switch_core.bridges.agent.protocol.connections import (
@@ -82,6 +94,7 @@ from switch_core.sessions.contract import (
     SessionStop,
     SessionUpsert,
     Snapshot,
+    SnapshotRequest,
     Surface,
     TurnInterrupt,
     TurnUpsert,
@@ -353,13 +366,54 @@ class _SessionPresence:
 def _stored_session(row: SdkSession | _SessionPresence) -> Session:
     if isinstance(row, _SessionPresence):
         return row.state
+    return _valid_session(row.id, row.snapshot.get("session"))
+
+
+def _valid_session(session_id: str, stored: object) -> Session:
     try:
-        return Session.model_validate(row.snapshot.get("session"))
+        return Session.model_validate(stored)
     except ValidationError as error:
         raise SessionError(
             "INCOMPATIBLE_SESSION",
-            f"Session {row.id} contains unsupported or invalid stored data. Update the server or repair this session.",
+            f"Session {session_id} contains unsupported or invalid stored data. Update the server or repair this session.",
         ) from error
+
+
+def _valid_requests(session_id: str, stored: object) -> list[SnapshotRequest]:
+    try:
+        return _REQUESTS.validate_python(stored)
+    except ValidationError as error:
+        raise SessionError(
+            "INCOMPATIBLE_SESSION",
+            f"Session {session_id} contains unsupported or invalid stored data. Update the server or repair this session.",
+        ) from error
+
+
+_REQUESTS = TypeAdapter(list[SnapshotRequest])
+
+# The session's own metadata, a small fixed-size part of a snapshot whose turns
+# and items grow with the conversation. A read that needs only this selects it
+# instead of the whole snapshot.
+_SESSION_STATE = SdkSession.snapshot["session"]
+
+# The requests a timeout could still apply to, filtered in the database so the
+# settled history never leaves it.
+_EXPIRABLE_REQUESTS = func.jsonb_path_query_array(
+    SdkSession.snapshot,
+    literal_column(
+        """'$.requests[*] ? (@.state == "open" && @.expiresAt != null)'"""
+    ).cast(JSONPATH),
+)
+
+# Loads a session row without its snapshot, and refuses to lazy-load it: the
+# snapshot is loaded explicitly by `_load_snapshot`, never behind a caller's back.
+_WITHOUT_SNAPSHOT = defer(SdkSession.snapshot, raiseload=True)
+
+
+async def _load_snapshot(db: AsyncSession, row: SdkSession) -> None:
+    """Load the snapshot of a row locked without it, before writing to it."""
+    if "snapshot" in inspect(row).unloaded:
+        await db.refresh(row, ["snapshot"])
 
 
 async def _now(db: AsyncSession) -> datetime:
@@ -457,7 +511,11 @@ def _session_is_over(row: SdkSession | _SessionPresence) -> bool:
     for its siblings. Neither says this session is still working: a stopped one
     is not in the room it stopped in.
     """
-    return _stored_session(row).status == "stopped"
+    return _has_stopped(_stored_session(row))
+
+
+def _has_stopped(state: Session) -> bool:
+    return state.status == "stopped"
 
 
 def _occupies(
@@ -1111,7 +1169,7 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            (row,) = await self._host_lean(db, agent_id, session_id, host_id, epoch)
             row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
 
     async def renew_reporting_room_work(
@@ -1134,10 +1192,11 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            row, state = await self._host_state(
+                db, agent_id, session_id, host_id, epoch
+            )
             row.lease_expires_at = (await _now(db)) + timedelta(seconds=LEASE_SECONDS)
-            state = _stored_session(row)
-            if state.retired or _session_is_over(row) or not state.room_ids:
+            if state.retired or _has_stopped(state) or not state.room_ids:
                 return False
             owed = await db.scalar(
                 select(
@@ -1255,7 +1314,7 @@ class SessionAuthority:
                 stored.status = status.model_dump(by_alias=True)
                 await self._append(db, row, status)
             if isinstance(body, (CommandResult, SessionUpsert)):
-                await self._queue_room_control_followups(db, row)
+                await self._queue_room_control_followups(db, row, _stored_session(row))
             return row.host_sequence
 
     async def submit(
@@ -1619,9 +1678,8 @@ class SessionAuthority:
             db.begin(),
         ):
             await self._lock_agent(db, agent_id)
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
-            state = _stored_snapshot(row).session
-            if state.retired or _session_is_over(row):
+            _, state = await self._host_state(db, agent_id, session_id, host_id, epoch)
+            if state.retired or _has_stopped(state):
                 raise SessionError(
                     "HOST_OFFLINE", "This session has finished and holds no rooms."
                 )
@@ -2105,10 +2163,18 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
-            snapshot = _stored_snapshot(row)
+            row, stored_state, stored_requests = await self._host_lean(
+                db,
+                agent_id,
+                session_id,
+                host_id,
+                epoch,
+                _SESSION_STATE,
+                _EXPIRABLE_REQUESTS,
+            )
+            state = _valid_session(row.id, stored_state)
             now = await _now(db)
-            for request in snapshot.requests:
+            for request in _valid_requests(row.id, stored_requests):
                 if (
                     request.state != "open"
                     or not request.expires_at
@@ -2130,9 +2196,10 @@ class SessionAuthority:
                     continue
                 body: TurnInterrupt | SessionStop = (
                     TurnInterrupt(type="turn.interrupt", turn_id=request.turn_id)
-                    if snapshot.session.capabilities.interrupt
+                    if state.capabilities.interrupt
                     else SessionStop(type="session.stop")
                 )
+                await _load_snapshot(db, row)
                 await self._accept(
                     db,
                     row,
@@ -2162,7 +2229,7 @@ class SessionAuthority:
                         message="The request expired without an answer. Execution cancellation was queued; no approval was granted.",
                     ),
                 )
-            await self._queue_room_control_followups(db, row)
+            await self._queue_room_control_followups(db, row, state)
             records = (
                 await db.scalars(
                     select(SdkSessionCommand)
@@ -2186,6 +2253,7 @@ class SessionAuthority:
                 if status.status == "accepted":
                     status = status.model_copy(update={"status": "dispatched"})
                     record.status = status.model_dump(by_alias=True)
+                    await _load_snapshot(db, row)
                     await self._append(db, row, status)
             return pending
 
@@ -2341,12 +2409,11 @@ class SessionAuthority:
             return receipt
 
     async def _queue_room_control_followups(
-        self, db: AsyncSession, row: SdkSession
+        self, db: AsyncSession, row: SdkSession, state: Session
     ) -> None:
-        snapshot = _stored_snapshot(row)
         if (
             row.recovery.get("quiesced")
-            or snapshot.session.status not in ("ready", "running")
+            or state.status not in ("ready", "running")
             or row.lease_expires_at <= await _now(db)
         ):
             return
@@ -2366,6 +2433,7 @@ class SessionAuthority:
             original = Command.model_validate(record.command)
             if record.room_control_followup is None:
                 continue
+            await _load_snapshot(db, row)
             await self._accept(
                 db,
                 row,
@@ -2418,7 +2486,9 @@ class SessionAuthority:
             db.begin(),
         ):
             agent = await self._lock_agent(db, agent_id)
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            row, state = await self._host_state(
+                db, agent_id, session_id, host_id, epoch
+            )
             connection = connections.get(connection_id)
             if (
                 agent is None
@@ -2435,7 +2505,7 @@ class SessionAuthority:
             # sessions' rooms and a reattached one carries none, so the
             # connection would have this session vouch for its siblings'
             # membership on the first and forget its own rooms on the second.
-            rooms = list(_stored_snapshot(row).session.room_ids)
+            rooms = list(state.room_ids)
             for room_id in sorted(rooms):
                 if await db.get(ClientRoom, (agent.client_id, room_id)) is None:
                     raise SessionError(
@@ -2465,13 +2535,15 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            row, state = await self._host_state(
+                db, agent_id, session_id, host_id, epoch
+            )
             if row.connection_id is None:
                 raise SessionError(
                     "NO_ROOM_CONNECTION",
                     f"Session {session_id} has bound no room connection.",
                 )
-            rooms = _stored_snapshot(row).session.room_ids
+            rooms = state.room_ids
             return SessionBinding(
                 connection_id=row.connection_id,
                 room_id=rooms[0] if len(rooms) == 1 else None,
@@ -3311,13 +3383,13 @@ class SessionAuthority:
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
-            row = await self._locked(db, session_id)
+            row, state = await self._locked_state(db, session_id)
             await self._owner(db, row, user_id)
-            snapshot = _stored_snapshot(row)
             if (
                 row.lease_expires_at <= (await _now(db))
-                and snapshot.session.connectivity == "online"
+                and state.connectivity == "online"
             ):
+                await _load_snapshot(db, row)
                 await self._append(
                     db,
                     row,
@@ -3392,25 +3464,88 @@ class SessionAuthority:
             raise SessionError("NOT_FOUND", "Session not found.")
         return row
 
+    async def _locked_lean(
+        self, db: AsyncSession, session_id: str, *projected: ColumnElement[Any]
+    ) -> Row[Any]:
+        """`_locked`, reading only the named parts of the snapshot.
+
+        The same row lock, taken by the same statement. The row comes back
+        first and without its snapshot, followed by each projection;
+        `_load_snapshot` loads the snapshot before any write.
+        """
+        found = (
+            await db.execute(
+                select(SdkSession, *projected)
+                .options(_WITHOUT_SNAPSHOT)
+                .where(
+                    SdkSession.tenant_id == require_tenant_id(),
+                    SdkSession.id == session_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if found is None:
+            raise SessionError("NOT_FOUND", "Session not found.")
+        return found
+
+    async def _locked_state(
+        self, db: AsyncSession, session_id: str
+    ) -> tuple[SdkSession, Session]:
+        row, state = await self._locked_lean(db, session_id, _SESSION_STATE)
+        return row, _valid_session(row.id, state)
+
     async def _host(
         self, db: AsyncSession, agent_id: str, session_id: str, host_id: str, epoch: str
     ) -> SdkSession:
         row = await self._host_identity(db, agent_id, session_id, host_id, epoch)
-        if row.recovery.get("quiesced"):
-            raise SessionError("HOST_OFFLINE", "Host execution is quiesced.")
-        if row.lease_expires_at <= (await _now(db)):
-            raise SessionError("HOST_OFFLINE", "Host lease expired.")
+        await self._fence_live(db, row)
         return row
+
+    async def _host_lean(
+        self,
+        db: AsyncSession,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        *projected: ColumnElement[Any],
+    ) -> Row[Any]:
+        """`_host`, reading only the named parts of the snapshot."""
+        found = await self._locked_lean(db, session_id, *projected)
+        self._fence_identity(found[0], agent_id, host_id, epoch)
+        await self._fence_live(db, found[0])
+        return found
+
+    async def _host_state(
+        self, db: AsyncSession, agent_id: str, session_id: str, host_id: str, epoch: str
+    ) -> tuple[SdkSession, Session]:
+        row, state = await self._host_lean(
+            db, agent_id, session_id, host_id, epoch, _SESSION_STATE
+        )
+        return row, _valid_session(row.id, state)
 
     async def _host_identity(
         self, db: AsyncSession, agent_id: str, session_id: str, host_id: str, epoch: str
     ) -> SdkSession:
         row = await self._locked(db, session_id)
+        self._fence_identity(row, agent_id, host_id, epoch)
+        return row
+
+    @staticmethod
+    def _fence_identity(
+        row: SdkSession, agent_id: str, host_id: str, epoch: str
+    ) -> None:
         if row.agent_id != agent_id or row.host_id != host_id:
             raise SessionError("NOT_AUTHORIZED", "This host does not own the session.")
         if row.epoch != epoch:
             raise SessionError("STALE_EPOCH", "Session generation changed.")
-        return row
+
+    @staticmethod
+    async def _fence_live(db: AsyncSession, row: SdkSession) -> None:
+        if row.recovery.get("quiesced"):
+            raise SessionError("HOST_OFFLINE", "Host execution is quiesced.")
+        if row.lease_expires_at <= (await _now(db)):
+            raise SessionError("HOST_OFFLINE", "Host lease expired.")
 
     async def _owner(self, db: AsyncSession, row: SdkSession, user_id: str) -> None:
         agent = await db.get(Agent, row.agent_id)

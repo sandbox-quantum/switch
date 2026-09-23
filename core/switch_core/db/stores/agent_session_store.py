@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import AgentSession, SdkSession
-from switch_core.sessions.contract import Snapshot
+from switch_core.sessions.contract import Session
 
 _CONFLICT_TARGET = [
     AgentSession.agent_id,
@@ -154,12 +154,16 @@ class AgentSessionStore:
         A session in no room has not said where it is; one in several has not
         said which, and there is nothing here to choose between them.
         """
-        row = await session.scalar(
-            select(SdkSession.snapshot).where(SdkSession.id == sdk_session_id)
-        )
-        if row is None:
+        found = (
+            await session.execute(
+                select(SdkSession.snapshot["session"]).where(
+                    SdkSession.id == sdk_session_id
+                )
+            )
+        ).one_or_none()
+        if found is None:
             return None
-        rooms = Snapshot.model_validate(row).session.room_ids
+        rooms = Session.model_validate(found[0]).room_ids
         return rooms[0] if len(rooms) == 1 else None
 
     async def has_room_binding(
