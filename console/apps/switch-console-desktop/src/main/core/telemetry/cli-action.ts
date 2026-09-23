@@ -47,9 +47,8 @@ function report(
  * through — the caller sees exactly what it saw before.
  *
  * The timer is started here, around the operation alone. Resolving the manager
- * is the caller's and stays outside it: on a remote host that opens the SSH
- * connection, which is not part of how long an install takes and would make the
- * first measurement of a session systematically different from the rest.
+ * is the caller's and stays outside it, since it is not part of how long an
+ * install takes.
  */
 export async function reportedCliAction<T extends CliActionResult>(
   action: TelemetryCliAction,

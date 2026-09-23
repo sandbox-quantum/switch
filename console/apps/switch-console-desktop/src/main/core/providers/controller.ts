@@ -31,8 +31,7 @@ const enrichHostDep = (
  *
  * Always local. This controller accepts a connection id and discards it —
  * `getDependencyManager` returns the local manager whatever it is given — so
- * nothing reached through it runs anywhere else. The genuinely remote
- * equivalents live on the remote-hosts controller and report themselves.
+ * nothing reached through it runs anywhere else.
  */
 const TARGET = 'local';
 
