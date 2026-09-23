@@ -113,6 +113,7 @@ function OtherProviderConnectionStep({
   });
   const queryClient = useQueryClient();
   const wasVerifying = useRef(false);
+  const attemptedLocalConnection = useRef(false);
   useEffect(() => {
     const status = connection.data?.status;
     if (status === 'verifying') wasVerifying.current = true;
@@ -126,6 +127,7 @@ function OtherProviderConnectionStep({
   const info = instructions[provider];
   const name = providerDisplayName(provider);
   const run = async (remove: boolean) => {
+    attemptedLocalConnection.current = true;
     setPending(true);
     setError(null);
     try {
@@ -140,13 +142,31 @@ function OtherProviderConnectionStep({
       if (remove || saved?.status !== 'verifying') {
         setCredential('');
       }
-      if (!remove && saved?.status !== 'verifying') onDone();
+      if (remove) onBack();
+      else if (saved?.status === 'connected') onDone();
     } catch (cause) {
       setError(String(cause));
     } finally {
       setPending(false);
     }
   };
+  useEffect(() => {
+    if (
+      localAuthentication &&
+      !attemptedLocalConnection.current &&
+      !busy &&
+      localSignIn.isFetchedAfterMount &&
+      !localSignIn.isFetching &&
+      !localSignIn.isError &&
+      localSignIn.data?.status === 'ready' &&
+      connection.isFetchedAfterMount &&
+      !connection.isFetching &&
+      !connection.isError &&
+      (connection.data?.status === 'not_connected' || connection.data?.status === 'configured')
+    ) {
+      void run(false);
+    }
+  });
   return (
     <>
       <DialogHeader>
@@ -251,8 +271,8 @@ function OtherProviderConnectionStep({
                     : 'Waiting for a local sign-in…'}
               </p>
               <p className="text-xs text-foreground-muted">
-                Use local sign-in saves your credential encrypted on Switch for your cloud workers.
-                Switch will run a short connection check before saving it.
+                Once found, Switch automatically checks your credential on a temporary cloud worker
+                and saves it encrypted for your cloud agents.
               </p>
             </div>
           ) : (
@@ -279,23 +299,23 @@ function OtherProviderConnectionStep({
         <Button variant="outline" onClick={onBack} disabled={pending}>
           Back
         </Button>
-        <Button
-          disabled={
-            busy ||
-            (localAuthentication
-              ? localSignIn.isError || localSignIn.data?.status !== 'ready'
-              : !credential.trim())
-          }
-          onClick={() => void run(false)}
-        >
-          {busy
-            ? 'Checking connection…'
-            : connection.data?.status === 'failed'
-              ? 'Retry connection'
-              : localAuthentication
-                ? 'Use local sign-in'
+        {(!localAuthentication || error || connection.data?.status === 'failed') && (
+          <Button
+            disabled={
+              busy ||
+              (localAuthentication
+                ? localSignIn.isError || localSignIn.data?.status !== 'ready'
+                : !credential.trim())
+            }
+            onClick={() => void run(false)}
+          >
+            {busy
+              ? 'Checking connection…'
+              : connection.data?.status === 'failed' || localAuthentication
+                ? 'Retry connection'
                 : 'Save credential'}
-        </Button>
+          </Button>
+        )}
         <Button
           disabled={
             busy ||
