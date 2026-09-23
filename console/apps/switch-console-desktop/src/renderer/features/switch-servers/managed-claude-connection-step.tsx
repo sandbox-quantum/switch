@@ -17,10 +17,12 @@ export function ManagedClaudeConnectionStep({
   serverId,
   onBack,
   onDone,
+  context,
 }: {
   serverId: string;
   onBack: () => void;
   onDone: () => void;
+  context: 'onboarding' | 'settings';
 }) {
   const [connection, setConnection] = useState<ClaudeConnection | null>(null);
   const [editing, setEditing] = useState(false);
@@ -77,12 +79,10 @@ export function ManagedClaudeConnectionStep({
               {connection.kind === 'api-key' ? 'API key' : 'Subscription setup token'} · Verified{' '}
               {new Date(connection.verified_at).toLocaleString()}
             </p>
-            <p className="text-sm">
-              Your credential is stored encrypted on Switch. No cloud agent has been started.
-            </p>
+            <p className="text-sm">Your credential is stored encrypted on Switch.</p>
             <p className="text-xs text-foreground-muted">
-              GitHub and cloud agent setup come next. Removing this connection deletes the saved
-              credential from Switch; it does not revoke it with Claude.
+              Removing this connection deletes the saved credential from Switch; it does not revoke
+              it with Claude.
             </p>
           </>
         ) : null}
@@ -123,7 +123,9 @@ export function ManagedClaudeConnectionStep({
             >
               Remove
             </Button>
-            <Button onClick={onDone}>Continue to GitHub</Button>
+            <Button onClick={onDone}>
+              {context === 'settings' ? 'Done' : 'Continue to GitHub'}
+            </Button>
           </>
         )}
       </DialogFooter>

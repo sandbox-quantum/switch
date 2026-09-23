@@ -25,11 +25,13 @@ export function CloudAgentRepository({
   providerId,
   onProviderChange,
   onSelection,
+  onConnectProvider,
 }: {
   serverId: string;
   providerId: AgentProviderId;
   onProviderChange: (provider: AgentProviderId) => void;
   onSelection: (value: CloudRepositorySelection | null) => void;
+  onConnectProvider: () => void;
 }) {
   const [repository, setRepository] = useState<string | null>(null);
   const { data, error, isPending, refetch } = useQuery({
@@ -112,10 +114,14 @@ export function CloudAgentRepository({
         </div>
       )}
       {data && data.claude.status === 'not_connected' && (
-        <p role="alert" className="text-sm text-destructive">
-          Connect {providerDisplayName(providerId)} in Switch-managed server setup to use it in the
-          cloud.
-        </p>
+        <div className="space-y-2">
+          <p role="status" className="text-sm text-foreground-muted">
+            Connect {providerDisplayName(providerId)} to use it in the cloud.
+          </p>
+          <Button variant="outline" onClick={onConnectProvider}>
+            Connect {providerDisplayName(providerId)}
+          </Button>
+        </div>
       )}
       {data && (
         <Field>

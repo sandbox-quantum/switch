@@ -42,14 +42,23 @@ export function ManagedProviderConnectionStep({
   provider,
   onBack,
   onDone,
+  context,
 }: {
   serverId: string;
   provider: AgentProviderId;
   onBack: () => void;
   onDone: () => void;
+  context: 'onboarding' | 'settings';
 }) {
   if (provider === 'claude')
-    return <ManagedClaudeConnectionStep serverId={serverId} onBack={onBack} onDone={onDone} />;
+    return (
+      <ManagedClaudeConnectionStep
+        serverId={serverId}
+        onBack={onBack}
+        onDone={onDone}
+        context={context}
+      />
+    );
   return (
     <OtherProviderConnectionStep
       key={`${serverId}:${provider}`}
@@ -57,6 +66,7 @@ export function ManagedProviderConnectionStep({
       provider={provider}
       onBack={onBack}
       onDone={onDone}
+      context={context}
     />
   );
 }
@@ -66,11 +76,13 @@ function OtherProviderConnectionStep({
   provider,
   onBack,
   onDone,
+  context,
 }: {
   serverId: string;
   provider: Exclude<AgentProviderId, 'claude'>;
   onBack: () => void;
   onDone: () => void;
+  context: 'onboarding' | 'settings';
 }) {
   const [kind, setKind] = useState<'api-key' | 'auth-json'>(
     provider === 'codex' || provider === 'cursor' ? 'api-key' : 'auth-json'
@@ -223,7 +235,7 @@ function OtherProviderConnectionStep({
           disabled={pending || !connection.data || connection.data.status === 'not_connected'}
           onClick={onDone}
         >
-          Continue
+          {context === 'settings' ? 'Done' : 'Continue'}
         </Button>
       </DialogFooter>
     </>

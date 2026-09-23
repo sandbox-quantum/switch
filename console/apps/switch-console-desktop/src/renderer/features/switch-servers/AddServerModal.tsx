@@ -265,6 +265,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'managedClaude' && connected) {
     return (
       <ManagedProviderConnectionStep
+        context="onboarding"
         provider={selectedProviders[providerIndex] ?? 'claude'}
         serverId={connected.id}
         onBack={() =>

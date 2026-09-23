@@ -1,5 +1,5 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -12,6 +12,7 @@ import {
   useRemoteHostReadiness,
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
+import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -78,6 +79,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   serverId,
   initialRunLocation,
 }: NewAgentFormProps) {
+  const queryClient = useQueryClient();
+  const [connectingProvider, setConnectingProvider] = useState(false);
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const [cloudRepository, setCloudRepository] = useState<CloudRepositorySelection | null>(null);
   const cloudRequestId = useRef(crypto.randomUUID());
@@ -99,7 +102,20 @@ export const NewAgentForm = observer(function NewAgentForm({
     queryFn: () => rpc.remoteHosts.listHosts(),
   });
   const onboardedHosts = useMemo(() => remoteHosts ?? [], [remoteHosts]);
-  const isCloudRun = runHost === 'cloud';
+  const selectedServerId =
+    serverId ??
+    switchServersStore.activeServerId ??
+    (switchServersStore.servers.length === 1 ? switchServersStore.servers[0].id : null);
+  const selectedServer = switchServersStore.servers.find(
+    (server) => server.id === selectedServerId
+  );
+  const managedOrigin = import.meta.env.VITE_SWITCH_MANAGED_URL;
+  const isManagedCloud =
+    !!managedOrigin &&
+    !!selectedServer &&
+    urlOrigin(selectedServer.gatewayUrl) === urlOrigin(managedOrigin) &&
+    urlOrigin(selectedServer.apiUrl) === urlOrigin(managedOrigin);
+  const isCloudRun = isManagedCloud || runHost === 'cloud';
   const isRemoteRun = runHost !== LOCAL_RUN_LOCATION && !isCloudRun;
   // The trigger has to say the host's name, not the value behind it: the value
   // for this machine is the sentinel "local", which is not what it is called.
@@ -121,10 +137,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // When no server is active yet but exactly one exists (e.g. right after the
   // first server was added, before it was ever activated), preselect it so the
   // common single-server case needs no extra click.
-  const activeServerId = switchServersStore.activeServerId;
-  const soleServerId =
-    switchServersStore.servers.length === 1 ? switchServersStore.servers[0].id : null;
-  const targetServerId = serverId ?? activeServerId ?? soleServerId;
+  const targetServerId = selectedServerId;
   const { serverId: pickedServerId, setServerId } = pickState;
   useEffect(() => {
     if (targetServerId && pickedServerId !== targetServerId) {
@@ -139,12 +152,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // computer only. External servers are unconstrained — the user owns their
   // reachability.
   const targetServer = switchServersStore.servers.find((s) => s.id === targetServerId) ?? null;
-  const managedOrigin = import.meta.env.VITE_SWITCH_MANAGED_URL;
-  const cloudAvailable =
-    !!managedOrigin &&
-    !!targetServer &&
-    urlOrigin(targetServer.gatewayUrl) === urlOrigin(managedOrigin) &&
-    urlOrigin(targetServer.apiUrl) === urlOrigin(managedOrigin);
+  const cloudAvailable = isManagedCloud;
   const targetKind = targetServer?.managementKind ?? null;
   const targetHost = targetServer?.sshHost ?? null;
   const allowedHosts = useMemo(
@@ -183,8 +191,8 @@ export const NewAgentForm = observer(function NewAgentForm({
   const { setProviderId } = pickState;
   useEffect(() => {
     setRemoteRepoDir('');
-    setProviderId(runHost === 'cloud' ? 'claude' : null);
-  }, [runHost, setProviderId]);
+    setProviderId(isCloudRun ? 'claude' : null);
+  }, [runHost, isCloudRun, setProviderId]);
 
   const { suggestAutoApprove } = form;
   useEffect(() => {
@@ -241,7 +249,8 @@ export const NewAgentForm = observer(function NewAgentForm({
     (isCloudRun ? cloudRepository !== null : dir.trim().length > 0) &&
     runHostReachable &&
     runHostReady &&
-    submitState === 'idle';
+    submitState === 'idle' &&
+    !connectingProvider;
 
   // Why "Add agent" is greyed out, in one line, shown on hover over the button.
   const disabledReason: string | null =
@@ -417,210 +426,238 @@ export const NewAgentForm = observer(function NewAgentForm({
 
   const handleCreate = () => createNewAgent();
 
-  return (
-    <ModalLayout
-      header={
-        <DialogHeader showCloseButton={submitState === 'idle'}>
-          <DialogTitle>New agent</DialogTitle>
-        </DialogHeader>
-      }
-      footer={
-        <DialogFooter>
-          {isRemoteRun && hostReadiness.checking && (
-            <span className="mr-auto self-center text-xs text-foreground-muted">
-              Waiting for {runLocationLabel}…
-            </span>
-          )}
-          {onBack && (
-            <Button variant="outline" onClick={onBack} disabled={submitState !== 'idle'}>
-              Back
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onClose}
-            disabled={submitState !== 'idle'}
-          >
-            Cancel
-          </Button>
-          <TooltipProvider delay={150}>
-            <Tooltip>
-              {/* Span, not button, carries the tooltip: a disabled button emits no pointer events. */}
-              <TooltipTrigger
-                render={
-                  <span className="inline-flex">
-                    <ConfirmButton
-                      type="button"
-                      onClick={() => void handleCreate()}
-                      disabled={!canSubmit}
-                    >
-                      {submitState === 'creating' ? 'Adding…' : 'Add agent'}
-                    </ConfirmButton>
-                  </span>
-                }
-              />
-              {disabledReason !== null && (
-                <TooltipContent side="top">{disabledReason}</TooltipContent>
-              )}
-            </Tooltip>
-          </TooltipProvider>
-        </DialogFooter>
-      }
-    >
-      <DialogContentArea
-        data-autofocus
-        tabIndex={-1}
-        className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
-      >
-        <AgentIdentityFields form={form} />
+  const finishConnection = () => {
+    void queryClient.invalidateQueries({
+      queryKey: ['cloud-agent-connections', pickState.serverId],
+    });
+    setConnectingProvider(false);
+  };
 
-        <Field>
-          <FieldLabel>Run location</FieldLabel>
-          {/* Icons and the right-hand kind, because the list mixes two sorts of
+  return (
+    <>
+      {connectingProvider && pickState.serverId && (
+        <ManagedProviderConnectionStep
+          serverId={pickState.serverId}
+          provider={pickState.providerId ?? 'claude'}
+          context="settings"
+          onBack={finishConnection}
+          onDone={finishConnection}
+        />
+      )}
+      <div hidden={connectingProvider}>
+        <ModalLayout
+          header={
+            <DialogHeader showCloseButton={submitState === 'idle'}>
+              <DialogTitle>New agent</DialogTitle>
+            </DialogHeader>
+          }
+          footer={
+            <DialogFooter>
+              {isRemoteRun && hostReadiness.checking && (
+                <span className="mr-auto self-center text-xs text-foreground-muted">
+                  Waiting for {runLocationLabel}…
+                </span>
+              )}
+              {onBack && (
+                <Button variant="outline" onClick={onBack} disabled={submitState !== 'idle'}>
+                  Back
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onClose}
+                disabled={submitState !== 'idle'}
+              >
+                Cancel
+              </Button>
+              <TooltipProvider delay={150}>
+                <Tooltip>
+                  {/* Span, not button, carries the tooltip: a disabled button emits no pointer events. */}
+                  <TooltipTrigger
+                    render={
+                      <span className="inline-flex">
+                        <ConfirmButton
+                          type="button"
+                          onClick={() => void handleCreate()}
+                          disabled={!canSubmit}
+                        >
+                          {submitState === 'creating' ? 'Adding…' : 'Add agent'}
+                        </ConfirmButton>
+                      </span>
+                    }
+                  />
+                  {disabledReason !== null && (
+                    <TooltipContent side="top">{disabledReason}</TooltipContent>
+                  )}
+                </Tooltip>
+              </TooltipProvider>
+            </DialogFooter>
+          }
+        >
+          <DialogContentArea
+            data-autofocus
+            tabIndex={-1}
+            className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
+          >
+            <AgentIdentityFields form={form} />
+
+            <Field>
+              <FieldLabel>Run location</FieldLabel>
+              {/* Icons and the right-hand kind, because the list mixes two sorts of
               thing: this machine, and hosts reached over SSH. The names alone
               do not say which is which. */}
-          <Select value={runHost} onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}>
-            <SelectTrigger className="w-full">
-              <SelectValue>
-                {isCloudRun ? (
-                  <Cloud className="size-4 text-foreground-muted" />
-                ) : isRemoteRun ? (
-                  <Server className="size-4 text-foreground-muted" />
-                ) : (
-                  <Monitor className="size-4 text-foreground-muted" />
-                )}
-                <span className="truncate">{runLocationLabel}</span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={LOCAL_RUN_LOCATION}>
-                <Monitor className="size-4 text-foreground-muted" />
-                <span className="flex-1">This computer</span>
-                <span className="text-xs text-foreground-muted">local</span>
-              </SelectItem>
-              {cloudAvailable && (
-                <SelectItem value="cloud">
-                  <Cloud className="size-4 text-foreground-muted" />
-                  <span className="flex-1">Switch cloud</span>
-                  <span className="text-xs text-foreground-muted">preview</span>
-                </SelectItem>
+              <Select
+                value={isManagedCloud ? 'cloud' : runHost}
+                disabled={isManagedCloud}
+                onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue>
+                    {isCloudRun ? (
+                      <Cloud className="size-4 text-foreground-muted" />
+                    ) : isRemoteRun ? (
+                      <Server className="size-4 text-foreground-muted" />
+                    ) : (
+                      <Monitor className="size-4 text-foreground-muted" />
+                    )}
+                    <span className="truncate">{runLocationLabel}</span>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {!isManagedCloud && (
+                    <SelectItem value={LOCAL_RUN_LOCATION}>
+                      <Monitor className="size-4 text-foreground-muted" />
+                      <span className="flex-1">This computer</span>
+                      <span className="text-xs text-foreground-muted">local</span>
+                    </SelectItem>
+                  )}
+                  {cloudAvailable && (
+                    <SelectItem value="cloud">
+                      <Cloud className="size-4 text-foreground-muted" />
+                      <span className="flex-1">Switch cloud</span>
+                      <span className="text-xs text-foreground-muted">preview</span>
+                    </SelectItem>
+                  )}
+                  {!isManagedCloud &&
+                    allowedHosts.map((host) => (
+                      <SelectItem key={host.sshHost} value={host.sshHost}>
+                        <Server className="size-4 text-foreground-muted" />
+                        <span className="flex-1 truncate">{host.name}</span>
+                        <span className="text-xs text-foreground-muted">ssh</span>
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {!isCloudRun && runLocationConstrained && (
+                <p className="text-xs text-foreground-muted">
+                  {targetServer?.managementKind === 'remote'
+                    ? `This server runs on ${targetServer.sshHost}, so its agents run on this computer or on ${targetServer.sshHost}.`
+                    : 'This server runs on this computer, so its agents run here too.'}
+                </p>
               )}
-              {allowedHosts.map((host) => (
-                <SelectItem key={host.sshHost} value={host.sshHost}>
-                  <Server className="size-4 text-foreground-muted" />
-                  <span className="flex-1 truncate">{host.name}</span>
-                  <span className="text-xs text-foreground-muted">ssh</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {!isCloudRun && runLocationConstrained && (
-            <p className="text-xs text-foreground-muted">
-              {targetServer?.managementKind === 'remote'
-                ? `This server runs on ${targetServer.sshHost}, so its agents run on this computer or on ${targetServer.sshHost}.`
-                : 'This server runs on this computer, so its agents run here too.'}
-            </p>
-          )}
-          {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
-          {/* Not while it is still checking: the provider picker below is
+              {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
+              {/* Not while it is still checking: the provider picker below is
               already saying so, and two spinners for one question read as two
               questions. Its verdict — the part only it can report — still
               lands here. */}
-          {isRemoteRun && runHostReachable && !hostReadiness.checking && (
-            <HostReadinessNotice
-              sshHost={runHost}
-              readiness={hostReadiness}
-              onNavigateAway={onClose}
-            />
-          )}
-        </Field>
+              {isRemoteRun && runHostReachable && !hostReadiness.checking && (
+                <HostReadinessNotice
+                  sshHost={runHost}
+                  readiness={hostReadiness}
+                  onNavigateAway={onClose}
+                />
+              )}
+            </Field>
 
-        {/* The host still gates what comes below it: with it unreachable, or
+            {/* The host still gates what comes below it: with it unreachable, or
             missing its own prerequisites, we cannot know which providers it
             has, so offering the tiles would be guessing. What no longer gates
             anything is the directory — nothing is scanned in it, so it can be
             filled in while the host is still being surveyed. */}
-        {canChooseAgentType && !isCloudRun && (
-          <Field>
-            <FieldLabel>Directory</FieldLabel>
-            {isRemoteRun ? (
-              // No file picker for a host: the directory is on the other end of
-              // an SSH connection, so it is typed rather than browsed.
-              <Input
-                value={remoteRepoDir}
-                placeholder="/home/agent/repo"
-                onChange={(e) => setRemoteRepoDir(e.target.value)}
-              />
-            ) : (
-              <LocalDirectorySelector
-                title="Choose the agent's working directory"
-                message="The agent runs its sessions here."
-                path={pickState.path}
-                onPathChange={pickState.handlePathChange}
+            {canChooseAgentType && !isCloudRun && (
+              <Field>
+                <FieldLabel>Directory</FieldLabel>
+                {isRemoteRun ? (
+                  // No file picker for a host: the directory is on the other end of
+                  // an SSH connection, so it is typed rather than browsed.
+                  <Input
+                    value={remoteRepoDir}
+                    placeholder="/home/agent/repo"
+                    onChange={(e) => setRemoteRepoDir(e.target.value)}
+                  />
+                ) : (
+                  <LocalDirectorySelector
+                    title="Choose the agent's working directory"
+                    message="The agent runs its sessions here."
+                    path={pickState.path}
+                    onPathChange={pickState.handlePathChange}
+                  />
+                )}
+              </Field>
+            )}
+
+            {canChooseAgentType && !isCloudRun && (
+              <AgentTypePicker
+                value={pickState.providerId}
+                onChange={pickState.setProviderId}
+                sshHost={isRemoteRun ? runHost : undefined}
+                onNavigateAway={onClose}
               />
             )}
-          </Field>
-        )}
 
-        {canChooseAgentType && !isCloudRun && (
-          <AgentTypePicker
-            value={pickState.providerId}
-            onChange={pickState.setProviderId}
-            sshHost={isRemoteRun ? runHost : undefined}
-            onNavigateAway={onClose}
-          />
-        )}
+            {canChooseAgentType && !isCloudRun && pickState.providerId && (
+              <ProviderConnectionStatus
+                providerId={pickState.providerId}
+                sshHost={isRemoteRun ? runHost : null}
+                dir={dir}
+              />
+            )}
 
-        {canChooseAgentType && !isCloudRun && pickState.providerId && (
-          <ProviderConnectionStatus
-            providerId={pickState.providerId}
-            sshHost={isRemoteRun ? runHost : null}
-            dir={dir}
-          />
-        )}
+            {isCloudRun && pickState.serverId && (
+              <CloudAgentRepository
+                serverId={pickState.serverId}
+                providerId={pickState.providerId ?? 'claude'}
+                onProviderChange={setProviderId}
+                onSelection={setCloudRepository}
+                onConnectProvider={() => setConnectingProvider(true)}
+              />
+            )}
 
-        {isCloudRun && pickState.serverId && (
-          <CloudAgentRepository
-            serverId={pickState.serverId}
-            providerId={pickState.providerId ?? 'claude'}
-            onProviderChange={setProviderId}
-            onSelection={setCloudRepository}
-          />
-        )}
+            {canConfigureAgent && !!pickState.providerId && (
+              <>
+                <AgentAdvancedConfig
+                  providerId={pickState.providerId}
+                  sshHost={isRemoteRun ? runHost : null}
+                  dir={dir}
+                  onChange={onAdvancedChange}
+                />
+                <LaunchProfileConfig
+                  providerId={pickState.providerId}
+                  sshHost={isRemoteRun ? runHost : null}
+                  dir={dir}
+                  onChange={onLaunchProfileConfigChange}
+                />
+              </>
+            )}
 
-        {canConfigureAgent && !!pickState.providerId && (
-          <>
-            <AgentAdvancedConfig
-              providerId={pickState.providerId}
-              sshHost={isRemoteRun ? runHost : null}
-              dir={dir}
-              onChange={onAdvancedChange}
-            />
-            <LaunchProfileConfig
-              providerId={pickState.providerId}
-              sshHost={isRemoteRun ? runHost : null}
-              dir={dir}
-              onChange={onLaunchProfileConfigChange}
-            />
-          </>
-        )}
-
-        {/* Last, below Advanced configuration. Everything above it is a choice
+            {/* Last, below Advanced configuration. Everything above it is a choice
             the agent cannot exist without; these have working defaults and are
             changeable afterwards from the agent's own settings. */}
-        {canConfigureAgent && (
-          <AgentSettingsSection
-            form={form}
-            serverId={pickState.serverId}
-            onAddServer={() => showAddServerModal({})}
-            onOpenMessagingApps={() => {
-              onClose();
-              if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
-            }}
-          />
-        )}
-      </DialogContentArea>
-    </ModalLayout>
+            {canConfigureAgent && (
+              <AgentSettingsSection
+                form={form}
+                serverId={pickState.serverId}
+                onAddServer={() => showAddServerModal({})}
+                onOpenMessagingApps={() => {
+                  onClose();
+                  if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
+                }}
+              />
+            )}
+          </DialogContentArea>
+        </ModalLayout>
+      </div>
+    </>
   );
 });
