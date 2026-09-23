@@ -6,7 +6,7 @@ import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import { SwitchRoomAdmissions } from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
-import { declareHandoffCapability, HANDOFF_FILE } from './handoff';
+import { COMMAND_WAKE_FILE, declareHandoffCapability, HANDOFF_FILE } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
 import {
@@ -1602,4 +1602,29 @@ it('hands a session it has just created the event that created it', async () => 
   );
   // The session is created already holding the room it was started to answer.
   expect(assigned!.grant).toEqual({ roomId: 'room', messageId: 'message-1' });
+});
+
+it('wakes only locally configured sessions of its agent without starting a session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-commands-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config, true);
+  const otherConfig = structuredClone(config);
+  otherConfig.session.agentId = randomUUID();
+  const other = await existing(root, otherConfig, true);
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onCommands!([own.sessionId, other.sessionId, randomUUID()]);
+    expect(await readFile(join(own.sessionRoot, COMMAND_WAKE_FILE), 'utf8')).toBeTruthy();
+    await expect(readFile(join(other.sessionRoot, COMMAND_WAKE_FILE))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+    await run;
+  }
 });

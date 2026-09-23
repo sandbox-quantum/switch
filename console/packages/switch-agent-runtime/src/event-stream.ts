@@ -173,6 +173,8 @@ export interface SwitchEventStreamDeps {
    * advanced past them. */
   rooms: string[];
   onEvent(event: AgentBridgeEvent): Promise<void> | void;
+  /** A hint to fetch a session's durable command queue; independent of rooms/cursors. */
+  onCommands?: (sessionIds: string[]) => Promise<void> | void;
   /**
    * The rooms the server says this connection covers — on connect, and again
    * whenever they change. The server is the authority here: a room claimed by
@@ -632,6 +634,13 @@ export class SwitchEventStream {
         this.reportRooms(frame.data.rooms);
         this.fence.attached();
         this.redeclare();
+        return;
+      case 'session_commands':
+        if (
+          Array.isArray(frame.data.session_ids) &&
+          frame.data.session_ids.every((id) => typeof id === 'string')
+        )
+          await this.deps.onCommands?.(frame.data.session_ids as string[]);
         return;
       case 'subscription_changed':
         log.debug('SwitchEventStream: subscription changed', {

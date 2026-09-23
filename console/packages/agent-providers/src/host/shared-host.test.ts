@@ -6,7 +6,7 @@ import type { Command, HostEvent, Session } from '@switch-console/shared/session
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
-import { declareHandoffCapability, handOff, readsHandoffs } from './handoff';
+import { declareHandoffCapability, handOff, readsHandoffs, wakeCommands } from './handoff';
 import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
 
 /** Every answer Switch has given this session's room binding, in order. */
@@ -1812,3 +1812,50 @@ it('stops when an ask under the lease it holds says that lease is gone', async (
   );
   expect(server.pulled).toHaveLength(1);
 }, 15000);
+
+it('checks commands on wake instead of polling while idle and recovers a missed wake', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-command-wake-'));
+  roots.push(root);
+  admittingServer();
+  const originalFetch = globalThis.fetch;
+  let polls = 0;
+  let queued: Command[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      if (new URL(url).pathname.endsWith('/commands')) {
+        polls += 1;
+        const batch = queued;
+        queued = [];
+        return Response.json(batch);
+      }
+      return originalFetch(url, options);
+    })
+  );
+  const { adapter, ran } = roomWorker();
+  const stop = new AbortController();
+  const outcome = startWorker(root, adapter, stop.signal);
+  const command = (id: string): Command => ({
+    contractVersion: 1,
+    commandId: id,
+    sessionId: 'session',
+    epoch: 'server-epoch',
+    origin: { actorId: 'owner', surface: 'console', roomId: null, threadId: null, messageId: null },
+    body: { type: 'message.send', delivery: 'queue', text: id, attachments: [] },
+  });
+  try {
+    await vi.waitFor(() => expect(polls).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(polls).toBe(1);
+    queued.push(command('notified'));
+    await wakeCommands(root);
+    await vi.waitFor(() => expect(ran).toEqual(['notified']), { timeout: 1500 });
+    // Let the successful batch drain to an empty response before losing a hint.
+    await vi.waitFor(() => expect(polls).toBe(3));
+    queued.push(command('missed-wakeup'));
+    await vi.waitFor(() => expect(ran).toEqual(['notified', 'missed-wakeup']), { timeout: 6500 });
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 12000);

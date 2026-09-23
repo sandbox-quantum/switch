@@ -9,6 +9,7 @@ import {
   HANDOFF_PROTOCOL,
   HandoffInbox,
   readsHandoffs,
+  wakeCommands,
 } from './handoff';
 
 const roots: string[] = [];
@@ -228,4 +229,21 @@ it('stops waiting when the session does', async () => {
   const waiting = inbox.idle(30_000, stop.signal);
   stop.abort(new Error('session stopped'));
   await expect(waiting).rejects.toThrow('session stopped');
+});
+
+it('wakes for commands without adding a room delivery', async () => {
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  const stop = new AbortController();
+  inbox.listen(stop.signal);
+  try {
+    const waiting = inbox.idle(5000, stop.signal);
+    await wakeCommands(session);
+    await waiting;
+    expect(inbox.takeCommandWake()).toBe(true);
+    expect(inbox.takeCommandWake()).toBe(false);
+    expect(await inbox.drain()).toEqual([]);
+  } finally {
+    stop.abort();
+  }
 });

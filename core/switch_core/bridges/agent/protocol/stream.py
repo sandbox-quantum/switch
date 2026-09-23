@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from typing import Any
 
 from switch_core.bridges.agent.protocol.connections import (
@@ -31,6 +32,8 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.sessions.command_notifications import subscribe
+from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
 
 logger = logging.getLogger(__name__)
@@ -125,6 +128,19 @@ async def _event_stream(
     # reported when it resumes.
     last_rooms = set(conn.rooms)
 
+    commands: set[str] = set()
+
+    def wake_commands(session_id: str) -> None:
+        commands.add(session_id)
+        conn.wake.set()
+
+    tenant_id = current_tenant_id()
+    subscription = (
+        subscribe(tenant_id, agent_id, wake_commands)
+        if tenant_id is not None and conn.scope == "all"
+        else nullcontext()
+    )
+    subscription.__enter__()
     try:
         yield _frame("connection_state", _connection_state(conn))
 
@@ -217,6 +233,11 @@ async def _event_stream(
                 registry.close(conn.id, HEARTBEAT_LAPSED)
                 yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
+
+            if commands:
+                session_ids = sorted(commands)
+                commands.clear()
+                yield _frame("session_commands", {"session_ids": session_ids})
 
             if conn.rooms != last_rooms:
                 last_rooms = set(conn.rooms)
@@ -331,12 +352,17 @@ async def _event_stream(
             conn.wake.clear()
             # Re-check after clearing: an event appended between the read above
             # and the clear would otherwise wait for the keepalive timeout.
-            if buffer.head(agent_id) > conn.cursor or conn.rooms != last_rooms:
+            if (
+                commands
+                or buffer.head(agent_id) > conn.cursor
+                or conn.rooms != last_rooms
+            ):
                 continue
 
             if not await _wait_for_work(bell, conn):
                 yield b": keepalive\n\n"
     finally:
+        subscription.__exit__(None, None, None)
         registry.detach_stream(conn, generation)
 
 

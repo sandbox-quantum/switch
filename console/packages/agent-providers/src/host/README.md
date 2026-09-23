@@ -154,3 +154,18 @@ rather than guess at it.
   `room-reservations` on the interval as it did before the renewal could say.
   Removable once the oldest server the app supports answers `roomWork`. Until
   then an idle session on such a server makes one extra request per interval.
+
+
+### Command delivery
+
+Core sends `session_commands` hints over the agent watcher’s existing all-scope
+SSE connection after command acceptance commits. The watcher signals the matching
+local worker through `commands.wake`; the worker then reads the durable, ordered
+command queue. These hints do not claim rooms or start sessions.
+
+Workers also check commands on startup and every five seconds to recover missed
+hints, support older watchers or servers, and work while the watcher is offline.
+The 250 ms local loop still flushes provider events, but no longer requests
+commands on every pass. A room admission that cannot return its command directly
+triggers an immediate queue check. Notifications are process-local in Core;
+commands handled by another server process rely on the fallback check.

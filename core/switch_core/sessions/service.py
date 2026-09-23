@@ -52,6 +52,9 @@ from switch_core.sessions.attachments import (
     normalise_mime_type,
     validate_attachment,
 )
+from switch_core.sessions.command_notifications import (
+    schedule as notify_commands_after_commit,
+)
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalResult,
@@ -3544,6 +3547,10 @@ class SessionAuthority:
             )
         )
         await db.flush()
+        if isinstance(body, CommandStatus) and body.status == "accepted":
+            notify_commands_after_commit(
+                db.sync_session, row.tenant_id, row.agent_id, row.id
+            )
 
     async def _validate_event(
         self, db: AsyncSession, row: SdkSession, event: HostEvent

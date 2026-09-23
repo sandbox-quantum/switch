@@ -663,6 +663,7 @@ export async function runSharedHost(
       await upload(false);
     };
     let heldForDecision = false;
+    let commandsCheckedAt = -Infinity;
     // A refusal from before the provider existed had no transcript to be said
     // in; this is the first moment there is one.
     if (unreachable) await discloseRefusal();
@@ -710,6 +711,7 @@ export async function runSharedHost(
               })
             );
             if (receipt.command) admitted.push(receipt.command);
+            else commandsCheckedAt = -Infinity;
             if (receipt.status === 'unknown' || receipt.status === 'rejected')
               await host.notice(
                 `Room message ${event.messageId}: ${receipt.message ?? receipt.status}. It was not resent.`
@@ -758,9 +760,19 @@ export async function runSharedHost(
       // carries no command and this falls through to the ordered endpoint.
       // Anything queued after the admission is served by the next pass, as a
       // command arriving just after a fetch always has been.
-      const commands =
-        admitted.length > 0 ? admitted : await request(`${sessionPath}/commands`, hostLease);
+      // Room handoffs and Console controls share the durable command queue.
+      // The watcher wakes us for committed commands; a slow check recovers
+      // missed notifications, older watchers and disconnected controllers.
+      const commandWake = handoffs?.takeCommandWake() ?? false;
+      const checkCommands = commandWake || performance.now() - commandsCheckedAt >= 5000;
+      let commands: unknown = admitted;
+      if (admitted.length === 0 && checkCommands) {
+        commandsCheckedAt = performance.now();
+        commands = await request(`${sessionPath}/commands`, hostLease);
+      }
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
+      // Drain queued work promptly; only an empty response starts the idle interval.
+      if (commands.length > 0) commandsCheckedAt = -Infinity;
       for (const value of commands) {
         executionSignal.throwIfAborted();
         if (performance.now() >= deadline) {

@@ -1216,3 +1216,28 @@ describe('the permission to start a session', () => {
     abort.abort();
   });
 });
+
+it('routes command wakeups separately from room events and their cursor', async () => {
+  const onCommands = vi.fn();
+  const onEvent = vi.fn();
+  const fetchMock = vi.fn(async (url: string) =>
+    url.includes('/events')
+      ? new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(connected());
+              controller.enqueue(encodeFrame('session_commands', { session_ids: ['session'] }));
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } }
+        )
+      : Response.json({})
+  );
+  const { abort } = makeStream(fetchMock, { rooms: [], scope: 'all', onCommands, onEvent });
+  try {
+    await vi.waitFor(() => expect(onCommands).toHaveBeenCalledWith(['session']));
+    expect(onEvent).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+  }
+});

@@ -11,6 +11,7 @@ import {
   type RoomReservation,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
+import { wakeCommands } from './handoff';
 import { declareHandoffCapability, handOff, readsHandoffs, type Handoff } from './handoff';
 import { Journal } from './journal';
 import {
@@ -876,6 +877,24 @@ export async function runSharedWatcher(
       startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
+      onCommands: async (sessionIds) => {
+        for (const sessionId of sessionIds) {
+          const workerRoot = sharedSessionRoot(sessionId);
+          try {
+            const saved = sharedConfigSchema.parse(
+              JSON.parse(await readFile(join(workerRoot, 'config.json'), 'utf8'))
+            );
+            if (
+              saved.session.agentId === template.session.agentId &&
+              saved.session.sessionId === sessionId
+            )
+              await wakeCommands(workerRoot);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+              console.warn(`Could not wake session commands: ${String(error)}`);
+          }
+        }
+      },
       onEvent: (event) => {
         // Read as the event arrives rather than when its turn comes: what is
         // done with it follows the setting it was delivered under, and work

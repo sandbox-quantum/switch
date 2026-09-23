@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 export const HANDOFF_FILE = 'handoff.jsonl';
+export const COMMAND_WAKE_FILE = 'commands.wake';
+
+/** A lossy wakeup only. Commands stay in Core until the worker acknowledges them. */
+export async function wakeCommands(root: string): Promise<void> {
+  await writeFile(join(root, COMMAND_WAKE_FILE), randomUUID(), { mode: 0o600 });
+}
 export const CAPABILITY_FILE = 'worker.json';
 const NEWLINE = 0x0a;
 
@@ -158,6 +164,13 @@ async function readFully(
 export class HandoffInbox {
   private offset = 0;
   private appended = false;
+  private commands = false;
+
+  takeCommandWake(): boolean {
+    const pending = this.commands;
+    this.commands = false;
+    return pending;
+  }
   private watcher: FSWatcher | null = null;
   private wake: (() => void) | null = null;
 
@@ -182,6 +195,10 @@ export class HandoffInbox {
     try {
       this.watcher = watch(this.root, (_event, filename) => {
         // A null filename is the platform declining to say what changed.
+        if (filename === null || filename === COMMAND_WAKE_FILE) {
+          this.commands = true;
+          this.wake?.();
+        }
         if (filename !== null && filename !== HANDOFF_FILE) return;
         this.appended = true;
         this.wake?.();
@@ -204,7 +221,7 @@ export class HandoffInbox {
   idle(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);
-      if (this.appended) return resolve();
+      if (this.appended || this.commands) return resolve();
       const finish = (error?: unknown) => {
         clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
