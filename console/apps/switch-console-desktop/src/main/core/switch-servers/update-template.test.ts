@@ -12,6 +12,7 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 }));
 vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
+vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
 const { updateTemplate, GatewayError } = await import('./gateway-client');
 

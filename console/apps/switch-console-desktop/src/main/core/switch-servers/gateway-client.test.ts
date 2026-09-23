@@ -26,6 +26,12 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 
 vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
+vi.mock('./console-identity', () => ({
+  consoleIdentityHeaders: async (server: { managed: boolean }) =>
+    server.managed
+      ? { 'X-Switch-Console-Id': 'console-1', 'X-Switch-Console-Name': 'alice@laptop' }
+      : {},
+}));
 
 const {
   createRoom,
@@ -161,6 +167,52 @@ describe('gatewayFetch proactive session renewal', () => {
     expect(refreshSession).not.toHaveBeenCalled();
     expect(reauthenticateManagedServer).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('gatewayFetch console attribution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockImplementation(async () => okMeResponse());
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function headersOf(call: unknown[] | undefined): Record<string, string> {
+    return ((call?.[1] as RequestInit | undefined)?.headers ?? {}) as Record<string, string>;
+  }
+
+  it('says which Console is calling a server it manages', async () => {
+    await fetchMe(MANAGED);
+
+    expect(headersOf(fetchMock.mock.calls[0])).toMatchObject({
+      'X-Switch-Console-Id': 'console-1',
+      'X-Switch-Console-Name': 'alice@laptop',
+    });
+  });
+
+  it('keeps saying so on the retry after a silent re-login', async () => {
+    reauthenticateManagedServer.mockResolvedValue(makeJwt(24 * 60 * 60));
+    fetchMock.mockResolvedValueOnce(unauthorizedResponse());
+
+    await fetchMe(MANAGED);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(headersOf(fetchMock.mock.calls[1])).toMatchObject({
+      'X-Switch-Console-Id': 'console-1',
+    });
+  });
+
+  it('tells a server someone else runs nothing about the desktop', async () => {
+    await fetchMe(SERVER);
+
+    const headers = headersOf(fetchMock.mock.calls[0]);
+    expect(headers).not.toHaveProperty('X-Switch-Console-Id');
+    expect(headers).not.toHaveProperty('X-Switch-Console-Name');
   });
 });
 

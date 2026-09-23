@@ -28,6 +28,7 @@ import type {
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
 import { reauthenticateManagedServer, refreshSession } from './auth';
+import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
@@ -167,8 +168,9 @@ async function gatewayFetch(
   const stopped = managedServerStoppedPhase(server);
   if (stopped) throw new ManagedServerStoppedError(server, stopped);
 
+  const identity = await consoleIdentityHeaders(server);
   const sendOnce = async (cookie: string | null): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = { Accept: 'application/json', ...identity };
     if (options.body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }

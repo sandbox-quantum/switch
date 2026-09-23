@@ -6,6 +6,7 @@ import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/h
 import { loadOrCreateSecrets } from '@main/core/managed-switch-server/secrets';
 import { log } from '@main/lib/logger';
 import type { SwitchServer, SwitchUser } from '@shared/core/switch-servers/switch-servers';
+import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 const SWITCH_AUTH_COOKIE = 'switch_auth';
@@ -44,11 +45,12 @@ export async function passwordLogin(
   email: string,
   password: string
 ): Promise<Result<SwitchUser, LoginError>> {
+  const identity = await consoleIdentityHeaders(server);
   let response: Response;
   try {
     response = await fetch(gatewayUrl(server, '/auth/login'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...identity },
       body: JSON.stringify({ email, password }),
       redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
@@ -109,7 +111,11 @@ export async function refreshSession(
   try {
     response = await fetch(gatewayUrl(server, '/auth/refresh'), {
       method: 'POST',
-      headers: { Accept: 'application/json', Cookie: `${SWITCH_AUTH_COOKIE}=${currentJwt}` },
+      headers: {
+        Accept: 'application/json',
+        Cookie: `${SWITCH_AUTH_COOKIE}=${currentJwt}`,
+        ...(await consoleIdentityHeaders(server)),
+      },
       redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
     });
