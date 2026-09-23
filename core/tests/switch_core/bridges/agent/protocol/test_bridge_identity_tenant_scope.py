@@ -146,7 +146,7 @@ class _StoppableClientLifecycle:
     async def stop(self, client_id: str) -> None:
         self.stopped.append(client_id)
 
-    async def remove(self, client_id: str) -> None:
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
         self.removed.append(client_id)
 
 

@@ -75,7 +75,7 @@ class _FakeClientLifecycle:
     async def stop(self, client_id: str) -> None:
         return None
 
-    async def remove(self, client_id: str) -> None:
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
         return None
 
 
