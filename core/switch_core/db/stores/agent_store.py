@@ -131,8 +131,7 @@ class AgentStore:
 
         Not the agent's client, and not that client's room memberships:
         `ClientStore.delete` owns both, and `delete_agent` calls it in this
-        same transaction. Clearing the memberships here as well would be a
-        second statement against rows the first one already took.
+        same transaction.
         """
         agent = await session.get(Agent, agent_id)
         if not agent:

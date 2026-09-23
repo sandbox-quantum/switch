@@ -30,13 +30,12 @@ class _ClientLifecycle:
     client; none of these are running, and a MagicMock here would let a
     missing deletion pass.
 
-    `delete_record` deliberately does not commit — the point of the split is
-    that the client rows join the bridge teardown's transaction, so a fake
-    that committed on its own would hide a regression back to the old shape.
+    `delete_record` deliberately does not commit: the client rows have to join
+    the bridge teardown's transaction, and a fake that committed on its own
+    would pass a removal that commits them separately.
     """
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
+    def __init__(self) -> None:
         self.removed: list[str] = []
         self.stopped: list[str] = []
 
@@ -56,10 +55,8 @@ class _FailingClientLifecycle(_ClientLifecycle):
     asserted rather than assumed.
     """
 
-    def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], *, fail_on_nth: int
-    ) -> None:
-        super().__init__(session_factory)
+    def __init__(self, *, fail_on_nth: int) -> None:
+        super().__init__()
         self._fail_on_nth = fail_on_nth
 
     async def delete_record(self, session: AsyncSession, client_id: str) -> None:
@@ -70,7 +67,7 @@ class _FailingClientLifecycle(_ClientLifecycle):
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
-    client_lifecycle: _ClientLifecycle | None = None,
+    client_lifecycle: _ClientLifecycle,
 ) -> CollaborationBridgeLifecycleService:
     """Build the service with real stores; mock the deps remove() never touches."""
     return CollaborationBridgeLifecycleService(
@@ -81,7 +78,7 @@ def _service(
         room_store=RoomStore(),
         agent_store=MagicMock(),
         client_store=MagicMock(),
-        client_lifecycle=client_lifecycle or _ClientLifecycle(session_factory),
+        client_lifecycle=client_lifecycle,
         room_service=MagicMock(),
         matrix_admin=MagicMock(),
         session_factory=session_factory,
@@ -154,7 +151,7 @@ async def test_remove_detaches_dependent_rooms(
     while rooms point at it raised a raw FK error. remove() now detaches the
     rooms (non-destructive) before deleting the bridge.
     """
-    service = _service(session_factory)
+    service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, _ = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
@@ -181,7 +178,7 @@ async def test_remove_detaches_dependent_rooms(
 async def test_remove_without_dependent_rooms_still_deletes(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    service = _service(session_factory)
+    service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, _ = await _make_bridge(session)
         await session.commit()
@@ -203,7 +200,7 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
     app and reconnecting one named the same hit the leftover row —
     `duplicate key value violates unique constraint "clients_matrix_user_id_key"`.
     """
-    service = _service(session_factory)
+    service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, bridge_client_id = await _make_bridge(session)
         _external_user_id, puppet_client_id = await _make_external_user(
@@ -222,15 +219,14 @@ async def test_disconnecting_takes_every_identity_switch_made_for_it(
 async def test_identities_that_were_in_rooms_go_too(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The case that actually happens, and the one that used to fail.
+    """The case that actually happens: identities with room memberships.
 
     Both of these clients have been in a room — the bridge because it carries
     the channel, the puppet because the person it stands for spoke there — and
-    `client_rooms` references `clients` with no `ON DELETE` rule. So the
-    deletes above raised a foreign key violation instead, after the bridge row
-    had already been committed, and the client rows were left behind for good.
+    `client_rooms` references `clients` with no `ON DELETE` rule, so the
+    memberships have to go before the client rows can.
     """
-    service = _service(session_factory)
+    service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, bridge_client_id = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
@@ -258,14 +254,11 @@ async def test_a_failed_client_delete_leaves_the_bridge_intact(
 ) -> None:
     """The teardown is one transaction, so a failure part-way undoes all of it.
 
-    This is the property that makes the orphaning survivable rather than
-    permanent. Removal used to commit the bridge and then delete the clients
-    one at a time afterwards, so a raise in that loop left the bridge gone and
-    the remaining clients behind — nothing pointed at them and nothing would
-    retry. Failing now rolls the whole thing back, and the operator can try
-    again with everything still in place.
+    If the bridge committed separately from its clients, a raise part-way
+    would leave clients that nothing points at and nothing retries. Rolled
+    back instead, the operator can try again with everything still in place.
     """
-    lifecycle = _FailingClientLifecycle(session_factory, fail_on_nth=2)
+    lifecycle = _FailingClientLifecycle(fail_on_nth=2)
     service = _service(session_factory, lifecycle)
     async with session_factory() as session:
         bridge_id, bridge_client_id = await _make_bridge(session)
@@ -303,7 +296,7 @@ async def test_an_app_with_nobody_on_it_still_loses_its_own_client(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     # Louis's case exactly: a Telegram connection nobody had messaged yet.
-    service = _service(session_factory)
+    service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, bridge_client_id = await _make_bridge(session)
         await session.commit()
@@ -354,7 +347,7 @@ async def test_a_starting_bridge_is_recorded_in_the_rooms_it_carries(
     no rows is in none of them and relays nothing outward — while still
     receiving, because inbound posts into a room by id.
     """
-    service = _service(session_factory)
+    service = _service(session_factory, _ClientLifecycle())
     async with session_factory() as session:
         bridge_id, client_id = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)

@@ -274,7 +274,6 @@ class ClientLifecycleService:
         opposite order leaves an orphan row that nothing repairs.
         """
         await self._client_store.delete(session, client_id)
-        logger.info("Deleted client record %s", client_id)
 
     def get(self, client_id: str) -> ClientBase[ClientConfig] | None:
         return self._clients.get(client_id)

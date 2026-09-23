@@ -38,10 +38,9 @@ class TestDeleteClearsMemberships:
     """A client that has joined a room must still be deletable.
 
     `client_rooms` references `clients` with no `ON DELETE` rule, so the
-    membership rows held the client row hostage: every caller that deletes a
-    client — bridge removal above all, where each puppet has been in every
-    room the person it stands for spoke in — hit a raw foreign key violation
-    and left the client behind.
+    membership rows would otherwise hold the client row hostage — and every
+    client worth deleting has them: a bridge puppet has been in every room the
+    person it stands for spoke in.
     """
 
     async def test_a_client_that_is_in_a_room_can_be_deleted(

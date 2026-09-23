@@ -888,18 +888,10 @@ class CollaborationBridgeLifecycleService:
         so an operator who disconnects an app and reconnects one named the same
         collided with the row left by the last one.
 
-        One transaction. The clients are children of nothing but the bridge,
-        and external-user rows point at them, so within it the dependents go
-        before the clients or the foreign keys refuse. Across it, all or
-        nothing: this used to commit the bridge teardown and then delete the
-        clients one at a time afterwards, so anything that raised in that loop
-        — a foreign key, a dropped connection, the process dying between two
-        of them — left the bridge gone and its clients behind, with nothing
-        pointing at them and nothing that would ever retry.
-
-        Stopping the in-process clients is the one part that cannot be rolled
-        back, so it happens first and deliberately: a rollback leaves clients
-        stopped but intact, which the next start repairs.
+        One transaction, all or nothing. The clients are children of nothing
+        but the bridge, and external-user rows point at them, so within it the
+        dependents go before the clients or the foreign keys refuse. The
+        clients are stopped before it opens; see `delete_record` for why.
         """
         # The durable record, not `self._connected`: that is empty until a
         # connect succeeds *in this process*, so a connector that worked for
