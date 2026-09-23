@@ -2310,10 +2310,15 @@ for _table, _triggers in (
 
 
 class UsageMetric(StrEnum):
+    """What is counted. Cache reads and writes are kept apart from input
+    tokens because providers price them apart."""
+
     MESSAGES = "messages"
     TURNS = "turns"
     INPUT_TOKENS = "input_tokens"
     OUTPUT_TOKENS = "output_tokens"
+    CACHE_READ_TOKENS = "cache_read_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
 
 
 class TenantUsage(TenantScoped, Base):

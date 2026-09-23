@@ -61,7 +61,7 @@ def upgrade() -> None:
             "tenant_id", "metric", "bucket_start", "client_id", "model"
         ),
         sa.CheckConstraint(
-            "metric IN ('messages', 'turns', 'input_tokens', 'output_tokens')",
+            "metric IN ('messages', 'turns', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens')",
             name="ck_tenant_usage_metric",
         ),
         sa.CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
