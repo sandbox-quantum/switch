@@ -19,6 +19,8 @@ silently does less on a remote host. This page is the map of the remote half.
 | Remote dependency detection and install | `dependencies/remote-dependency-manager.ts`, `dependencies/ssh-install-runner.ts` |
 | The persistent SDK host | `packages/agent-providers/src/host/`, `src/main/core/sdk-host/` |
 | A Switch Console-managed Switch server | `src/main/core/managed-switch-server/` |
+| A remote server's shared state: published settings, who uses it | `managed-switch-server/stack-state.ts`, `console-register.ts` |
+| Agents another account runs on a shared host | `src/main/core/agents/observed-agents.ts`, `observed-guard.ts` |
 | Renderer surfaces | `src/renderer/features/remote-hosts/` |
 
 ## Reachability is a state machine, not a boolean (CHOO-1682)
@@ -78,6 +80,84 @@ Two properties worth preserving:
   `wrong-version`, `unknown`. `not-running` matters because `docker` being on `PATH` tells
   you nothing about whether `dockerd` is up, and running an installer over a stopped
   service would misreport the cause.
+
+## A remote Switch server is shared (CHOO-2893)
+
+A server Switch Console runs on a remote host is used by everyone with access
+to that host, from their own Consoles and often under their own accounts. The
+access boundary is being able to run Docker there — which already means being
+able to read every secret the stack has — so nothing here pretends otherwise.
+
+**The host is the source of truth for its stack.** A remote stack's ports and
+credentials used to live only in the encrypted store of the Console that
+started it; a second Console had neither, generated its own, rewrote the
+stack's `.env` and took the running server down. Now:
+
+- The `.env` the stack was last started with is published into a Docker volume
+  beside the stack's own (`<project>_console-state`, labelled outside compose's
+  project so `compose down -v` leaves it). Every account that can reach the
+  daemon can read it, where the working dir holding the real `.env` belongs to
+  whoever started the stack first. It is read and written through a throwaway
+  container of the stack's own Postgres image, with secrets on stdin, never in
+  a command line — see `stack-state.ts`.
+- A start reads the host first (`inspectStack`) and takes the published copy,
+  then this account's `.env`, then this desktop's cache. New credentials are
+  made **only** on a host with nothing of the stack at all. Another account's
+  unpublished stack, a partial `.env`, or a host that cannot be read with no
+  cache to fall back on are refused before anything is written.
+- Every account's Console writes the published `.env` verbatim. Compose run
+  from a second working dir with a byte-identical `.env` recreates nothing
+  (measured; it follows from the bundled compose referencing nothing by path),
+  which is what lets several accounts run one stack.
+- **Connect** joins a running stack without writing its settings differently or
+  running compose. **Disconnect** leaves it running for everyone else; only
+  **Delete for everyone** resets it.
+- A Console re-reads the host at launch, on reachability recovery, and when a
+  running stack stops answering (rate-limited), so a stack another Console
+  stopped, restarted on new ports or reset shows as it is. The status carries a
+  `notice` for what this Console did not do.
+
+**Identity is shared; attribution is not.** Everyone signs in as the stack's one
+seeded admin — sessions are owner-only on the server with no admin override, so
+per-person accounts would hide each person's sessions from the others. Instead:
+
+- Each Console has a random id (`console-identity.ts`, deliberately not the
+  telemetry install id) and a `user@host` name, sent as `X-Switch-Console-Id` /
+  `X-Switch-Console-Name` to managed servers only; switch-core stamps them on
+  its log lines. A server someone else runs signs each person in as themselves
+  and is told nothing about the desktop.
+- Each Console records itself in the state volume (`console-register.ts`): a
+  register of who uses the stack and an activity log of starts, connects,
+  stops, resets and disconnects. A reset keeps the activity. The record is for
+  people, never a control, and a write that fails does not fail the operation.
+
+**Agents another account runs are observed, not run.** Their working
+directories, credentials and watchers are in the other account's home. A
+location marked `observed` (migration 0050) holds agents whose identity came
+from the server alone; their sessions are read and driven through the server,
+and nothing about them touches the host. The guards sit at the chokepoints:
+
+- `resolveWorkspaceFsFor` refuses an observed directory, so no read or write of
+  an agent's files can reach one however it was asked for.
+- `configureSharedWatcher` leaves an observed agent's watcher to its owner —
+  starting one here would run it as the wrong account and fight the owner's for
+  the session lease.
+- `openLocation` opens an observed location without a provider; creating or
+  provisioning a session refuses with the owner named; storage migration and
+  room-session restore skip it.
+- Actions a person asks for (auto-session, auto-approve, provider config,
+  rename, restart, reset, sidecar, diagnostics, terminate, delete in Switch)
+  refuse with `ObservedLocationError`. Removing the row is allowed.
+
+When adding a path that touches an agent's host, check `observed` (via
+`locationWhereAgentRuns` / `isObservedAgent`) before it does.
+
+**Limitations.** Rootless Docker gives each account its own daemon, so there is
+nothing to share. A remote server's port numbers must also be free on each
+desktop, because the forward mirrors them and agent endpoints depend on the
+number. Two different Console versions on one account restart each other's SDK
+hosts. Agents that run on someone's laptop appear in the server view but cannot
+be loaded.
 
 ## Persistent execution
 
