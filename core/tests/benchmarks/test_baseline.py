@@ -42,6 +42,7 @@ from tests.benchmarks.host import (
     new_marker,
     successor_bundle,
 )
+from tests.benchmarks.instrumentation import Hold
 from tests.benchmarks.server import BenchCore, BenchServer, RoomState
 from tests.benchmarks.trace import PROVIDER_DISPATCH, TraceCollector, correlation_for
 from tests.benchmarks.workload import (
@@ -1207,8 +1208,14 @@ async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
 
     What must not depend on it is everything the session is reached by
     otherwise — a delivery its controller pushes, and a command submitted for
-    it. Both are asserted while the ask is still held, and the ask is asserted
-    to be exactly one: a session that started another on each interval would be
+    it. Both are timed, and asserted to have happened while the session was
+    still waiting on its own ask rather than after its client had given up on
+    one: the client sets its own timeout, so a request held past it is held on
+    nobody's behalf and proves nothing about what the session was doing
+    meanwhile. The gate watches for the disconnect that timeout sends, and the
+    hold is then deliberately kept past it, so the same watch that reported a
+    wait is seen to report the end of one. Never more than one ask is waited on
+    at a time — a session that started another on each interval would be
     piling up requests against a server already failing to answer.
 
     Then the hold is let go, and the work it was holding is not done twice.
@@ -1245,15 +1252,17 @@ async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
         assert not await dispatch_wait(watcher, markers, dispatch_timeout(1))
         session = watcher.sessions_by_room()[room_id]
 
+        clock = asyncio.get_running_loop()
         bench.stalls.arm()
         try:
-            await bench.stalls.await_held(ASK_HELD_SECONDS)
+            arrived = await bench.stalls.await_held(ASK_HELD_SECONDS)
 
             pushed = new_marker()
             markers[pushed] = await send(pushed)
             assert not await dispatch_wait(
                 watcher, {pushed: markers[pushed]}, dispatch_timeout(1)
             )
+            served_at = clock.time()
 
             receipt = await _control_when_idle(
                 bench,
@@ -1267,15 +1276,35 @@ async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
                 bench, session, receipt.command_id, CONTROL_SECONDS
             )
             assert outcome == "applied", outcome
+            applied_at = clock.time()
             # What the control was for, rather than only its bookkeeping: a
             # reset is the session's conversation being started again, so a
             # second conversation on the same session is the work being done.
             conversations = watcher.provider_conversations(session)
             assert len(set(conversations)) == 2, conversations
 
-            # Still held, so the two above are not a stall that quietly ended
-            # before they were made; and one, so nothing retried behind it.
-            assert bench.stalls.held == 1, bench.stalls.held
+            # The two above happened while the session was still waiting on its
+            # own ask, rather than after its client had given up on it and
+            # moved on — which a gate that merely held the request would report
+            # identically. Each is timed against the disconnect the client
+            # sends when it abandons the request.
+            assert bench.stalls.live_at(served_at), (served_at, bench.stalls.holds())
+            assert bench.stalls.live_at(applied_at), (applied_at, bench.stalls.holds())
+
+            # Which is only worth asserting if the gate can tell the difference,
+            # so it is made to: held past the client's own timeout, the ask is
+            # given up on, and the moment that happened is observed rather than
+            # assumed. It is after both of the above, which is what "still
+            # waiting" at those moments meant.
+            abandoned = await bench.stalls.await_abandoned(ASK_HELD_SECONDS)
+            assert abandoned > applied_at, (abandoned, applied_at)
+            assert not bench.stalls.live_at(abandoned), bench.stalls.holds()
+
+            # And one ask at a time: the next was made only once the last had
+            # been given up on, rather than piled on a server already failing
+            # to answer.
+            holds = bench.stalls.holds()
+            assert bench.stalls.concurrent_peak() == 1, holds
         finally:
             bench.stalls.release()
 
@@ -1303,12 +1332,31 @@ async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
     print(
         "stalled ask: with the session's own ask for its room work held open "
         "and unanswered, a pushed delivery was served and a room control "
-        f"command was applied to the same session ({session}); exactly one ask "
-        "was outstanding the whole time. The applied reset queued the session "
-        "one follow-up of Switch's own, served once. Letting the ask go "
-        "re-executed nothing, and the room was served normally afterwards."
+        f"command was applied to the same session ({session}). Measured from "
+        "the first ask being held: delivery served at "
+        f"{served_at - arrived:.2f}s, reset applied at "
+        f"{applied_at - arrived:.2f}s, both while that ask was still being "
+        f"waited on — the client gave up on it at {abandoned - arrived:.2f}s, "
+        "observed rather than assumed. Never more than one ask at a time "
+        f"({_held_summary(holds, arrived)}). The applied reset "
+        "queued the session one follow-up of Switch's own, served once. "
+        "Letting the ask go re-executed nothing, and the room was served "
+        "normally afterwards."
     )
     assert duplicated == {}, duplicated
+
+
+def _held_summary(holds: tuple[Hold, ...], origin: float) -> str:
+    """Each held ask as the window its client actually waited through."""
+    return ", ".join(
+        f"{hold.arrived - origin:.2f}s→"
+        + (
+            "still waiting"
+            if hold.abandoned is None
+            else f"{hold.abandoned - origin:.2f}s"
+        )
+        for hold in holds
+    )
 
 
 def _server_originated_dispatches(trace_path: Path) -> dict[str, str]:
