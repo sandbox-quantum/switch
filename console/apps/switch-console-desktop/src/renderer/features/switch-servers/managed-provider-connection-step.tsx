@@ -156,7 +156,7 @@ function OtherProviderConnectionStep({
             <div className="rounded-lg border p-3 text-sm">
               {connection.data.status === 'connected'
                 ? 'Verified on a cloud worker.'
-                : 'Credential saved. Switch will verify it on the worker before the agent becomes ready.'}
+                : 'Credential saved. It has not passed a connection check yet.'}
               <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run(true)}>
                 Disconnect
               </Button>

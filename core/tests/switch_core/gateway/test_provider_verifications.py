@@ -241,3 +241,17 @@ async def test_changed_credential_cannot_silently_reuse_pending_check(verificati
         json={"kind": "api-key", "credential": "different-placeholder"},
     )
     assert response.status_code == 409
+
+
+async def test_removed_member_cannot_use_verification_token(verification_app):
+    client, factory, owner = verification_app
+    job_id, worker = await start(client)
+    async with factory() as session:
+        member = await session.get(TenantMember, (require_tenant_id(), owner))
+        await session.delete(member)
+        await session.commit()
+    base = "/provider-verifications/" + job_id
+    assert (await client.get(base + "/credential", headers=worker)).status_code == 403
+    assert (
+        await client.post(base + "/result", headers=worker, json={"succeeded": True})
+    ).status_code == 403
