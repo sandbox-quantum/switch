@@ -294,6 +294,38 @@ async def test_a_bind_that_does_not_commit_moves_no_routing(
 
 
 @pytest.mark.asyncio
+async def test_a_bind_that_does_not_commit_takes_no_unread_count(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whose reading clears a room follows the bind too, so a refusal leaves it.
+
+    Taking the count before the write lands would hand it to a session that
+    never reached the room, and the session actually in it would go on being
+    told it had read messages it has not seen.
+    """
+    _open(registry)
+    monkeypatch.setattr(definitions, "SessionAuthority", _refusing_authority())
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    protocol = _protocol_for(registry, "room-c")
+    init_operations_protocol(protocol)
+    buffer = protocol.event_buffer
+    occupant = Reader(id="session-b", is_session=True)
+    buffer.hand_counting_to(AGENT, occupant, "room-c")
+    for index in range(2):
+        buffer.enqueue(AGENT, "room-c", _chatter("room-c", index))
+
+    with call_context(_caller("session-a", None)):
+        with pytest.raises(SessionError):
+            await definitions.connect_to_room(
+                "room-c", include_general_instructions=False
+            )
+
+    buffer.caught_up(AGENT, occupant, "room-c", buffer.head(AGENT), CONNECTION)
+
+    assert buffer.unread(AGENT, "room-c", buffer.head(AGENT)).count == 0
+
+
+@pytest.mark.asyncio
 async def test_displacing_a_sibling_names_it_in_the_warning(
     registry, monkeypatch: pytest.MonkeyPatch
 ) -> None:

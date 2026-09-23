@@ -294,44 +294,52 @@ async def connect_to_room(
     if not key:
         raise ValueError("MCP session has no session id; cannot connect to room")
 
-    # The durable bind goes first and says what it changed, and the connection
-    # is then reconciled to that. Routing is where events actually go, so
-    # moving it on a bind that then fails would send them somewhere the
-    # session is not — and the rooms to vacate are the caller's own, read
-    # under the bind's lock rather than from what it believed on arrival.
+    # Where a session is recorded and where its events are routed are one
+    # move, so they are made under one hold of the agent's connection slots.
+    # Reconciling the connection after the bind has already committed leaves a
+    # window a sibling can bind this room in, and the rooms this caller then
+    # drops are the ones it was in before that — it would take the room off a
+    # connection the sibling now holds it on.
+    #
+    # The slot lock is taken before the bind's row locks and never after, which
+    # is the order every other holder of both takes them in.
     caller = caller_session()
     displaced_session_id = None
-    if caller is not None:
-        binding = await SessionAuthority(protocol.session_factory).bind_room(
-            agent_id, caller.id, caller.host_id, caller.epoch, room.id
-        )
-        previous = set(binding.vacated)
-        displaced_session_id = binding.displaced
-    else:
-        previous = rooms_on_caller_connection(protocol, agent_id, key)
-
     async with protocol.connections.slots(agent_id):
+        # Routing is where events actually go, so moving it on a bind that
+        # then fails would send them somewhere the session is not — and the
+        # rooms to vacate are the caller's own, read under the bind's lock
+        # rather than from what it believed on arrival.
+        if caller is not None:
+            binding = await SessionAuthority(protocol.session_factory).bind_room(
+                agent_id, caller.id, caller.host_id, caller.epoch, room.id
+            )
+            previous = set(binding.vacated)
+            displaced_session_id = binding.displaced
+        else:
+            previous = rooms_on_caller_connection(protocol, agent_id, key)
+
         evicted_connection_id = claim_room_on_caller_connection(
             protocol, agent_id, key, room.id
         )
         for departed in previous - {room.id}:
             release_room_on_caller_connection(protocol, agent_id, key, departed)
 
-    # Connecting is how an agent's occupancy of a room changes hands, and the
-    # occupant is the one whose reading clears that room's unread count. The
-    # connection underneath cannot stand in for it: sessions of one agent share
-    # it, and each of them is in a room of its own.
-    reader = counting_reader()
-    if reader is not None:
-        protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
+        # Connecting is how an agent's occupancy of a room changes hands, and
+        # the occupant is the one whose reading clears that room's unread
+        # count. The connection underneath cannot stand in for it: sessions of
+        # one agent share it, and each of them is in a room of its own.
+        reader = counting_reader()
+        if reader is not None:
+            protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
 
-    await bind_room_for_connectionless_caller(
-        protocol,
-        agent_id=agent_id,
-        connection_id=key,
-        room_id=room.id,
-        connection_model=profile.connection_model,
-    )
+        await bind_room_for_connectionless_caller(
+            protocol,
+            agent_id=agent_id,
+            connection_id=key,
+            room_id=room.id,
+            connection_model=profile.connection_model,
+        )
 
     return {
         "agent_id": agent_id,
