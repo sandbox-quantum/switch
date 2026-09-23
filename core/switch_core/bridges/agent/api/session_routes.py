@@ -359,13 +359,17 @@ class ConnectionCarryRequest(BaseModel):
 
 
 class RefusedRoomResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    model_config = ConfigDict(
+        extra="forbid", alias_generator=to_camel, populate_by_name=True
+    )
     room_id: str
     reason: str
 
 
 class CarriedSessionResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    model_config = ConfigDict(
+        extra="forbid", alias_generator=to_camel, populate_by_name=True
+    )
     session_id: str
     adopted: list[str]
     refused: list[RefusedRoomResponse]

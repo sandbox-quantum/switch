@@ -310,11 +310,12 @@ async def connect_to_room(
     else:
         previous = rooms_on_caller_connection(protocol, agent_id, key)
 
-    evicted_connection_id = claim_room_on_caller_connection(
-        protocol, agent_id, key, room.id
-    )
-    for departed in previous - {room.id}:
-        release_room_on_caller_connection(protocol, agent_id, key, departed)
+    async with protocol.connections.slots(agent_id):
+        evicted_connection_id = claim_room_on_caller_connection(
+            protocol, agent_id, key, room.id
+        )
+        for departed in previous - {room.id}:
+            release_room_on_caller_connection(protocol, agent_id, key, departed)
 
     # Connecting is how an agent's occupancy of a room changes hands, and the
     # occupant is the one whose reading clears that room's unread count. The

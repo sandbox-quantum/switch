@@ -13,6 +13,7 @@ door, where the caller *is* the connection.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -202,3 +203,28 @@ async def test_a_legacy_subscribe_takes_the_room_from_a_managed_session() -> Non
     buffer.caught_up(AGENT_ID, session, ROOM_A, later, "conn-a")
 
     assert buffer.unread(AGENT_ID, ROOM_A, later).count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_subscribe_waits_while_the_agents_room_slots_are_held() -> None:
+    """A repoint lands either side of a decision taken on the slots, never inside one.
+
+    The registry is in memory and every move through it is synchronous, so a
+    reader of it is safe until it writes what it read somewhere that has to be
+    awaited. Whoever does that holds the agent's slots across the write, and
+    this door — the one a repoint arrives at — is made to wait for it rather
+    than move a room out from under a decision already taken on it.
+    """
+    protocol = _Protocol()
+    conn = _open(protocol, "single", CONN_ID)
+
+    async with protocol.connections.slots(AGENT_ID):
+        repoint = asyncio.create_task(
+            _subscribe(protocol, ROOM_A, conn.stream_generation, CONN_ID, False)
+        )
+        await asyncio.sleep(0.01)
+        assert protocol.connections.claimant_of(AGENT_ID, ROOM_A) is None
+
+    await repoint
+
+    assert protocol.connections.claimant_of(AGENT_ID, ROOM_A) is conn

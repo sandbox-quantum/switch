@@ -868,7 +868,8 @@ async def _open_event_stream(
             # Without this, a session started before its supervisor learned to
             # share connections keeps the slot, and the supervisor's restored
             # stream 409s and retries forever.
-            protocol.connections.claim_room(conn, room_id, takeover=True)
+            async with protocol.connections.slots(agent.id):
+                protocol.connections.claim_room(conn, room_id, takeover=True)
             # The room's unread count follows the slot: whoever is told how far
             # behind the room is has to be the one whose reading clears it.
             protocol.event_buffer.take_counting(agent.id, conn.id, room_id, conn.cursor)
@@ -1004,17 +1005,18 @@ async def connection_subscribe(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    held = set(conn.rooms)
-    try:
-        evicted = protocol.connections.claim_room(
-            conn, req.room_id, takeover=req.takeover
-        )
-    except RoomOccupiedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    async with protocol.connections.slots(agent.id):
+        held = set(conn.rooms)
+        try:
+            evicted = protocol.connections.claim_room(
+                conn, req.room_id, takeover=req.takeover
+            )
+        except RoomOccupiedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    if conn.scope == "single":
-        for departed in held - {req.room_id}:
-            protocol.connections.release_room(conn, departed)
+        if conn.scope == "single":
+            for departed in held - {req.room_id}:
+                protocol.connections.release_room(conn, departed)
 
     # A room slot changes hands here as much as it does on the stream URL or in
     # connect_to_room, and the room's unread count follows it: the holder being
@@ -1061,7 +1063,8 @@ async def connection_unsubscribe(
     except UnknownConnectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    protocol.connections.release_room(conn, req.room_id)
+    async with protocol.connections.slots(agent.id):
+        protocol.connections.release_room(conn, req.room_id)
     return {"ok": True, "rooms": sorted(conn.rooms)}
 
 

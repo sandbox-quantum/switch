@@ -224,6 +224,26 @@ def _carry_notice(adopted: list[str], refused: list[RefusedRoom]) -> Notice:
     )
 
 
+def _undecided_notice() -> Notice:
+    """What a session is told when this server cannot see its connection.
+
+    Nothing is known to have been lost here — the session may have been serving
+    nothing at all — and that is the reason to write it down rather than leave
+    it out: an upgrade that could not establish what a session was doing reads
+    exactly like one that found nothing to do.
+    """
+    return Notice(
+        type="notice",
+        level="warning",
+        code="ROOMS_UNDECIDED",
+        message=(
+            "This session is bound to a connection this server cannot see, so whether "
+            "it was serving a room could not be established and none was recorded for "
+            "it. Any room it was serving stays with whichever session claims it next."
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class RoomAdmission:
     """Who, if anyone, an agent's controller may hand a room delivery to.
@@ -2310,11 +2330,21 @@ class SessionAuthority:
         hold.
 
         The evidence lasts only as long as the old worker does, so this runs
-        while it is still alive — before its controller replaces it. A
-        connection that moves or closes underneath the decision invalidates it:
-        every one is re-read against the generation and room set it was decided
-        on, and the whole carry is refused rather than committed against state
-        that has moved.
+        while it is still alive — before its controller replaces it. Two things
+        keep it from moving out from under the decision. The agent's room slots
+        are held for the whole of this, commit included, so a claim cannot
+        change hands between the last look at the registry and the record of
+        what it said; without that the commit's own wait is a window, and no
+        number of re-reads before it closes one. What the hold does not cover is
+        a connection being closed or superseded from under itself, so every one
+        is also re-read against the generation and rooms it was decided on and
+        the whole carry refused rather than committed against state that moved.
+
+        Afterwards the room is the session's, recorded, and a repoint is an
+        ordinary later claim rather than a contradiction: the connection it
+        moves to belongs to a worker this controller is about to replace, and
+        once that connection is gone the room is served through the controller,
+        which routes it by the record written here.
 
         `controller_connection_id` is the one thing the caller supplies, and it
         names the caller rather than any session: a session already bound to it
@@ -2328,16 +2358,20 @@ class SessionAuthority:
         nothing unfinished claims it; no grant is outstanding for it; and this
         session has never been recorded holding it. What is refused is named
         and written into the session's own log, because a room that does not
-        come across is a conversation that starts again somewhere else.
+        come across is a conversation that starts again somewhere else — as is
+        a session that could not be decided at all.
         """
         async with (
+            connections.slots(agent_id),
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
         ):
             # The same order as `bind_room`: the agent row, then every session
             # of the agent by id. A session being created for one of these
             # rooms serializes on the agent row, which is what keeps a grant
-            # and a carry from both finding the room free.
+            # and a carry from both finding the room free. The room slots are
+            # taken before any of it, and nothing holding a row here waits for
+            # them, so the two orders cannot close on each other.
             await self._lock_agent(db, agent_id)
             rows = list(
                 await db.scalars(
@@ -2373,6 +2407,8 @@ class SessionAuthority:
                     or connection.agent_id != agent_id
                     or not connection.is_alive(uptime)
                 ):
+                    if await self._last_carry_notice(db, row.id) != "ROOMS_UNDECIDED":
+                        await self._append(db, row, _undecided_notice())
                     unverifiable.append(row.id)
                     continue
                 # An `all` connection subscribes to nothing and covers what no
@@ -2425,6 +2461,28 @@ class SessionAuthority:
                         f"Connection {connection_id} changed while its rooms were being carried across.",
                     )
             return ConnectionCarry(tuple(carried), tuple(unverifiable))
+
+    async def _last_carry_notice(self, db: AsyncSession, session_id: str) -> str | None:
+        """The last thing this session was told about the rooms it was serving.
+
+        A carry that cannot decide a session leaves it exactly as it was, so the
+        question is asked again on the next attempt and on the next start. The
+        first answer is the disclosure; repeating it every few seconds would
+        bury the transcript it is written into, and saying it again after
+        something else has been said is a new episode rather than a repeat.
+        """
+        return await db.scalar(
+            select(SdkSessionEvent.event["body"]["code"].astext)
+            .where(
+                SdkSessionEvent.tenant_id == require_tenant_id(),
+                SdkSessionEvent.session_id == session_id,
+                SdkSessionEvent.event["body"]["code"].astext.in_(
+                    ("ROOMS_CARRIED", "ROOMS_NOT_CARRIED", "ROOMS_UNDECIDED")
+                ),
+            )
+            .order_by(SdkSessionEvent.sequence.desc())
+            .limit(1)
+        )
 
     async def _ever_held(self, db: AsyncSession, session_id: str, room_id: str) -> bool:
         """Has this session ever been recorded in `room_id`?

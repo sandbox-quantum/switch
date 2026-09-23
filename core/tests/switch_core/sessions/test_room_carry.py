@@ -16,10 +16,16 @@ rooms on the strength of an empty claim.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
+from switch_core.bridges.agent.api.session_routes import (
+    ConnectionCarryRequest,
+    carry_connection_rooms,
+)
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
     ClientDeclaration,
@@ -206,7 +212,48 @@ async def test_a_session_whose_connection_cannot_be_seen_is_reported(session_fac
 
     assert carry == ConnectionCarry(sessions=(), unverifiable=(FIRST_SESSION,))
     assert (await service.snapshot(FIRST_SESSION, "owner")).session.room_ids == []
-    assert await _notices(session_factory, FIRST_SESSION) == []
+    # Said in the session's own transcript as well as in the answer: an upgrade
+    # that could not establish what a session was doing reads exactly like one
+    # that found nothing to do.
+    code, message = (await _notices(session_factory, FIRST_SESSION))[0]
+    assert code == "ROOMS_UNDECIDED"
+    assert "could not be established" in message
+
+
+async def test_a_session_that_cannot_be_decided_is_told_once_an_episode(
+    session_factory,
+):
+    """The disclosure is the first answer, not every attempt at it.
+
+    A carry that cannot decide a session leaves it exactly as it was, so the
+    same question is asked again on the next attempt and on every start after
+    it. Repeating the answer each time would bury the transcript it is written
+    into; saying it again once something else has been said is a new episode.
+    """
+    service, connections = await _legacy(session_factory, [ROOM])
+    connection = connections.get(f"connection-{FIRST_SESSION}")
+    beating = connection.last_beat
+    connection.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+
+    assert [code for code, _ in await _notices(session_factory, FIRST_SESSION)] == [
+        "ROOMS_UNDECIDED"
+    ]
+
+    connection.last_beat = beating
+    second_epoch = await _second_session(service)
+    await service.bind_room(AGENT, SECOND[0], SECOND[1], second_epoch, ROOM)
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+    connection.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+    await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+
+    assert [code for code, _ in await _notices(session_factory, FIRST_SESSION)] == [
+        "ROOMS_UNDECIDED",
+        "ROOMS_NOT_CARRIED",
+        "ROOMS_UNDECIDED",
+    ]
 
 
 async def test_a_session_already_on_the_controllers_connection_is_left_alone(
@@ -362,6 +409,52 @@ async def test_a_retry_after_a_lost_response_changes_nothing(session_factory):
     assert after.session.room_ids == [ROOM]
 
 
+async def test_a_room_cannot_change_hands_while_the_carry_is_being_written(
+    session_factory,
+):
+    """The window a re-read cannot close: the commit's own wait.
+
+    The decision is taken from the registry and recorded in the database, and
+    between the last look and the record landing there is a suspension no
+    further look happens after. A claim moving in it would be a room this
+    server had stopped delivering to the session, recorded against it anyway.
+    So whoever moves a room slot waits for the carry to be written, and lands
+    after it as an ordinary later claim.
+    """
+    service, connections = await _legacy(session_factory, [ROOM])
+    elsewhere = _serving(connections, SECOND[0], [])
+    deciding = asyncio.Event()
+    order: list[str] = []
+    ever_held = service._ever_held
+
+    async def suspended(db, session_id: str, room_id: str) -> bool:
+        deciding.set()
+        await asyncio.sleep(0.05)
+        return await ever_held(db, session_id, room_id)
+
+    async def repoint() -> None:
+        await deciding.wait()
+        async with connections.slots(AGENT):
+            order.append("repointed")
+            serving = connections.get(f"connection-{FIRST_SESSION}")
+            connections.release_room(serving, ROOM)
+            connections.claim_room(elsewhere, ROOM)
+
+    service._ever_held = suspended  # type: ignore[method-assign]
+    moving = asyncio.create_task(repoint())
+    try:
+        carry = await service.carry_connection_rooms(AGENT, CONTROLLER, connections)
+        order.append("carried")
+        await moving
+    finally:
+        service._ever_held = ever_held  # type: ignore[method-assign]
+
+    # Not CLAIM_MOVED: the move could not happen inside the decision at all.
+    assert carry.sessions[0].adopted == (ROOM,)
+    assert order == ["carried", "repointed"]
+    assert (await service.snapshot(FIRST_SESSION, "owner")).session.room_ids == [ROOM]
+
+
 async def test_a_connection_that_moves_while_the_carry_is_decided_commits_nothing(
     session_factory,
 ):
@@ -396,3 +489,34 @@ async def test_a_connection_that_moves_while_the_carry_is_decided_commits_nothin
 
     assert (await service.snapshot(FIRST_SESSION, "owner")).session.room_ids == []
     assert await _notices(session_factory, FIRST_SESSION) == []
+
+
+async def test_the_answer_the_controller_reads_names_the_session_and_its_rooms(
+    session_factory,
+):
+    """The carry has to leave the server, and the route is where its shape is set.
+
+    The decision is committed before the reply is built, so a reply that cannot
+    be built is a carry that happened and an account of it the caller never
+    gets: the controller sees a failure, asks again, and is told there was
+    nothing to carry.
+    """
+    _, connections = await _legacy(session_factory, [ROOM, "room-elsewhere"])
+
+    answer = await carry_connection_rooms(
+        ConnectionCarryRequest(connection_id=CONTROLLER),
+        SimpleNamespace(id=AGENT),  # type: ignore[arg-type]
+        session_factory,
+        SimpleNamespace(connections=connections),  # type: ignore[arg-type]
+    )
+
+    assert answer.model_dump(by_alias=True) == {
+        "sessions": [
+            {
+                "sessionId": FIRST_SESSION,
+                "adopted": [ROOM],
+                "refused": [{"roomId": "room-elsewhere", "reason": "NOT_A_MEMBER"}],
+            }
+        ],
+        "unverifiable": [],
+    }

@@ -26,7 +26,8 @@ import asyncio
 import logging
 import secrets
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -417,6 +418,7 @@ class ConnectionRegistry:
         self._on_close: Callable[[Connection], None] = lambda conn: None
         self._by_id: dict[str, Connection] = {}
         self._by_agent: dict[str, set[str]] = {}
+        self._slot_locks: dict[str, tuple[asyncio.Lock, int]] = {}
         # Incarnations are drawn from here, never from the connection, so a
         # number is never handed out twice in one process — including to a
         # connection id that was closed and opened again. The seed is random so
@@ -768,6 +770,34 @@ class ConnectionRegistry:
     # ------------------------------------------------------------------
     # Room slots
     # ------------------------------------------------------------------
+
+    @asynccontextmanager
+    async def slots(self, agent_id: str) -> AsyncIterator[None]:
+        """Hold this agent's room slots still.
+
+        The registry is in memory and every move through it is synchronous, so
+        within one step nothing can change underneath a reader. What needs more
+        than that is a decision recorded elsewhere: a reader that writes what a
+        connection is serving into the database is suspended at the commit, and
+        a claim moving in that window leaves the two disagreeing with no later
+        read able to notice. Whoever moves a slot takes this first, so a move is
+        ordered either wholly before such a decision or wholly after it.
+
+        Per agent, because that is the scope a room slot is contested in. It
+        does not stand in for the database locks: a caller that takes both takes
+        this one first, and no holder of a row lock waits here.
+        """
+        lock, users = self._slot_locks.get(agent_id, (asyncio.Lock(), 0))
+        self._slot_locks[agent_id] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, remaining = self._slot_locks[agent_id]
+            if remaining == 1:
+                del self._slot_locks[agent_id]
+            else:
+                self._slot_locks[agent_id] = (lock, remaining - 1)
 
     def claim_room(
         self, conn: Connection, room_id: str, *, takeover: bool = False

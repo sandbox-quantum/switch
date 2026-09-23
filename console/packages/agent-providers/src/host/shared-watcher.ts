@@ -177,17 +177,18 @@ const CARRY_RETRY_MS = [1000, 3000, 9000];
  * where that is written down, and it has to happen before anything replaces
  * those workers: closing the connection is what destroys the evidence.
  *
- * Which is why an unreachable server takes the watcher down with it rather
- * than being carried on past. Nothing has been replaced at this point, so
- * every one of those sessions is still serving its room exactly as it was
- * before this watcher started, and the next attempt finds the same evidence
- * intact. Going on instead would replace them with the one thing that cannot
- * be retried.
+ * Only one answer lets the upgrade go on: Switch deciding, for every session,
+ * what it is serving. Being unreachable is not that answer, and neither is a
+ * refusal, a reply that cannot be read, or a session Switch could not place —
+ * an upgrade blocked is recoverable and a conversation replaced is not, so all
+ * of them stop the watcher instead. Nothing has been replaced at that point:
+ * every session is still serving its room exactly as it was before the watcher
+ * started, and the next start finds the same evidence intact.
  *
- * A server that refuses outright is a different answer and is taken as one:
- * older than this call, or certain the rooms are not these sessions' to keep.
- * Retrying cannot change it, so it is reported and the upgrade proceeds
- * without them.
+ * Rooms Switch decided against are the exception, and they are the one case
+ * that is genuinely decided: another session holds the room, or the agent is no
+ * longer in it. Switch has written each of them into the session's own log, so
+ * the upgrade goes on and they are named here as well.
  */
 export async function carryLegacyRooms(
   admissions: SwitchRoomAdmissions,
@@ -195,72 +196,70 @@ export async function carryLegacyRooms(
   signal: AbortSignal
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
+    let undecided: string;
     try {
       const carried = await admissions.carryRooms(connectionId, signal);
-      for (const session of carried.sessions)
-        for (const room of session.refused)
-          console.warn(
-            `Session ${session.sessionId} was serving room ${room.roomId} over a connection of its own, and Switch would not record the room against it (${room.reason}). The room will be answered by a new session.`
-          );
-      for (const sessionId of carried.unverifiable)
-        console.warn(
-          `Session ${sessionId} is running on a connection Switch could not look up, so what it was serving could not be established. Any room it was serving will be answered by a new session.`
-        );
-      return;
-    } catch (error) {
-      if (!(error instanceof RoomAdmissionError)) throw error;
-      if (!error.retryable) {
-        console.error(
-          `Switch will not record what this agent's sessions are serving (${error.message}). The sessions running the superseded build are being replaced without it, and any room they were serving will be answered by a new session.`
-        );
+      if (carried.unverifiable.length === 0) {
+        for (const session of carried.sessions)
+          for (const room of session.refused)
+            console.warn(
+              `Session ${session.sessionId} was serving room ${room.roomId} over a connection of its own, and Switch would not record the room against it (${room.reason}). The room will be answered by a new session.`
+            );
         return;
       }
-      const wait = CARRY_RETRY_MS[attempt];
-      if (wait === undefined)
+      undecided = `Switch could not establish what ${carried.unverifiable.join(', ')} is serving`;
+    } catch (error) {
+      if (!(error instanceof RoomAdmissionError)) throw error;
+      if (!error.retryable)
         throw new Error(
-          `Switch could not be asked what this agent's sessions are serving (${error.message}). They are still serving their rooms and have been left alone; the watcher stops here rather than replace them with nothing recorded.`
+          `Switch would not say what this agent's sessions are serving (${error.message}). They are still serving their rooms and have been left alone; the watcher stops here rather than replace them with nothing recorded.`
         );
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, wait);
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          { once: true }
-        );
-      });
-      if (signal.aborted)
-        throw new Error(
-          `The controller stopped before Switch could say what this agent's sessions are serving (${error.message}). They are still serving their rooms and have been left alone.`
-        );
+      undecided = `Switch could not be asked what this agent's sessions are serving (${error.message})`;
     }
+    const wait = CARRY_RETRY_MS[attempt];
+    if (wait === undefined)
+      throw new Error(
+        `${undecided}. They are still serving their rooms and have been left alone; the watcher stops here rather than replace them with nothing recorded.`
+      );
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, wait);
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true }
+      );
+    });
+    if (signal.aborted)
+      throw new Error(
+        `${undecided}, and the controller stopped before it could be asked again. The sessions are still serving their rooms and have been left alone.`
+      );
   }
 }
 
 /**
- * Replaces this agent's sessions that are still running the build the watcher
- * has just superseded. A session is supervised independently of the watcher,
- * so nothing else would: it would go on answering its room with code the
- * deployment moved past until somebody restarted it by hand. Only a session
- * with a live supervisor is touched — one that is not running was not left
- * behind by an upgrade, and starting it here would reopen a session its owner
- * had closed.
+ * This agent's sessions that are still running the build the watcher has just
+ * superseded. A session is supervised independently of the watcher, so nothing
+ * else finds them: they would go on answering their rooms with code the
+ * deployment moved past until somebody restarted them by hand. Only a session
+ * with a live supervisor counts — one that is not running was not left behind
+ * by an upgrade, and starting it would reopen a session its owner had closed.
  */
-export async function replaceSupersededSessions(
+export async function supersededSessions(
   agentId: string,
-  connectionId: string,
   supervision: Supervision
-): Promise<void> {
+): Promise<{ root: string; config: SharedHostConfig }[]> {
   const base = sharedSessionsBase();
   let names: string[];
   try {
     names = await readdir(base);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+  const found: { root: string; config: SharedHostConfig }[] = [];
   for (const name of names) {
     const root = join(base, name);
     let config: SharedHostConfig;
@@ -286,6 +285,18 @@ export async function replaceSupersededSessions(
     if (config.session.agentId !== agentId) continue;
     const running = await liveSupervisor(root);
     if (!running || running.build === supervision.build) continue;
+    found.push({ root, config });
+  }
+  return found;
+}
+
+/** Restarts each superseded session from its saved state, on this connection. */
+export async function replaceSupersededSessions(
+  superseded: { root: string; config: SharedHostConfig }[],
+  connectionId: string,
+  supervision: Supervision
+): Promise<void> {
+  for (const { root, config } of superseded) {
     console.warn(
       `Session ${config.session.sessionId} is running a superseded build; restarting it from saved state.`
     );
@@ -619,8 +630,18 @@ export async function runSharedWatcher(
       await handOff(sessionRoot, event);
       return true;
     };
-    await carryLegacyRooms(admissions, connectionId, stop.signal);
-    await replaceSupersededSessions(template.session.agentId, connectionId, supervision);
+    const superseded = await supersededSessions(template.session.agentId, supervision);
+    /**
+     * Switch is asked only where one of those sessions is serving itself over a
+     * connection of its own. The controller's connection is derived from the
+     * agent rather than the run, so a session saved by any build that shares
+     * one already names this connection and has nothing to carry — and a Switch
+     * too old to answer at all would otherwise stop the watcher here, on every
+     * upgrade, for a question with no answer to give.
+     */
+    if (superseded.some(({ config }) => config.roomConnection?.connectionId !== connectionId))
+      await carryLegacyRooms(admissions, connectionId, stop.signal);
+    await replaceSupersededSessions(superseded, connectionId, supervision);
     const launchAssigned = async () => {
       for (const config of assignments.sessions()) await launch(config);
     };
