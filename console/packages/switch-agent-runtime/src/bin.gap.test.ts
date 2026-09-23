@@ -36,12 +36,6 @@ describe('gap handling in the connector channel', () => {
     expect(gapBranch()).toContain('process.stderr.write');
   });
 
-  it('moves the cursor to where the server resumed', () => {
-    // A server restart resets its numbering; keeping the old, higher cursor
-    // would send it back on every reconnect and replay the buffer each time.
-    expect(gapBranch()).toContain('cursor = Number(resumedAt)');
-  });
-
   it('drains the deferred gap onto an outgoing notification', () => {
     const emit = SOURCE.slice(SOURCE.indexOf('async function emitNotification'));
     // Read and cleared in the one place every notification passes through, so

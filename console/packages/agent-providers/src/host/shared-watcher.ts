@@ -254,64 +254,84 @@ export async function runSharedWatcher(
     };
     await replaceSupersededSessions(template.session.agentId, supervision);
     for (const config of assignments.sessions()) await launch(config);
-    const stream = new SwitchEventStream({
-      creds: {
-        agentId: credentials.SWITCH_AGENT_ID,
-        apiEndpoint: credentials.SWITCH_API_ENDPOINT,
-        token: credentials.SWITCH_API_TOKEN,
-      },
-      connectionId: template.roomConnection.connectionId,
-      scope: 'all',
-      filter: 'addressed',
-      spawnCapable: process.env.SWITCH_HOSTED_AUTO_SESSION !== 'false',
-      rooms: [],
-      startCursor: assignments.cursor,
-      signal: stop.signal,
-      log: console,
-      onEvent: (event) => {
-        if (process.env.SWITCH_HOSTED_AUTO_SESSION === 'false') return;
-        pending = pending.then(async () => {
-          const messageId = roomInputId(event);
-          if (!messageId) return;
-          const config = await assignments.assign(
-            sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
-            {
-              sequence: z.number().int().positive().parse(event.sequence),
-              roomId: event.room_id,
-              messageId,
-            }
+    const connectionId = template.roomConnection.connectionId;
+    const open = (startCursor: number) => {
+      const own = new AbortController();
+      const halt = () => own.abort(stop.signal.reason);
+      stop.signal.addEventListener('abort', halt, { once: true });
+      own.signal.addEventListener('abort', () => stop.signal.removeEventListener('abort', halt), {
+        once: true,
+      });
+      new SwitchEventStream({
+        creds: {
+          agentId: credentials.SWITCH_AGENT_ID,
+          apiEndpoint: credentials.SWITCH_API_ENDPOINT,
+          token: credentials.SWITCH_API_TOKEN,
+        },
+        connectionId,
+        scope: 'all',
+        filter: 'addressed',
+        spawnCapable: process.env.SWITCH_HOSTED_AUTO_SESSION !== 'false',
+        rooms: [],
+        startCursor,
+        signal: own.signal,
+        log: console,
+        onEvent: (event) => {
+          if (process.env.SWITCH_HOSTED_AUTO_SESSION === 'false') return;
+          pending = pending.then(async () => {
+            const messageId = roomInputId(event);
+            if (!messageId) return;
+            const config = await assignments.assign(
+              sharedConfigSchema.parse(
+                JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+              ),
+              {
+                sequence: z.number().int().positive().parse(event.sequence),
+                roomId: event.room_id,
+                messageId,
+              }
+            );
+            await launch(config);
+          });
+          return pending.catch((error: Error) => {
+            fail(error);
+            throw error;
+          });
+        },
+        // A gap is terminal for a session host, which has context to re-read.
+        // The watcher has none, and stopping would end auto-start until
+        // someone deleted this journal by hand. Events lost to retention are
+        // gone, so it carries on from the server's position. A server restart
+        // resumes at head, past events the new server still holds — often the
+        // mention that woke this machine — so the watcher reopens at 0 and
+        // reads them once; a room already assigned keeps its session.
+        onGap: (gap) => {
+          console.warn(
+            gap.cursorReset
+              ? `Shared SDK watcher delivery gap: ${gap.reason}. Re-reading the server's retained events from the start.`
+              : `Shared SDK watcher delivery gap: ${gap.reason}. Resuming from the server's current position; rooms addressed during the gap must be re-addressed to start a session.`
           );
-          await launch(config);
-        });
-        return pending.catch((error: Error) => {
-          fail(error);
-          throw error;
-        });
-      },
-      // A gap is terminal for a session host, which has context to re-read. The
-      // watcher has none: the events it missed are gone from the server, and
-      // the sessions it starts read room context themselves. Stopping here
-      // would end auto-start until someone deleted this journal by hand — and
-      // a server restart resets the numbering, so it would happen again on
-      // every reconnect.
-      onGap: (gap) => {
-        console.warn(
-          `Shared SDK watcher delivery gap: ${gap.reason}. Resuming from the server's current position; rooms addressed during the gap must be re-addressed to start a session.`
-        );
-        if (!gap.cursorReset) return;
-        pending = pending.then(() => assignments.restart());
-        return pending.catch((error: Error) => {
-          fail(error);
-          throw error;
-        });
-      },
-      onEvicted: (reason) => {
-        if (reason === 'heartbeat lapsed')
-          console.warn('Watcher heartbeat lapsed; reconnecting from the saved cursor.');
-        else fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
-      },
-    });
-    stream.start();
+          if (!gap.cursorReset) return;
+          pending = pending.then(async () => {
+            await assignments.restart();
+            if (stop.signal.aborted || own.signal.aborted) return;
+            own.abort();
+            open(0);
+          });
+          return pending.catch((error: Error) => {
+            fail(error);
+            throw error;
+          });
+        },
+        onEvicted: (reason) => {
+          if (own.signal.aborted) return;
+          if (reason === 'heartbeat lapsed')
+            console.warn('Watcher heartbeat lapsed; reconnecting from the saved cursor.');
+          else fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
+        },
+      }).start();
+    };
+    open(assignments.cursor);
     while (!stop.signal.aborted) {
       const enabled = z
         .object({ enabled: z.boolean() })
