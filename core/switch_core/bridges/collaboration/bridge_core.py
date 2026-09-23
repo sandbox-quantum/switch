@@ -415,11 +415,10 @@ class BridgeCore:
                     if room_ids is None
                     else await self._room_tenant(room_ids[0])
                 )
-                # The first room only, where a channel maps to several: the
-                # field answers "which room was this about", and a list is not
-                # an answer a log search can use. None until the mapping
-                # exists, which is the honest reading for a channel whose room
-                # the handler is about to create.
+                # `room_ids` is (Switch room id, transport room id); the log
+                # field is the first. None until the mapping exists, which is
+                # the honest reading for a channel whose room the handler is
+                # about to create.
                 room_id = room_ids[0] if room_ids else None
                 with tenant_scope(tenant_id), log_context(room_id=room_id):
                     try:

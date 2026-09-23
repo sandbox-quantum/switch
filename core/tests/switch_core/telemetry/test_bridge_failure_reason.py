@@ -27,6 +27,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError
 from requests.exceptions import Timeout as RequestsTimeout
 from slack_sdk.errors import SlackApiError
+from slack_sdk.web.async_slack_response import AsyncSlackResponse
 from sqlalchemy.exc import DBAPIError
 from telegram.error import (
     BadRequest,
@@ -250,6 +251,22 @@ class TestSlackAuthCodesAreExhaustiveOverNothingElse:
             _failure_reason(SlackApiError("boom", _NotAMapping()))  # type: ignore[arg-type]
             == "platform_error"
         )
+
+    def test_a_plain_text_response_does_not_crash(self) -> None:
+        """A real `AsyncSlackResponse` holding a text body, as the async client
+        builds for a proxy's plain-text 5xx. It has a `.get`, and that `.get`
+        raises."""
+        response = AsyncSlackResponse(
+            client=None,
+            http_verb="POST",
+            api_url="https://slack.com/api/auth.test",
+            req_args={},
+            data="<html>502 Bad Gateway</html>",  # type: ignore[arg-type]
+            headers={},
+            status_code=502,
+        )
+
+        assert _failure_reason(SlackApiError("boom", response)) == "platform_error"
 
     def test_a_response_of_none_does_not_crash(self) -> None:
         assert _failure_reason(SlackApiError("boom", None)) == "platform_error"  # type: ignore[arg-type]

@@ -186,10 +186,15 @@ def _slack_failure_reason(exc: SlackApiError) -> str:
     # — an empty 502, a proxy's error page. That object has no `.get`, and this
     # is evaluated inside the argument list of the `emit_safely` that reports
     # the failure, so an `AttributeError` here would replace the bridge's real
-    # exception with a meaningless one *and* suppress the event.
+    # exception with a meaningless one *and* suppress the event. Nor does a
+    # `.get` promise a mapping: `AsyncSlackResponse.get` itself raises when
+    # the body it holds is text, as a proxy's plain-text 5xx is.
     response = getattr(exc, "response", None)
     reader = getattr(response, "get", None)
-    code = reader("error") if callable(reader) else None
+    try:
+        code = reader("error") if callable(reader) else None
+    except Exception:
+        code = None
     if code in _SLACK_AUTH_ERROR_CODES:
         return "auth_failed"
     return "platform_error"
