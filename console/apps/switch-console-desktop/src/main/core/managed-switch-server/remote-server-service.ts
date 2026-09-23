@@ -1,6 +1,9 @@
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
-import { deleteAgentsForServer } from '@main/core/switch-servers/delete-server-agents';
+import {
+  deleteAgentsForServer,
+  forgetObservedAgentsForServer,
+} from '@main/core/switch-servers/delete-server-agents';
 import {
   ensureManagedServer,
   getRemoteManagedServer,
@@ -469,7 +472,8 @@ class RemoteServerService {
    * for everyone else (CHOO-2893): close the forward, remove the server
    * record — its agents are unlinked and kept, as for any server — and drop
    * this desktop's copy of the stack's credentials, which it no longer needs.
-   * Nothing on the host is touched, so this needs no connection to it.
+   * Agents this Console only observed there go with the server, since they are
+   * views of it. Nothing on the host is touched, so this needs no connection.
    */
   async disconnect(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
@@ -484,7 +488,10 @@ class RemoteServerService {
       }
       this.releaseHost(sshHost, live);
       const server = await getRemoteManagedServer(sshHost);
-      if (server) await removeServer(server.id);
+      if (server) {
+        await forgetObservedAgentsForServer(server.id);
+        await removeServer(server.id);
+      }
       await clearSecrets({ secretsKey: remoteSecretsKey(sshHost) });
       await clearPorts({ stateDir: remoteServerStateDir(hostSlug(sshHost)) });
       this.setStatus(sshHost, initialStatus(sshHost));

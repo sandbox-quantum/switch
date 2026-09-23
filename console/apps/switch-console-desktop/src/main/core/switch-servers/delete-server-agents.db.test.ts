@@ -23,7 +23,8 @@ vi.mock('@main/core/agents/deleteAgent', () => ({
   deleteAgent: mocks.deleteAgent,
 }));
 
-const { deleteAgentsForServer } = await import('./delete-server-agents');
+const { deleteAgentsForServer, forgetObservedAgentsForServer } =
+  await import('./delete-server-agents');
 
 describe('deleteAgentsForServer', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
@@ -37,6 +38,14 @@ describe('deleteAgentsForServer', () => {
     await fixture.db
       .insert(locations)
       .values({ id: 'loc-1', name: 'repo', sshHost: '', dir: '/tmp/repo' });
+    await fixture.db.insert(locations).values({
+      id: 'loc-observed',
+      name: 'reviewer',
+      sshHost: 'vm-1',
+      dir: '/home/alice/reviewer',
+      observed: true,
+      observedOwner: 'alice',
+    });
     for (const id of ['managed-1', 'other-1']) {
       await fixture.db.insert(switchServers).values({
         id,
@@ -52,11 +61,47 @@ describe('deleteAgentsForServer', () => {
     mocks.db = undefined;
   });
 
-  async function seedAgent(id: string, serverId: string | null): Promise<void> {
+  async function seedAgent(
+    id: string,
+    serverId: string | null,
+    locationId = 'loc-1'
+  ): Promise<void> {
     await fixture.db
       .insert(agents)
-      .values({ id, locationId: 'loc-1', name: id, providerId: 'claude', serverId });
+      .values({ id, locationId, name: id, providerId: 'claude', serverId });
   }
+
+  // An observed agent is another account's (CHOO-2893): its row is all there
+  // is of it here, and its files are not this Console's to remove.
+  it('drops an observed agent without reaching into its directory', async () => {
+    await seedAgent('agent-own', 'managed-1');
+    await seedAgent('agent-observed', 'managed-1', 'loc-observed');
+
+    const result = await deleteAgentsForServer('managed-1');
+
+    expect(result.failed).toEqual([]);
+    const options = Object.fromEntries(
+      mocks.deleteAgent.mock.calls.map(([agentId, opts]) => [agentId, opts])
+    );
+    expect(options['agent-own']).toMatchObject({ removeProvisionedFiles: true });
+    expect(options['agent-observed']).toMatchObject({
+      removeProvisionedFiles: false,
+      deleteInSwitch: false,
+    });
+  });
+
+  it('forgets only the observed agents of a server this Console leaves', async () => {
+    await seedAgent('agent-own', 'managed-1');
+    await seedAgent('agent-observed', 'managed-1', 'loc-observed');
+    await seedAgent('agent-observed-elsewhere', 'other-1', 'loc-observed');
+
+    expect(await forgetObservedAgentsForServer('managed-1')).toEqual(['agent-observed']);
+    expect(mocks.deleteAgent).toHaveBeenCalledExactlyOnceWith('agent-observed', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'server_teardown',
+    });
+  });
 
   it('deletes only the agents belonging to the given server', async () => {
     await seedAgent('agent-a', 'managed-1');

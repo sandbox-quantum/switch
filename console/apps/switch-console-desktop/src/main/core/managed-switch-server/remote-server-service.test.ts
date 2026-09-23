@@ -20,6 +20,7 @@ const listManagedServers = vi.hoisted(() => vi.fn());
 const getRemoteManagedServer = vi.hoisted(() => vi.fn());
 const ensureManagedServer = vi.hoisted(() => vi.fn());
 const removeServer = vi.hoisted(() => vi.fn());
+const forgetObservedAgentsForServer = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const clearSecrets = vi.hoisted(() => vi.fn());
 const clearPorts = vi.hoisted(() => vi.fn());
 const readVersionStatus = vi.hoisted(() =>
@@ -55,6 +56,7 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 }));
 vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
   deleteAgentsForServer: vi.fn(),
+  forgetObservedAgentsForServer,
 }));
 vi.mock('@main/core/telemetry/managed-server', () => ({
   reportManagedServerOutcome: vi.fn(),
@@ -213,6 +215,8 @@ describe('disconnect', () => {
     expect(host.dispose).toHaveBeenCalledOnce();
     expect(createRemoteServerHost).not.toHaveBeenCalled();
     expect(removeServer).toHaveBeenCalledExactlyOnceWith('srv-1');
+    // Agents it only observed there are views of the server, and go with it.
+    expect(forgetObservedAgentsForServer).toHaveBeenCalledExactlyOnceWith('srv-1');
     expect(clearSecrets).toHaveBeenCalledWith({ secretsKey: 'remote-switch-server:vm-1:secrets' });
     expect(clearPorts).toHaveBeenCalledWith({ stateDir: '/user-data/remote/vm-1' });
     expect(service.getStatuses()).toEqual([]);
