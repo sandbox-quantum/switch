@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { declareHandoffCapability, handOff, readsHandoffs, wakeCommands } from './handoff';
-import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
+import { runSharedHost, SharedHostUnavailableError } from './shared-host';
 
 /** Every answer Switch has given this session's room binding, in order. */
 async function boundRooms(root: string): Promise<string[][]> {
@@ -435,6 +435,7 @@ function roomWorker() {
     interruptTurn: vi.fn(async () => {}),
     stopSession: vi.fn(async () => {
       live = false;
+      emit({ type: 'session.exited', reason: 'Stopped' });
     }),
     stopAll: vi.fn(async () => {}),
     hasSession: () => live,
@@ -445,7 +446,7 @@ function roomWorker() {
       };
     },
   };
-  return { adapter, ran };
+  return { adapter, ran, emit };
 }
 
 const startingSession: Session = {
@@ -1807,9 +1808,19 @@ it('stops when an ask under the lease it holds says that lease is gone', async (
       return owing(url, options);
     })
   );
-  expect(await startWorker(root, adapter, new AbortController().signal)).toBeInstanceOf(
-    SharedHostLeaseExpiredError
-  );
+  const error = await startWorker(root, adapter, new AbortController().signal);
+  expect(error).toBeInstanceOf(SharedHostUnavailableError);
+  expect(String(error)).toContain('Lease lapsed.');
+  expect(String(error)).toContain('/room-reservations');
+  const events = (await readFile(join(root, 'events.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  expect(
+    events.some(
+      (event) => event.body.type === 'session.upsert' && event.body.session.status === 'stopped'
+    )
+  ).toBe(false);
   expect(server.pulled).toHaveLength(1);
 }, 15000);
 
@@ -1859,3 +1870,55 @@ it('checks commands on wake instead of polling while idle and recovers a missed 
     expect(await outcome).toBeNull();
   }
 }, 12000);
+
+it('waits for Core to acknowledge readiness before admitting room work', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-ready-race-'));
+  roots.push(root);
+  await writeFile(
+    join(root, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'raced' }) + '\n'
+  );
+  admittingServer();
+  const originalFetch = globalThis.fetch;
+  const { adapter, ran, emit } = roomWorker();
+  const start = adapter.startSession;
+  adapter.startSession = vi.fn(async (input) => {
+    const result = await start(input);
+    emit({ type: 'session.state.changed', status: 'starting' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return result;
+  });
+  let injected = false;
+  let ready = false;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string);
+        if (event.body.type === 'session.upsert') {
+          ready = event.body.session.status === 'ready';
+          if (!injected) {
+            injected = true;
+            emit({ type: 'session.state.changed', status: 'ready' });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+      }
+      if (path.endsWith('/room-message') && !ready)
+        return Response.json(
+          { code: 'HOST_OFFLINE', message: 'The session is not ready.' },
+          { status: 409 }
+        );
+      return originalFetch(url, options);
+    })
+  );
+  const stop = new AbortController();
+  const outcome = startWorker(root, adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(ran).toEqual(['raced']), { timeout: 3000 });
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});

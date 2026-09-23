@@ -232,7 +232,7 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   const outcome = runSharedHost(f.options, f.adapter, stop.signal).catch((error) => error);
   await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
   f.setExpired(true);
-  expect(await outcome).toMatchObject({ name: 'SharedHostLeaseExpiredError' });
+  expect(await outcome).toMatchObject({ name: 'SharedHostUnavailableError' });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
   f.setExpired(false);
   await unlink(join(f.root, 'shared-owner.lock'));

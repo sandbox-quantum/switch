@@ -57,7 +57,13 @@ class RequestError extends Error {
  */
 const ROOM_PULL_MS = 5000;
 const roomWorkSchema = z.object({ roomWork: z.boolean() });
-export class SharedHostLeaseExpiredError extends Error {
+export class SharedHostUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SharedHostUnavailableError';
+  }
+}
+export class SharedHostLeaseExpiredError extends SharedHostUnavailableError {
   constructor() {
     super('HOST_OFFLINE: lease renewal deadline passed.');
     this.name = 'SharedHostLeaseExpiredError';
@@ -122,7 +128,9 @@ export async function runSharedHost(
           body = null;
         }
         if (body && typeof body === 'object' && 'code' in body && body.code === 'HOST_OFFLINE')
-          throw new SharedHostLeaseExpiredError();
+          throw new SharedHostUnavailableError(
+            `Switch rejected ${path} (${response.status}): ${text}`
+          );
       }
       let code = '';
       try {
@@ -182,6 +190,7 @@ export async function runSharedHost(
     });
   };
   executionSignal.addEventListener('abort', onAbort, { once: true });
+  const acknowledged: { session: { epoch: string; status: string } | null } = { session: null };
   const upload = async (reconcile: boolean) => {
     for (const event of delivery!.pending()) {
       const receipt = await request(
@@ -197,6 +206,8 @@ export async function runSharedHost(
       )
         throw new Error('Switch returned an invalid host event receipt.');
       await delivery!.acknowledge(receipt.throughHostSequence);
+      if (event.body.type === 'session.upsert')
+        acknowledged.session = { epoch: event.epoch, status: event.body.session.status };
     }
   };
   const validateSession = (snapshot: unknown) => {
@@ -212,12 +223,12 @@ export async function runSharedHost(
     return parsed;
   };
   const finish = async () => {
+    await stopExecution();
     if (starting) {
       starting = false;
-      if (adapter.hasSession(options.session.sessionId))
+      if (!host && adapter.hasSession(options.session.sessionId))
         await adapter.stopSession(options.session.sessionId);
     }
-    await stopExecution();
     if (host && delivery)
       for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);
     await state.journal.append({ type: 'quiesced' });
@@ -499,7 +510,7 @@ export async function runSharedHost(
           if (executionSignal.aborted) pullFatal = { epoch: null, error };
           else if (epoch !== hostLease.epoch) {
             /* Asked for under a generation a recovery has since replaced. */
-          } else if (error instanceof SharedHostLeaseExpiredError) pullFatal = { epoch, error };
+          } else if (error instanceof SharedHostUnavailableError) pullFatal = { epoch, error };
           else if (error instanceof RequestError && error.status === 404) {
             pullUnanswered = epoch;
             console.warn(
@@ -686,8 +697,9 @@ export async function runSharedHost(
       }
       const admitted: Command[] = [];
       if (
-        host.snapshot().session.status === 'ready' ||
-        host.snapshot().session.status === 'running'
+        acknowledged.session?.epoch === hostLease.epoch &&
+        ['ready', 'running'].includes(acknowledged.session.status) &&
+        ['ready', 'running'].includes(host.snapshot().session.status)
       ) {
         if (rooms) {
           startPull();

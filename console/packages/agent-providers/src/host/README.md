@@ -169,3 +169,14 @@ The 250 ms local loop still flushes provider events, but no longer requests
 commands on every pass. A room admission that cannot return its command directly
 triggers an immediate queue check. Notifications are process-local in Core;
 commands handled by another server process rely on the fallback check.
+
+
+Host cleanup stops the provider process without publishing a terminal session
+status. The unfinished session keeps its room claim while its supervisor recovers
+it. An explicit `session.stop` remains terminal and allows a later room message
+to start a new session. Server rejections retain their endpoint and reason in
+host logs. Only a locally elapsed renewal deadline is labelled lease expiry.
+
+Room messages are admitted only after Core acknowledges a ready or running
+state in the current lease epoch. Local provider readiness alone does not imply
+that Core has received that state.
