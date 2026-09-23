@@ -34,7 +34,7 @@ def summary(job: ProviderVerification) -> dict:
 async def latest(
     session: AsyncSession, user_id: str, provider: str
 ) -> ProviderVerification | None:
-    return await session.scalar(
+    job: ProviderVerification | None = await session.scalar(
         select(ProviderVerification)
         .where(
             ProviderVerification.tenant_id == require_tenant_id(),
@@ -44,6 +44,7 @@ async def latest(
         .order_by(ProviderVerification.created_at.desc())
         .limit(1)
     )
+    return job
 
 
 async def queue(
