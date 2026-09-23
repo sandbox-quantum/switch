@@ -1,8 +1,10 @@
 # Switch Console telemetry — what we collect, where it goes, and why it cannot be traced to a person
 
 **Audience:** InfoSec.
-**Scope:** the Switch Console desktop app. Switch server-side logging is out of
-scope and needs its own pass.
+**Scope:** the Switch Console desktop app, and the consent decision it carries
+to a Switch server it runs for the user (§4.1). What that server itself
+collects is documented separately; Switch server-side logging is out of scope
+here and needs its own pass.
 **Claim:** the data we transmit is anonymous. No field identifies a person, and
 no combination of the fields we transmit can be resolved back to one.
 
@@ -225,6 +227,29 @@ single event rather than cached, so turning it off stops transmission
 immediately, with no further requests and no queued backlog. Dev builds never
 transmit regardless of the setting. Opting out is itself not reported — the one
 thing we do not measure is someone asking not to be measured.
+
+### 4.1 The same answer governs a server the Console runs
+
+Switch Console can run a Switch server for the user — as containers on their own
+machine, or on a host they have given it over SSH. That server has product-usage
+telemetry of its own, off unless its configuration turns it on, and the Console's
+toggle is what turns it on: the answer is written into the server's configuration
+every time the Console starts it, in both directions. "No" is written down
+explicitly rather than left out, because a stack started under a "yes" would
+otherwise keep the setting it started with.
+
+Two limits are stated in the app rather than left to be discovered.
+
+- **The server reads the setting when it starts.** Changing the answer while it
+  is running does not reach it until it restarts, and the Console does not
+  restart it silently — a restart ends live agent sessions. Instead the server's
+  page says the running server is out of step with the answer and offers the
+  restart. The check reads the running container's own environment, so a start
+  that wrote the configuration and then failed is reported as out of step rather
+  than as applied; a server that cannot be read at all is reported as unknown,
+  never as agreeing.
+- **A server reached by URL is not covered.** It is somebody else's deployment
+  with its own answer, and the toggle neither reaches it nor claims to.
 
 ---
 

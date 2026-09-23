@@ -4,6 +4,7 @@ import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
   CheckoutBuild,
+  DeployedTelemetry,
   DockerAvailability,
   LocalServerStatus,
   SwitchVersionDrift,
@@ -80,6 +81,12 @@ export class LocalServerStore {
   /** Set when the stack's switch-core differs from the version this build pins. */
   get drift(): SwitchVersionDrift | null {
     return this.status?.drift ?? null;
+  }
+
+  /** What the running stack is doing about usage data, or null when nothing is
+   * up to be doing anything. */
+  get deployedTelemetry(): DeployedTelemetry | null {
+    return this.status?.deployedTelemetry ?? null;
   }
 
   /** Dev builds launched from a Switch checkout only: the checkout the stack's

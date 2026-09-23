@@ -15,6 +15,18 @@
 export const TELEMETRY_SUMMARY =
   'Switch Console shares anonymous usage data to show which features get used and where the app runs into trouble.';
 
+/**
+ * How far the answer reaches, stated because the alternative is a toggle that
+ * appears to govern more than it does (CHOO-2890).
+ *
+ * It governs a Switch server this app runs — the setting is written into that
+ * server's configuration at every start — and it does not govern a server
+ * reached by URL, which is somebody else's deployment with its own answer. Both
+ * halves matter: the first is the promise, the second is the limit of it.
+ */
+export const TELEMETRY_SCOPE_NOTE =
+  'The same answer applies to a Switch server this app runs for you. A server you connect to by URL is not covered — whoever operates it decides.';
+
 export const TELEMETRY_DETAILS_LABEL = 'Read what is collected';
 
 export const TELEMETRY_DETAILS_URL =

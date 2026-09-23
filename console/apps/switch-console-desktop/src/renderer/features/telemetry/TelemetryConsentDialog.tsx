@@ -9,6 +9,7 @@ import { Switch } from '@renderer/lib/ui/switch';
 import {
   TELEMETRY_DETAILS_LABEL,
   TELEMETRY_DETAILS_URL,
+  TELEMETRY_SCOPE_NOTE,
   TELEMETRY_SUMMARY,
 } from './telemetry-copy';
 
@@ -69,6 +70,7 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
             Help improve Switch Console
           </h2>
           <p className="text-sm text-foreground-muted">{TELEMETRY_SUMMARY}</p>
+          <p className="text-sm text-foreground-muted">{TELEMETRY_SCOPE_NOTE}</p>
         </div>
         <DialogContentArea className="gap-4">
           <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
