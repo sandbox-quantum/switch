@@ -62,8 +62,8 @@ export function ManagedProvidersStep({
           })}
         </div>
         <p className="text-xs text-foreground-muted">
-          Credentials are checked on the worker before it becomes ready. Selecting a provider does
-          not start an agent.
+          Each connection is checked before it is marked verified. Selecting a provider does not
+          start an agent.
         </p>
       </DialogContentArea>
       <DialogFooter>
