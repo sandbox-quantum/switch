@@ -367,11 +367,12 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
     const availability = await switchSetupService.listAgentTypeAvailability();
 
     expect(availability).toEqual([
-      { agentId: 'claude', available: true, blockedReason: null },
+      { agentId: 'claude', available: true, blockedReason: null, blockedKind: null },
       {
         agentId: 'opencode',
         available: false,
         blockedReason: expect.stringContaining('implements no behavior'),
+        blockedKind: 'unknown',
       },
     ]);
   });

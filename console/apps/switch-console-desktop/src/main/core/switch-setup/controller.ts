@@ -75,6 +75,7 @@ export const switchSetupController = createRPCController({
               agentId: status.agentId,
               available: false,
               blockedReason: `Its Switch connector status could not be read on ${sshHost}: ${status.refreshError}`,
+              blockedKind: 'unknown' as const,
             };
           }
           return status.installed

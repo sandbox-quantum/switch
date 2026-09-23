@@ -96,5 +96,6 @@ it('says a remote status could not be read rather than calling it not installed'
     available: false,
     blockedReason:
       'Its Switch connector status could not be read on example-host: ssh channel closed',
+    blockedKind: 'unknown',
   });
 });

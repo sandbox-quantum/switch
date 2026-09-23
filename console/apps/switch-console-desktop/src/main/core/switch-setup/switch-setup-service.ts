@@ -359,6 +359,7 @@ class SwitchSetupService {
           blockedReason: `Its Switch connector status could not be read: ${
             err instanceof Error ? err.message : String(err)
           }`,
+          blockedKind: 'unknown',
         });
         continue;
       }
