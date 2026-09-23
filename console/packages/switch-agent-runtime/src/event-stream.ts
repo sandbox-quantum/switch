@@ -121,6 +121,9 @@ export class SwitchEventStream {
    * refusals can never be retried into a success, and both loops have to end. */
   private readonly halt = new AbortController();
   private rooms: string[];
+  /** Set when the current stream was ended by an eviction frame, so the
+   * reconnect loop backs off instead of hammering immediately. */
+  private wasEvicted = false;
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -321,6 +324,24 @@ export class SwitchEventStream {
           await this.handleFrame(frame);
           if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
+
+        // An eviction ends the stream cleanly, with no error, so without this
+        // check the loop restarts at once, and two supervisors on one
+        // connection id evict each other about nine times a second. Back off
+        // on eviction the same way the error path does on failures.
+        if (this.wasEvicted) {
+          this.wasEvicted = false;
+          failures += 1;
+          if ((failures & (failures - 1)) === 0) {
+            log.warn('SwitchEventStream: backing off after eviction', {
+              event: 'switch_stream_eviction_backoff',
+              failures,
+              backoffMs: backoff,
+            });
+          }
+          await new Promise((r) => setTimeout(r, backoff));
+          backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+        }
       } catch (error) {
         if (signal.aborted || this.halt.signal.aborted) return;
         // A deliberate reopen (repoint) aborts the socket; that is not an error.
@@ -383,6 +404,7 @@ export class SwitchEventStream {
         return;
       }
       case 'evicted':
+        this.wasEvicted = true;
         log.warn('SwitchEventStream: evicted', {
           event: 'switch_stream_evicted',
           reason: frame.data.reason,
