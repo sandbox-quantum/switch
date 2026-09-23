@@ -53,6 +53,8 @@ spec:
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: HOSTED_CONTROLLER_CONFIG_PATH
               value: /etc/switch-hosted/controller.json
+            - name: HOSTED_PROVIDER_VERIFICATION_ENABLED
+              value: {{ .Values.switchCore.hostedProviderVerificationEnabled | quote }}
             - name: HOSTED_LAUNCH_CAPACITY
               value: {{ .Values.switchCore.hostedLaunchCapacity | quote }}
             {{- end }}

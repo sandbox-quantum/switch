@@ -55,7 +55,8 @@ async def connection_app(session_factory):
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(
-        jwt_secret_key="synthetic-encryption-test-key"
+        jwt_secret_key="synthetic-encryption-test-key",
+        hosted_provider_verification_enabled=False,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"

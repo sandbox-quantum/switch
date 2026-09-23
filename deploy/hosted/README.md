@@ -266,9 +266,26 @@ API. Revocation denies further credential and control requests and stops the
 affected workers. Reconnect the provider, then use Retry to start them again.
 
 Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
-under their provider IDs. Saved credentials remain marked as configured until a
-native worker check succeeds. Native readiness is not proof of a successful model
-request; verify each provider with its intended account before deployment acceptance.
+under their provider IDs. Enable `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
+`switchCore.hostedProviderVerificationEnabled`) after deploying the verification
+API, controller IAM policy, and a worker image with `--verify-credential` support.
+This requires a hosted controller. With the setting off, credentials keep the
+existing configured-until-worker-check behavior.
+
+With verification enabled, saving a credential queues a durable connection check.
+Console polls its status and shows **Checking connection**. A temporary worker
+uses the native provider adapter to send one fixed model request in an empty
+workspace. It has no repository, agent assignment, instance profile, or retained
+data volume. Its encrypted root volume is deleted on termination. The controller
+allows at most two checks at a time. Each worker schedules its own shutdown after
+eight minutes; the controller also terminates checks past their ten-minute deadline.
+Checks and cleanup continue when Console closes.
+
+The connection becomes verified only after the model replies and the controller
+observes instance termination. Refreshed subscription credentials are saved with
+the result. Failed checks preserve an existing verified credential and show a retry
+action. Job credentials and bootstrap tokens are cleared when the job finishes.
+Test each provider with its intended account before deployment acceptance.
 
 ### GitHub App connections
 

@@ -49,6 +49,9 @@ from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.provider_connections import (
     router as provider_connections_router,
 )
+from switch_core.gateway.provider_verifications import (
+    router as provider_verifications_router,
+)
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
@@ -127,7 +130,13 @@ def create_gateway_app(
             "Cloud launch capacity requires enough configured worker identities."
         )
     app.include_router(hosted_launches_router, tags=["hosted-launches"])
+    if (
+        config.hosted_provider_verification_enabled
+        and app.state.hosted_controller_settings is None
+    ):
+        raise ValueError("Provider verification requires a hosted controller.")
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
+    app.include_router(provider_verifications_router, tags=["provider-verifications"])
     app.state.github_connections = (
         GitHubConnections(config.hosted_github_config_path)
         if config.hosted_github_config_path

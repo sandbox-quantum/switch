@@ -115,6 +115,7 @@ switchCore:
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
   hostedLaunchCapacity: 0
+  hostedProviderVerificationEnabled: false
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO

@@ -45,6 +45,7 @@ export function CloudAgentRepository({
     },
     staleTime: 0,
     retry: false,
+    refetchInterval: (query) => (query.state.data?.claude.status === 'verifying' ? 2000 : false),
   });
   const repositories =
     data?.github.status === 'connected'
@@ -94,18 +95,26 @@ export function CloudAgentRepository({
               ? data.claude.status === 'connected'
                 ? 'Verified'
                 : data.claude.status === 'configured'
-                  ? 'Saved · awaiting worker verification'
-                  : 'Not connected'
+                  ? 'Credential saved'
+                  : data.claude.status === 'verifying'
+                    ? 'Checking connection…'
+                    : data.claude.status === 'failed'
+                      ? 'Connection failed'
+                      : 'Not connected'
               : 'Checking connection'}
           </span>
-          {data?.claude.status === 'not_connected' && (
+          {data && ['not_connected', 'failed', 'verifying'].includes(data.claude.status) && (
             <Button
               variant="outline"
               size="sm"
               aria-label={`Connect ${providerDisplayName(providerId)}`}
               onClick={onConnectProvider}
             >
-              Connect
+              {data.claude.status === 'verifying'
+                ? 'View'
+                : data.claude.status === 'failed'
+                  ? 'Retry'
+                  : 'Connect'}
             </Button>
           )}
         </div>

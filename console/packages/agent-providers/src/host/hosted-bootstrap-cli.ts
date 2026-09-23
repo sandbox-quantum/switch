@@ -2,8 +2,13 @@
 import { fileURLToPath } from 'node:url';
 import { runHostedBootstrap } from './hosted-bootstrap';
 import { runGitHubCli, runGitHubCredentialHelper } from './hosted-github';
+import { runCredentialVerification } from './verify-credential';
 
 async function main(): Promise<void> {
+  if (process.argv[2] === '--verify-credential') {
+    await runCredentialVerification();
+    return;
+  }
   if (process.argv[2] === '--github-cli') {
     await runGitHubCli(process.argv.slice(3));
     return;

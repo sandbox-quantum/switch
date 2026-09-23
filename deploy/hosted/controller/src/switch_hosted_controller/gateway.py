@@ -87,9 +87,11 @@ class Gateway:
                     "An existing worker assignment cannot change its secret or IAM identity."
                 )
 
-    def request(self, path: str, body: dict | None = None) -> Any:
+    def request(
+        self, path: str, body: dict | None = None, *, prefix: str = "/gateway/hosted-controller"
+    ) -> Any:
         request = Request(
-            self.settings.origin + "/gateway/hosted-controller" + path,
+            self.settings.origin + prefix + path,
             data=json.dumps(body).encode() if body is not None else None,
             headers={
                 "Authorization": "Bearer " + self.settings.token,

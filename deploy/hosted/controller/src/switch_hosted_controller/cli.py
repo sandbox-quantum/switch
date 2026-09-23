@@ -23,6 +23,7 @@ from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import Agent, DesiredState
 from .reconciler import Reconciler
 from .store import AgentStore, StoreError
+from .verification import VerificationWorkers
 
 
 def parser() -> argparse.ArgumentParser:
@@ -178,6 +179,7 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                 if gateway_path
                 else None
             )
+            verification = VerificationWorkers(ec2, config, gateway) if gateway else None
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -193,6 +195,13 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
             signal.signal(signal.SIGTERM, request_stop)
             signal.signal(signal.SIGINT, request_stop)
             while not stop.is_set():
+                if verification:
+                    try:
+                        verification.reconcile()
+                    except Exception as error:
+                        logging.error(
+                            "Provider verification reconciliation failed: %s", type(error).__name__
+                        )
                 try:
                     if gateway:
                         gateway.accept_launches()

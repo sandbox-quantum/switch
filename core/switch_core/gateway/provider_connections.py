@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import delete, func, update
+from sqlalchemy import case, delete, func, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     HostedLaunch,
     ProviderConnection,
+    ProviderVerification,
     User,
     require_tenant_id,
 )
@@ -26,6 +27,7 @@ from switch_core.providers.claude_verifier import (
     ClaudeVerifier,
 )
 from switch_core.providers.credentials import validate_provider_credential
+from switch_core.providers.verification import ACTIVE, latest, queue, summary
 
 OtherProvider = Literal["codex", "cursor", "opencode", "antigravity"]
 
@@ -149,11 +151,17 @@ async def disconnect_claude(
 @router.get("/{provider}")
 async def get_other_connection(
     provider: OtherProvider,
+    config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
+    if config.hosted_provider_verification_enabled:
+        job = await latest(session, user.id, provider)
+        if job and job.state not in ("cancelled", "succeeded"):
+            return summary(job)
     row = await session.get(
-        ProviderConnection, (require_tenant_id(), user.id, provider)
+        ProviderConnection,
+        (require_tenant_id(), user.id, provider),
     )
     if row is None:
         return {"status": "not_connected"}
@@ -200,6 +208,15 @@ async def connect_other_provider(
         await store.lock_user(session, user.id)
     except ProviderConnectionBusy as error:
         raise HTTPException(409, str(error)) from None
+    if config.hosted_provider_verification_enabled:
+        return await queue(
+            session,
+            user.id,
+            provider,
+            payload["kind"],
+            credential,
+            config.jwt_secret_key,
+        )
     now = datetime.now(UTC)
     values = {
         "tenant_id": require_tenant_id(),
@@ -241,6 +258,26 @@ async def disconnect_other_provider(
             ProviderConnection.tenant_id == require_tenant_id(),
             ProviderConnection.user_id == user.id,
             ProviderConnection.provider == provider,
+        )
+    )
+    await session.execute(
+        update(ProviderVerification)
+        .where(
+            ProviderVerification.tenant_id == require_tenant_id(),
+            ProviderVerification.user_id == user.id,
+            ProviderVerification.provider == provider,
+        )
+        .values(
+            state="cancelled",
+            encrypted_credential=None,
+            encrypted_token=None,
+            instance_id=case(
+                (
+                    ProviderVerification.state.in_(ACTIVE),
+                    ProviderVerification.instance_id,
+                ),
+                else_=None,
+            ),
         )
     )
     await mark_disconnected_workers(session, user.id, provider)

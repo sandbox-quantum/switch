@@ -287,6 +287,38 @@ class ProviderConnection(TenantScoped, Base):
     verified_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ProviderVerification(TenantScoped, Base):
+    __tablename__ = "provider_verifications"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        Index(
+            "ix_provider_verification_owner",
+            "tenant_id",
+            "user_id",
+            "provider",
+            "created_at",
+        ),
+        Index("ix_provider_verification_state", "tenant_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_credential: Mapped[str | None] = mapped_column(Text)
+    encrypted_token: Mapped[str | None] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[bool | None] = mapped_column(Boolean)
+    instance_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class HostedLaunch(TenantScoped, Base):
     __tablename__ = "hosted_launches"
     __table_args__ = (

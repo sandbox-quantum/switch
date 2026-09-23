@@ -131,6 +131,7 @@ class SwitchConfig(BaseSettings):
     hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
+    hosted_provider_verification_enabled: bool = False
     hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the switch_auth cookie. Defaults to False so local
     # dev over plain HTTP keeps working; deployments serving over HTTPS must set
