@@ -49,7 +49,6 @@ export async function createSession(
       id: params.id,
       agentId: params.agentId,
       title: params.title,
-      shellId: 'system',
       config,
       isInitialSession: false,
       status: 'in_progress',

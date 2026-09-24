@@ -1533,19 +1533,3 @@ export async function fetchRoomHealth(server: SwitchServer): Promise<unknown> {
     await gatewayFetch(server, '/agent-sessions/room-health', { authenticated: true })
   ).json();
 }
-
-/** Move a room's messages to this session, as a session's own connect_to_room would. */
-export async function placeSession(
-  server: SwitchServer,
-  switchAgentId: string,
-  sessionId: string,
-  roomId: string
-): Promise<unknown> {
-  return (
-    await gatewayFetch(
-      server,
-      `/agent-sessions/${encodeURIComponent(switchAgentId)}/${encodeURIComponent(sessionId)}/place`,
-      { authenticated: true, method: 'POST', body: { roomId } }
-    )
-  ).json();
-}

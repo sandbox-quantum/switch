@@ -57,6 +57,20 @@ const MAX_BACKOFF_MS = 30_000;
  */
 const STABLE_STREAM_MS = 30_000;
 
+/** How long a placements update waits for the stream to be attached. */
+const PLACEMENTS_WAIT_MS = 15_000;
+
+/** Switch answered a placements update with anything but success. */
+export class PlacementsRefusedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string
+  ) {
+    super(`Switch refused the session placements (HTTP ${status}): ${detail}`);
+    this.name = 'PlacementsRefusedError';
+  }
+}
+
 export type StreamScope = 'single' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
 
@@ -235,6 +249,17 @@ export interface SwitchEventStreamDeps {
    * has to forget, or the next connection declares the same dead room again.
    */
   onRoomRejected?: (info: { roomId: string; status: number; detail: string }) => void;
+  /**
+   * Another connection of this agent took over a room this one held, and
+   * `sessionId` names which of this connection's sessions it was placed with,
+   * where the server knew. What remembers that placement has to drop it.
+   */
+  onRoomReleased?: (info: { roomId: string; sessionId: string | null }) => Promise<void> | void;
+  /**
+   * The server confirmed an open: the first, and every reconnect after it.
+   * Where state the server holds only in memory is restated.
+   */
+  onConnected?: () => void;
   /** Fired when the server reports missed events it cannot replay. */
   onGap(info: {
     fromSequence: number;
@@ -499,6 +524,38 @@ export class SwitchEventStream {
     }
   }
 
+  /**
+   * State which room each of this connection's sessions is placed in, replacing
+   * whatever Switch held for it.
+   *
+   * Fenced like a subscribe, and for the same reason: sent before the stream
+   * has named its incarnation, or by a client that has been displaced, it
+   * would rewrite the placements of whoever holds the connection now. Waits
+   * up to `PLACEMENTS_WAIT_MS` for the stream to be attached, then refuses.
+   * Raises on any answer but success; a takeover also stands the stream down.
+   */
+  async replacePlacements(placements: Record<string, string>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attached = await Promise.race([
+      this.fence.reached.then(() => true),
+      until(this.deps.signal, this.halt.signal).then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), PLACEMENTS_WAIT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (!attached || this.halt.signal.aborted)
+      throw new Error('the connection to Switch is not open, so it cannot take placements');
+    const resp = await this.post('connection/placements', {
+      connection_id: this.deps.connectionId,
+      placements,
+      generation: this.generation,
+    });
+    if (resp.ok) return;
+    const body = await resp.text();
+    if (resp.status === 409 && refusalCode(body) === EVICTION_TAKEN_OVER) this.standDown();
+    throw new PlacementsRefusedError(resp.status, body.slice(0, 500));
+  }
+
   private post(path: string, body: unknown, timeoutMs = BEAT_REQUEST_TIMEOUT_MS) {
     const { creds } = this.deps;
     return fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/${path}`, {
@@ -678,7 +735,24 @@ export class SwitchEventStream {
         this.reportRooms(frame.data.rooms);
         this.fence.attached();
         this.redeclare();
+        this.deps.onConnected?.();
         return;
+      case 'room_released': {
+        const roomId = frame.data.room_id;
+        const sessionId = frame.data.session_id ?? null;
+        if (typeof roomId === 'string' && (sessionId === null || typeof sessionId === 'string')) {
+          log.warn('SwitchEventStream: another connection took a room over', {
+            event: 'switch_stream_room_released',
+            roomId,
+            sessionId,
+          });
+          await this.deps.onRoomReleased?.({ roomId, sessionId });
+        } else
+          log.warn('SwitchEventStream: unreadable room release dropped', {
+            event: 'switch_stream_bad_release',
+          });
+        return;
+      }
       case 'session_commands':
         if (
           Array.isArray(frame.data.session_ids) &&

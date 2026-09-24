@@ -6,6 +6,7 @@ import {
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
+import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -17,12 +18,14 @@ import {
   type Supervision,
 } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { SessionPlacements } from './placements';
 import { roomInputId } from './room-inbox';
 import { type SessionRequest, SessionUnavailableError } from './session-channel';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
+import { type PlaceOutcome, sessionToolAnswerer, type WatcherControl } from './watcher-tools';
 
 const assignmentSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -323,14 +326,18 @@ export class SharedWatchAssignments {
   }
 
   /**
-   * The session that serves a room: the one most recently assigned to it.
-   *
-   * This controller is the agent's only one — Switch lets a single connection
-   * carry the agent's rooms — so what it has written down is the whole record.
+   * Which session each room was last assigned to, one room per session: what
+   * a watcher that predates `placements.json` routed by, and so what its
+   * placements start from.
    */
-  ownerOf(roomId: string): SharedHostConfig | null {
-    const assigned = this.every.filter((record) => record.roomId === roomId);
-    return assigned.at(-1)?.config ?? null;
+  placements(): [sessionId: string, roomId: string][] {
+    const rooms = new Map<string, string>();
+    for (const record of this.every) {
+      const sessionId = record.config.session.sessionId;
+      for (const [placed, roomId] of rooms) if (roomId === record.roomId) rooms.delete(placed);
+      rooms.set(sessionId, record.roomId);
+    }
+    return [...rooms];
   }
 
   /** Records that the event has been routed, or decided not to be. */
@@ -407,6 +414,14 @@ export class SharedWatchAssignments {
     return config;
   }
 
+  /** The config this journal assigned a session under, or null if it assigned none. */
+  configOf(sessionId: string): SharedHostConfig | null {
+    return (
+      this.every.filter((record) => record.config.session.sessionId === sessionId).at(-1)?.config ??
+      null
+    );
+  }
+
   sessions(): SharedHostConfig[] {
     return [
       ...new Map(
@@ -420,7 +435,8 @@ export async function runSharedWatcher(
   root: string,
   template: SharedHostConfig,
   signal: AbortSignal,
-  supervision: Supervision
+  supervision: Supervision,
+  control: WatcherControl
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
@@ -443,6 +459,7 @@ export async function runSharedWatcher(
   let fault: Error | null = null;
   let pending: Promise<void> = Promise.resolve();
   let retry: NodeJS.Timeout | null = null;
+  const unbind: (() => void)[] = [];
   const fail = (error: Error) => {
     fault = error;
     stop.abort(error);
@@ -470,6 +487,78 @@ export async function runSharedWatcher(
     }
     const credentials = await readSharedCredentials(template);
     const assignments = await SharedWatchAssignments.open(root);
+    const links = supervision.links;
+    if (!links)
+      throw new Error(
+        'The room watcher needs to be the parent of its sessions to talk to them; it was given a supervision that starts them detached.'
+      );
+    const agentId = template.session.agentId;
+    const identity: SwitchIdentity = {
+      endpoint: credentials.SWITCH_API_ENDPOINT,
+      agentId: credentials.SWITCH_AGENT_ID,
+      token: credentials.SWITCH_API_TOKEN,
+    };
+    const placements = await SessionPlacements.open(root, () => assignments.placements());
+    let stream: SwitchEventStream | null = null;
+    let publishing: Promise<void> = Promise.resolve();
+    /**
+     * Tells Switch where every session is, replacing what it held: after each
+     * change here and whenever the stream reconnects, since Switch keeps
+     * placements in memory only. Nothing to say before the stream exists; its
+     * first open says it.
+     */
+    const publish = (): Promise<void> => {
+      const run = async () => {
+        await stream?.replacePlacements(placements.snapshot());
+      };
+      publishing = publishing.then(run, run);
+      return publishing;
+    };
+    const publishQuietly = () => {
+      void publish().catch((error: unknown) => {
+        console.warn(
+          `Switch did not take this agent's session placements: ${error instanceof Error ? error.message : String(error)}. They are stated again on the next change or reconnect.`
+        );
+      });
+    };
+    /**
+     * One of this agent's sessions here: its saved config, or the one this
+     * watcher assigned it under when its host has not written one yet. Null
+     * when it is neither.
+     */
+    const sessionConfig = async (sessionId: string): Promise<SharedHostConfig | null> => {
+      let saved: SharedHostConfig;
+      try {
+        saved = sharedConfigSchema.parse(
+          JSON.parse(await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8'))
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          return assignments.configOf(sessionId);
+        throw error;
+      }
+      return saved.session.agentId === agentId ? saved : null;
+    };
+    // Before any session is started below: a host asks for its tools as soon
+    // as its provider comes up.
+    unbind.push(
+      links.answer(agentId, sessionToolAnswerer({ identity, connectionId, placements, publish }))
+    );
+    unbind.push(
+      links.onExit((_root, exited) => {
+        if (!exited || exited.agentId !== agentId) return;
+        pending = pending.then(async () => {
+          if (placements.roomOf(exited.sessionId) === null) return;
+          if (!(await stopped(exited.sessionId))) return;
+          const roomId = await placements.unplace(exited.sessionId);
+          console.warn(
+            `Session ${exited.sessionId} was stopped, so room ${roomId} has no session attending it now.`
+          );
+          publishQuietly();
+        });
+        void pending.catch((error: Error) => fail(error));
+      })
+    );
     const launch = async (config: SharedHostConfig) => {
       // Both flags are re-read here rather than taken from whoever asked for the
       // launch. Everything that reaches this point was admitted earlier and may
@@ -502,34 +591,12 @@ export async function runSharedWatcher(
      */
     const held = new Map<string, { events: Held[]; since: number }>();
     /**
-     * Routes the event to the session serving its room, starting one where
-     * the room has none and this controller may. False when neither can be
-     * done yet and the event has to wait.
-     *
-     * The permission is the one the event arrived under rather than the one in
-     * force when it is finally admitted: a room that was promised a session
-     * when it was addressed should still get one.
-     */
-    const links = supervision.links;
-    if (!links)
-      throw new Error(
-        'The room watcher needs to be the parent of its sessions to talk to them; it was given a supervision that starts them detached.'
-      );
-    /**
      * Ask the host of one of this agent's sessions, if it runs here. False
      * when it is not this agent's, or nothing is running it.
      */
     const askSession = async (sessionId: string, request: SessionRequest, what: string) => {
       const sessionRoot = sharedSessionRoot(sessionId);
-      try {
-        const saved = sharedConfigSchema.parse(
-          JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
-        );
-        if (saved.session.agentId !== template.session.agentId) return false;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-        throw error;
-      }
+      if (!(await sessionConfig(sessionId))) return false;
       try {
         await links.request(sessionRoot, request, 0);
         return true;
@@ -598,38 +665,39 @@ export async function runSharedWatcher(
       pump(config);
       return true;
     };
+    /**
+     * Routes the event to the session placed in its room. A room whose session
+     * was stopped, or is not this agent's here, loses its placement, and then
+     * gets a new session where this controller may start one. False when
+     * neither can be done yet and the event has to wait.
+     *
+     * The permission is the one the event arrived under rather than the one in
+     * force when it is finally admitted: a room that was promised a session
+     * when it was addressed should still get one.
+     */
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
-      const owner = assignments.ownerOf(event.roomId);
-      if (owner && !(await stopped(owner.session.sessionId))) {
-        await deliver(owner, event, waiting);
-        return true;
+      const placed = placements.sessionIn(event.roomId);
+      if (placed) {
+        const owner = await sessionConfig(placed);
+        if (owner && !(await stopped(placed))) {
+          await deliver(owner, event, waiting);
+          return true;
+        }
+        await placements.unplace(placed);
+        publishQuietly();
+        console.warn(
+          `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
+        );
       }
       if (!spawning) return false;
       const config = await assignments.assign(
         sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
         event
       );
+      await placements.place(config.session.sessionId, event.roomId);
+      publishQuietly();
       await deliver(config, event, waiting);
       return true;
-    };
-    /**
-     * Routes to the session Switch says has connected to the room, when it is
-     * one of this agent's here. A session can move between rooms, or be one
-     * Console started, so this is the fresher answer than the journal's.
-     */
-    const routePlaced = async (sessionId: string, event: Handoff): Promise<boolean> => {
-      let saved: SharedHostConfig;
-      try {
-        saved = sharedConfigSchema.parse(
-          JSON.parse(await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8'))
-        );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-        throw error;
-      }
-      if (saved.session.agentId !== template.session.agentId || (await stopped(sessionId)))
-        return false;
-      return deliver(saved, event, false);
     };
     const queued = (roomId: string, messageId: string): boolean =>
       held.get(roomId)?.events.some((entry) => entry.messageId === messageId) === true;
@@ -682,7 +750,7 @@ export async function runSharedWatcher(
     }
     if (held.size) await resolveHeld();
     if (spawn) await launchAssigned();
-    const stream = new SwitchEventStream({
+    stream = new SwitchEventStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
         apiEndpoint: credentials.SWITCH_API_ENDPOINT,
@@ -696,6 +764,23 @@ export async function runSharedWatcher(
       startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
+      onConnected: publishQuietly,
+      // Another connection of this agent took the room: whichever session
+      // attended it here no longer does.
+      onRoomReleased: async ({ roomId, sessionId }) => {
+        pending = pending.then(async () => {
+          const lost = await placements.roomLost(roomId);
+          if (lost === null) return;
+          console.warn(
+            `Room ${roomId} was taken over by another connection of this agent${sessionId && sessionId !== lost ? ` (Switch named session ${sessionId})` : ''}; session ${lost} here no longer attends it.`
+          );
+          publishQuietly();
+        });
+        return pending.catch((error: Error) => {
+          fail(error);
+          throw error;
+        });
+      },
       onApprovalOutcome: async (outcome) => {
         await askSession(outcome.session_id, { type: 'approvals' }, 'an approval answer');
       },
@@ -727,7 +812,6 @@ export async function runSharedWatcher(
             // The session builds its prompt from this; nothing else keeps it.
             event: { type: event.type, payload: event.payload, missed: event.missed ?? null },
           };
-          const placed = event.session_id ?? null;
           // The connection is this agent's reachability; starting a session is
           // a separate permission it may not have. Without it a session that
           // already serves the room is still served — it has no connection of
@@ -740,7 +824,6 @@ export async function runSharedWatcher(
           // an event arriving is the cheapest evidence that time has passed.
           if (held.size) await resolveHeld();
           if (held.has(assignment.roomId)) return hold(assignment, spawning);
-          if (placed && (await routePlaced(placed, assignment))) return;
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning);
         });
         return pending.catch((error: Error) => {
@@ -793,7 +876,31 @@ export async function runSharedWatcher(
         fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
       },
     });
-    stream.start();
+    const started = stream;
+    started.start();
+    unbind.push(
+      control.bind(async (sessionId, roomId): Promise<PlaceOutcome> => {
+        if (!(await sessionConfig(sessionId)))
+          throw new Error(`Session ${sessionId} is not one of this agent's sessions here.`);
+        if (await stopped(sessionId))
+          throw new Error(`Session ${sessionId} was stopped; start it before moving a room to it.`);
+        const before = placements.snapshot();
+        const moved = await placements.place(sessionId, roomId);
+        try {
+          await publish();
+        } catch (error) {
+          await placements.restore(before);
+          throw new Error(
+            `Switch refused to move room ${roomId} to session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        if (moved.displaced)
+          console.warn(
+            `Room ${roomId} moved from session ${moved.displaced} to session ${sessionId}.`
+          );
+        return { sessionId, roomId, ...moved };
+      })
+    );
     // Queued behind the events rather than run beside them: the decision it
     // takes is the same one the handler takes, and two of them at once could
     // start a session for a room the other has just found an owner for.
@@ -808,7 +915,7 @@ export async function runSharedWatcher(
       if (!changed || !changed.enabled) break;
       flags = changed;
       spawn = flags.spawn;
-      stream.setSpawnCapable(spawn);
+      started.setSpawnCapable(spawn);
       // What waited for permission to start a session is answered now rather
       // than on the next retry, and so is a session this controller was
       // already assigned and could not start.
@@ -821,6 +928,7 @@ export async function runSharedWatcher(
   } catch (error) {
     if (!stop.signal.aborted) throw error;
   } finally {
+    for (const release of unbind) release();
     stop.abort();
     if (retry) clearInterval(retry);
     signal.removeEventListener('abort', abort);

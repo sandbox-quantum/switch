@@ -165,7 +165,6 @@ export type AgentCapabilities = {
   prompt: { kind: string };
   sessions: { kind: string };
   autoApprove: { kind: string };
-  hooks: { kind: string; scope?: string };
   mcp: { kind: string };
   plugins: { kind: string };
   repoAgents: { kind: string };

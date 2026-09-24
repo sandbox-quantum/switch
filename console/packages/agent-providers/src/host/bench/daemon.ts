@@ -33,10 +33,11 @@ import {
 import { replaceOwner } from '../ownership-lock';
 import { ownProcessGroup } from '../process-fence';
 import { SessionLinks } from '../session-channel';
-import { prepareSharedConfig, sharedConfigSchema } from '../shared-config';
-import { parkAfterMs, runSharedHost } from '../shared-host';
+import { sharedConfigSchema } from '../shared-config';
+import { hostSessionProcess } from '../shared-host';
 import { runSharedWatcher } from '../shared-watcher';
 import { superviseSharedHost } from '../supervisor';
+import { WatcherControl } from '../watcher-tools';
 import { createBenchAdapter } from './adapter';
 
 const [root, configPath, mode] = process.argv.slice(2);
@@ -94,9 +95,11 @@ async function main(): Promise<void> {
         supervision,
       });
     };
+    // Console's "Reconnect to room" reaches the watcher through the control port.
+    const control = new WatcherControl();
     await Promise.all([
-      runSharedWatcher(root, config, stop.signal, supervision),
-      serveControl(resolve(root), links, ensure, stop.signal),
+      runSharedWatcher(root, config, stop.signal, supervision, control),
+      serveControl(resolve(root), links, ensure, control, stop.signal),
     ]);
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
@@ -113,32 +116,26 @@ async function main(): Promise<void> {
       process.exitCode = code ?? 1;
     });
   } else {
-    const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
+    if (!process.send)
+      throw new Error('The benchmark session host is started by its watcher over IPC.');
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
+    process.on('disconnect', () => stop.abort());
     try {
-      await runSharedHost(
-        {
-          root: resolve(root),
-          agentApiUrl,
-          token,
-          session: config.session,
-          resumeOperationId: config.resumeOperationId,
-          input,
-          roomConnection: config.roomConnection,
-          grant: config.grant,
-          parent: process.send ? process : null,
-          parkAfterMs: parkAfterMs(),
-        },
-        createBenchAdapter(),
-        stop.signal
-      );
+      await hostSessionProcess({
+        root,
+        config,
+        adapter: createBenchAdapter(),
+        port: process,
+        authenticate: null,
+        signal: stop.signal,
+      });
     } catch (error) {
       if (!stop.signal.aborted) throw error;
     } finally {
       // The channel would otherwise keep this process alive after the host is done.
-      if (process.send) process.disconnect();
+      process.disconnect();
     }
   }
 }

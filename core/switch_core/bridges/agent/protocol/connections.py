@@ -74,6 +74,10 @@ APPROVAL_OUTCOME_PROTOCOL_REVISION = 4
 # for one of the agent's sessions, relayed from Switch Console.
 SESSION_COMMAND_PROTOCOL_REVISION = 5
 
+# The revision from which a client takes a `room_released` frame: a room claim
+# or session placement on its connection was taken over by another connection.
+ROOM_RELEASED_PROTOCOL_REVISION = 6
+
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
@@ -277,6 +281,15 @@ TAKEN_OVER = Closure(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class Released:
+    """A room another connection lost to a placement, and its session there."""
+
+    connection_id: str
+    room_id: str
+    session_id: str | None
+
+
 def evicted_session_warning(room_id: str, evicted: str) -> str:
     """What to tell a caller that took a room off another live session.
 
@@ -412,6 +425,9 @@ class Connection:
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     # Commands relayed to this connection and not yet written to its stream.
     session_commands: list[dict[str, Any]] = field(default_factory=list)
+    # Rooms another connection took off this one, not yet written to its
+    # stream, with the session of this connection that was placed there.
+    released_rooms: dict[str, str | None] = field(default_factory=dict)
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
@@ -443,6 +459,11 @@ class ConnectionRegistry:
         # session's host keeps everything else about it, and a session whose
         # placement a restart forgot is told to connect again.
         self._session_rooms: dict[str, dict[str, str]] = {}
+        # Who placed each of those sessions: the connection id or MCP transport
+        # session the placement arrived on. A connection's placements are
+        # replaced wholesale, and a placement another connection takes is
+        # reported to the one that lost it.
+        self._placement_owners: dict[str, dict[str, str]] = {}
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
@@ -785,15 +806,18 @@ class ConnectionRegistry:
         ]
 
     def place_session(
-        self, agent_id: str, session_id: str, room_id: str
+        self, agent_id: str, session_id: str, room_id: str, owner: str
     ) -> tuple[set[str], str | None]:
         """Put a session in a room: the rooms it left, and the sibling it displaced.
 
         One session of an agent per room. A sibling that was working in the
         room is taken out of it, so events for the room go to the session that
-        asked for it last.
+        asked for it last. `owner` is the connection id or transport session the
+        placement arrived on; a sibling placed by another connection is
+        reported to that connection as released.
         """
         placed = self._session_rooms.setdefault(agent_id, {})
+        owners = self._placement_owners.setdefault(agent_id, {})
         previous = placed.get(session_id)
         displaced = next(
             (
@@ -804,9 +828,124 @@ class ConnectionRegistry:
             None,
         )
         if displaced is not None:
-            del placed[displaced]
+            self._unplace(agent_id, displaced, room_id, taker=owner)
         placed[session_id] = room_id
+        owners[session_id] = owner
         return ({previous} - {room_id} if previous else set()), displaced
+
+    def replace_placements(
+        self, conn: Connection, placements: dict[str, str]
+    ) -> list[Released]:
+        """Make `placements` the whole of this connection's session placements.
+
+        Sessions the connection placed before and does not name now are
+        unplaced, and the rooms they held are released from the connection.
+        Each named room is claimed on the connection with takeover, the rule
+        `connect_to_room` follows: a session of another connection placed there
+        is unplaced, and that connection is told. Returns what other
+        connections lost.
+
+        The rooms must be distinct, since one session of an agent acts in a
+        room; membership is the caller's to check.
+        """
+        rooms = list(placements.values())
+        if len(set(rooms)) != len(rooms):
+            twice = sorted({room for room in rooms if rooms.count(room) > 1})
+            raise ValueError(
+                f"placements name room(s) {', '.join(twice)} for more than one "
+                "session; one session of an agent acts in a room"
+            )
+        agent_id = conn.agent_id
+        placed = self._session_rooms.setdefault(agent_id, {})
+        owners = self._placement_owners.setdefault(agent_id, {})
+
+        mine = [session for session, owner in owners.items() if owner == conn.id]
+        previous_rooms = {placed[session] for session in mine if session in placed}
+        for session in mine:
+            placed.pop(session, None)
+            owners.pop(session, None)
+
+        released: list[Released] = []
+        for session_id, room_id in placements.items():
+            placed.pop(session_id, None)
+            owners.pop(session_id, None)
+            occupant = next(
+                (other for other, room in placed.items() if room == room_id), None
+            )
+            if occupant is not None:
+                lost = self._unplace(agent_id, occupant, room_id, taker=conn.id)
+                if lost is not None:
+                    released.append(lost)
+            placed[session_id] = room_id
+            owners[session_id] = conn.id
+
+        for room_id in sorted(set(rooms)):
+            evicted = self.claim_room(conn, room_id, takeover=True)
+            if evicted is not None and not any(
+                r.connection_id == evicted.id and r.room_id == room_id for r in released
+            ):
+                released.append(
+                    Released(connection_id=evicted.id, room_id=room_id, session_id=None)
+                )
+        for room_id in previous_rooms - set(rooms):
+            self.release_room(conn, room_id)
+        return released
+
+    def _unplace(
+        self, agent_id: str, session_id: str, room_id: str, *, taker: str
+    ) -> Released | None:
+        """Take a session out of its room on behalf of `taker`.
+
+        Returns the release when the session was placed by a live connection
+        other than the taker, which is then told.
+        """
+        self._session_rooms.get(agent_id, {}).pop(session_id, None)
+        owner = self._placement_owners.get(agent_id, {}).pop(session_id, None)
+        if owner is None or owner == taker:
+            return None
+        loser = self._by_id.get(owner)
+        if loser is None or loser.agent_id != agent_id:
+            return None
+        self._notify_released(loser, room_id, session_id)
+        return Released(connection_id=loser.id, room_id=room_id, session_id=session_id)
+
+    @staticmethod
+    def _notify_released(
+        conn: Connection, room_id: str, session_id: str | None
+    ) -> None:
+        """Queue a `room_released` frame for a client that can take one.
+
+        A room released twice before the stream writes it is reported once,
+        naming the session when either release knew it.
+        """
+        if (conn.declaration.speaks or 0) < ROOM_RELEASED_PROTOCOL_REVISION:
+            return
+        if session_id is not None or room_id not in conn.released_rooms:
+            conn.released_rooms[room_id] = session_id
+        conn.wake.set()
+
+    def _placed_by(self, conn: Connection, room_id: str) -> str | None:
+        """The session this connection placed in the room, if any."""
+        owners = self._placement_owners.get(conn.agent_id, {})
+        return next(
+            (
+                session_id
+                for session_id, room in self._session_rooms.get(
+                    conn.agent_id, {}
+                ).items()
+                if room == room_id and owners.get(session_id) == conn.id
+            ),
+            None,
+        )
+
+    def connection_placements(self, conn: Connection) -> dict[str, str]:
+        """The sessions this connection placed, and their rooms."""
+        owners = self._placement_owners.get(conn.agent_id, {})
+        return {
+            session_id: room
+            for session_id, room in self._session_rooms.get(conn.agent_id, {}).items()
+            if owners.get(session_id) == conn.id
+        }
 
     def session_room(self, agent_id: str, session_id: str) -> str | None:
         return self._session_rooms.get(agent_id, {}).get(session_id)
@@ -901,7 +1040,9 @@ class ConnectionRegistry:
             claimant.rooms.discard(room_id)
             claimant.wake.set()
             evicted = claimant
+            self._notify_released(claimant, room_id, self._placed_by(claimant, room_id))
 
+        conn.released_rooms.pop(room_id, None)
         conn.rooms.add(room_id)
         conn.wake.set()
         return evicted

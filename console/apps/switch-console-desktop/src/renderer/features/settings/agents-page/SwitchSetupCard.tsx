@@ -30,8 +30,8 @@ export function SwitchSetupCard({ agentId }: { agentId: string }) {
             with {name} CLI, then add a {name} agent to your Switch server.
           </p>
           <p className="text-xs text-foreground-muted">
-            Included with Console updates. No separate connector installation is needed. Terminal
-            sessions and remote hosts are not supported for this connection.
+            Included with Console updates. No separate connector installation is needed. Remote
+            hosts are not supported for this connection.
           </p>
         </div>
       </Field>

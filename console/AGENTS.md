@@ -630,7 +630,7 @@ pnpm run test
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
   `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
 - SDK host deployment and env passthrough live under `src/main/core/sdk-host/`.
-- Provider event hooks and plugins live under `src/main/core/agent-hooks/`.
+- Per-provider directory-trust helpers live under `src/main/core/agent-hooks/`.
 - Modal definitions are centralized in `src/renderer/app/modal-registry.ts`.
 - View definitions and navigation guards are centralized in `src/renderer/app/view-registry.ts`.
 - MCP types live under `src/shared/core/mcp/`.
@@ -653,23 +653,6 @@ pnpm run test
   OTLP relay, which holds the vendor credentials server-side, so every build can report
   and none carries a secret. Example:
   `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009 pnpm run dev`.
-- **A hook command is built for the machine the session runs on, not for the one
-  building it.** `writeHooks(fs, hooks, { platform })` takes the target
-  platform: `process.platform` locally and in the sidecar, the execution host's platform
-  during SDK host setup. A `makeStdinHookCommand(...)` returns
-  a builder, not a string, so nothing can freeze the wrong shell at import time.
-  Getting this wrong is silent — the POSIX form ends in `|| true` and agents
-  ignore hook exit codes, so the only symptom is a remote session whose provider
-  session id is never captured and whose room never stops saying "working on it".
-- **A Windows hook command carries no quotes of its own.** It is a bare
-  `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64>`,
-  never a `cmd.exe /d /c "…"` wrapper. Hosts wrap a `command` hook in a shell
-  before running it, and Claude Code's wrapping did not reliably survive the
-  inner double quotes: when they were lost, cmd.exe ignored its `/c` argument,
-  opened an interactive prompt and exited 0 — a hook that reported success
-  having never run. Because the marker then exists only inside the base64,
-  `isManagedHookEntry` decodes it; matching on the raw string would stop
-  recognising managed entries and append a duplicate on every launch.
 - The Codex Windows install list leads with the ChatGPT `install.ps1`, and npm's
   option is stripped of the `recommended` flag `npmDependency` adds for every
   platform — both `pickInstallOption` and the settings UI take the *first*
@@ -684,17 +667,7 @@ pnpm run test
   nothing else. The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
   network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
-  stands. Measured against codex-cli 0.146.0, Codex runs hooks **outside** the
-  sandbox, so Switch Console's `curl http://127.0.0.1:$SWITCHDASH_HOOK_PORT/hook`
-  hooks return 200 under `workspace-write` — the loopback block applies to
-  model-generated commands only. See
-  `packages/plugins/src/agents/impl/codex/index.ts`.
-- Every Codex session launched by Switch Console — not only auto-approving ones — carries
-  `--dangerously-bypass-hook-trust`. Codex skips any hook it has no persisted
-  `trusted_hash` for, which would take Switch Console's own hooks with it; the flag is
-  per-invocation and also un-gates hooks the user added to `~/.codex/hooks.json`
-  themselves. Rationale and the rejected alternative are on `CODEX_HOOK_TRUST_FLAG` in
-  `packages/plugins/src/agents/impl/codex/hooks.ts`.
+  stands. See `packages/plugins/src/agents/impl/codex/index.ts`.
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —

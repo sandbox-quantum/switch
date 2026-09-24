@@ -91,8 +91,6 @@ export interface AgentBridgeEvent {
    * `reason` is why. A reason alongside a number means the number is a floor.
    */
   missed?: { count: number | null; reason: string | null };
-  /** The agent's session working in this room, when one has connected to it. */
-  session_id?: string;
 }
 
 export interface AgentBridgeEventResponse {

@@ -8,7 +8,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter, TurnAttachment } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
-import { sessionSelectorPath } from './shared-config';
+import { connectParent } from './session-channel';
 import { runSharedHost } from './shared-host';
 import { hostParked } from './shared-state';
 
@@ -49,6 +49,7 @@ function fakeParent() {
     value?: unknown;
     error?: string;
     event?: { sequence: number };
+    identity?: Record<string, string>;
   };
   const sent: Sent[] = [];
   const port = Object.assign(new EventEmitter(), {
@@ -199,7 +200,7 @@ async function start(
         mcpServers: {},
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
-      parent: parent.port,
+      parent: connectParent(parent.port),
       parkAfterMs: opts.parkAfterMs ?? null,
     },
     adapter,
@@ -276,13 +277,21 @@ const roomMessage = (sequence: number, body: string, attachments: unknown[] = []
   },
 });
 
-it('names itself to Switch for the tool calls its agent makes', async () => {
+it('names itself to its parent, which makes its tool calls, before the provider starts', async () => {
   const host = await start();
   try {
-    expect(JSON.parse(await readFile(sessionSelectorPath(host.root), 'utf8'))).toMatchObject({
-      session_id: 'session',
-      host_id: 'host',
+    const identities = host.parent.sent.filter((message) => message.kind === 'identity');
+    expect(identities[0]!.identity).toEqual({
+      agentId: 'agent',
+      sessionId: 'session',
+      hostId: 'host',
+      epoch: 'initial',
     });
+    // Said again only when it changes, and always naming the generation the host is on.
+    expect(identities.at(-1)!.identity!.epoch).toBe(await host.snapshotEpoch());
+    expect(host.parent.sent.findIndex((message) => message.kind === 'identity')).toBeLessThan(
+      host.parent.sent.findIndex((message) => message.kind === 'ready')
+    );
   } finally {
     expect(await host.stop()).toBeNull();
   }

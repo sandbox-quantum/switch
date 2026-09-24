@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CONTROL_FILE, ControlClient, serveControl } from './control';
 import { SessionLinks } from './session-channel';
+import { WatcherControl } from './watcher-tools';
 
 const paths = vi.hoisted(() => ({ base: '' }));
 vi.mock('./launch', () => ({
@@ -50,7 +51,8 @@ async function started() {
   const links = new SessionLinks();
   const ensure = vi.fn(async () => ({ created: true }));
   const stop = new AbortController();
-  const serving = serveControl(base, links, ensure, stop.signal);
+  const watcher = new WatcherControl();
+  const serving = serveControl(base, links, ensure, watcher, stop.signal);
   await vi.waitFor(async () =>
     expect(await readFile(join(base, CONTROL_FILE), 'utf8')).toBeTruthy()
   );
@@ -62,7 +64,7 @@ async function started() {
     const socket = connect(control.port, '127.0.0.1');
     return new ControlClient(socket, token);
   };
-  return { base, links, ensure, stop, serving, client };
+  return { base, links, ensure, stop, serving, client, watcher };
 }
 
 it('relays requests to a session host and its events back', async () => {
@@ -108,6 +110,33 @@ it('answers at once for a session nothing is running', async () => {
 it('refuses a client without the secret', async () => {
   const { stop, serving, client } = await started();
   await expect(client('wrong').ready).rejects.toThrow();
+  stop.abort();
+  await serving;
+});
+
+it('moves a room to a session through the watcher, and says why when it cannot', async () => {
+  const { stop, serving, client, watcher } = await started();
+  const console = client();
+  await console.ready;
+  await expect(console.place('session', 'room')).rejects.toThrow('room watcher is not running');
+  const placed = vi.fn(async (sessionId: string, roomId: string) => ({
+    sessionId,
+    roomId,
+    previous: null,
+    displaced: 'other',
+  }));
+  const unbind = watcher.bind(placed);
+  expect(await console.place('session', 'room')).toEqual({
+    sessionId: 'session',
+    roomId: 'room',
+    previous: null,
+    displaced: 'other',
+  });
+  expect(placed).toHaveBeenCalledWith('session', 'room');
+  placed.mockRejectedValueOnce(new Error('Switch refused to move room room'));
+  await expect(console.place('session', 'room')).rejects.toThrow('Switch refused');
+  unbind();
+  console.close();
   stop.abort();
   await serving;
 });

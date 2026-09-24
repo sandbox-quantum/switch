@@ -7,7 +7,6 @@ import {
 } from '@switch-console/core/agents/plugins/helpers';
 import type { HostDependencyDescriptor, InstallOption } from '@switch-console/core/deps';
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
-import { buildCodexHookConfig, CODEX_HOOK_TRUST_FLAG } from './hooks';
 import { icon } from './icon';
 import { codexLaunchProfile, codexLaunchProfileFields, codexProfilePaths } from './profile';
 
@@ -87,12 +86,6 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hooks: {
-      kind: 'config',
-      scope: 'global',
-      supportedEvents: ['notification', 'stop', 'session', 'tool-use', 'tool-done'],
-      reportsSessionStart: true,
-    },
     hostDependency: codexHostDependency(),
     mcp: {
       kind: 'supported',
@@ -130,13 +123,9 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
-        // Every session, not just auto-approving ones. See the flag's docblock.
-        defaultArgs: [CODEX_HOOK_TRUST_FLAG],
         // Approvals only — the sandbox is left to the user's config. "Bypass
         // permissions" promises unattended approval, not unattended filesystem
-        // and network access, and Codex runs hooks outside the sandbox, so
-        // Switch Console's loopback curls reach the hook server under
-        // workspace-write just as they do under danger-full-access.
+        // and network access.
         autoApproveFlag: '-c approval_policy="never"',
         initialPromptFlag: '',
         resumeFlag: 'resume',
@@ -146,7 +135,6 @@ export const provider = registerPluginBehavior(plugin, {
         deduplicateFlags: ['--dangerously-bypass-approvals-and-sandbox'],
       }),
   },
-  hooks: buildCodexHookConfig(),
   mcp: {
     ...codexMcpAdapter(),
     // The profile carries per-agent model / effort / instructions in CODEX_HOME,

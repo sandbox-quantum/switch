@@ -81,6 +81,7 @@ At most one connection per agent may act in a given room. The following routes c
 | `POST /agents/{agent_id}/connection/subscribe` | Cooperative. Body `{connection_id, room_id, takeover}`. Returns 409 if a live sibling connection holds the room, unless `takeover` is true |
 | `connect_to_room` operation, with the connection id header | **Always takes over.** Returns a `warning` naming the connection it evicted, plus the room's instructions, participants, references, roles and linked rooms in the same response |
 | `rooms=` on the stream open URL | Takes over unconditionally. For a supervisor asserting ownership of a session it is about to feed |
+| `POST /agents/{agent_id}/connection/placements` | **Always takes over.** Body `{connection_id, placements, generation}`, where `placements` maps each session id to the room it works in. Replaces every placement the connection made before: a session it omits is unplaced and its room released from the connection. Every room must be one the agent belongs to (403 otherwise, and nothing changes), and no room may be named twice (400). Returns `{placements, rooms, released}`, `released` listing `{connection_id, room_id, session_id}` for each room taken off another connection |
 
 **Declare rooms on the open URL, not after.** Catch-up runs immediately on open. A room subscribed a moment later arrives too late — its buffered events are skipped as not-covered and the cursor is advanced past them, which loses exactly the events resume exists to recover.
 
@@ -92,7 +93,7 @@ Every frame on the stream is either a **domain event** or a **control frame**. T
 
 | | Domain events | Control frames |
 |---|---|---|
-| Kinds | `message`, `command`, `room_join`, `task_delegate`, `task_accept`, `task_update`, `task_finalise`, `task_cancel` | `connection_state`, `gap`, `evicted`, `subscription_changed` |
+| Kinds | `message`, `command`, `room_join`, `task_delegate`, `task_accept`, `task_update`, `task_finalise`, `task_cancel` | `connection_state`, `gap`, `evicted`, `subscription_changed`, `room_released` |
 | SSE `id:` line | Yes — the sequence number | No |
 | Held in the event buffer | Yes | No |
 | Subject to `filter` | Yes | Never |
@@ -108,7 +109,7 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
        "payload":{…},"sequence":4813}
 ```
 
-Every domain event carries `type`, `room_id`, `bridge_id` (nullable), `channel_type` (nullable), `payload`, and `sequence`. **`sequence` appears on the data object as well as the `id:` line**, and they are the same number.
+Every domain event carries `type`, `room_id`, `bridge_id` (nullable), `channel_type` (nullable), `payload`, and `sequence`. It names no session: routing a room's events to one of the agent's sessions is the watcher's, from the placements it holds. **`sequence` appears on the data object as well as the `id:` line**, and they are the same number.
 
 ### `connection_state`
 
@@ -134,6 +135,7 @@ Always the first frame on a stream.
 | `gap` | `from_sequence`, `resumed_at`, `reason` | The cursor is ahead of the buffer head — the buffer is in memory, so a restart resets the sequence — or the cursor is below the dropped-through watermark at open, or it expires mid-stream |
 | `evicted` | `reason` | Another stream attaches to the same connection id, the connection is closed server-side, or the heartbeat lapses while the stream is open |
 | `subscription_changed` | `rooms`, `reason` | The covered room set changes, including a room going dark because a sibling connection claimed it |
+| `room_released` | `room_id`, `session_id` (nullable) | Another connection of the agent took over this connection's claim on the room or its session's placement there. `session_id` is the session this connection had placed in the room, or null when it had none. Sent only to clients declaring agent-protocol 6 or later |
 
 A gap is never silent, and it is not a wake. Hold it and attach it to the next event you surface rather than interrupting the agent, and re-read the room's history before responding. A supervisor learns its session's room from `subscription_changed` rather than by reading operation responses.
 

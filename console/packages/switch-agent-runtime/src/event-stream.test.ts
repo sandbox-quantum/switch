@@ -1327,3 +1327,66 @@ it('hands a relayed session command to its own callback', async () => {
     abort.abort();
   }
 });
+
+it('hands a room another connection took over to its own callback', async () => {
+  const onRoomReleased = vi.fn();
+  const onEvent = vi.fn();
+  const { abort } = makeStream(
+    streaming(
+      encodeFrame('room_released', { session_id: 'no-room' }),
+      encodeFrame('room_released', { room_id: 'room', session_id: 'session' }),
+      encodeFrame('room_released', { room_id: 'other', session_id: null })
+    ),
+    { rooms: [], scope: 'all', onRoomReleased, onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onRoomReleased).toHaveBeenCalledTimes(2));
+    expect(onRoomReleased).toHaveBeenNthCalledWith(1, { roomId: 'room', sessionId: 'session' });
+    expect(onRoomReleased).toHaveBeenNthCalledWith(2, { roomId: 'other', sessionId: null });
+    expect(onEvent).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+  }
+});
+
+it('says when the server has confirmed an open', async () => {
+  const onConnected = vi.fn();
+  const { abort } = makeStream(streaming(), { rooms: [], scope: 'all', onConnected });
+  try {
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+  } finally {
+    abort.abort();
+  }
+});
+
+it('states placements on the attached incarnation, and raises on a refusal', async () => {
+  const bodies: unknown[] = [];
+  let refuse = false;
+  const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+    if (url.includes('/events'))
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(connected(4));
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    if (url.includes('connection/placements')) {
+      bodies.push(JSON.parse(init!.body!));
+      return refuse ? new Response('not a member', { status: 403 }) : Response.json({ ok: true });
+    }
+    return Response.json({});
+  });
+  const { stream, abort } = makeStream(fetchMock, { rooms: [], scope: 'all' });
+  try {
+    await stream.replacePlacements({ session: 'room' });
+    expect(bodies).toEqual([
+      { connection_id: 'conn-1', placements: { session: 'room' }, generation: 4 },
+    ]);
+    refuse = true;
+    await expect(stream.replacePlacements({ session: 'elsewhere' })).rejects.toThrow('HTTP 403');
+  } finally {
+    abort.abort();
+  }
+});

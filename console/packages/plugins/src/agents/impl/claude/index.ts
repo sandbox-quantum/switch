@@ -5,7 +5,6 @@ import {
   passthroughMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
-import { buildClaudeHookConfig } from './hooks';
 import { icon } from './icon';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
@@ -23,23 +22,6 @@ export const plugin = definePlugin(
     },
     effort: {
       kind: 'none',
-    },
-    hooks: {
-      kind: 'config',
-      scope: 'workspace',
-      supportedEvents: [
-        'session',
-        'start',
-        'notification',
-        'stop',
-        'stop-failure',
-        'tool-use',
-        'tool-done',
-        'tool-use-failure',
-        'subagent',
-        'subagent-done',
-      ],
-      reportsSessionStart: true,
     },
     hostDependency: {
       id: 'claude',
@@ -131,7 +113,6 @@ export const provider = registerPluginBehavior(plugin, {
         sessionIdFlag: '--session-id',
       }),
   },
-  hooks: buildClaudeHookConfig(),
   mcp: passthroughMcpAdapter('.claude.json'),
   repoAgents: claudeRepoAgentsBehavior,
 });

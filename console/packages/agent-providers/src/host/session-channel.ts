@@ -13,7 +13,10 @@ import { z } from 'zod';
  *
  * The parent asks (`request`) and the host answers (`reply`); the host also
  * pushes every event it records (`event`) and says when it is ready to take
- * requests (`ready`).
+ * requests (`ready`). The other way round, the host says which session it is
+ * (`identity`, again whenever its generation moves) and asks its parent
+ * (`ask`) for what only the holder of the agent's connection can do: list the
+ * Switch tools and run one. The parent answers (`answer`).
  */
 
 export const sessionRequestSchema = z.discriminatedUnion('type', [
@@ -36,11 +39,50 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type SessionRequest = z.infer<typeof sessionRequestSchema>;
 
-const toChildSchema = z.object({
-  kind: z.literal('request'),
-  id: z.number().int().nonnegative(),
-  request: sessionRequestSchema,
+/** What a host asks its parent, which holds the agent's connection to Switch. */
+export const hostAskSchema = z.discriminatedUnion('type', [
+  /** The Switch tools, as MCP lists them. */
+  z.object({ type: z.literal('tools') }),
+  /** One tool call, answered with the MCP tool result. */
+  z.object({
+    type: z.literal('tool'),
+    name: z.string().min(1),
+    arguments: z.record(z.string(), z.unknown()),
+  }),
+]);
+export type HostAsk = z.infer<typeof hostAskSchema>;
+
+/** Which session a host runs: what its tool calls are made as. */
+export const hostIdentitySchema = z.strictObject({
+  agentId: z.string().min(1),
+  sessionId: z.string().min(1),
+  hostId: z.string().min(1),
+  epoch: z.string().min(1),
 });
+export type HostIdentity = z.infer<typeof hostIdentitySchema>;
+
+/** A host asking, as its parent knows it. */
+export type Caller = HostIdentity & { root: string };
+
+/** Answers what the hosts of one agent's sessions ask. */
+export type AskHandler = (caller: Caller, ask: HostAsk) => Promise<unknown>;
+
+const answerSchema = z.object({
+  kind: z.literal('answer'),
+  id: z.number().int().nonnegative(),
+  ok: z.boolean(),
+  value: z.unknown().optional(),
+  error: z.string().optional(),
+});
+
+const toChildSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('request'),
+    id: z.number().int().nonnegative(),
+    request: sessionRequestSchema,
+  }),
+  answerSchema,
+]);
 
 const fromChildSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ready') }),
@@ -52,6 +94,8 @@ const fromChildSchema = z.discriminatedUnion('kind', [
     value: z.unknown().optional(),
     error: z.string().optional(),
   }),
+  z.object({ kind: z.literal('identity'), identity: hostIdentitySchema }),
+  z.object({ kind: z.literal('ask'), id: z.number().int().nonnegative(), ask: hostAskSchema }),
 ]);
 
 /** Raised when a session host is not running, or stopped before it answered. */
@@ -71,6 +115,7 @@ type Pending = {
 type Link = {
   child: ChildProcess | null;
   ready: boolean;
+  identity: HostIdentity | null;
   nextId: number;
   pending: Map<number, Pending>;
   waiting: (() => void)[];
@@ -83,6 +128,8 @@ type Link = {
  */
 export class SessionLinks {
   private readonly links = new Map<string, Link>();
+  private readonly answerers = new Map<string, AskHandler>();
+  private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();
 
   private link(root: string): Link {
     let link = this.links.get(root);
@@ -90,6 +137,7 @@ export class SessionLinks {
       link = {
         child: null,
         ready: false,
+        identity: null,
         nextId: 0,
         pending: new Map(),
         waiting: [],
@@ -105,6 +153,7 @@ export class SessionLinks {
     const link = this.link(root);
     link.child = child;
     link.ready = false;
+    link.identity = null;
     child.on('message', (raw) => {
       const parsed = fromChildSchema.safeParse(raw);
       if (!parsed.success) {
@@ -117,6 +166,20 @@ export class SessionLinks {
         for (const wake of link.waiting.splice(0)) wake();
       } else if (message.kind === 'event') {
         for (const subscriber of link.subscribers) subscriber(message.event);
+      } else if (message.kind === 'identity') {
+        link.identity = message.identity;
+      } else if (message.kind === 'ask') {
+        const answer = (outcome: { ok: true; value: unknown } | { ok: false; error: string }) => {
+          if (child.connected)
+            child.send({ kind: 'answer', id: message.id, ...outcome }, (error) => {
+              if (error) console.warn(`Could not answer the session host at ${root}: ${error}`);
+            });
+        };
+        this.answerAsk(root, link.identity, message.ask).then(
+          (value) => answer({ ok: true, value: value ?? null }),
+          (error: unknown) =>
+            answer({ ok: false, error: error instanceof Error ? error.message : String(error) })
+        );
       } else {
         const pending = link.pending.get(message.id);
         if (!pending) return;
@@ -128,14 +191,57 @@ export class SessionLinks {
     });
     child.once('exit', () => {
       if (link.child !== child) return;
+      const identity = link.identity;
       link.child = null;
       link.ready = false;
+      link.identity = null;
       for (const [id, pending] of link.pending) {
         clearTimeout(pending.timer);
         pending.reject(new SessionUnavailableError('The session host stopped before it answered.'));
         link.pending.delete(id);
       }
+      for (const listener of this.exitListeners) listener(root, identity);
     });
+  }
+
+  private async answerAsk(
+    root: string,
+    identity: HostIdentity | null,
+    ask: HostAsk
+  ): Promise<unknown> {
+    if (!identity)
+      throw new Error('The session host asked its parent before saying which session it runs.');
+    const handler = this.answerers.get(identity.agentId);
+    if (!handler)
+      throw new Error(
+        `No room watcher is running for agent ${identity.agentId} here, so this session's Switch tools cannot reach Switch. Turn the agent's room connection on in Console.`
+      );
+    return handler({ ...identity, root }, ask);
+  }
+
+  /**
+   * Answer what the hosts of this agent's sessions ask, until the returned
+   * function is called. One answerer per agent: it is the process holding the
+   * agent's connection.
+   */
+  answer(agentId: string, handler: AskHandler): () => void {
+    if (this.answerers.has(agentId))
+      throw new Error(`Agent ${agentId} already has a watcher answering its sessions here.`);
+    this.answerers.set(agentId, handler);
+    return () => {
+      if (this.answerers.get(agentId) === handler) this.answerers.delete(agentId);
+    };
+  }
+
+  /** Which session the host at this root last said it runs, or null. */
+  identity(root: string): HostIdentity | null {
+    return this.links.get(root)?.identity ?? null;
+  }
+
+  /** Hear each host exit, with the session it last said it ran. */
+  onExit(listener: (root: string, identity: HostIdentity | null) => void): () => void {
+    this.exitListeners.add(listener);
+    return () => this.exitListeners.delete(listener);
   }
 
   /** Whether a host is running at this root and ready for requests. */
@@ -192,7 +298,7 @@ export class SessionLinks {
   }
 }
 
-type Handlers = {
+export type SessionRequestHandlers = {
   [K in SessionRequest['type']]: (
     request: Extract<SessionRequest, { type: K }>
   ) => Promise<unknown>;
@@ -202,34 +308,73 @@ type Handlers = {
 export type ParentPort = {
   send?: (message: unknown) => boolean;
   connected: boolean;
-  on(event: 'message', listener: (message: unknown) => void): unknown;
-  off(event: 'message', listener: (message: unknown) => void): unknown;
+  on(event: 'message' | 'disconnect', listener: (message: unknown) => void): unknown;
+  off(event: 'message' | 'disconnect', listener: (message: unknown) => void): unknown;
 };
 
-/**
- * The host's end, when it was started with a channel. Returns what to call
- * once the host is ready for requests, and what pushes an event up; null when
- * nothing started it with one.
- */
-export function serveParent(
-  handlers: Handlers,
-  port: ParentPort
-): {
+/** The host's end of the pipe. */
+export type ParentChannel = {
+  /** Answer the parent's requests with these, from now on. */
+  serve: (handlers: SessionRequestHandlers) => void;
+  /** Tell the parent requests can be sent. */
   ready: () => void;
   push: (event: ServerEvent) => void;
+  /** Say which session this host runs; again whenever that changes. */
+  identify: (identity: HostIdentity) => void;
+  /** Ask the parent, rejecting if it does not answer or goes away. */
+  ask: (ask: HostAsk) => Promise<unknown>;
+  /** Stop answering requests, so the parent reads the host as going. */
   close: () => void;
-} | null {
-  if (!port.send) return null;
+};
+
+/** How long a host waits for its parent to answer; a tool call may upload files. */
+const ASK_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * The host's end, over the IPC channel it was started with. Refuses a port
+ * with none: a session host is always some process's child.
+ */
+export function connectParent(port: ParentPort): ParentChannel {
+  if (!port.send)
+    throw new Error(
+      'A session host is started by its parent (Console or the agent sidecar) with an IPC channel, and this one has none.'
+    );
   const send = (message: unknown) => {
     if (port.connected) port.send!(message);
   };
+  let handlers: SessionRequestHandlers | null = null;
+  let serving = true;
+  let nextAsk = 0;
+  const asks = new Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   const onMessage = (raw: unknown) => {
     const parsed = toChildSchema.safeParse(raw);
     if (!parsed.success) {
       console.warn('Ignoring an unreadable message from the parent process.');
       return;
     }
-    const { id, request } = parsed.data;
+    const message = parsed.data;
+    if (message.kind === 'answer') {
+      const pending = asks.get(message.id);
+      if (!pending) return;
+      asks.delete(message.id);
+      clearTimeout(pending.timer);
+      if (message.ok) pending.resolve(message.value);
+      else pending.reject(new Error(message.error ?? 'The parent refused.'));
+      return;
+    }
+    if (!serving) return;
+    const { id, request } = message;
+    if (!handlers) {
+      send({ kind: 'reply', id, ok: false, error: 'The session host is not ready yet.' });
+      return;
+    }
     const handler = handlers[request.type] as (request: SessionRequest) => Promise<unknown>;
     handler(request).then(
       (value) => send({ kind: 'reply', id, ok: true, value }),
@@ -242,10 +387,37 @@ export function serveParent(
         })
     );
   };
+  const onDisconnect = () => {
+    for (const [id, pending] of asks) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('The parent process went away before it answered.'));
+      asks.delete(id);
+    }
+  };
   port.on('message', onMessage);
+  port.on('disconnect', onDisconnect);
   return {
+    serve: (next) => {
+      handlers = next;
+    },
     ready: () => send({ kind: 'ready' }),
     push: (event) => send({ kind: 'event', event }),
-    close: () => port.off('message', onMessage),
+    identify: (identity) => send({ kind: 'identity', identity }),
+    ask: (ask) => {
+      if (!port.connected)
+        return Promise.reject(new Error('The parent process is gone, so nothing can answer.'));
+      const id = nextAsk++;
+      return new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          asks.delete(id);
+          reject(new Error('The parent process did not answer in time.'));
+        }, ASK_TIMEOUT_MS);
+        asks.set(id, { resolve, reject, timer });
+        send({ kind: 'ask', id, ask });
+      });
+    },
+    close: () => {
+      serving = false;
+    },
   };
 }

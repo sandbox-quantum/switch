@@ -112,14 +112,6 @@ export const SESSION_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'folder-open',
   },
   {
-    id: 'session.viewTerminals',
-    label: 'View Terminals',
-    description: 'Open the terminal drawer',
-    scope: 'session',
-    group: 'View',
-    iconKey: 'terminal',
-  },
-  {
     id: 'session.toggleRightSidebar',
     label: 'Toggle Right Sidebar',
     description: 'Show or hide the right sidebar',

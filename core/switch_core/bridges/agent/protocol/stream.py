@@ -263,6 +263,14 @@ async def _event_stream(
                 for frame in relayed:
                     yield _frame("session_command", frame)
 
+            if conn.released_rooms:
+                released = dict(conn.released_rooms)
+                conn.released_rooms.clear()
+                for room_id, session_id in released.items():
+                    yield _frame(
+                        "room_released", {"room_id": room_id, "session_id": session_id}
+                    )
+
             if resync[0] and approvals is not None:
                 resync[0] = False
                 for outcome in await approvals.undelivered(agent_id):
@@ -362,11 +370,6 @@ async def _event_stream(
                     continue
                 payload = item.event.model_dump(mode="json")
                 payload["sequence"] = item.seq
-                # The session working in this room, for a controller routing
-                # to several: it cannot tell from the room alone.
-                placed = registry.session_in_room(agent_id, item.room_id)
-                if placed is not None:
-                    payload["session_id"] = placed
                 if item.notifiable:
                     # Told on the way past, on the one event the agent is being
                     # woken for anyway. A count of its own would be a wake
@@ -393,6 +396,7 @@ async def _event_stream(
             # and the clear would otherwise wait for the keepalive timeout.
             if (
                 conn.session_commands
+                or conn.released_rooms
                 or outcomes
                 or resync[0]
                 or buffer.head(agent_id) > conn.cursor

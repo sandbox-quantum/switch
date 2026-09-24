@@ -4,7 +4,6 @@ import { createPluginFramework } from '../../lib/plugins/framework';
 import { iconAsset } from './assets/icon';
 import { autoApproveCapability } from './capabilities/auto-approve';
 import { effortCapability } from './capabilities/effort';
-import { hooksCapability } from './capabilities/hooks';
 import { mcpCapability } from './capabilities/mcp';
 import { modelsCapability } from './capabilities/models';
 import { pluginsCapability } from './capabilities/plugins';
@@ -16,7 +15,6 @@ import { switchSetupCapability } from './capabilities/switch-setup';
 export const PLUGIN_CAPABILITIES = {
   autoApprove: autoApproveCapability,
   effort: effortCapability,
-  hooks: hooksCapability,
   hostDependency: hostDependencyCapability,
   mcp: mcpCapability,
   models: modelsCapability,
@@ -58,18 +56,9 @@ export type { AgentIconAsset, AgentIconVariant } from './assets/icon';
 
 // Convenience re-exports for impl packages
 export type { AgentCommand, CommandContext } from './capabilities/prompt';
-export type {
-  CanonicalHookEvent,
-  HookCommand,
-  HookCommandOptions,
-  HookEvent,
-  HookRegistration,
-  NotificationType,
-} from './capabilities/hooks-types';
 export type { PluginFs } from '../runtime/fs';
 // Capability behavior interfaces — needed for dts portability
 export type { IHostDependencyBehavior } from '../../host-dependencies/capability';
-export type { IHooksBehavior } from './capabilities/hooks';
 export type {
   IMcpBehavior,
   LaunchProfileHostExec,

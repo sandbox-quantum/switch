@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { SWITCH_AGENT_RUNTIME_PIN } from '../../../distribution';
 import { icon } from './icon';
-import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 import { OPENCODE_SKILL_CONTENT } from './skill-file';
 import {
   buildOpencodeSwitchConnector,
@@ -58,10 +57,6 @@ async function install(): Promise<Map<string, string>> {
 }
 
 describe('opencode connector assets', () => {
-  it('embeds the reporting plugin exactly as the connector ships it', () => {
-    expect(OPENCODE_PLUGIN_CONTENT).toBe(connectorFile('plugin', 'switch-notifications.js'));
-  });
-
   it('embeds the room-workflow skill exactly as the connector ships it', () => {
     expect(OPENCODE_SKILL_CONTENT).toBe(connectorFile('skills', 'switch', 'SKILL.md'));
   });

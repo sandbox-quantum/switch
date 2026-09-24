@@ -42,7 +42,6 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
@@ -53,6 +52,15 @@ import {
   type ResolvedAgent,
 } from './credentials';
 import { BEAT_SETTLE_LIMIT_MS, EVICTION_TAKEN_OVER, refusalCode, until } from './event-stream';
+import {
+  type CallerContext,
+  createRuntimeServer,
+  fetchMediaToFile,
+  loadOperations,
+  sanitiseName,
+  setTyping as setRoomTyping,
+  SwitchToolCatalog,
+} from './hosted';
 import { reapOrphanedRuntimes } from './reap';
 import { ReattachFence } from './reattach-fence';
 import { sessionSelector } from './session-selector';
@@ -92,6 +100,7 @@ const SESSIONS_ROOT = path.join(os.homedir(), '.switch', 'sessions');
 const SESSION_DIR = path.join(SESSIONS_ROOT, String(SESSION_PPID));
 const PORT_FILE = path.join(SESSION_DIR, 'port');
 const STARTUP_ERROR_FILE = path.join(SESSION_DIR, 'startup-error.log');
+const MEDIA_DIR = path.join(SESSION_DIR, 'media');
 
 /** True once the transport is serving; before that, any failure is fatal. */
 let serving = false;
@@ -556,53 +565,7 @@ let streamHasRoom = false;
 
 // -- MCP server --------------------------------------------------------------
 
-const mcp = new Server(
-  { name: 'switch', version: '0.1.0' },
-  {
-    capabilities: {
-      tools: {},
-      experimental: {
-        'claude/channel': {},
-      },
-    },
-    instructions: [
-      'Events from Switch rooms arrive as <channel source="plugin:switch-connector:switch" room_id="..." event_type="..." ...>.',
-      'Only addressed messages, room_join events, and task events are delivered — unaddressed room chatter is filtered out.',
-      '',
-      'A room_join event fires when a user or agent joins a room — but you are only notified for rooms where you are configured to receive join events (per-room, per-agent; off by default, set via the join_event_listeners option on create_room / update_room or the gateway). The meta carries member (their matrix id) and member_name (their display name). React if it is relevant — e.g. a welcome agent greets the new arrival and explains the room via post_message, or send_targeted_message to address them directly. Your own join does not produce a room_join event.',
-      '',
-      "A notification carries a `missed_count` in its meta: how far behind you are on unaddressed chatter in that event's room. Switch counts it per room, so reading one room's context clears that room's count and leaves every other room standing at its own. A count above 0 means the room is active around you — call read_context (widen `since` to cover the gap) to catch up. It reads `unknown` when Switch cannot vouch for a number; read rather than assuming zero. A `missed_reason` beside it says why a count is unknown, or why a number is only a floor. The one-line body is annotated whenever there is something to act on, and a count is absent entirely from a server that does not count.",
-      '',
-      'Delivery is automatic: when you call connect_to_room on the switch MCP server, a PostToolUse hook pushes the room id to this channel over a localhost port. The channel claims that room on its connection and events are pushed to you as they happen. No separate tool call is needed.',
-      '',
-      "Lost history reaches you through that same count rather than as a warning of its own: when the server restarted or events aged out, the affected room's `missed_count` reads `unknown`, or stays a number with a `missed_reason` marking it a floor. It never arrives as a notification of its own — it rides on the next event you are woken for in that room. Call read_context before responding rather than assuming you have the full picture.",
-      '',
-      'When you receive a message event:',
-      '1. Call read_context ONLY if you are missing context: missed_count is above 0 or unknown, a missed_reason came with it, the message joins a thread or discussion you have not been following, or a long time has passed since your last read. Set since to a few minutes before the event timestamp. When missed_count is 0 and you have been following the room, the event itself is enough — skip the read and answer.',
-      '2. Understand what is being asked or discussed.',
-      '3. Respond by calling post_message (or send_targeted_message if addressing a specific agent).',
-      '',
-      'If a message event has an image_path attribute, the sender attached one or more images. Each path is a local file already downloaded for you (comma-separated if several) — Read it to see the image before responding.',
-      'If it has a file_path attribute, the sender attached one or more non-image files (.md, .csv, .pdf, logs, code — comma-separated if several), already downloaded for you. Read them before responding.',
-      'A failed_attachments attribute lists files the sender attached that could NOT be retrieved. Do not pretend you saw them — say so.',
-      '',
-      "To view a file that appears in read_context history but did NOT arrive with an image_path/file_path (e.g. an unaddressed file posted earlier), call the download_attachment tool with the attachment's mxc (from the read_context attachments field). It writes the file locally and returns the path — then Read that path.",
-      'To send files into the room, call the send_attachment tool with `path` (one file) or `paths` (several, delivered as ONE message) plus an optional caption/thread_id. Any file type works. They post as native room attachments and bridged platforms (Slack, Mattermost) receive them as real file uploads.',
-      '',
-      'When you receive a task_delegate event (only delivered if your integration profile has can_accept=true):',
-      '1. Call accept_task with the task_id to move it to ongoing.',
-      '2. Call read_context with since if the task summary and description do not tell you enough about the surrounding conversation.',
-      '3. Perform the work described in the task. Optionally call update_task(task_id, update) with progress messages as you work — these are persisted.',
-      '4. Call finalise_task(task_id, outcome) with a one-string description of what happened (success or failure).',
-      '',
-      'When you receive task_accept, task_update, or task_finalise events for tasks you delegated, review the progress/outcome and continue your work accordingly.',
-      'When you receive a task_cancel event, the task is dead — do not finalise it.',
-      '',
-      'read_context, post_message, send_targeted_message and the task tools all act on the room you are connected to, so connect_to_room comes first — once. That connection then holds for the rest of the session: do not reconnect before each call. Call connect_to_room again only to switch rooms, to return after switching, or when a tool fails saying you are not connected.',
-      "read_context also takes an optional room_id: pass one to read any room you are a member of without connecting to it, so you can catch up elsewhere while staying in the room you are attending. It does not move you, and it does not clear the other room's unread count. Reading a room you are not a member of is refused.",
-    ].join('\n'),
-  }
-);
+const mcp = createRuntimeServer(true);
 
 /**
  * The whole tool surface when startup could not produce an identity.
@@ -717,88 +680,6 @@ function handleSelectAgent(rawArgs: Record<string, unknown>) {
   };
 }
 
-// Addressed images are auto-downloaded and surfaced as image_path on the
-// notification. This tool lets the agent fetch ANY attachment on demand — e.g.
-// an image seen in read_context history that arrived unaddressed (no
-// notification, so no image_path). It writes the bytes to a local file and
-// returns the path, which the agent then Reads.
-const DOWNLOAD_ATTACHMENT_TOOL = {
-  name: 'download_attachment',
-  description:
-    'Download a room attachment (by its mxc:// URI, as returned in an ' +
-    "attachment's `mxc` field from read_context) to a local file and return " +
-    'the path. Works for any file type. Use this to view a file from history ' +
-    'that did not arrive with an image_path/file_path. Operates on the ' +
-    'currently connected room unless ' +
-    'room_id is given.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      mxc: {
-        type: 'string',
-        description: "The attachment's mxc:// URI (from a read_context attachment).",
-      },
-      filename: {
-        type: 'string',
-        description: 'Optional original filename, used to name the local file.',
-      },
-      room_id: {
-        type: 'string',
-        description: 'Optional Switch room id. Defaults to the currently polling room.',
-      },
-    },
-    required: ['mxc'],
-  },
-};
-
-// The outbound counterpart of download_attachment: the agent names a local
-// file (e.g. a screenshot it produced) and this runtime uploads the bytes to
-// the agent bridge, which posts them into the room as an m.image / m.file
-// event — from there the collaboration bridges relay it out to Slack /
-// Mattermost like any other room message.
-const SEND_ATTACHMENT_TOOL = {
-  name: 'send_attachment',
-  description:
-    'Send one or more local files of ANY type (image, .md, .csv, .pdf, log, ' +
-    'code) into the connected Switch room as attachments. They enter the room ' +
-    'as native image/file events and bridged platforms (Slack, Mattermost) ' +
-    'receive them as real file uploads. Several files sent in one call arrive ' +
-    'as ONE message carrying all of them. Pass `path` for a single file or ' +
-    '`paths` for several. Oversize or unreadable files fail the whole call — ' +
-    'nothing is sent silently. Operates on the currently connected room unless ' +
-    'room_id is given.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      path: {
-        type: 'string',
-        description: 'Absolute path of the local file to send.',
-      },
-      paths: {
-        type: 'array',
-        items: { type: 'string' },
-        description:
-          'Absolute paths of several local files to send as one message. ' +
-          'Use instead of `path` for a multi-attachment message.',
-      },
-      caption: {
-        type: 'string',
-        description: 'Optional text to accompany the attachment.',
-      },
-      thread_id: {
-        type: 'string',
-        description:
-          'Optional message id to reply into, making this a threaded reply ' +
-          '(normalised to the thread root).',
-      },
-      room_id: {
-        type: 'string',
-        description: 'Optional Switch room id. Defaults to the currently polling room.',
-      },
-    },
-  },
-};
-
 // -- Switch operations, served locally --------------------------------------
 //
 // The agent's whole tool surface is served from this process. Each tool is one
@@ -810,67 +691,7 @@ const SEND_ATTACHMENT_TOOL = {
 // the connection id never has to travel through the agent or its config, and
 // cannot be forgotten, leaked, or attached to the wrong session.
 
-type SwitchOperation = {
-  name: string;
-  description: string;
-  input_schema: Record<string, unknown>;
-};
-
-let operations: SwitchOperation[] = [];
-
-/**
- * How long to wait for the operation list before giving up.
- *
- * Unbounded, an unreachable endpoint holds the handshake open until the host's
- * own startup timeout fires, which reports a timeout and names no cause. A
- * bounded wait fails first and says what it was waiting for.
- */
-const OPERATIONS_FETCH_TIMEOUT_MS = 15_000;
-
-/**
- * Fetch the operation list.
- *
- * Credentials are passed rather than read from the module state because the
- * catalog has to exist before an identity necessarily does. The server scopes
- * this route to an agent for authentication only — it answers from the same
- * static registry whichever agent asks — so any credential valid for `endpoint`
- * yields the catalog every agent on that server would get.
- */
-async function loadOperations(endpoint: string, agentId: string, token: string): Promise<void> {
-  const resp = await fetch(`${endpoint}/agents/${agentId}/ops`, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(OPERATIONS_FETCH_TIMEOUT_MS),
-  });
-  if (!resp.ok) {
-    // Without the operation list this process cannot serve the agent at all.
-    // Fail loudly at startup rather than presenting an empty tool surface that
-    // looks like "Switch has nothing to offer".
-    throw new Error(`cannot load Switch operations: HTTP ${resp.status}: ${await resp.text()}`);
-  }
-  const data = (await resp.json()) as {
-    operations: Record<string, { description: string; input_schema: Record<string, unknown> }>;
-  };
-  operations = Object.entries(data.operations).map(([name, op]) => ({
-    name,
-    description: op.description,
-    input_schema: op.input_schema,
-  }));
-  process.stderr.write(`switch: serving ${operations.length} operations locally\n`);
-}
-
-/**
- * Whether the server rejected a call because the connection it was stamped with
- * no longer exists.
- *
- * Two status codes for one condition: `/ops/*` answers 409 and `/connection/*`
- * answers 404, so matching on either alone misses half the surface. The id is
- * checked too — a 409 naming some *other* connection is a different fault and
- * must not be dressed up as this one.
- */
-function isDeadConnection(status: number, body: string): boolean {
-  if (status !== 409 && status !== 404) return false;
-  return body.includes(CONNECTION_ID) && body.includes('is not open');
-}
+let catalog = new SwitchToolCatalog([]);
 
 /** Whether the operator has already been told this connection is dead. */
 let deadConnectionReported = false;
@@ -918,81 +739,38 @@ function deadConnectionMessage(operation: string): string {
   );
 }
 
-async function callOperation(
-  name: string,
-  args: Record<string, unknown>
-): Promise<{
-  isError?: boolean;
-  content: { type: 'text'; text: string }[];
-  structuredContent?: Record<string, unknown>;
-}> {
-  try {
-    const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/ops/${name}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${API_TOKEN}`,
-        'Content-Type': 'application/json',
-        // Correlation, supplied by the process that owns the connection.
-        'X-Switch-Connection-Id': CONNECTION_ID,
-        // And which session on it, where a supervisor shares one between
-        // several. The two agree by construction: the supervisor publishes the
-        // selector only after binding this same connection to that session.
-        ...sessionSelector(SESSION_FILE),
-      },
-      body: JSON.stringify(args),
-    });
-    const text = await resp.text();
-    if (!resp.ok) {
-      if (isDeadConnection(resp.status, text)) {
-        return { isError: true, content: [{ type: 'text', text: deadConnectionMessage(name) }] };
-      }
-      return { isError: true, content: [{ type: 'text', text: `${resp.status}: ${text}` }] };
-    }
-    const data = JSON.parse(text) as { result?: unknown };
-    const result = data.result ?? null;
-    return {
-      content: [
-        {
-          type: 'text',
-          text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-        },
-      ],
-      // Object results are also returned as structured content. The remote MCP
-      // server produced this for free (FastMCP derives it from the return
-      // type), and hosts read the tool's *fields* from it — Switch Console's
-      // connect_to_room hook takes room_id and agent_id straight off the tool
-      // response. Text alone leaves them with a blob they cannot address, so
-      // the session silently never gets bound to its room.
-      ...(result !== null && typeof result === 'object' && !Array.isArray(result)
-        ? { structuredContent: result as Record<string, unknown> }
-        : {}),
-    };
-  } catch (err) {
-    return { isError: true, content: [{ type: 'text', text: `${name} failed: ${err}` }] };
-  }
+/**
+ * Who is calling, built per call: the identity can still be bound by
+ * `select_agent`, the room moves with `connect_to_room`, and the selector is
+ * re-read because the supervisor rewrites it.
+ */
+function callerContext(): CallerContext {
+  return {
+    identity: { endpoint: API_ENDPOINT, agentId: AGENT_ID, token: API_TOKEN },
+    connectionId: CONNECTION_ID,
+    // Which session on the connection, where a supervisor shares one between
+    // several. The two agree by construction: the supervisor publishes the
+    // selector only after binding this same connection to that session.
+    selector: sessionSelector(SESSION_FILE),
+    room: pollingRoomId,
+    mediaDir: MEDIA_DIR,
+    cwd: process.cwd(),
+    deadConnection: deadConnectionMessage,
+  };
 }
 
 // Fixed for the life of the process. `select_agent` stays listed after it has
 // bound an identity — the alternative is a catalog that changes underneath a
 // host mid-session, which costs a `tools/list_changed` round trip to announce
 // and is not honoured everywhere. A second call answers that it is spoken for.
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   // Degraded, the catalog was never fetched — there were no credentials to
   // fetch it with. One tool that explains itself beats fifty that are silently
   // absent.
-  tools: isDegraded()
-    ? [UNAVAILABLE_TOOL]
-    : [
-        ...operations.map((op) => ({
-          name: op.name,
-          description: op.description,
-          inputSchema: op.input_schema,
-        })),
-        ...(OFFERS_SELECT_AGENT ? [SELECT_AGENT_TOOL] : []),
-        DOWNLOAD_ATTACHMENT_TOOL,
-        SEND_ATTACHMENT_TOOL,
-      ],
-}));
+  if (isDegraded()) return { tools: [UNAVAILABLE_TOOL] };
+  const tools = catalog.tools();
+  return { tools: OFFERS_SELECT_AGENT ? [...tools, SELECT_AGENT_TOOL] : tools };
+});
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name;
@@ -1009,191 +787,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (!isBound()) {
     return { isError: true, content: [{ type: 'text', text: unboundRefusal() }] };
   }
-  if (name === 'download_attachment') {
-    return handleDownloadAttachment(req.params.arguments ?? {});
+  const args = req.params.arguments ?? {};
+  const result = await catalog.call(callerContext(), name, args);
+  // connect_to_room binds the room to this connection; keep the local view
+  // in step so attachments and missed-counts target the right room.
+  if (name === 'connect_to_room' && !result.isError && typeof args.room_id === 'string') {
+    setConnectedRoom(args.room_id);
   }
-  if (name === 'send_attachment') {
-    return handleSendAttachment(req.params.arguments ?? {});
-  }
-  if (operations.some((op) => op.name === name)) {
-    const result = await callOperation(name, req.params.arguments ?? {});
-    // connect_to_room binds the room to this connection; keep the local view
-    // in step so attachments and missed-counts target the right room.
-    if (name === 'connect_to_room' && !result.isError) {
-      const roomId = (req.params.arguments ?? {}).room_id;
-      if (typeof roomId === 'string') setConnectedRoom(roomId);
-    }
-    return result;
-  }
-  throw new Error(`Unknown tool: ${name}`);
+  return result;
 });
-
-async function handleDownloadAttachment(rawArgs: Record<string, unknown>) {
-  const args = rawArgs as {
-    mxc?: string;
-    filename?: string;
-    room_id?: string;
-  };
-  const mxc = typeof args.mxc === 'string' ? args.mxc : '';
-  if (!mxc) {
-    return { isError: true, content: [{ type: 'text', text: 'mxc is required' }] };
-  }
-  const roomId = args.room_id ?? pollingRoomId;
-  if (!roomId) {
-    return {
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text: 'Not connected to a room — call connect_to_room first or pass room_id.',
-        },
-      ],
-    };
-  }
-  const mediaId = mxc.split('/').pop() || 'attachment';
-  const destName = `${sanitiseName(mediaId)}-${sanitiseName(args.filename ?? '')}`;
-  try {
-    const path = await fetchMediaToFile(roomId, mxc, destName);
-    return { content: [{ type: 'text', text: path }] };
-  } catch (err) {
-    return {
-      isError: true,
-      content: [{ type: 'text', text: `Download failed: ${err}` }],
-    };
-  }
-}
-
-// Extension → mimetype map. Anything unlisted goes up as
-// application/octet-stream, which still relays fine — the mapping exists to
-// preserve type fidelity so platforms render/preview the file properly.
-const MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.bmp': 'image/bmp',
-  '.pdf': 'application/pdf',
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.csv': 'text/csv',
-  '.tsv': 'text/tab-separated-values',
-  '.log': 'text/plain',
-  '.json': 'application/json',
-  '.yaml': 'application/yaml',
-  '.yml': 'application/yaml',
-  '.toml': 'application/toml',
-  '.xml': 'application/xml',
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'text/javascript',
-  '.mjs': 'text/javascript',
-  '.ts': 'text/x-typescript',
-  '.tsx': 'text/x-typescript',
-  '.jsx': 'text/javascript',
-  '.py': 'text/x-python',
-  '.rs': 'text/x-rust',
-  '.go': 'text/x-go',
-  '.java': 'text/x-java',
-  '.c': 'text/x-c',
-  '.h': 'text/x-c',
-  '.cpp': 'text/x-c++',
-  '.sh': 'application/x-sh',
-  '.sql': 'application/sql',
-  '.zip': 'application/zip',
-  '.gz': 'application/gzip',
-  '.tar': 'application/x-tar',
-};
-
-async function handleSendAttachment(rawArgs: Record<string, unknown>) {
-  const args = rawArgs as {
-    path?: string;
-    paths?: unknown;
-    caption?: string;
-    thread_id?: string;
-    room_id?: string;
-  };
-  const filePaths: string[] = [];
-  if (typeof args.path === 'string' && args.path) filePaths.push(args.path);
-  if (Array.isArray(args.paths)) {
-    for (const p of args.paths) if (typeof p === 'string' && p) filePaths.push(p);
-  }
-  if (filePaths.length === 0) {
-    return {
-      isError: true,
-      content: [{ type: 'text', text: 'path (or paths) is required' }],
-    };
-  }
-  const roomId = args.room_id ?? pollingRoomId;
-  if (!roomId) {
-    return {
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text: 'Not connected to a room — call connect_to_room first or pass room_id.',
-        },
-      ],
-    };
-  }
-
-  // Read every file up front: one unreadable path fails the whole call rather
-  // than posting a partial message.
-  const files: { name: string; bytes: Buffer; mimetype: string }[] = [];
-  for (const filePath of filePaths) {
-    let bytes: Buffer;
-    try {
-      bytes = fs.readFileSync(filePath);
-    } catch (err) {
-      return {
-        isError: true,
-        content: [{ type: 'text', text: `Cannot read ${filePath}: ${err}` }],
-      };
-    }
-    files.push({
-      name: path.basename(filePath),
-      bytes,
-      mimetype: MIME_BY_EXT[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream',
-    });
-  }
-
-  const form = new FormData();
-  for (const file of files) {
-    form.append('files', new Blob([file.bytes], { type: file.mimetype }), file.name);
-  }
-  if (typeof args.caption === 'string' && args.caption) form.append('caption', args.caption);
-  if (typeof args.thread_id === 'string' && args.thread_id)
-    form.append('thread_id', args.thread_id);
-
-  try {
-    const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/rooms/${roomId}/media`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${API_TOKEN}` },
-      body: form,
-    });
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-    }
-    const data = (await resp.json()) as { event_id?: string };
-    const names = files.map((f) => f.name).join(', ');
-    return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `Sent ${files.length === 1 ? names : `${files.length} files (${names})`} ` +
-            `to the room (event_id: ${data.event_id ?? 'unknown'}).`,
-        },
-      ],
-    };
-  } catch (err) {
-    return {
-      isError: true,
-      content: [{ type: 'text', text: `Send failed: ${err}` }],
-    };
-  }
-}
 
 // -- Event stream (SSE) ------------------------------------------------------
 //
@@ -1904,34 +1506,6 @@ async function handleEvent(event: AgentEvent) {
   process.stderr.write(`switch: unknown event type: ${type}\n`);
 }
 
-const MEDIA_DIR = path.join(SESSION_DIR, 'media');
-
-// Download an inbound attachment from the agent bridge to a local file so the
-// agent can read it. The bridge proxies the bytes out of the Matrix media repo
-// (this runtime holds only the bridge API token, not Matrix creds).
-// Returns the local path, or null on failure (logged, never throws).
-function sanitiseName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'attachment';
-}
-
-// Fetch an attachment's bytes from the agent bridge (which proxies the Matrix
-// media repo) and write them to a local file under MEDIA_DIR. Throws on error.
-async function fetchMediaToFile(roomId: string, mxc: string, destName: string): Promise<string> {
-  const url =
-    `${API_ENDPOINT}/agents/${AGENT_ID}/rooms/${roomId}/media` + `?mxc=${encodeURIComponent(mxc)}`;
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${API_TOKEN}` },
-  });
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-  }
-  const bytes = Buffer.from(await resp.arrayBuffer());
-  fs.mkdirSync(MEDIA_DIR, { recursive: true });
-  const dest = path.join(MEDIA_DIR, destName);
-  fs.writeFileSync(dest, bytes);
-  return dest;
-}
-
 // Notification path: best-effort download (failures are logged, never thrown,
 // so they can't break event delivery). Returns the local path or null.
 async function downloadAttachment(
@@ -1942,31 +1516,30 @@ async function downloadAttachment(
 ): Promise<string | null> {
   try {
     const destName = `${messageId.replace(/[^a-zA-Z0-9]/g, '_')}-${index}-${sanitiseName(att.filename)}`;
-    return await fetchMediaToFile(roomId, att.mxc, destName);
+    return await fetchMediaToFile(
+      { endpoint: API_ENDPOINT, agentId: AGENT_ID, token: API_TOKEN },
+      MEDIA_DIR,
+      roomId,
+      att.mxc,
+      destName
+    );
   } catch (err) {
     process.stderr.write(`switch: attachment download error: ${err}\n`);
     return null;
   }
 }
 
-async function setTyping(roomId: string, isTyping: boolean) {
+// Typing feedback must never block or fail event delivery, so a refusal is
+// logged rather than raised.
+async function setTyping(roomId: string, isTyping: boolean): Promise<void> {
   try {
-    const url = `${API_ENDPOINT}/agents/${AGENT_ID}/typing`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${API_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ room_id: roomId, is_typing: isTyping }),
-    });
-    if (!resp.ok) {
-      process.stderr.write(
-        `switch: set typing failed: HTTP ${resp.status}: ${await resp.text()}\n`
-      );
-    }
+    await setRoomTyping(
+      { endpoint: API_ENDPOINT, agentId: AGENT_ID, token: API_TOKEN },
+      roomId,
+      isTyping
+    );
   } catch (err) {
-    process.stderr.write(`switch: set typing error: ${err}\n`);
+    process.stderr.write(`switch: ${err}\n`);
   }
 }
 
@@ -2082,12 +1655,20 @@ setInterval(() => {
 if (!isDegraded()) {
   try {
     if (isBound()) {
-      await loadOperations(API_ENDPOINT, AGENT_ID, API_TOKEN);
+      catalog = new SwitchToolCatalog(
+        await loadOperations({ endpoint: API_ENDPOINT, agentId: AGENT_ID, token: API_TOKEN })
+      );
     } else {
       let lastError: unknown;
       for (const candidate of unboundCandidates) {
         try {
-          await loadOperations(API_ENDPOINT, candidate.agentId, candidate.token);
+          catalog = new SwitchToolCatalog(
+            await loadOperations({
+              endpoint: API_ENDPOINT,
+              agentId: candidate.agentId,
+              token: candidate.token,
+            })
+          );
           lastError = undefined;
           break;
         } catch (err) {
@@ -2099,6 +1680,7 @@ if (!isDegraded()) {
       }
       if (lastError !== undefined) throw lastError;
     }
+    process.stderr.write(`switch: serving ${catalog.operations.length} operations locally\n`);
   } catch (err) {
     degrade(
       `cannot reach Switch at ${API_ENDPOINT} to load its operations: ${err instanceof Error ? err.message : err}`

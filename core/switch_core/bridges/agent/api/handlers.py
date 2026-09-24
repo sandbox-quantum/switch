@@ -26,6 +26,7 @@ from switch_core.bridges.agent.api.schemas import (
     BulkRegisterResult,
     CancelTaskRequest,
     ConnectionBeatRequest,
+    ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
     CreateModerationRoomRequest,
@@ -96,6 +97,7 @@ from switch_core.bridges.agent.protocol.connections import (
     UnknownConnectionError,
     evicted_session_warning,
 )
+from switch_core.bridges.agent.protocol.event_buffer import Reader
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -970,7 +972,9 @@ async def connection_beat(
 
 
 def _current_connection(
-    protocol: ProtocolService, agent_id: str, req: ConnectionSubscribeRequest
+    protocol: ProtocolService,
+    agent_id: str,
+    req: ConnectionSubscribeRequest | ConnectionPlacementsRequest,
 ) -> Connection:
     """The connection this request may write to, or the refusal saying why not.
 
@@ -1079,6 +1083,76 @@ async def connection_unsubscribe(
         conn = _current_connection(protocol, agent.id, req)
         protocol.connections.release_room(conn, req.room_id)
     return {"ok": True, "rooms": sorted(conn.rooms)}
+
+
+@router.post("/{agent_id}/connection/placements")
+async def connection_placements(
+    agent_id: str,
+    req: ConnectionPlacementsRequest,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict[str, Any]:
+    """Replace every session placement on an open connection.
+
+    The agent's watcher places its sessions itself and states the whole set
+    here after each change and on every (re)connect, so a restart of either
+    side converges on what the watcher knows. A room another connection holds
+    is taken over, as `connect_to_room` takes it, and that connection is sent
+    `room_released`. Every room must be one the agent belongs to; one that is
+    not refuses the whole request and changes nothing.
+    """
+    if agent_id != agent.id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"authenticated as agent {agent.id}, not {agent_id}",
+        )
+    conn = _current_connection(protocol, agent.id, req)
+
+    for room_id in sorted(set(req.placements.values())):
+        try:
+            await protocol.require_room_member(agent.id, room_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    async with protocol.connections.slots(agent.id):
+        conn = _current_connection(protocol, agent.id, req)
+        before = protocol.connections.connection_placements(conn)
+        try:
+            released = protocol.connections.replace_placements(conn, req.placements)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    for session_id, room_id in req.placements.items():
+        if before.get(session_id) != room_id:
+            protocol.event_buffer.hand_counting_to(
+                agent.id, Reader(id=session_id, is_session=True), room_id
+            )
+    for lost in released:
+        logger.warning(
+            "[CONN] agent=%s connection=%s took room %s from connection %s "
+            "(session %s)",
+            agent.id,
+            conn.id,
+            lost.room_id,
+            lost.connection_id,
+            lost.session_id or "-",
+        )
+
+    return {
+        "ok": True,
+        "placements": protocol.connections.connection_placements(conn),
+        "rooms": sorted(conn.rooms),
+        "released": [
+            {
+                "connection_id": lost.connection_id,
+                "room_id": lost.room_id,
+                "session_id": lost.session_id,
+            }
+            for lost in released
+        ],
+    }
 
 
 @router.get("/{agent_id}/notifications", response_model=None)

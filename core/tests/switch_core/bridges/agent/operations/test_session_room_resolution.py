@@ -193,8 +193,8 @@ async def test_connecting_vacates_only_the_callers_own_room(
     registry.claim_room(connection, ROOM_A)
     registry.claim_room(connection, ROOM_B)
 
-    registry.place_session(AGENT, "session-a", ROOM_A)
-    registry.place_session(AGENT, "session-b", ROOM_B)
+    registry.place_session(AGENT, "session-a", ROOM_A, CONNECTION)
+    registry.place_session(AGENT, "session-b", ROOM_B, CONNECTION)
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -221,7 +221,7 @@ async def test_a_room_a_sibling_has_taken_is_not_vacated(
     connection = _open(registry)
     registry.claim_room(connection, ROOM_A)
     # The sibling took ROOM_A after this caller's request came in.
-    registry.place_session(AGENT, "session-b", ROOM_A)
+    registry.place_session(AGENT, "session-b", ROOM_A, CONNECTION)
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -244,7 +244,7 @@ async def test_displacing_a_sibling_names_it_in_the_warning(
     """
     connection = _open(registry)
     registry.claim_room(connection, "room-c")
-    registry.place_session(AGENT, "session-b", "room-c")
+    registry.place_session(AGENT, "session-b", "room-c", CONNECTION)
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
@@ -267,7 +267,7 @@ async def test_connecting_takes_the_rooms_unread_count(
     the session that left would clear a count the arrival has not read.
     """
     _open(registry)
-    registry.place_session(AGENT, "session-b", "room-c")
+    registry.place_session(AGENT, "session-b", "room-c", CONNECTION)
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     protocol = _protocol_for(registry, "room-c")
     init_operations_protocol(protocol)
@@ -330,7 +330,7 @@ async def test_one_eviction_is_reported_once_and_names_the_session(
     )
     registry.claim_room(incumbent, "room-c")
     _open(registry)
-    registry.place_session(AGENT, "session-b", "room-c")
+    registry.place_session(AGENT, "session-b", "room-c", "connection-old")
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 

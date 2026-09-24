@@ -311,7 +311,7 @@ async def connect_to_room(
         # rather than from what it believed on arrival.
         if caller is not None:
             previous, displaced_session_id = protocol.connections.place_session(
-                agent_id, caller.id, room.id
+                agent_id, caller.id, room.id, key
             )
         else:
             previous = rooms_on_caller_connection(protocol, agent_id, key)

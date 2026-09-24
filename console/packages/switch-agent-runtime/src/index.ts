@@ -13,8 +13,9 @@
  * It exists because those two had a copy each and the copies drifted within a
  * day.
  *
- * The MCP runtime is a separate entry point (`./bin`) so importing the client
- * does not drag in the MCP SDK.
+ * The MCP runtime is in separate entry points — `./hosted`, the tool surface a
+ * session host serves and its watcher runs, and `./bin`, the standalone
+ * binary — so importing the client does not drag in the MCP SDK.
  */
 
 export {
@@ -32,6 +33,7 @@ export {
   EVICTION_CREDENTIALS_REJECTED,
   EVICTION_HEARTBEAT_LAPSED,
   EVICTION_TAKEN_OVER,
+  PlacementsRefusedError,
   SwitchEventStream,
   type ApprovalOutcome,
   type SessionCommand,

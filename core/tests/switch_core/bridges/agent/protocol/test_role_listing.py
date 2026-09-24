@@ -119,7 +119,7 @@ def _build_service(
             for lease in held
             if lease.session_id == session_id
         )
-        svc.connections.place_session(holder, session_id, room_id)
+        svc.connections.place_session(holder, session_id, room_id, f"conn-{session_id}")
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]

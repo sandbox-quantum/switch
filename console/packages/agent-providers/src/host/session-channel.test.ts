@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { afterEach, expect, it, vi } from 'vitest';
-import { SessionLinks, SessionUnavailableError, serveParent } from './session-channel';
+import { connectParent, SessionLinks, SessionUnavailableError } from './session-channel';
 
 /** A child process as far as the parent's end can tell: messages both ways, and an exit. */
 function fakeChild() {
@@ -10,6 +10,7 @@ function fakeChild() {
     send: (message: unknown, callback: (error: Error | null) => void) => boolean;
   };
   child.sent = [];
+  (child as unknown as { connected: boolean }).connected = true;
   child.send = (message, callback) => {
     child.sent.push(message);
     callback(null);
@@ -75,7 +76,7 @@ it('passes a refusal on as an error, and every pushed event to subscribers', asy
   await expect(answer).rejects.toThrow('STALE_EPOCH');
 });
 
-it('serves requests on the host side when it has a parent', async () => {
+function fakePort() {
   const sent: unknown[] = [];
   const port = Object.assign(new EventEmitter(), {
     connected: true,
@@ -84,18 +85,25 @@ it('serves requests on the host side when it has a parent', async () => {
       return true;
     },
   });
-  const served = serveParent(
-    {
-      command: async () => ({ applied: true }),
-      room: async () => null,
-      snapshot: async () => 'snapshot',
-      approvals: async () => null,
-    },
-    port
-  );
-  expect(served).not.toBeNull();
-  served!.ready();
-  served!.push(event(3) as never);
+  return { sent, port };
+}
+
+it('serves requests on the host side once it has handlers', async () => {
+  const { sent, port } = fakePort();
+  const served = connectParent(port);
+  port.emit('message', { kind: 'request', id: 6, request: { type: 'snapshot' } });
+  expect(sent).toEqual([
+    { kind: 'reply', id: 6, ok: false, error: 'The session host is not ready yet.' },
+  ]);
+  sent.length = 0;
+  served.serve({
+    command: async () => ({ applied: true }),
+    room: async () => null,
+    snapshot: async () => 'snapshot',
+    approvals: async () => null,
+  });
+  served.ready();
+  served.push(event(3) as never);
   port.emit('message', { kind: 'request', id: 7, request: { type: 'snapshot' } });
   port.emit('message', { kind: 'request', id: 8, request: { type: 'nonsense' } });
   await vi.waitFor(() =>
@@ -103,20 +111,81 @@ it('serves requests on the host side when it has a parent', async () => {
   );
   expect(sent.slice(0, 2)).toEqual([{ kind: 'ready' }, { kind: 'event', event: event(3) }]);
   expect(sent).toHaveLength(3);
-  served!.close();
+  served.close();
+  port.emit('message', { kind: 'request', id: 9, request: { type: 'snapshot' } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(sent).toHaveLength(3);
 });
 
-it('serves nothing without a parent', () => {
+it('refuses to serve without a parent', () => {
   const port = Object.assign(new EventEmitter(), { connected: false });
-  expect(
-    serveParent(
-      {
-        command: async () => null,
-        room: async () => null,
-        snapshot: async () => null,
-        approvals: async () => null,
-      },
-      port
-    )
-  ).toBeNull();
+  expect(() => connectParent(port)).toThrow('has none');
+});
+
+const IDENTITY = { agentId: 'agent', sessionId: 'session', hostId: 'host', epoch: 'epoch' };
+
+it("carries a host's question up to the watcher answering for its agent, and the answer back", async () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  const { port } = fakePort();
+  // The host's end talks to the parent's end through the fake pipe both ways.
+  port.send = (message: unknown) => {
+    child.emit('message', message);
+    return true;
+  };
+  child.send = (message, callback) => {
+    port.emit('message', message);
+    callback(null);
+    return true;
+  };
+  const host = connectParent(port);
+  host.identify(IDENTITY);
+  expect(links.identity('root')).toEqual(IDENTITY);
+
+  await expect(host.ask({ type: 'tools' })).rejects.toThrow('No room watcher is running');
+
+  const handler = vi.fn(async (_caller: unknown, ask: { type: string }) =>
+    ask.type === 'tools' ? [{ name: 'post_message' }] : { content: [] }
+  );
+  const release = links.answer('agent', handler);
+  expect(() => links.answer('agent', handler)).toThrow('already has a watcher');
+  expect(await host.ask({ type: 'tools' })).toEqual([{ name: 'post_message' }]);
+  expect(await host.ask({ type: 'tool', name: 'post_message', arguments: { body: 'hi' } })).toEqual(
+    {
+      content: [],
+    }
+  );
+  expect(handler).toHaveBeenLastCalledWith(
+    { ...IDENTITY, root: 'root' },
+    { type: 'tool', name: 'post_message', arguments: { body: 'hi' } }
+  );
+
+  handler.mockRejectedValueOnce(new Error('Switch refused'));
+  await expect(host.ask({ type: 'tools' })).rejects.toThrow('Switch refused');
+
+  release();
+  await expect(host.ask({ type: 'tools' })).rejects.toThrow('No room watcher is running');
+});
+
+it('refuses a question from a host that has not said who it is, and tells who exited', async () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  links.answer('agent', async () => 'answered');
+  child.emit('message', { kind: 'ask', id: 1, ask: { type: 'tools' } });
+  await vi.waitFor(() =>
+    expect(child.sent).toContainEqual({
+      kind: 'answer',
+      id: 1,
+      ok: false,
+      error: 'The session host asked its parent before saying which session it runs.',
+    })
+  );
+  const exits: unknown[] = [];
+  links.onExit((root, identity) => exits.push([root, identity]));
+  child.emit('message', { kind: 'identity', identity: IDENTITY });
+  child.emit('exit', 0, null);
+  expect(exits).toEqual([['root', IDENTITY]]);
+  expect(links.identity('root')).toBeNull();
 });

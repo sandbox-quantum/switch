@@ -181,9 +181,17 @@ contracts:
     # owner from Switch Console and relayed without being stored. Sessions no
     # longer fetch commands from a queue on the server. Sent only to a client
     # that declares this revision, for the same reason as revision 4.
+    #
+    # Revision 6 moves session placement to the agent's watcher. Delivered
+    # events no longer carry `session_id`; the watcher states its placements on
+    # `POST /agents/{id}/connection/placements`, and a connection whose room
+    # claim or session placement another connection took over is sent
+    # `room_released` (`room_id`, and the session placed there or null). The
+    # frame is sent only to a client that declares this revision, for the same
+    # reason as revision 4.
     artifacts:
-      switch-core: { speaks: 5, accepts: 1 }
-      agent-runtime: { speaks: 5, accepts: 1 }
+      switch-core: { speaks: 6, accepts: 1 }
+      agent-runtime: { speaks: 6, accepts: 1 }
 
   gateway-api:
     description: >-

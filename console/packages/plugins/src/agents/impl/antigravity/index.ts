@@ -17,9 +17,6 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hooks: {
-      kind: 'none',
-    },
     hostDependency: {
       id: 'antigravity',
       binaryNames: ['antigravity-acp'],

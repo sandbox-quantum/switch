@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session } from '@switch-console/shared/session-v1';
@@ -14,9 +15,10 @@ import {
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
-import { serveParent, type ParentPort } from './session-channel';
+import { connectParent, type ParentChannel, type ParentPort } from './session-channel';
 import { HostedSession } from './session-host';
-import { writeSessionSelector } from './shared-config';
+import { startSessionMcp } from './session-mcp';
+import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
 import { SharedState } from './shared-state';
 
 /**
@@ -46,7 +48,7 @@ export type SharedHostOptions = {
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
   /** The IPC channel to the process that started this host, or null if none did. */
-  parent: ParentPort | null;
+  parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
   parkAfterMs: number | null;
 };
@@ -197,14 +199,23 @@ export async function runSharedHost(
   executionSignal.addEventListener('abort', onAbort, { once: true });
 
   try {
-    // Names this session to Switch on the agent's tool calls, so the room it
-    // connects to is its own rather than its connection's, which it shares
-    // with the agent's other sessions.
-    await writeSessionSelector(options.root, {
-      session_id: options.session.sessionId,
-      host_id: options.session.hostId,
-      epoch: options.session.epoch,
-    });
+    // Names this session to its parent, which makes the agent's tool calls
+    // as this session: the room it connects to is its own rather than its
+    // connection's, which it shares with the agent's other sessions.
+    let identified = '';
+    const identify = (session: { hostId: string; epoch: string }) => {
+      const identity = {
+        agentId,
+        sessionId: options.session.sessionId,
+        hostId: session.hostId,
+        epoch: session.epoch,
+      };
+      const key = JSON.stringify(identity);
+      if (key === identified) return;
+      identified = key;
+      options.parent?.identify(identity);
+    };
+    identify(options.session);
     await state.journal.append({ type: 'running' });
     // Read whether or not this session serves rooms: it is also where the
     // agent's controller hands over commands Switch relayed from Console.
@@ -471,32 +482,32 @@ export async function runSharedHost(
       }
     };
 
+    identify(host.snapshot().session);
     // A parent that started this host talks to it over IPC: commands and room
     // messages come down the pipe, and every recorded event goes up it.
-    const parent = serveParent(
-      {
-        command: async ({ command }) => {
-          const outcome = await run(command);
-          if (typeof outcome === 'string') throw new Error(outcome);
-          return outcome;
-        },
-        room: async ({ handoff }) => {
-          if (!rooms) throw new Error('This session serves no rooms.');
-          await rooms.accept(handoff);
-          active();
-          waker.nudge();
-          return { accepted: true };
-        },
-        snapshot: async () => host!.snapshot(),
-        approvals: async () => {
-          active();
-          waker.approvalsWaiting();
-          return null;
-        },
+    const parent = options.parent;
+    parent?.serve({
+      command: async ({ command }) => {
+        const outcome = await run(command);
+        if (typeof outcome === 'string') throw new Error(outcome);
+        return outcome;
       },
-      options.parent ?? { connected: false, on: () => null, off: () => null }
-    );
+      room: async ({ handoff }) => {
+        if (!rooms) throw new Error('This session serves no rooms.');
+        await rooms.accept(handoff);
+        active();
+        waker.nudge();
+        return { accepted: true };
+      },
+      snapshot: async () => host!.snapshot(),
+      approvals: async () => {
+        active();
+        waker.approvalsWaiting();
+        return null;
+      },
+    });
     host.onPublished(active);
+    host.onPublished(() => identify(host!.snapshot().session));
     if (parent) {
       host.onPublished((event) => parent.push(event));
       parent.ready();
@@ -563,4 +574,49 @@ export async function runSharedHost(
     executionSignal.removeEventListener('abort', onAbort);
   }
   if (failure) throw failure;
+}
+
+/**
+ * A session host as its own process: the child of Console or the agent's
+ * sidecar, which it reaches over `port`.
+ *
+ * The Switch tools are served on loopback before the provider starts, so the
+ * CLI is launched already pointing at them; every call goes up the pipe to
+ * the parent. `authenticate` checks the provider's own sign-in with the
+ * environment the CLI will get, where there is one to check.
+ */
+export async function hostSessionProcess(input: {
+  root: string;
+  config: SharedHostConfig;
+  adapter: ProviderAdapter;
+  port: ParentPort;
+  authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { config } = input;
+  const parent = connectParent(input.port);
+  const mcp = await startSessionMcp(parent);
+  try {
+    const prepared = await prepareSharedConfig(input.root, config, mcp.spec);
+    const authenticate = input.authenticate;
+    await runSharedHost(
+      {
+        root: resolve(input.root),
+        agentApiUrl: prepared.agentApiUrl,
+        token: prepared.token,
+        session: config.session,
+        resumeOperationId: config.resumeOperationId,
+        ...(authenticate ? { authenticate: () => authenticate(prepared.input) } : {}),
+        input: prepared.input,
+        roomConnection: config.roomConnection,
+        grant: config.grant,
+        parent,
+        parkAfterMs: parkAfterMs(),
+      },
+      input.adapter,
+      input.signal
+    );
+  } finally {
+    await mcp.close();
+  }
 }

@@ -12,6 +12,7 @@ import {
   type SessionLinks,
   type SessionRequest,
 } from './session-channel';
+import type { PlaceOutcome, WatcherControl } from './watcher-tools';
 
 /**
  * How Console reaches the sessions an agent's sidecar runs on a remote host.
@@ -33,6 +34,11 @@ const clientMessageSchema = z.union([
   z.object({
     id: z.number().int(),
     ensure: z.object({ config: z.unknown(), resuming: z.boolean(), restart: z.boolean() }),
+  }),
+  /** Console's "Reconnect to room": move a room's messages to this session. */
+  z.object({
+    id: z.number().int(),
+    place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }),
   }),
 ]);
 
@@ -64,6 +70,7 @@ export async function serveControl(
   root: string,
   links: SessionLinks,
   ensure: EnsureSession,
+  watcher: WatcherControl,
   signal: AbortSignal
 ): Promise<void> {
   const token = randomBytes(32).toString('hex');
@@ -127,7 +134,9 @@ export async function serveControl(
         subscriptions.get(parsed.unsubscribe)?.();
         subscriptions.delete(parsed.unsubscribe);
         void reply(Promise.resolve(null));
-      } else void reply(ensure(parsed.ensure));
+      } else if ('place' in parsed)
+        void reply(watcher.place(parsed.place.sessionId, parsed.place.roomId));
+      else void reply(ensure(parsed.ensure));
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -162,6 +171,13 @@ const serverMessageSchema = z.union([
   }),
   z.object({ sessionId: z.string(), event: serverEventSchema }),
 ]);
+
+const placeOutcomeSchema = z.object({
+  sessionId: z.string(),
+  roomId: z.string(),
+  previous: z.string().nullable(),
+  displaced: z.string().nullable(),
+});
 
 /** Console's end of the control connection, over whatever stream reaches the port. */
 export class ControlClient {
@@ -231,6 +247,11 @@ export class ControlClient {
 
   ensure(input: { config: unknown; resuming: boolean; restart: boolean }): Promise<unknown> {
     return this.call({ ensure: input });
+  }
+
+  /** Move a room's messages to this session, through the sidecar's room watcher. */
+  async place(sessionId: string, roomId: string): Promise<PlaceOutcome> {
+    return placeOutcomeSchema.parse(await this.call({ place: { sessionId, roomId } }));
   }
 
   async subscribe(sessionId: string, listener: (event: ServerEvent) => void): Promise<() => void> {

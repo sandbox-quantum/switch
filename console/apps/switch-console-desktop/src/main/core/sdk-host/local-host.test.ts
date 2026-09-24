@@ -25,13 +25,17 @@ vi.mock('@switch-console/agent-providers', () => ({
   WATCH_FLAGS_FILE: 'watch.json',
   watchFlagsSchema: { parse: (value: unknown) => value },
   sharedConfigSchema: { parse: (value: unknown) => value },
+  sharedSessionRoot: (sessionId: string) => `/sessions/${sessionId}`,
+  SessionLinks: class {},
+  WatcherControl: class {},
 }));
 vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: mocks.bundle,
 }));
 vi.mock('@main/lib/logger', () => ({ log: { error: vi.fn(), warn: vi.fn() } }));
 
-const { startLocalWatcher, localWatcherRoot, readLocalHostFailure } = await import('./local-host');
+const { startLocalWatcher, localWatcherRoot, localWatcherControl, readLocalHostFailure } =
+  await import('./local-host');
 
 const roots: string[] = [];
 let home: string;
@@ -125,4 +129,11 @@ it('appends start and failure lines to the log the panel tails', async () => {
     .poll(() => readFile(log, 'utf8'))
     .toContain('Room watcher stopped: Shared SDK watcher delivery gap: sequence reset.');
   expect(await readFile(log, 'utf8')).toContain('Room watcher started inside Console.');
+});
+
+it('gives the watcher the control Console moves this agent’s sessions through', async () => {
+  mocks.runWatcher.mockReturnValue(new Promise(() => {}));
+  await startLocalWatcher(config, { intent: 'explicit', spawning: true });
+  expect(mocks.runWatcher.mock.calls[0][4]).toBe(localWatcherControl('switch-agent-1'));
+  expect(localWatcherControl('switch-agent-2')).not.toBe(localWatcherControl('switch-agent-1'));
 });

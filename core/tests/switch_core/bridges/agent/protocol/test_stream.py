@@ -962,3 +962,18 @@ class TestAGapNamesTheRoomsThatLostEvents:
 
         assert frames[1][0] == "gap"
         assert frames[1][1]["all_rooms"] is False
+
+
+async def test_a_delivered_event_names_no_session() -> None:
+    """Routing a room's events to a session is the watcher's, from its own placements."""
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry, scope="all")
+    registry.place_session(AGENT, "session-1", ROOM_A, conn.id)
+    buffer.enqueue(AGENT, ROOM_A, _message("hello"))
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer, approvals=None)
+    (_, (name, data)) = await _take(stream, 2)
+
+    assert name == "message"
+    assert "session_id" not in data

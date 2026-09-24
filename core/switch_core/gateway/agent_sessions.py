@@ -6,7 +6,8 @@ agent's addressing policy in the request's room, or its owner when the request
 has no room.
 
 Room health: the agent's live connections and where its sessions are, for
-Console to show and to move a room to another session.
+Console to show. Moving a room to another session is the agent's watcher's
+to do; it states the result on `POST /agents/{id}/connection/placements`.
 """
 
 from datetime import datetime
@@ -21,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent, ApprovalRequest, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_protocol, get_session_factory
 from switch_core.session_activity.service import SessionActivityService, SwitchUser
@@ -31,7 +31,6 @@ from switch_core.sessions.contract import (
     QuestionsResult,
     RequestResult,
 )
-from switch_core.sessions.errors import SessionError
 
 router = APIRouter()
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -218,45 +217,3 @@ async def room_health(
         },
         placements={agent_id: registry.placements(agent_id) for agent_id in agent_ids},
     )
-
-
-class PlaceBody(_Model):
-    room_id: str = Field(min_length=1)
-
-
-class Placement(_Model):
-    room_id: str
-    displaced: str | None
-
-
-@router.post("/{agent_id}/{session_id}/place", response_model_by_alias=True)
-async def place_session(
-    agent_id: str,
-    session_id: str,
-    body: PlaceBody,
-    user: CurrentUser,
-    factory: Factory,
-    protocol: Protocol,
-) -> Placement:
-    """Move a room's messages to this session, as its owner asks from Console.
-
-    The same move a session's own `connect_to_room` makes: the room's events
-    are tagged with this session from now on, and the agent's controller
-    routes them to it.
-    """
-    async with tenant_session(factory, require_tenant_id()) as db:
-        agent = await db.get(Agent, agent_id)
-        if agent is None or agent.owner_id != user.id:
-            raise SessionError(
-                "NOT_AUTHORIZED", "Only the agent's owner can move its sessions."
-            )
-        found = await RoomStore().get_with_membership(db, body.room_id, agent_id)
-    if found is None:
-        raise SessionError("NOT_FOUND", f"Room not found: {body.room_id}")
-    if not found[1]:
-        raise SessionError("NOT_AUTHORIZED", "The agent is not a member of this room.")
-    async with protocol.connections.slots(agent_id):
-        _, displaced = protocol.connections.place_session(
-            agent_id, session_id, body.room_id
-        )
-    return Placement(room_id=body.room_id, displaced=displaced)

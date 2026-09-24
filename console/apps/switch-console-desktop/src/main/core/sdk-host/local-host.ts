@@ -15,6 +15,7 @@ import {
   type Supervision,
   WATCH_FLAGS_FILE,
   type WatchFlags,
+  WatcherControl,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
@@ -246,6 +247,21 @@ export async function readLocalHostFailure(root: string): Promise<unknown> {
  * starting it would take the connection off whoever holds it now. `'explicit'`
  * is a person asking, and clears the marker.
  */
+/**
+ * How Console reaches each local agent's running watcher, by Switch agent id:
+ * "Reconnect to room" is a direct call into it.
+ */
+const watcherControls = new Map<string, WatcherControl>();
+
+export function localWatcherControl(switchAgentId: string): WatcherControl {
+  let control = watcherControls.get(switchAgentId);
+  if (!control) {
+    control = new WatcherControl();
+    watcherControls.set(switchAgentId, control);
+  }
+  return control;
+}
+
 export async function startLocalWatcher(
   config: SharedHostConfig,
   options: { intent: WatcherIntent; spawning: boolean }
@@ -273,7 +289,14 @@ export async function startLocalWatcher(
         track(
           watchers,
           prepared,
-          (signal) => runSharedWatcher(prepared, written, signal, consoleSupervision),
+          (signal) =>
+            runSharedWatcher(
+              prepared,
+              written,
+              signal,
+              consoleSupervision,
+              localWatcherControl(written.session.agentId)
+            ),
           'Local room watcher stopped',
           true
         );

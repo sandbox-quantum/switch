@@ -20,9 +20,6 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hooks: {
-      kind: 'none',
-    },
     hostDependency: {
       id: 'cursor',
       binaryNames: ['agent', 'cursor-agent'],

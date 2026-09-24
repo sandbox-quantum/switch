@@ -21,7 +21,7 @@ from switch_core.gateway.dependencies import get_protocol, get_session_factory
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
 
-from .conftest import make_agent, make_room
+from .conftest import make_agent
 
 AGENT = "relay-agent"
 FRAME = {"sessionId": "session-1", "commandId": "command-1"}
@@ -105,7 +105,9 @@ async def test_the_owner_sees_connections_and_where_sessions_are(
 ) -> None:
     registry = ConnectionRegistry()
     _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
-    registry.place_session(AGENT, "session-1", "room-1")
+    registry.place_session(
+        AGENT, "session-1", "room-1", f"conn-all-{SESSION_COMMAND_PROTOCOL_REVISION}"
+    )
     async with _client(session_factory, registry, owner) as client:
         health = (await client.get("/agent-sessions/room-health")).json()
     assert health == {
@@ -117,27 +119,3 @@ async def test_the_owner_sees_connections_and_where_sessions_are(
             "connections": {},
             "placements": {},
         }
-
-
-async def test_the_owner_moves_a_room_to_a_session(session_factory, owner) -> None:
-    async with session_factory() as db, db.begin():
-        room_id = await make_room(db, member=AGENT)
-        foreign = await make_room(db, member=None)
-    registry = ConnectionRegistry()
-    registry.place_session(AGENT, "session-old", room_id)
-    async with _client(session_factory, registry, owner) as client:
-        moved = await client.post(
-            f"/agent-sessions/{AGENT}/session-new/place", json={"roomId": room_id}
-        )
-        refused = await client.post(
-            f"/agent-sessions/{AGENT}/session-new/place", json={"roomId": foreign}
-        )
-    assert moved.json() == {"roomId": room_id, "displaced": "session-old"}
-    assert registry.session_in_room(AGENT, room_id) == "session-new"
-    assert refused.status_code == 403
-    async with _client(session_factory, registry, "someone-else") as client:
-        assert (
-            await client.post(
-                f"/agent-sessions/{AGENT}/session-x/place", json={"roomId": room_id}
-            )
-        ).status_code == 403

@@ -1,6 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runtimeInstructions } from './hosted';
 
 /**
  * The MCP server's `instructions` are injected into every session that
@@ -13,20 +12,9 @@ import { describe, expect, it } from 'vitest';
  * regression a future edit can reintroduce in one line, so these assert the
  * shape of the guidance rather than its exact prose: conditional reading, and
  * a connection that holds for the session.
- *
- * `bin.ts` is the process entry point — importing it opens a connection and
- * starts an MCP server on stdio — so this reads the source, the same approach
- * as `bin.gap.test.ts` and `bin.shebang.test.ts`.
  */
-const SOURCE = readFileSync(join(import.meta.dirname, 'bin.ts'), 'utf8');
-
-/** The `instructions: [...]` array passed to the Server constructor. */
 function instructions(): string {
-  const start = SOURCE.indexOf('instructions: [');
-  expect(start).toBeGreaterThan(-1);
-  const end = SOURCE.indexOf("].join('\\n')", start);
-  expect(end).toBeGreaterThan(start);
-  return SOURCE.slice(start, end);
+  return runtimeInstructions(true);
 }
 
 describe('MCP server instructions', () => {
@@ -56,4 +44,11 @@ describe('MCP server instructions', () => {
       expect(instructions()).not.toContain(banned);
     }
   });
+});
+
+it('tells a session run by Console or a sidecar how its events arrive', () => {
+  const managed = runtimeInstructions(false);
+  expect(managed).toContain('[Switch]');
+  expect(managed).not.toContain('PostToolUse');
+  expect(managed).not.toContain('<channel');
 });

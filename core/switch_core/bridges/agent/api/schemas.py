@@ -127,6 +127,17 @@ class ConnectionSubscribeRequest(BaseModel):
     generation: int | None = None
 
 
+class ConnectionPlacementsRequest(BaseModel):
+    """Every session placement on an open connection, replacing what it had."""
+
+    connection_id: str
+    #: Session id to the Switch room id it is working in. Rooms are distinct;
+    #: a session the connection placed before and omits here is unplaced.
+    placements: dict[str, str]
+    #: The incarnation the caller believes it holds, fenced as on subscribe.
+    generation: int | None = None
+
+
 class ConnectionBeatRequest(BaseModel):
     """The single client tick that keeps a connection alive (CHOO-1857).
 

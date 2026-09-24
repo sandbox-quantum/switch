@@ -10,7 +10,6 @@ import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
 import { registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
-import { agentHookService } from './core/agent-hooks/agent-hook-service';
 import { reapOrphanedAgentRuntimes } from './core/agent-runtime/reap-orphaned-runtimes';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
@@ -163,10 +162,6 @@ void app.whenReady().then(async () => {
     log.warn('switch-agents: failed to migrate agent storage layout at boot', { error: e });
   });
 
-  const agentHookReady = agentHookService.initialize().catch((e) => {
-    log.error('Failed to start agent event service:', e);
-  });
-
   controlService.initialize().catch((e) => {
     log.error('Failed to start control API service:', e);
   });
@@ -204,12 +199,12 @@ void app.whenReady().then(async () => {
 
   // Relaunch every session that was connected to a Switch room before this
   // restart, so it resumes receiving and responding to room events without the
-  // user reopening its terminal. Wait for the hook server and dependency probe
-  // first — a spawned session needs both to deliver hooks and resolve its CLI.
+  // user reopening it. Wait for the dependency probe first — a spawned session
+  // needs it to resolve its CLI.
   // Restore first so already-live sessions register their room connections,
   // then start the agents' controllers — the controller's "is a session already
   // attending this room?" check relies on those connections being present.
-  void Promise.all([agentHookReady, dependenciesReady, migrationReady]).then(async () => {
+  void Promise.all([dependenciesReady, migrationReady]).then(async () => {
     try {
       bridgeAgentEventsToRenderer();
       await initializeRemoteDiscovery();
@@ -280,7 +275,6 @@ void app.whenReady().then(async () => {
 app.on('before-quit', (event) => {
   event.preventDefault();
   logAppExit('before-quit');
-  agentHookService.dispose();
   controlService.dispose();
   stopResourceSampler();
   localServerService.dispose();

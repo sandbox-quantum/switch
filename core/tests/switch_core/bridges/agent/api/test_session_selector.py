@@ -55,8 +55,8 @@ async def _resolve(protocol: _Protocol, **selector: str | None):
 @pytest.mark.asyncio
 async def test_two_sessions_on_one_connection_resolve_their_own_rooms() -> None:
     protocol = _protocol()
-    protocol.connections.place_session(AGENT, "first", "room-a")
-    protocol.connections.place_session(AGENT, "second", "room-b")
+    protocol.connections.place_session(AGENT, "first", "room-a", CONNECTION)
+    protocol.connections.place_session(AGENT, "second", "room-b", CONNECTION)
 
     key, first = await _resolve(protocol, connection_id=CONNECTION, session_id="first")
     _, second = await _resolve(protocol, connection_id=CONNECTION, session_id="second")
@@ -77,7 +77,7 @@ async def test_a_session_that_connected_to_nothing_is_in_no_room() -> None:
 @pytest.mark.asyncio
 async def test_host_and_epoch_are_accepted_and_not_needed() -> None:
     protocol = _protocol()
-    protocol.connections.place_session(AGENT, "first", "room-a")
+    protocol.connections.place_session(AGENT, "first", "room-a", CONNECTION)
     _, caller = await _resolve(
         protocol, connection_id=CONNECTION, session_id="first", host_id="h", epoch="e"
     )
@@ -106,11 +106,20 @@ async def test_a_dead_or_foreign_connection_is_refused() -> None:
 
 def test_one_session_per_room_and_one_room_per_session() -> None:
     connections = ConnectionRegistry()
-    assert connections.place_session(AGENT, "first", "room-a") == (set(), None)
+    assert connections.place_session(AGENT, "first", "room-a", CONNECTION) == (
+        set(),
+        None,
+    )
     # Moving leaves the room it was in.
-    assert connections.place_session(AGENT, "first", "room-b") == ({"room-a"}, None)
+    assert connections.place_session(AGENT, "first", "room-b", CONNECTION) == (
+        {"room-a"},
+        None,
+    )
     # Taking an occupied room displaces the session in it.
-    assert connections.place_session(AGENT, "second", "room-b") == (set(), "first")
+    assert connections.place_session(AGENT, "second", "room-b", CONNECTION) == (
+        set(),
+        "first",
+    )
     assert connections.session_in_room(AGENT, "room-b") == "second"
     assert connections.session_room(AGENT, "first") is None
     assert connections.session_in_room("another-agent", "room-b") is None

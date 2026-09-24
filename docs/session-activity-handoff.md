@@ -214,9 +214,9 @@ Compatibility with deployed Consoles is waived (owner's call).
    answer path uses moved to `collaboration/session/refusal.py`. Kept:
    `contract.py`, `errors.py`, `http.py`, `normalise_mime_type`.
 7. Room health for Console: `GET /gateway/agent-sessions/room-health`
-   (the owner's agents' live connections and in-memory placements), and
-   `POST /gateway/agent-sessions/{agent}/{session}/place` (`{roomId}`)
-   behind "Reconnect to room".
+   (the owner's agents' live connections and in-memory placements). The
+   `POST /gateway/agent-sessions/{agent}/{session}/place` route that sat
+   behind "Reconnect to room" is gone (see "Runtime move: contract").
 8. Migration `b9e4d2a71c05` drops `session_activity_posts`,
    `session_request_posts`, `sdk_session_commands`, `sdk_session_events`,
    `sdk_room_admissions`, `sdk_sessions` and `media_blobs.sdk_session_id`
@@ -438,3 +438,83 @@ script's role in managed sessions. Each session host's MCP server listens on
 `127.0.0.1:0` before the CLI is launched and passes the bound URL straight
 into the CLI's launch config (no port files); a restart gets a fresh port and
 token. Test: several concurrent sessions each reach their own server.
+
+### Runtime move: contract (in progress)
+
+One way for every CLI, Claude included: each session host serves an MCP
+server (streamable HTTP) on `127.0.0.1:0`, bound before the CLI starts, with a
+per-session bearer token; the adapter gets `mcpServers.switch =
+{transport:'http', url, headers}`. The host serves the Switch tool catalog and
+forwards every call over its IPC pipe (`session-channel.ts`) to the watcher as
+a new host → parent request `{type:'tool', name, arguments}` answered with the
+MCP tool result. The watcher (Console main or the sidecar) is the only thing
+calling Switch: it runs the operations with the agent's credentials, its
+connection id and the session selector headers, and keeps `SessionPlacements`
+(room ↔ session; `placements.json` only for restart). `connect_to_room` is
+handled there: place locally, take the room off any other local session,
+forward to Switch, roll back if refused.
+
+Switch side:
+- No `session_id` tag on delivered events.
+- `POST /agents/{agent_id}/connection/placements`
+  `{"connection_id": str, "placements": {"<session_id>": "<room_id>"}}` —
+  agent-authenticated full replacement of that connection's placements
+  (registry `replace_placements`); the watcher sends it after every local
+  change and on each (re)connect.
+- SSE frame `room_released` `{"room_id": str, "session_id": str | null}` to a
+  connection whose claim on a room another connection took over.
+- The gateway `place` route goes; Console's "Reconnect to room" goes to the
+  watcher (locally a direct call, remotely a `place` control message).
+
+Switch side, as built (agent-protocol 6 on switch-core; `agent-runtime` still
+declares 5 until it takes `room_released`):
+- `stream.py` no longer tags events. `connect_to_room` still calls
+  `place_session`, now with the caller's connection id (or transport session)
+  as the placement's owner, and still claims the room with takeover.
+- `ConnectionRegistry.replace_placements(conn, placements)` records each
+  placement against the connection, unplaces the connection's sessions it
+  omits and releases their rooms, claims every named room with takeover, and
+  returns the `Released(connection_id, room_id, session_id)` entries for other
+  connections. Duplicate rooms raise before anything changes.
+- The route (`handlers.connection_placements`) takes an optional `generation`,
+  fenced like `subscribe` (a holder speaking agent-protocol 2+ must send it).
+  403 for a path agent other than the caller or a room the agent is not in,
+  404 for an unknown or foreign connection, 400 for a room named twice, 409
+  for a stale or missing incarnation. The response is `{ok, placements,
+  rooms, released}`. Counting for a session's room is handed to that session
+  when its placement changed.
+- `room_released` is queued on the losing connection (only if it declares
+  agent-protocol 6+) by any takeover: `connect_to_room`, the placements call,
+  `subscribe` with `takeover`, or `rooms=` on the stream URL. Two releases of
+  one room before the stream writes are one frame, naming the session when
+  either knew it; taking the room back before then withdraws it.
+
+### Runtime move: Console side as built
+
+- `switch-agent-runtime/src/hosted.ts` (`./hosted` export): tool catalog,
+  operation calls, attachments, typing and the loopback MCP server, all taking
+  the caller's context as an argument. `bin.ts` stays as the standalone binary
+  for sessions started by hand (channel delivery, its own connection).
+  `runtimeInstructions(channel)` tells managed sessions that events arrive as
+  `[Switch] …` lines.
+- `host/session-mcp.ts`: each session host binds `127.0.0.1:0/mcp` with a
+  32-byte bearer token before the provider starts; a restart gets a new port
+  and token. The CLI's environment carries no Switch credentials.
+- `session-channel.ts`: host → parent `identity` (agent, session, host id,
+  epoch; replaces the selector file) and `ask` `{type:'tools'}` /
+  `{type:'tool', name, arguments}` answered with `answer`.
+- `host/placements.ts` + `host/watcher-tools.ts`: the watcher runs tool calls
+  with the agent's token, connection id and the caller's `X-Switch-Session-*`
+  headers; `connect_to_room` places locally, forwards, rolls back on refusal.
+  Routing is `sessionIn(room)`. The full map goes to
+  `POST /agents/{id}/connection/placements` (with `generation`) after every
+  change and on each stream (re)connect; `room_released` drops a placement.
+- Adapters: Claude `type:'http'`; Codex `url` + `bearer_token_env_var`
+  (verified live on codex-cli 0.146); OpenCode `type:'remote'`; Cursor and
+  Antigravity `type:'http'`, refusing to start unless `initialize` declares
+  `mcpCapabilities.http` (not yet verified against real installs).
+- "Reconnect to room" → `WatcherControl` (local direct call, remote `place`
+  control message). Agent protocol 6 (`room_released`).
+- Terminal sessions: the leftover hook server, hook installers, the Codex
+  hook-trust flag, "View Terminals" and `sessions.shell_id` (migration 0050)
+  are removed. OS notifications are no longer shown (owner: not needed).

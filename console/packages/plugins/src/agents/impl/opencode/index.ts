@@ -1,14 +1,11 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
 import {
   buildStandardCommand,
-  createFileDropPlugin,
   npmDependency,
   opencodeMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
-import { buildOpencodeHookBehavior } from './hooks';
 import { icon } from './icon';
 import { opencodeLaunchProfileModels } from './models';
-import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 import {
   opencodeLaunchProfile,
   opencodeLaunchProfileFields,
@@ -16,7 +13,6 @@ import {
 } from './profile';
 import { buildOpencodeSwitchConnector } from './switch-connector';
 
-const OPENCODE_PLUGIN_PATH = '.opencode/plugins/switchdash-notifications.js';
 const validateSessionId = (id: string) => id.startsWith('ses');
 
 /**
@@ -64,20 +60,6 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hooks: {
-      kind: 'plugin',
-      scope: 'workspace',
-      // 'start' is declared even though OpenCode has no turn-start event: the
-      // dropped plugin derives one from a new user message and posts it. Saying
-      // so suppresses the synthetic start the hook service would otherwise emit
-      // on input-submitted, which would both duplicate this one and miss turns
-      // the user starts by typing into the TUI directly.
-      //
-      // No 'notification': the plugin reports real turn boundaries now, so
-      // nothing sends the idle_prompt that used to stand in for them.
-      supportedEvents: ['start', 'stop', 'session', 'tool-use', 'tool-done'],
-      reportsSessionStart: false,
-    },
     hostDependency: OPENCODE_HOST_DEPENDENCY,
     mcp: {
       kind: 'supported',
@@ -88,8 +70,7 @@ export const plugin = definePlugin(
       kind: 'none',
     },
     plugins: {
-      kind: 'file-drop',
-      scope: 'workspace',
+      kind: 'none',
     },
     prompt: {
       kind: 'argv',
@@ -125,7 +106,6 @@ export const provider = registerPluginBehavior(plugin, {
       }),
   },
   sessions: { validateSessionId },
-  hooks: buildOpencodeHookBehavior(),
   switchSetup: { files: buildOpencodeSwitchConnector() },
   mcp: {
     ...opencodeMcpAdapter(),
@@ -144,8 +124,4 @@ export const provider = registerPluginBehavior(plugin, {
     // silence and only fails when the agent tries to answer.
     launchProfileModels: opencodeLaunchProfileModels,
   },
-  plugins: createFileDropPlugin({
-    relativePath: OPENCODE_PLUGIN_PATH,
-    content: OPENCODE_PLUGIN_CONTENT,
-  }),
 });

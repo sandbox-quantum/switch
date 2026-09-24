@@ -23,7 +23,6 @@ import { ANTIGRAVITY_SKILL_CONTENT } from '@switch-console/plugins/agents/antigr
 import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
 import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
 import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
-import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
@@ -465,7 +464,6 @@ export async function buildSharedHostConfig(
         'TERM',
         'SSH_AUTH_SOCK',
       ],
-      mcpRuntime: SWITCH_AGENT_RUNTIME_PIN,
       ...(binaryPath ? { binaryPath } : {}),
       ...(params.shellSetup ? { shellSetup: params.shellSetup } : {}),
       ...(getPlugin(provider).behavior.repoAgents
