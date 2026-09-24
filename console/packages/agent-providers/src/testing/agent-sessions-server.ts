@@ -10,10 +10,12 @@ export type AgentSessionsCall = { method: string; path: string; body: unknown };
  * activity and approval writes are accepted, and `outcomes` (settable per
  * test) is what `GET /agent-sessions/approvals/outcomes` returns. `server`
  * never sees those calls, so a test counting its own requests is unaffected.
+ * Setting `state.unavailable` answers every such call with 503, as an
+ * unreachable Switch would.
  */
 export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
   const calls: AgentSessionsCall[] = [];
-  const state = { outcomes };
+  const state = { outcomes, unavailable: false };
   vi.stubGlobal('fetch', async (url: string, options: RequestInit = {}) => {
     const path = new URL(url).pathname;
     if (!path.includes('/agent-sessions/')) return server(url, options);
@@ -23,6 +25,7 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
       path,
       body: typeof options.body === 'string' ? JSON.parse(options.body) : null,
     });
+    if (state.unavailable) return new Response('unavailable', { status: 503 });
     if (path.endsWith('/approvals/outcomes')) {
       const listed = state.outcomes;
       return Response.json(listed);

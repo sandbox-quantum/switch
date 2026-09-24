@@ -21,18 +21,19 @@ export type Handoff = z.infer<typeof handoffSchema>;
 export class HostWaker {
   private handedOver = false;
   private approvals = false;
-  private wake: (() => void) | null = null;
+  private wakeLoop: (() => void) | null = null;
+  private wakeReporting: (() => void) | null = null;
 
-  /** Something was handed over for the loop to take up. */
+  /** Something was handed over for the session loop to take up. */
   nudge(): void {
     this.handedOver = true;
-    this.wake?.();
+    this.wakeLoop?.();
   }
 
   /** Switch has an answer to one of this session's approval requests. */
   approvalsWaiting(): void {
     this.approvals = true;
-    this.wake?.();
+    this.wakeReporting?.();
   }
 
   takeApprovalWake(): boolean {
@@ -41,25 +42,38 @@ export class HostWaker {
     return pending;
   }
 
-  /** Waits out `ms`, or returns as soon as the parent hands something over. */
+  /** The session loop: waits out `ms`, or returns as soon as the parent hands something over. */
   idle(ms: number, signal: AbortSignal): Promise<void> {
+    return this.wait(ms, signal, 'loop');
+  }
+
+  /** The reporting loop: waits out `ms`, or returns as soon as Switch has an answer waiting. */
+  idleReporting(ms: number, signal: AbortSignal): Promise<void> {
+    return this.wait(ms, signal, 'reporting');
+  }
+
+  private wait(ms: number, signal: AbortSignal, who: 'loop' | 'reporting'): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);
-      if (this.handedOver || this.approvals) {
+      if (who === 'loop' && this.handedOver) {
         this.handedOver = false;
         return resolve();
       }
+      if (who === 'reporting' && this.approvals) return resolve();
       const finish = (error?: unknown) => {
         clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
-        this.wake = null;
-        this.handedOver = false;
+        if (who === 'loop') {
+          this.wakeLoop = null;
+          this.handedOver = false;
+        } else this.wakeReporting = null;
         if (error) reject(error);
         else resolve();
       };
       const onAbort = () => finish(signal.reason);
       const timer = setTimeout(finish, ms);
-      this.wake = finish;
+      if (who === 'loop') this.wakeLoop = finish;
+      else this.wakeReporting = finish;
       signal.addEventListener('abort', onAbort, { once: true });
     });
   }

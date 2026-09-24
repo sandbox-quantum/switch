@@ -635,3 +635,24 @@ it('does not park while a turn waits on a person', async () => {
     await host.stop();
   }
 });
+
+it('keeps running room messages while Switch cannot take its reports', async () => {
+  const host = await start({ rooms: true });
+  try {
+    host.switchCore.state.unavailable = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Still here?') });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    host.switchCore.state.unavailable = false;
+    await vi.waitFor(
+      () =>
+        expect(
+          host.switchCore.calls.some(
+            (c) => c.path.endsWith('/activity') && (c.body as { kind: string }).kind === 'turn'
+          )
+        ).toBe(true),
+      { timeout: 5000 }
+    );
+  } finally {
+    await host.stop();
+  }
+});

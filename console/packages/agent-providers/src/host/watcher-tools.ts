@@ -64,7 +64,19 @@ export function sessionToolAnswerer(deps: {
     };
   };
 
-  const connect = async (
+  // One room move at a time, so the local map and Switch see moves in the
+  // same order and a refused move restores the state it actually replaced.
+  let moves: Promise<unknown> = Promise.resolve();
+  const connect = (
+    caller: Caller,
+    catalog: SwitchToolCatalog,
+    args: Record<string, unknown>
+  ): Promise<ToolResult> => {
+    const move = moves.then(() => connectNow(caller, catalog, args));
+    moves = move.catch(() => {});
+    return move;
+  };
+  const connectNow = async (
     caller: Caller,
     catalog: SwitchToolCatalog,
     args: Record<string, unknown>

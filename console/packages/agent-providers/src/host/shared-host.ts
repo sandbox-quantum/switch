@@ -131,6 +131,7 @@ export async function runSharedHost(
   let host: HostedSession | null = null;
   let failure: unknown = null;
   let shutdown: Promise<void> | null = null;
+  let reporting: Promise<void> | null = null;
 
   const callOnce = async (
     route: string,
@@ -416,22 +417,10 @@ export async function runSharedHost(
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
       try {
-        if (command.body.type === 'session.compact') {
-          let finished = false;
-          const pending = host!.command(command).finally(() => {
-            finished = true;
-          });
-          void pending.catch(() => {});
-          while (!finished) {
-            await report();
-            await delay(250, undefined, { signal: executionSignal });
-          }
-          await pending;
-        } else await host!.command(command);
+        await host!.command(command);
       } catch (error) {
         await host!.reject(command, error);
       }
-      await report();
       return (
         host!.snapshot().commandStatuses.find((status) => status.commandId === command.commandId) ??
         'The host did not record the command.'
@@ -525,12 +514,23 @@ export async function runSharedHost(
         !(rooms?.pending().length ?? 0)
       );
     };
-    await report();
-    await applyOutcomes(true);
+    // Reporting runs beside the session rather than in its way: while Switch
+    // is unreachable the reports wait and retry, and the session keeps working.
+    let reportingFailure: unknown = null;
+    reporting = (async () => {
+      let force = true;
+      while (!executionSignal.aborted) {
+        await report();
+        await applyOutcomes(force);
+        force = false;
+        await waker.idleReporting(250, executionSignal);
+      }
+    })().catch((error: unknown) => {
+      if (!executionSignal.aborted) reportingFailure = error;
+    });
     let heldForDecision = false;
     while (!executionSignal.aborted) {
-      await report();
-      await applyOutcomes(false);
+      if (reportingFailure) throw reportingFailure;
       const status = host.snapshot().session.status;
       if (status === 'stopped') break;
       if (status === 'error' && !host.resetDecisionPending)
@@ -541,10 +541,7 @@ export async function runSharedHost(
       else if (heldForDecision) {
         heldForDecision = false;
         const held = rooms?.pending().length ?? 0;
-        if (held) {
-          await host.roomBacklogDelivered(held);
-          await report();
-        }
+        if (held) await host.roomBacklogDelivered(held);
       }
       if (rooms && ['ready', 'running'].includes(status)) await admitRoomMessages(rooms);
       if (idleEnough()) {
@@ -563,6 +560,7 @@ export async function runSharedHost(
     if (!signal.aborted) failure ??= error;
   } finally {
     stopped.abort();
+    await reporting;
     try {
       await stopExecution();
       await state.journal.append({ type: 'quiesced' });
