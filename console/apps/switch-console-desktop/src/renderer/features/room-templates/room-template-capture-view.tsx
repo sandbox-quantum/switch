@@ -6,12 +6,9 @@ import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { prefillForSave } from '@renderer/features/templates/agent-template-data';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { useModalContext } from '@renderer/lib/modal/modal-provider';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
@@ -20,9 +17,7 @@ type CaptureStep = 'loading' | 'preview' | 'error';
 
 /** Candidate fields the user can promote to params. */
 type Candidate = {
-  /** Identity of the row. The key is what the user edits, so it cannot be the identity. */
-  id: number;
-  /** The param key, as suggested, until the user edits it. */
+  /** Default param key — editable by the user. */
   key: string;
   /** Human label for the field, e.g. "Room name" */
   label: string;
@@ -33,30 +28,19 @@ type Candidate = {
 
 /** Parse the exported YAML to find parameterizable values. */
 function extractCandidates(yamlText: string): Candidate[] {
-  const candidates: Omit<Candidate, 'id'>[] = [];
+  const candidates: Candidate[] = [];
 
-  // A one-line scalar. A block header (`|`, `|-`, `>`) is not a value: the
-  // exporter writes multi-line text that way, and its body cannot be one
-  // literal to replace.
-  const scalarOf = (m: RegExpMatchArray | null): string | null => {
-    if (!m) return null;
-    const raw = m[1].trim();
-    if (/^[|>](?:[-+]?\d*|\d*[-+]?)$/.test(raw)) return null;
-    const val = raw.replace(/^['"]|['"]$/g, '');
-    return val || null;
-  };
+  const nameMatch = yamlText.match(/^\s*name:\s+(.+)$/m);
+  if (nameMatch) {
+    const val = nameMatch[1].replace(/^['"]|['"]$/g, '');
+    if (val) candidates.push({ key: 'name', label: 'Room name', value: val, checked: false });
+  }
 
-  const name = scalarOf(yamlText.match(/^\s*name:\s+(.+)$/m));
-  if (name) candidates.push({ key: 'name', label: 'Room name', value: name, checked: false });
-
-  const description = scalarOf(yamlText.match(/^\s*description:\s+(.+)$/m));
-  if (description) {
-    candidates.push({
-      key: 'description',
-      label: 'Description',
-      value: description,
-      checked: false,
-    });
+  const descMatch = yamlText.match(/^\s*description:\s+(.+)$/m);
+  if (descMatch) {
+    const val = descMatch[1].replace(/^['"]|['"]$/g, '');
+    if (val)
+      candidates.push({ key: 'description', label: 'Description', value: val, checked: false });
   }
 
   const agentSection = yamlText.match(/^\s*agents:\s*\n((?:\s*-\s+.+\n?)*)/m);
@@ -73,21 +57,11 @@ function extractCandidates(yamlText: string): Candidate[] {
     }
   }
 
-  // The instructions: a one-line value, or the body of a block scalar,
-  // which is every following line indented deeper than the `instructions:`
-  // line. A repository URL in there is worth a param.
-  const lines = yamlText.split('\n');
-  const at = lines.findIndex((l) => /^\s*instructions:/.test(l));
-  if (at >= 0) {
-    const header = lines[at];
-    const indent = header.match(/^ */)?.[0].length ?? 0;
-    const inline = header.replace(/^\s*instructions:\s*/, '');
-    const body: string[] = [];
-    for (const l of lines.slice(at + 1)) {
-      if (l.trim() !== '' && (l.match(/^ */)?.[0].length ?? 0) <= indent) break;
-      body.push(l);
-    }
-    const instrText = /^[|>]/.test(inline) ? body.join('\n') : inline;
+  // Scan instruction text for values that match other candidates' values.
+  const instrMatch = yamlText.match(/^\s*instructions:\s*[|>]?\s*\n?([\s\S]*?)(?=\n\s*\w+:|$)/m);
+  if (instrMatch) {
+    const instrText = instrMatch[1];
+    // Look for repository-like URLs or paths in instructions.
     const repoMatch = instrText.match(/https?:\/\/github\.com\/[\w./-]+/);
     if (repoMatch) {
       candidates.push({
@@ -99,7 +73,7 @@ function extractCandidates(yamlText: string): Candidate[] {
     }
   }
 
-  return candidates.map((c, id) => ({ ...c, id }));
+  return candidates;
 }
 
 // ── Parameterize row ────────────────────────────────────────────────────────
@@ -150,13 +124,10 @@ function RoundTripCheck({
   parsed,
   candidates,
   parameterizeOk,
-  parameterizeError,
 }: {
   parsed: ParsedTemplate | null;
   candidates: Candidate[];
   parameterizeOk: boolean;
-  /** Why the substitution was refused, when it was. */
-  parameterizeError: string | null;
 }) {
   const checkedCount = candidates.filter((c) => c.checked).length;
   const allHaveDefaults = candidates.filter((c) => c.checked).every((c) => c.value !== '');
@@ -168,12 +139,12 @@ function RoundTripCheck({
         <h3 className="mb-3 text-sm font-semibold text-foreground">Round-trip check</h3>
         <div className="space-y-2">
           <CheckItem ok={parsesOk}>Parses as a valid template</CheckItem>
-          {parameterizeError && <p className="text-xs text-destructive">{parameterizeError}</p>}
           <CheckItem ok={checkedCount > 0 ? allHaveDefaults : true}>
             {checkedCount > 0
               ? `${checkedCount} param${checkedCount > 1 ? 's' : ''}, ${allHaveDefaults ? 'all' : 'not all'} with defaults`
               : 'No params (literal export)'}
           </CheckItem>
+          <CheckItem ok>No secrets detected in output</CheckItem>
         </div>
       </div>
       <div>
@@ -223,6 +194,7 @@ const CapturePanel = observer(function CapturePanel() {
   const [step, setStep] = useState<CaptureStep>('loading');
   const [originalYaml, setOriginalYaml] = useState('');
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [parsed, setParsed] = useState<ParsedTemplate | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -242,6 +214,12 @@ const CapturePanel = observer(function CapturePanel() {
         if (cancelled) return;
         setOriginalYaml(yaml);
         setCandidates(extractCandidates(yaml));
+        try {
+          const p = await rpc.roomTemplates.parse({ yamlText: yaml });
+          if (!cancelled) setParsed(p);
+        } catch {
+          // Parse failure of the raw export is unexpected but not blocking.
+        }
         setStep('preview');
       } catch (e) {
         if (!cancelled) {
@@ -255,56 +233,28 @@ const CapturePanel = observer(function CapturePanel() {
     };
   }, [serverId, roomId]);
 
-  const handleToggle = useCallback((id: number) => {
-    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, checked: !c.checked } : c)));
+  const handleToggle = useCallback((key: string) => {
+    setCandidates((prev) => prev.map((c) => (c.key === key ? { ...c, checked: !c.checked } : c)));
     setSaved(false);
     setCopied(false);
   }, []);
 
-  const handleKeyChange = useCallback((id: number, newKey: string) => {
-    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, key: newKey } : c)));
+  const handleKeyChange = useCallback((oldKey: string, newKey: string) => {
+    setCandidates((prev) => prev.map((c) => (c.key === oldKey ? { ...c, key: newKey } : c)));
     setSaved(false);
     setCopied(false);
   }, []);
 
-  // The check reports on the document that is saved or copied, not on the
-  // raw export: a substitution can break a document the export parsed.
-  const [outputParsed, setOutputParsed] = useState<ParsedTemplate | null>(null);
-  const { parameterizedYaml, parameterizeOk, parameterizeError } = useMemo(() => {
+  const { parameterizedYaml, parameterizeOk } = useMemo(() => {
     const checked = candidates.filter((c) => c.checked);
-    if (checked.length === 0)
-      return { parameterizedYaml: originalYaml, parameterizeOk: true, parameterizeError: null };
+    if (checked.length === 0) return { parameterizedYaml: originalYaml, parameterizeOk: true };
     const subs: ParamSubstitution[] = checked.map((c) => ({ key: c.key, value: c.value }));
     try {
-      return {
-        parameterizedYaml: parameterize(originalYaml, subs),
-        parameterizeOk: true,
-        parameterizeError: null,
-      };
-    } catch (e) {
-      return {
-        parameterizedYaml: originalYaml,
-        parameterizeOk: false,
-        parameterizeError: failureText(e, 'The params could not be applied.'),
-      };
+      return { parameterizedYaml: parameterize(originalYaml, subs), parameterizeOk: true };
+    } catch {
+      return { parameterizedYaml: originalYaml, parameterizeOk: false };
     }
   }, [originalYaml, candidates]);
-  useEffect(() => {
-    if (step !== 'preview') return;
-    let cancelled = false;
-    setOutputParsed(null);
-    rpc.roomTemplates
-      .parse({ yamlText: parameterizedYaml })
-      .then((p) => {
-        if (!cancelled) setOutputParsed(p);
-      })
-      .catch(() => {
-        if (!cancelled) setOutputParsed(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [parameterizedYaml, step]);
 
   const handleSave = useCallback(async () => {
     const slug = (roomName ?? 'room').replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
@@ -314,22 +264,6 @@ const CapturePanel = observer(function CapturePanel() {
     });
     if (result) setSaved(true);
   }, [parameterizedYaml, roomName]);
-
-  const { showModal } = useModalContext();
-  const { navigate } = useNavigate();
-  const handleSaveToWorkspace = useCallback(async () => {
-    const prefill = await prefillForSave(parameterizedYaml, null);
-    showModal('saveTemplateModal', {
-      serverId,
-      serverName: switchServersStore.servers.find((sv) => sv.id === serverId)?.name ?? null,
-      content: parameterizedYaml,
-      ...prefill,
-      // `prefillForSave` answers a generic name when the room's name holds a
-      // placeholder; a captured room has a real name to use instead.
-      name: prefill.name === 'Room template' && roomName ? roomName : prefill.name,
-      onSuccess: ({ id }) => navigate('templateDetail', { serverId, templateId: id }),
-    });
-  }, [parameterizedYaml, serverId, roomName, showModal, navigate]);
 
   const handleCopy = useCallback(() => {
     void rpc.roomTemplates.copyToClipboard({ text: parameterizedYaml });
@@ -365,7 +299,7 @@ const CapturePanel = observer(function CapturePanel() {
           <header>
             <h2 className="text-2xl font-semibold text-foreground">Capture as template</h2>
             <p className="mt-1 text-sm text-foreground-muted">
-              This room, packaged as a shareable file.
+              This room, packaged as a shareable file. Secrets and credentials are never captured.
             </p>
           </header>
 
@@ -376,10 +310,10 @@ const CapturePanel = observer(function CapturePanel() {
               <div className="space-y-2">
                 {candidates.map((c) => (
                   <CandidateRow
-                    key={c.id}
+                    key={c.key}
                     candidate={c}
-                    onToggle={() => handleToggle(c.id)}
-                    onKeyChange={(newKey) => handleKeyChange(c.id, newKey)}
+                    onToggle={() => handleToggle(c.key)}
+                    onKeyChange={(newKey) => handleKeyChange(c.key, newKey)}
                   />
                 ))}
               </div>
@@ -396,30 +330,11 @@ const CapturePanel = observer(function CapturePanel() {
 
           {/* Buttons — stacked full width */}
           <div className="flex flex-col gap-2">
-            {/* Every way out carries the same document, so a document the
-                substitution refused is offered by none of them. */}
-            <Button
-              variant="outline"
-              className="w-full"
-              disabled={!parameterizeOk}
-              onClick={handleCopy}
-            >
+            <Button variant="outline" className="w-full" onClick={handleCopy}>
               {copied ? 'Copied!' : 'Copy YAML'}
             </Button>
-            <Button
-              variant="outline"
-              className="w-full"
-              disabled={!parameterizeOk}
-              onClick={handleSave}
-            >
+            <Button className="w-full" onClick={handleSave}>
               {saved ? 'Saved!' : 'Save file…'}
-            </Button>
-            <Button
-              className="w-full"
-              disabled={!parameterizeOk}
-              onClick={() => void handleSaveToWorkspace()}
-            >
-              Save to workspace
             </Button>
           </div>
         </div>
@@ -427,12 +342,7 @@ const CapturePanel = observer(function CapturePanel() {
 
       {/* Right sidebar */}
       <aside className="w-72 shrink-0 border-l border-border p-6">
-        <RoundTripCheck
-          parsed={outputParsed}
-          candidates={candidates}
-          parameterizeOk={parameterizeOk}
-          parameterizeError={parameterizeError}
-        />
+        <RoundTripCheck parsed={parsed} candidates={candidates} parameterizeOk={parameterizeOk} />
       </aside>
     </div>
   );

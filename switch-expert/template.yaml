@@ -1,108 +1,74 @@
-# Switch expert, as a template.
+# Switch expert, as an agent template.
 #
-# A template is one YAML document that describes what to create: an agent,
-# a room, or several of each. Switch Console reads it on its Templates page,
-# shows one form built from the `params:` block, and creates everything in
-# one pass. The language is documented in docs/TEMPLATES.md at the
-# repository root; this header is the short version.
+# An agent template describes an agent the way a room template describes a
+# room. Open it in Switch Console's Templates view, choose where the agent
+# runs and which provider runs it, click "Create agent", and the agent
+# exists. Everything the agent depends on is data (this document and the
+# instructions file next to it), so an expert on another subject is another
+# document with the same fields.
 #
-#   params:       What the form asks for, referred to as `{name}` anywhere
-#                 below. Each param says what it is (`type`), what it starts
-#                 as (`default`, one value or a list of candidates tried in
-#                 order, `$first` meaning the first one the server has),
-#                 whether it may be left empty (`required`), and how the
-#                 form shows it (`input`: `ask` for a visible input,
-#                 `advanced` for one folded away with its default filled in,
-#                 `fixed` for a value the deployer cannot change). Nothing
-#                 the form fills in comes from anywhere else: every default
-#                 is written here.
+#   agent:        Who the agent is. `name` is offered as the default agent
+#                 name (people address it as @name), `description` is what
+#                 others read to know what it is for, `instructions` is its
+#                 brief. `repo` is the repository it works from: Switch
+#                 Console offers to clone it (shallow) into a subdirectory of
+#                 the agent's working directory before the agent first runs,
+#                 and the agent clones it itself when that did not happen.
+#                 `sources` are the pages it should read; they are shown to
+#                 the deployer and are the agent's to fetch.
+#                 `addressing` is who may talk to it: `owner` (the default,
+#                 the user who created it), `owner-agents` (that user and
+#                 their other agents), or `anyone` (every member of its
+#                 rooms). An expert shared by a team needs `anyone`. It can
+#                 be changed afterwards under the agent's Settings.
 #
-#   agent:        Who the agent is. `display_name` is how the agent is
-#                 shown to people; the identifier it is addressed by
-#                 (`name`) is derived from it unless written. `provider`,
-#                 `location` and `directory` say what runs it, where, and
-#                 in which folder, each read from a param so the template
-#                 decides what the deployer may change. `repo` is the
-#                 repository it works from: Switch Console clones it
-#                 (shallow) into the agent's directory before the agent
-#                 first runs, and the agent clones it itself when that did
-#                 not happen. `sources` are the pages it should read.
-#                 `addressing` is who may talk to it: `owner` (the default),
-#                 `owner-agents`, or `anyone`. `join` lists rooms it is put
-#                 in once it exists, by name or through a `room` param; a
-#                 `room` param whose default lists `$new` offers the room
-#                 below as one of the choices. `instructions` is its brief,
-#                 read from AGENT.md next to this file for the bundled copy.
+#   room:         Optional. A room to put the agent in as soon as it exists,
+#                 in the same shape as a room template. `{agent}` is the name
+#                 the agent was given; `{$creator}` is the deployer
+#                 creating it. A template with no `room:` creates the agent
+#                 and stops there.
 #
-#   room:         The room to put the agent in as soon as it exists, in the
-#                 shape of a room template. `{agent}` is the agent's
-#                 identifier; `{$creator}` is the deployer. Without a
-#                 `room:` the template creates the agent and stops.
+#   params:       Optional. Values the deployer fills in, referred to as
+#                 `{name}` anywhere below. On a param of type `bridge`,
+#                 `agent` or `room`, `prefill: first` selects the server's
+#                 default messaging app, or its first agent or room by name,
+#                 so the deployer only confirms it.
 #
-#   kickoff:      Posted into the room on behalf of the deployer once the
-#                 room exists. An agent starts working when a message
-#                 addresses it, so mention the agent here or it will sit in
-#                 the room without answering.
+#   kickoff:      Optional, needs `room:`. Posted into the room on behalf of
+#                 the deployer, once the room exists. An agent
+#                 starts working when a message addresses it, so mention the
+#                 agent here or it will sit in the room without answering.
 #
-#   form:         How the form folds things away: `advanced.label` names the
-#                 fold that holds the `input: advanced` and `input: fixed`
-#                 params, `advanced.open` says whether it starts open.
+#   agents:       The plural form: a list of `agent` blocks, each created by
+#                 Switch Console, for a template that makes a team. The room
+#                 lists them by the same names, `{team}-triager` for example,
+#                 and on the Use page each one can be created new or pointed
+#                 at an agent the server already has. An agent may
+#                 carry `provider: "{provider}"` to read a `type: provider`
+#                 param, which the Console answers and leaves out of the
+#                 request to the server. See
+#                 examples/agent-templates/triage-pair.template.yaml.
 #
-# The form for this template shows the agent's name, filled in, an Advanced
-# fold with the provider, where it runs and its directory, and one switch,
-# "Start it in a room", off by default. One click creates the agent alone;
-# switched on, the room below is the choice, with Slack as the messaging
-# app when it is set up, and the agent starts there.
+#   group:        Used instead of `room:` for several rooms. `group:` has the
+#   rooms:        group's name, description and color; `rooms:` is a list of
+#   links:        room blocks, each with its own `kickoff:`; `links:` connects
+#                 rooms by name and is optional.
+#
+# Switch Console bundles this template and reads `agent.instructions` from
+# AGENT.md next to this file, so the instructions are written once. A
+# template saved to a workspace carries its instructions inline instead.
 version: 1
 params:
-  name:
-    type: string
-    label: Agent name
-    description: How the agent is shown to people. It is addressed by a short form of this.
-    default: Switch expert
-    required: true
-  where:
-    type: room
-    label: Start it in a room
-    description: >-
-      Off, the agent is created on its own and you add it to rooms later. On,
-      it starts in a new room made for it, or in one you pick.
-    required: false
   bridge:
     type: bridge
-    label: Messaging app
-    description: Where the new room is created. Slack when it is set up, else the server's default app.
-    default: [Slack, $first]
-    required: false
-  provider:
-    type: provider
-    description: The coding agent that runs it. The first one installed where it runs is chosen.
-    default: [claude, codex, opencode]
-    input: advanced
-  location:
-    type: location
-    description: The machine it runs on.
-    default: local
-    input: advanced
-  directory:
-    type: directory
-    description: Its working directory. The repository is cloned inside it.
-    default: "{$agents_dir}/{agent}"
-    input: advanced
-form:
-  advanced:
-    label: Advanced
-    open: false
+    description: The messaging app the room is created in.
+    prefill: first
 agent:
-  display_name: "{name}"
+  name: switch-expert
   description: >-
     Answers questions about Switch and helps you design and build things with
     it. Grounded in a local clone of the Switch repository, which it re-reads
     rather than answering from memory.
-  provider: "{provider}"
-  location: "{location}"
-  directory: "{directory}"
-  join: ["{where}"]
   repo: https://github.com/sandbox-quantum/switch
   addressing: anyone
   sources:

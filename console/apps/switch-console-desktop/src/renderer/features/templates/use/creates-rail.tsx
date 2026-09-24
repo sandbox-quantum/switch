@@ -1,6 +1,6 @@
 import { Check, ChevronRight, DoorOpen, Loader2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
+import type { ParsedAgentEntry } from '@main/core/agent-templates/controller';
 import type { TemplateRoom } from '@main/core/room-templates/controller';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
@@ -58,6 +58,12 @@ export function newSlot(entry: ParsedAgentEntry): AgentSlot {
     step: null,
     cloneWarning: null,
   };
+}
+
+/** The name from the template's `name` field with the inputs filled in, or the name typed in the name field. */
+export function slotWantedName(slot: AgentSlot, values: Values, override: string | null): string {
+  if (override !== null) return override;
+  return interpolate(slot.entry.name ?? '', values);
 }
 
 function StatusLine({ slot }: { slot: AgentSlot }) {
@@ -205,27 +211,33 @@ export function SlotDirectoryField({
 export function AgentSlotCard({
   slot,
   wantedName,
+  finalName,
   onChange,
   lists,
+  sshHost,
   locationLabel,
-  choice = true,
+  busy,
+  directoryInForm = false,
 }: {
   slot: AgentSlot;
-  /** The name the agent is created under, as far as the inputs resolve it. */
+  /** The name the deployer asked for; see `slotWantedName`. */
   wantedName: string;
+  /** The name the agent will be created under: `wantedName`, or `wantedName-2`, `-3`, … when it is taken. */
+  finalName: string;
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;
+  sshHost: string | null;
   /** The run location's display name, shown under the existing-agent picker. */
   locationLabel: string;
-  /** Whether the deployer may point the slot at an existing agent. An agent
-   * template always makes a new one, so its card offers no choice. */
-  choice?: boolean;
+  busy: boolean;
+  /** The page shows the directory among its inputs, so the card leaves it out. */
+  directoryInForm?: boolean;
 }) {
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
   const shownName =
     slot.mode === 'existing'
       ? slot.existingName || 'Pick an agent'
-      : (slot.createdName ?? wantedName);
+      : (slot.createdName ?? (finalName || wantedName));
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
@@ -248,36 +260,46 @@ export function AgentSlotCard({
 
       {/* An agent that exists can no longer change how it is made, even when a
           later step for it failed. */}
-      {(slot.status === 'idle' || slot.status === 'failed') &&
-        slot.createdName === null &&
-        choice && (
-          <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
-            <SegmentedControl
-              value={slot.mode}
-              onChange={(mode) => onChange({ ...slot, mode })}
-              options={[
-                { value: 'new', label: 'New agent' },
-                { value: 'existing', label: 'Existing agent' },
-              ]}
-              ariaLabel={`How to fill ${wantedName || 'this agent'}`}
-              className="w-max"
-            />
-            {slot.mode === 'existing' ? (
-              <div className="flex flex-col gap-1.5">
-                <AgentField
-                  value={slot.existingName}
-                  onChange={(name) => onChange({ ...slot, existingName: name })}
-                  lists={lists}
-                />
-                <p className="text-[11px] text-foreground-passive">
-                  {lists.agents.length === 0
-                    ? `No agent of yours runs on ${locationLabel} yet.`
-                    : `Agents of yours that run on ${locationLabel}.`}
+      {(slot.status === 'idle' || slot.status === 'failed') && slot.createdName === null && (
+        <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
+          <SegmentedControl
+            value={slot.mode}
+            onChange={(mode) => onChange({ ...slot, mode })}
+            options={[
+              { value: 'new', label: 'New agent' },
+              { value: 'existing', label: 'Existing agent' },
+            ]}
+            ariaLabel={`How to fill ${wantedName || 'this agent'}`}
+            className="w-max"
+          />
+          {slot.mode === 'existing' ? (
+            <div className="flex flex-col gap-1.5">
+              <AgentField
+                value={slot.existingName}
+                onChange={(name) => onChange({ ...slot, existingName: name })}
+                lists={lists}
+              />
+              <p className="text-[11px] text-foreground-passive">
+                {lists.agents.length === 0
+                  ? `No agent of yours runs on ${locationLabel} yet.`
+                  : `Agents of yours that run on ${locationLabel}.`}
+              </p>
+            </div>
+          ) : (
+            <>
+              {finalName !== wantedName && finalName !== '' && (
+                <p className="text-[11.5px] text-foreground-muted">
+                  An agent called {wantedName} already exists on this server, so this one will be{' '}
+                  <span className="font-mono">{finalName}</span>.
                 </p>
-              </div>
-            ) : null}
-          </div>
-        )}
+              )}
+              {!directoryInForm && (
+                <SlotDirectoryField slot={slot} onChange={onChange} sshHost={sshHost} busy={busy} />
+              )}
+            </>
+          )}
+        </div>
+      )}
       {slot.status !== 'idle' && (
         <div className="mt-2 flex flex-col gap-1">
           <StatusLine slot={slot} />

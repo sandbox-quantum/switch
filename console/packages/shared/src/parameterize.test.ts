@@ -65,8 +65,8 @@ describe('parameterize', () => {
       { key: 'room_name', value: 'agent-alpha-room' },
       { key: 'agent', value: 'agent-alpha' },
     ]);
-    // The room name contains 'agent-alpha' as a substring, so the longer value
-    // is replaced first and the room name is not partially mangled.
+    // The room name contains 'agent-alpha' as a substring — the longer value
+    // must be replaced first so the room name isn't partially mangled.
     expect(result).toContain("name: '{room_name}'");
     expect(result).toContain("- '{agent}'");
   });
@@ -127,78 +127,5 @@ describe('parameterize', () => {
     expect(result).toMatch(/^room:/m);
     // Placeholder is quoted (safe for yaml.safe_load).
     expect(result).toMatch(/'.*\{name\}.*'/);
-  });
-});
-
-describe('parameterize: block scalars', () => {
-  it('leaves the body of a | block alone, and still quotes a mapping value outside it', () => {
-    const yaml = [
-      'room:',
-      '  name: alpha-room',
-      '  instructions: |',
-      '    Room rules:',
-      '    - Ask agent-alpha for help when stuck.',
-      '    - Respond with: {"ok": true}',
-      '  topic: agent-alpha',
-    ].join('\n');
-    const out = parameterize(yaml, [{ key: 'agent_a', value: 'agent-alpha' }]);
-    expect(out).toContain('    - Ask {agent_a} for help when stuck.');
-    expect(out).toContain('    - Respond with: {"ok": true}');
-    expect(out).toContain("  topic: '{agent_a}'");
-  });
-
-  it('recognises an indented block header with the chomping sign after the indent', () => {
-    const yaml = [
-      'room:',
-      '  name: r',
-      '  instructions: |2-',
-      '     - Ask agent-alpha.',
-      '  topic: agent-alpha',
-    ].join('\n');
-    const out = parameterize(yaml, [{ key: 'a', value: 'agent-alpha' }]);
-    expect(out).toContain('     - Ask {a}.');
-    expect(out).toContain("  topic: '{a}'");
-  });
-});
-
-describe('parameterize: structure and keys', () => {
-  it('never touches a structural key, even when a value spells it', () => {
-    const yaml = ['room:', '  name: room', '  description: the room'].join('\n');
-    const out = parameterize(yaml, [{ key: 'n', value: 'room' }]);
-    expect(out).toContain('\nroom:\n');
-    expect(out).toContain("  name: '{n}'");
-    expect(out).toContain("  description: 'the {n}'");
-  });
-
-  it('quotes an alias key that becomes a placeholder', () => {
-    const yaml = [
-      'room:',
-      '  name: r',
-      '  agents:',
-      '  - helper',
-      '  aliases:',
-      '    helper: buddy',
-    ].join('\n');
-    const out = parameterize(yaml, [{ key: 'a', value: 'helper' }]);
-    expect(out).toContain("  - '{a}'");
-    expect(out).toContain("    '{a}': buddy");
-  });
-
-  it('substitutes inside an already quoted value and keeps its quotes', () => {
-    const yaml = ['room:', "  name: 'Ask helper: now'"].join('\n');
-    const out = parameterize(yaml, [{ key: 'a', value: 'helper' }]);
-    expect(out).toContain("  name: 'Ask {a}: now'");
-  });
-
-  it('quotes a default the loader would read as a number, boolean or null', () => {
-    const yaml = ['room:', '  name: r', '  description: 001'].join('\n');
-    const out = parameterize(yaml, [
-      { key: 'code', value: '001' },
-      { key: 'flag', value: 'true' },
-      { key: 'nothing', value: 'null' },
-    ]);
-    expect(out).toContain("    default: '001'");
-    expect(out).toContain("    default: 'true'");
-    expect(out).toContain("    default: 'null'");
   });
 });

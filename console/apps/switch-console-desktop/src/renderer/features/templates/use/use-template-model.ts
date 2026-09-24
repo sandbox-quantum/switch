@@ -1,10 +1,5 @@
 import type { ParamSpec } from '@main/core/room-templates/controller';
-import {
-  FIRST,
-  NEW,
-  type ParamType,
-  isConsoleParamType,
-} from '@shared/core/switch-servers/room-template-params';
+import type { ParamType } from '@shared/core/switch-servers/room-template-params';
 import type { SlotStatus, SlotStep } from './creates-rail';
 
 export type Values = Record<string, string | number | boolean>;
@@ -21,11 +16,6 @@ export function hasPlaceholder(text: string): boolean {
   return /\{\$?\w+\}/.test(text);
 }
 
-/** Every `{name}` placeholder written in `text`, without the braces. */
-export function placeholdersIn(text: string): string[] {
-  return [...text.matchAll(/\{(\$?\w+)\}/g)].map((m) => m[1]);
-}
-
 export function typeLabel(type: ParamType): string {
   switch (type) {
     case 'string':
@@ -39,44 +29,17 @@ export function typeLabel(type: ParamType): string {
   }
 }
 
-/** The name of the input on the form: the template's `label`, else a
- * readable name for the common types, else the param key. */
-export function paramLabel(param: ParamSpec): string {
-  if (param.label) return param.label;
-  switch (param.type) {
-    case 'bridge':
-      return 'Messaging app';
-    case 'provider':
-      return 'Provider';
-    case 'location':
-      return 'Runs on';
-    case 'directory':
-      return 'Directory';
-    case 'room':
-      return 'Room';
-    default:
-      return param.name;
-  }
-}
-
-/** Whether the value may not be empty at Create. Read from the template. */
+/** A param is required when the template gives it no default. A bridge param
+ * is the exception: left empty, the room uses the server's default messaging app. */
 export function isRequired(param: ParamSpec): boolean {
-  return param.required;
+  return param.default === null && param.type !== 'bridge';
 }
 
-/** Whether the default is a chain of candidates rather than a value. */
-export function isChain(param: ParamSpec): param is ParamSpec & { default: string[] } {
-  return Array.isArray(param.default);
-}
-
-/** Each param's starting value: its default, `false` for a boolean without
- * one, empty for the rest. A chain starts empty and `resolveChain` fills it
- * once the candidates are known. */
+/** Each param's default; without one, `false` for a boolean and empty for the rest. */
 export function defaultsFor(params: ParamSpec[]): Values {
   const defaults: Values = {};
   for (const param of params) {
-    if (param.default !== null && !Array.isArray(param.default))
-      defaults[param.name] = param.default;
+    if (param.default !== null) defaults[param.name] = param.default;
     else if (param.type === 'boolean') defaults[param.name] = false;
     else defaults[param.name] = '';
   }
@@ -87,42 +50,23 @@ export function isEmpty(value: string | number | boolean | undefined): boolean {
   return value === undefined || value === '';
 }
 
+/** Bridge params left empty with no default. The server document is sent without them. */
+export function unsetBridgeParams(params: ParamSpec[], values: Values): string[] {
+  return params
+    .filter((p) => p.type === 'bridge' && p.default === null && isEmpty(values[p.name]))
+    .map((p) => p.name);
+}
+
 export function missingParams(params: ParamSpec[], values: Values): ParamSpec[] {
   return params.filter((p) => isRequired(p) && isEmpty(values[p.name]));
 }
 
-/** What is wrong with a value, by the template's own rules, or null. */
-export function valueProblem(param: ParamSpec, value: string | number | boolean): string | null {
-  if (isEmpty(value)) return null;
-  if (param.type === 'string' && param.pattern !== null) {
-    let re: RegExp;
-    try {
-      re = new RegExp(`^(?:${param.pattern})$`);
-    } catch {
-      return null;
-    }
-    if (!re.test(String(value))) return `Must match ${param.pattern}`;
-  }
-  if (param.type === 'number' && typeof value === 'number') {
-    if (param.min !== null && value < param.min) return `Must be at least ${param.min}`;
-    if (param.max !== null && value > param.max) return `Must be at most ${param.max}`;
-  }
-  return null;
-}
-
-/**
- * The inputs sent to the server: every filled param the server document
- * declares, with numbers converted. Params of a Console type are never sent,
- * nor those only an agent entry reads (`serverNames` says which are left).
- */
-export function serverInputs(
-  params: ParamSpec[],
-  values: Values,
-  serverNames: Set<string>
-): Values {
+/** The inputs sent to the server: every filled param of a type the server knows, with numbers converted. */
+export function serverInputs(params: ParamSpec[], values: Values): Values {
   const inputs: Values = {};
   for (const param of params) {
-    if (isConsoleParamType(param.type) || !serverNames.has(param.name)) continue;
+    if (param.type === 'provider') continue;
+    if (param.type === 'bridge' && isEmpty(values[param.name]) && param.default === null) continue;
     const val = values[param.name];
     if (isEmpty(val)) continue;
     inputs[param.name] = param.type === 'number' ? Number(val) : (val as string | boolean);
@@ -144,45 +88,16 @@ export function bridgeCandidates(
 }
 
 /**
- * The value a chain resolves to: the first candidate the server or the
- * Console has, `$first` standing for the first of `candidates`, `$new` for
- * the template's own room when `hasNewRoom`. Null when nothing matches.
+ * The value the form selects for a param before the deployer touches it, or
+ * null to leave it empty. A param with `prefill: first` gets the first
+ * candidate. A messaging app is also selected when it is the only one,
+ * since there is nothing to choose; an agent, room or user never is,
+ * because selecting one silently could add a member nobody asked for.
  */
-export function resolveChain(
-  param: ParamSpec,
-  candidates: string[],
-  hasNewRoom = false
-): string | null {
-  if (!isChain(param)) return null;
-  for (const candidate of param.default) {
-    if (candidate === FIRST) {
-      if (candidates.length > 0) return candidates[0];
-    } else if (candidate === NEW) {
-      if (param.type === 'room' && hasNewRoom) return NEW;
-    } else if (candidates.includes(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-/** Which section of the page a param belongs to: the agent it is written
- * into, or the room part. A `room` param always sits with the room, since
- * it says where the agent works; a param used by both sits with the agent. */
-export function sectionOf(
-  param: ParamSpec,
-  agentTexts: string[][],
-  roomText: string
-): { section: 'agent'; index: number } | { section: 'room' } {
-  if (param.type !== 'room') {
-    const index = agentTexts.findIndex((texts) =>
-      texts.some((t) => placeholdersIn(t).includes(param.name))
-    );
-    if (index >= 0) return { section: 'agent', index };
-  }
-  if (param.type === 'room' || placeholdersIn(roomText).includes(param.name))
-    return { section: 'room' };
-  return { section: 'agent', index: 0 };
+export function prefillChoice(param: ParamSpec, candidates: string[]): string | null {
+  if (param.default !== null || candidates.length === 0) return null;
+  const wanted = param.prefill === 'first' || (param.type === 'bridge' && candidates.length === 1);
+  return wanted ? candidates[0] : null;
 }
 
 export type CreateStepStatus = 'waiting' | 'running' | 'done' | 'failed';

@@ -170,7 +170,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     let cancelled = false;
     setLoaded(null);
     setError(null);
-    loadTemplateById(serverId, templateId, me?.id ?? null)
+    loadTemplateById(serverId, templateId)
       .then((t) => {
         if (cancelled) return;
         setLoaded(t);
@@ -183,7 +183,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
       cancelled = true;
       setCurrentName(null);
     };
-  }, [serverId, templateId, me?.id]);
+  }, [serverId, templateId]);
 
   const back = (
     <Button
@@ -494,24 +494,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
             <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
               {params.map((p) => (
                 <div key={p.name} className="flex items-start gap-3 px-3.5 py-2.5 text-[12.5px]">
-                  <span
-                    className={cn(
-                      'w-36 shrink-0 truncate',
-                      paramLabel(p) === p.name && 'font-mono'
-                    )}
-                  >
-                    {paramLabel(p)}
-                  </span>
+                  <span className="w-36 shrink-0 truncate font-mono">{p.name}</span>
                   <span className="w-16 shrink-0 text-[11.5px] text-foreground-passive">
                     {typeLabel(p.type)}
                   </span>
                   <span className="min-w-0 flex-1 leading-snug text-foreground-muted">
                     {p.description ??
-                      (Array.isArray(p.default)
-                        ? `Tries ${p.default.join(', then ')}`
-                        : p.default !== null
-                          ? `Defaults to ${String(p.default)}`
-                          : '')}
+                      (p.default !== null ? `Defaults to ${String(p.default)}` : '')}
                   </span>
                   <span
                     className={cn(
@@ -521,13 +510,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                         : 'text-foreground-passive'
                     )}
                   >
-                    {p.input === 'fixed'
-                      ? 'Set by the template'
-                      : p.input === 'advanced'
-                        ? 'Advanced'
-                        : isRequired(p)
-                          ? 'Required'
-                          : 'Optional'}
+                    {isRequired(p) ? 'Required' : 'Optional'}
                   </span>
                 </div>
               ))}

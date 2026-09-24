@@ -1,13 +1,14 @@
 /**
- * Turns exported room YAML into a parameterized template: literal values
- * become `{key}` placeholders and a `params:` block is prepended, in the
- * grammar the server interpolates on import (see `rooms_yaml.PLACEHOLDER_RE`).
+ * Client-side transform that turns exported room YAML into a parameterized
+ * template.  Replaces literal values with `{key}` placeholders and prepends a
+ * `params:` block — the same grammar the server-side parser interpolates on
+ * import (see `rooms_yaml.PLACEHOLDER_RE`).
  */
 
 const PARAM_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export type ParamSubstitution = {
-  /** The param name, matching `[A-Za-z_][A-Za-z0-9_]*`. */
+  /** Param name — must match `[A-Za-z_][A-Za-z0-9_]*`. */
   key: string;
   /** The literal value to replace with `{key}`. */
   value: string;
@@ -16,16 +17,13 @@ export type ParamSubstitution = {
 };
 
 /**
- * Replace `substitutions` values with `{key}` placeholders and prepend a
- * `params:` block with each substitution's type and default.
+ * Replace `substitutions` values with `{key}` placeholders throughout the YAML
+ * text and prepend a `params:` block with each substitution's type and default.
  *
- * Only scalar positions are touched: a mapping value, a mapping key (an
- * alias map is keyed by agent name), a sequence item, and the text of a
- * block scalar. The structure of the document is never a match, so a room
- * called `room` does not lose its `room:` key. Longer values are replaced
- * first so a value that is a substring of another cannot steal its match,
- * and a key or value that now holds a bare `{` is single-quoted so
- * `yaml.safe_load` reads it as text rather than a flow mapping.
+ * Longer values are replaced first so a value that is a substring of another
+ * cannot steal its match.  After replacement, any YAML scalar value that now
+ * contains a bare `{` is single-quoted so it survives `yaml.safe_load` (which
+ * would otherwise parse `{word}` as a flow mapping).
  */
 export function parameterize(yamlText: string, substitutions: ParamSubstitution[]): string {
   if (substitutions.length === 0) return yamlText;
@@ -48,10 +46,14 @@ export function parameterize(yamlText: string, substitutions: ParamSubstitution[
 
   // Replace longest values first.
   const sorted = [...substitutions].sort((a, b) => b.value.length - a.value.length);
-  const substitute = (text: string) =>
-    sorted.reduce((out, s) => out.split(s.value).join(`{${s.key}}`), text);
 
-  let result = rewriteScalars(yamlText, substitute);
+  let result = yamlText;
+  for (const s of sorted) {
+    result = result.split(s.value).join(`{${s.key}}`);
+  }
+
+  // Quote YAML scalars that now contain a bare `{`.
+  result = quoteUnquotedBraces(result);
 
   // Build and prepend the params block.
   const paramsBlock = buildParamsBlock(substitutions);
@@ -68,84 +70,45 @@ export function parameterize(yamlText: string, substitutions: ParamSubstitution[
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Apply `substitute` to every scalar of a YAML document dumped by Python's
- * `yaml.dump(default_flow_style=False)`, whose lines come in these shapes:
+/** YAML scalars dumped by Python's `yaml.dump(default_flow_style=False)` land
+ * in one of two line shapes:
  *
- *   key: value          (mapping entry)
- *   key: |              (block scalar header; the body is the lines below,
- *                        indented deeper, and is free text)
- *   - value             (sequence item)
- *   - key: value        (mapping entry inside a sequence item)
+ *   key: value        (mapping entry)
+ *   - value           (sequence item)
  *
- * A key or value that comes out holding a bare `{` is single-quoted. Keys
- * are names of the format, not text, so they are left alone except inside
- * an `aliases:` map, whose keys are agent names, and there a key is
- * substituted only as a whole.
+ * If `value` contains `{` and is not already quoted, wrap it in single quotes
+ * so `yaml.safe_load` reads it as a string rather than a flow mapping.  Values
+ * that are already single- or double-quoted, or that start a block scalar
+ * (`|`, `>`), are left alone.
  */
-function rewriteScalars(text: string, substitute: (s: string) => string): string {
-  // The indent of the `key: |` line whose block body is being walked, or
-  // null outside a block.
-  let blockIndent: number | null = null;
-  // The indent of the `aliases:` line whose entries are being walked, or null.
-  let aliasesIndent: number | null = null;
+function quoteUnquotedBraces(text: string): string {
   return text
     .split('\n')
     .map((line) => {
-      const indent = line.match(/^ */)?.[0].length ?? 0;
-      if (blockIndent !== null) {
-        if (line.trim() === '' || indent > blockIndent) return substitute(line);
-        blockIndent = null;
-      }
-      const item = line.match(/^(\s*-\s+)(.*)$/);
-      const prefix = item ? item[1] : '';
-      const rest = item ? item[2] : line;
-      if (aliasesIndent !== null && line.trim() !== '' && indent <= aliasesIndent) {
-        aliasesIndent = null;
-      }
-      const kv = rest.match(/^(\s*)([^\s#'"][^:]*?|'[^']*'|"[^"]*")(:)(\s+(.*)|)$/);
+      // mapping value: `  key: value`
+      const kv = line.match(/^(\s*[^\s#][^:]*:\s+)(.+)$/);
       if (kv) {
-        const [, lead, key, colon, tail, val] = kv;
-        const inAliases = aliasesIndent !== null && indent > aliasesIndent;
-        const newKey = inAliases ? substituteWhole(key, substitute) : key;
-        if (key === 'aliases' && (val === undefined || val === '')) aliasesIndent = indent;
-        if (val === undefined || val === '')
-          return `${prefix}${lead}${newKey}${colon}${tail ?? ''}`;
-        if (isBlockHeader(val)) {
-          blockIndent = indent;
-          return `${prefix}${lead}${newKey}${colon}${tail}`;
-        }
-        return `${prefix}${lead}${newKey}${colon} ${substituteScalar(val, substitute)}`;
+        const [, prefix, val] = kv;
+        if (needsQuoting(val)) return `${prefix}${singleQuote(val)}`;
+        return line;
       }
-      if (item) return `${prefix}${substituteScalar(rest, substitute)}`;
+      // sequence item: `  - value`
+      const li = line.match(/^(\s*-\s+)(.+)$/);
+      if (li) {
+        const [, prefix, val] = li;
+        if (needsQuoting(val)) return `${prefix}${singleQuote(val)}`;
+        return line;
+      }
       return line;
     })
     .join('\n');
 }
 
-/** A key is replaced only when it is exactly a value, and quoted if that leaves a `{`. */
-function substituteWhole(key: string, substitute: (s: string) => string): string {
-  const bare = key.replace(/^['"]|['"]$/g, '');
-  const next = substitute(bare);
-  if (next === bare) return key;
-  return next.includes('{') ? singleQuote(next) : next;
-}
-
-/** A scalar is substituted inside its quotes when it has them, and quoted when a `{` appears in a bare one. */
-function substituteScalar(val: string, substitute: (s: string) => string): string {
-  const quoted = val.match(/^(['"])(.*)\1(\s*#.*)?$/);
-  if (quoted) {
-    const [, q, inner, comment] = quoted;
-    const next = substitute(inner);
-    return `${q}${q === "'" ? next.replace(/(?<!')'(?!')/g, "''") : next}${q}${comment ?? ''}`;
-  }
-  const next = substitute(val);
-  return next.includes('{') ? singleQuote(next) : next;
-}
-
-/** `|`, `>`, and their chomping and indentation variants in either order (`|-`, `>+`, `|2`, `|2-`). */
-function isBlockHeader(val: string): boolean {
-  return /^[|>](?:[-+]?\d*|\d*[-+]?)$/.test(val.trim());
+function needsQuoting(val: string): boolean {
+  if (!val.includes('{')) return false;
+  if (val.startsWith("'") || val.startsWith('"')) return false;
+  if (val === '|' || val === '>') return false;
+  return true;
 }
 
 /** Single-quote a YAML scalar, escaping embedded single quotes by doubling. */
@@ -167,23 +130,12 @@ function buildParamsBlock(subs: ParamSubstitution[]): string {
   return lines.join('\n');
 }
 
-/**
- * Emit a YAML scalar, quoting when needed: special characters, and anything
- * the loader would read as something other than text (`true`, `null`, `001`,
- * `1.5`), so a default comes back as the string it was.
- */
+/** Emit a YAML scalar, quoting only when needed. */
 function yamlScalar(val: string): string {
   if (val === '') return "''";
+  // Quote if the value contains YAML-special characters.
   if (/[:{}[\],&*?|>'"%@`#!]/.test(val) || val.includes('\n')) {
     return singleQuote(val);
   }
-  if (
-    /^(?:true|false|yes|no|on|off|null|~|[-+]?(?:\d[\d_]*)?(?:\.\d*)?(?:e[-+]?\d+)?|0x[0-9a-f]+|0o[0-7]+|[-+]?\.(?:inf|nan))$/i.test(
-      val
-    )
-  ) {
-    return singleQuote(val);
-  }
-  if (val !== val.trim()) return singleQuote(val);
   return val;
 }

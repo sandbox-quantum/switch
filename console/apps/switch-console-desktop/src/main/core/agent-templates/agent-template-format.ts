@@ -1,4 +1,6 @@
 import { basename, join } from 'node:path';
+import { load } from 'js-yaml';
+import { composeTemplateDocument, serverDocument } from './template-document';
 
 /**
  * An agent template is a YAML document with an `agent:` block and, optionally,
@@ -29,11 +31,26 @@ export type ParsedAgentTemplate = {
   warnings: string[];
 };
 
+function parseYaml(yamlText: string): Record<string, unknown> {
+  let doc: unknown;
+  try {
+    doc = load(yamlText);
+  } catch (e) {
+    throw new Error(`Invalid YAML: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+    throw new Error('Template must be a YAML mapping');
+  }
+  return doc as Record<string, unknown>;
+}
+
 export function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }
+
+const ADDRESSING_VALUES: ReadonlySet<string> = new Set(['owner', 'owner-agents', 'anyone']);
 
 export function optionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -60,6 +77,71 @@ export function extractSources(raw: unknown): AgentTemplateSource[] {
 export function stripFrontMatter(instructions: string): string {
   const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(instructions);
   return match ? instructions.slice(match[0].length).replace(/^\s*\n/, '') : instructions;
+}
+
+/**
+ * Parse a single-agent template.
+ *
+ * `fallbackInstructions` is used when the document has no `instructions:`.
+ * The bundled Switch expert keeps its instructions in `AGENT.md` next to
+ * the template, and the Console passes that file's content here.
+ */
+export function parseAgentTemplate(
+  yamlText: string,
+  fallbackInstructions: string | null = null
+): ParsedAgentTemplate {
+  const doc = parseYaml(yamlText);
+  const agent = asRecord(doc.agent);
+  if (!agent) {
+    throw new Error('Template must have an "agent:" block.');
+  }
+  const instructions = stripFrontMatter(
+    typeof agent.instructions === 'string' && agent.instructions.trim().length > 0
+      ? agent.instructions
+      : (fallbackInstructions ?? '')
+  );
+  if (instructions.trim().length === 0) {
+    throw new Error('The "agent:" block needs "instructions:" — the agent has nothing to go on.');
+  }
+
+  const warnings: string[] = [];
+  const room = asRecord(doc.room);
+  const kickoff = optionalString(doc.kickoff);
+  if (kickoff && !room) {
+    warnings.push('`kickoff:` needs a `room:` to be posted into; without one it is ignored.');
+  }
+  if (typeof agent.kickoff === 'string' || typeof agent.room === 'object') {
+    warnings.push('`room:` and `kickoff:` belong at the top level, beside `agent:`.');
+  }
+
+  const addressing = optionalString(agent.addressing);
+  if (addressing !== null && !ADDRESSING_VALUES.has(addressing)) {
+    warnings.push(
+      `\`addressing: ${addressing}\` is not one of owner, owner-agents, anyone; the agent will answer only its owner.`
+    );
+  }
+
+  return {
+    name: optionalString(agent.name),
+    addressing: ADDRESSING_VALUES.has(addressing ?? '')
+      ? (addressing as AgentTemplateAddressing)
+      : null,
+    description: typeof agent.description === 'string' ? agent.description.trim() : '',
+    instructions,
+    repoUrl: optionalString(agent.repo),
+    sources: extractSources(agent.sources),
+    room: room ? { name: optionalString(room.name), kickoff } : null,
+    provider: optionalString(agent.provider),
+    warnings,
+  };
+}
+
+export function agentTemplateRoomDocument(yamlText: string): string | null {
+  return serverDocument(yamlText);
+}
+
+export function composeAgentTemplateDocument(yamlText: string, instructions: string): string {
+  return composeTemplateDocument(yamlText, instructions);
 }
 
 /** A folder named after the repository, inside `dir`. */
