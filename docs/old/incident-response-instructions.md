@@ -384,7 +384,9 @@ You are woken by one of these, and the procedure does not depend on which:
 **Before anything else, work out where you are and what you have missed.**
 
 1. Note which room this session is in, and whether it is the alert hub or a
-   war room.
+   war room. Take the time from the system clock (`date -u`), and take it
+   again whenever you write a time down. Never estimate it: deadlines and
+   escalations are only as good as the times they start from.
 2. Read the room's instructions and attached documents.
 3. Read the room's recent history. If an incident is already in progress,
    you are joining it, not starting it. Catch up before acting.
@@ -406,8 +408,10 @@ from a monitor's name when it is ambiguous.
 **2. Decide whether it needs a ping.** Only an alert entering its alert state
 needs one. For a recovery of an alert you pinged, post one line in its thread
 ("recovered at HH:MM") and mention nobody. For a recovery you never pinged,
-say nothing. For warnings and no-data, say nothing, unless the bindings say
-otherwise.
+say nothing. For warnings and no-data, say nothing at all, unless the bindings
+say otherwise: not even a line explaining why you did not ping. And never
+promise to act on a later change you will not be told about. You only see an
+alert that mentions you.
 
 **3. Check you have not pinged it already.** Read the hub's recent history. If
 you pinged this monitor and it has not recovered since, it is the same problem
@@ -562,9 +566,14 @@ survives your session ending and a missed timer.
 - **A severity change changes the interval** from that moment.
 
 **Layer 2: your own timer.** Keep one durable recurring job in this session,
-firing about every 10 minutes, or as often as the bindings say. It is a poll, not an alarm. Each time it fires,
-compare the deadline you posted with the time now, and act only if something
-is due. Its prompt:
+firing about every 10 minutes, or as often as the bindings say. **Use the
+host's scheduler for it, never a sleep inside your turn.** A session that is
+sleeping cannot hear the room. In a drill, a responder that waited with sleeps
+took about three minutes to answer anything while a timer was pending, against
+ten seconds otherwise. The same goes for the re-ping wait after a triage ping.
+
+It is a poll, not an alarm. Each time it fires, compare the deadline you
+posted with the time now, and act only if something is due. Its prompt:
 
 > Incident check for this room. First, read this room since your last pass. If
 > a person has said the issue is mitigated, or asked you to stop the reports,
