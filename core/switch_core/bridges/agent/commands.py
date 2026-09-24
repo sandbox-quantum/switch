@@ -256,12 +256,17 @@ def room_control_frame(
     message_id: str,
     thread_id: str | None,
     surface: str,
+    requester_name: str,
 ) -> dict[str, object]:
-    """The `session_command` frame a room control is relayed as."""
+    """The `session_command` frame a room control is relayed as.
+
+    Beside the contract command it names who asked, as the room knows them,
+    so the session can answer that person once the control has applied.
+    """
     body = _CONTROL_BODIES.get(action)
     if body is None:
         raise ValueError(f"{action} is not a room control")
-    return _control_frame(
+    frame = _control_frame(
         command_id=str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
@@ -276,6 +281,8 @@ def room_control_frame(
         surface=surface,
         body=body,
     )
+    frame["requesterName"] = requester_name
+    return frame
 
 
 def stop_control_frame(
@@ -437,6 +444,7 @@ async def _dispatch_control_command(
             message_id=event.message_id,
             thread_id=event.thread_id,
             surface=await _room_surface(client, meta.room_id),
+            requester_name=event.user_name,
         )
         if client._connections.relay_session_command(agent.id, frame):
             await _reply(

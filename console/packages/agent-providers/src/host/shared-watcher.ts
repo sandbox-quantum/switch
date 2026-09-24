@@ -807,10 +807,15 @@ export async function runSharedWatcher(
       },
       // A room control (!reset, !interrupt) typed in one of the agent's rooms,
       // which only Switch sees. Handed to the session's host like any other.
-      onSessionCommand: async (command) => {
+      onSessionCommand: async (relayed) => {
+        const { requesterName, ...command } = relayed;
         const taken = await askSession(
           command.sessionId,
-          { type: 'command', command },
+          {
+            type: 'command',
+            command,
+            requesterName: typeof requesterName === 'string' ? requesterName : null,
+          },
           `command ${command.commandId}`
         );
         if (!taken)

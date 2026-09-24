@@ -402,7 +402,7 @@ export async function runSharedHost(
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
       state.journal.records.filter((record): record is Followup => record.type === 'followup');
-    const followupFor = (command: Command): Followup | null => {
+    const followupFor = (command: Command, requesterName: string | null): Followup | null => {
       const action =
         command.body.type === 'session.reset'
           ? 'reset'
@@ -417,6 +417,7 @@ export async function runSharedHost(
         roomId: command.origin.roomId,
         threadId: command.origin.threadId,
         actorId: command.origin.actorId,
+        requesterName,
         surface: command.origin.surface,
       };
     };
@@ -425,28 +426,34 @@ export async function runSharedHost(
       const commandId = followupCommandId(owed.commandId);
       const snapshot = host!.snapshot();
       if (snapshot.commandStatuses.some((entry) => entry.commandId === commandId)) return;
-      await run({
-        contractVersion: 1,
-        commandId,
-        sessionId: options.session.sessionId,
-        epoch: snapshot.session.epoch,
-        origin: {
-          surface: owed.surface,
-          actorId: owed.actorId,
-          roomId: owed.roomId,
-          threadId: owed.threadId,
-          messageId: null,
+      await run(
+        {
+          contractVersion: 1,
+          commandId,
+          sessionId: options.session.sessionId,
+          epoch: snapshot.session.epoch,
+          origin: {
+            surface: owed.surface,
+            actorId: owed.actorId,
+            roomId: owed.roomId,
+            threadId: owed.threadId,
+            messageId: null,
+          },
+          body: {
+            type: 'message.send',
+            text: roomControlFollowup(owed),
+            attachments: [],
+            delivery: 'queue',
+          },
         },
-        body: {
-          type: 'message.send',
-          text: roomControlFollowup(owed),
-          attachments: [],
-          delivery: 'queue',
-        },
-      });
+        null
+      );
     };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
-    const run = async (value: unknown): Promise<CommandStatus | string> => {
+    const run = async (
+      value: unknown,
+      requesterName: string | null
+    ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
       const parsed = commandSchema.safeParse(value);
@@ -464,7 +471,7 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
-      const owed = followupFor(command);
+      const owed = followupFor(command, requesterName);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
       try {
@@ -518,7 +525,7 @@ export async function runSharedHost(
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        await run(command);
+        await run(command, null);
         await inbox.acknowledge(event);
       }
     };
@@ -528,8 +535,8 @@ export async function runSharedHost(
     // messages come down the pipe, and every recorded event goes up it.
     const parent = options.parent;
     parent?.serve({
-      command: async ({ command }) => {
-        const outcome = await run(command);
+      command: async ({ command, requesterName }) => {
+        const outcome = await run(command, requesterName);
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;
       },

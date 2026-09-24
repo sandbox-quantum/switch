@@ -313,12 +313,12 @@ it('runs a command its controller relayed from Console, once', async () => {
       text: 'Hello',
       attachments: [],
     });
-    expect(await host.parent.ask({ type: 'command', command })).toMatchObject({
+    expect(await host.parent.ask({ type: 'command', command, requesterName: null })).toMatchObject({
       ok: true,
       value: { commandId: 'turn' },
     });
     // The same command again is answered with what was recorded, not run twice.
-    expect(await host.parent.ask({ type: 'command', command })).toMatchObject({
+    expect(await host.parent.ask({ type: 'command', command, requesterName: null })).toMatchObject({
       ok: true,
       value: { commandId: 'turn' },
     });
@@ -326,6 +326,7 @@ it('runs a command its controller relayed from Console, once', async () => {
     // A command built against another generation of the session is not run.
     const stale = await host.parent.ask({
       type: 'command',
+      requesterName: null,
       command: relayed('stale', 'stale-turn', command.body),
     });
     expect(stale).toMatchObject({ ok: false });
@@ -545,6 +546,7 @@ it('stops when its session is stopped', async () => {
   const epoch = await host.snapshotEpoch();
   await host.parent.ask({
     type: 'command',
+    requesterName: null,
     command: relayed(epoch, 'stop', { type: 'session.stop' }),
   });
   await vi.waitFor(() => expect(host.adapter.stopSession).toHaveBeenCalled(), { timeout: 3000 });
@@ -556,6 +558,7 @@ it('fills in its own generation for a command that names the current one', async
   try {
     const answer = await host.parent.ask({
       type: 'command',
+      requesterName: null,
       command: relayed('current', 'room-control', {
         type: 'message.send',
         delivery: 'queue',
@@ -580,6 +583,7 @@ it('takes commands and room messages from its parent, and pushes what it records
 
     const sent = await parent.ask({
       type: 'command',
+      requesterName: null,
       command: relayed(epoch, 'turn', {
         type: 'message.send',
         delivery: 'queue',
@@ -592,6 +596,7 @@ it('takes commands and room messages from its parent, and pushes what it records
 
     const stale = await parent.ask({
       type: 'command',
+      requesterName: null,
       command: relayed('stale', 'other', { type: 'session.stop' }),
     });
     expect(stale.ok).toBe(false);
@@ -676,7 +681,11 @@ it('tells the session to rejoin its room once a reset asked for there has applie
         messageId: 'message-9',
       },
     };
-    const answer = await host.parent.ask({ type: 'command', command: reset });
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+    });
     expect(answer).toMatchObject({
       ok: true,
       value: { commandId: 'room-reset', status: 'applied' },
@@ -685,10 +694,10 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
     expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
     expect(host.turns[0]!.text).toContain('in thread "thread"');
-    expect(host.turns[0]!.text).toContain('@person:test');
+    expect(host.turns[0]!.text).toContain('targeted message to "louisa"');
     expect(host.turns[0]!.text).toContain('your session has been reset');
     // Asked again (a relay retried), the follow-up is not sent twice.
-    await host.parent.ask({ type: 'command', command: reset });
+    await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
   } finally {

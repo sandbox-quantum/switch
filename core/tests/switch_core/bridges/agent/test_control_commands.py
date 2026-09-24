@@ -319,7 +319,8 @@ async def test_a_session_in_the_room_is_sent_the_command_through_its_controller(
         "threadId": "$reset-command",
         "messageId": "$reset-command",
     }
-    assert "sent to the session" in reply.bodies[-1]
+    assert frame["requesterName"] == "louisa"
+    assert reply.bodies[-1].startswith("Resetting my session")
 
 
 @pytest.mark.asyncio
@@ -356,5 +357,6 @@ def test_an_interrupt_names_the_current_turn() -> None:
         message_id="m",
         thread_id=None,
         surface="slack",
+        requester_name="louisa",
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}

@@ -33,6 +33,7 @@ const schema = z.discriminatedUnion('type', [
     roomId: z.string(),
     threadId: z.string().nullable(),
     actorId: z.string(),
+    requesterName: z.string().nullable(),
     surface: z.string(),
   }),
   z.strictObject({

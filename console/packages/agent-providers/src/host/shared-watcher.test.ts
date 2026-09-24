@@ -1308,7 +1308,7 @@ it('hands a relayed command to the session it names, and only if it runs here', 
     // This agent's, but with nothing running it: dropped and said, not started.
     await streams[0]!.onSessionCommand!(command(idle.sessionId));
     expect(hosts.to(own.sessionRoot)).toEqual([
-      { type: 'command', command: command(own.sessionId) },
+      { type: 'command', command: command(own.sessionId), requesterName: null },
     ]);
     expect(hosts.to(other.sessionRoot)).toEqual([]);
     expect(hosts.to(idle.sessionRoot)).toEqual([]);

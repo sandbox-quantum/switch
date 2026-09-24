@@ -21,7 +21,12 @@ import { z } from 'zod';
 
 export const sessionRequestSchema = z.discriminatedUnion('type', [
   /** A contract `Command`; validated by the host. */
-  z.object({ type: z.literal('command'), command: z.unknown() }),
+  z.object({
+    type: z.literal('command'),
+    command: z.unknown(),
+    /** Who asked, as the room names them; null for a command from Console. */
+    requesterName: z.string().nullable(),
+  }),
   /** A room message the agent was addressed with, as the controller routed it. */
   z.object({
     type: z.literal('room'),

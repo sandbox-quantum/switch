@@ -63,6 +63,7 @@ export async function submitSessionCommand(
 ): Promise<CommandStatus> {
   const request: SessionRequest = {
     type: 'command',
+    requesterName: null,
     command: {
       ...command,
       origin: {

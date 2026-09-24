@@ -69,7 +69,7 @@ it('passes a refusal on as an error, and every pushed event to subscribers', asy
   child.emit('message', { kind: 'event', event: event(1) });
   child.emit('message', { kind: 'event', event: event(2) });
   expect(heard).toEqual([1, 2]);
-  const answer = links.request('root', { type: 'command', command: {} }, 1000);
+  const answer = links.request('root', { type: 'command', command: {}, requesterName: null }, 1000);
   await vi.waitFor(() => expect(child.sent).toHaveLength(1));
   const [request] = child.sent as { id: number }[];
   child.emit('message', { kind: 'reply', id: request!.id, ok: false, error: 'STALE_EPOCH' });
