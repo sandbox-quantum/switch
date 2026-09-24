@@ -8,6 +8,7 @@ vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: vi.fn(async () => '1
 vi.mock('./consent', () => ({ isTelemetryAllowed: vi.fn() }));
 vi.mock('./install-id', () => ({ getInstallId: vi.fn(async () => 'install-abc') }));
 
+import { durationMs } from '@tooling/utils/telemetry-duration';
 import { log } from '@main/lib/logger';
 import { isTelemetryAllowed } from './consent';
 import { telemetryService, trackEvent } from './telemetry-service';
@@ -19,7 +20,21 @@ function sentBody(): Record<string, unknown> {
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
-type Attribute = { key: string; value: { stringValue: string } };
+type Attribute = {
+  key: string;
+  value: { stringValue?: string; doubleValue?: number; boolValue?: boolean };
+};
+
+/**
+ * The value out of an OTLP attribute, whichever of the three shapes it took.
+ *
+ * Reading `stringValue` alone would make every number and boolean in a payload
+ * read back as `undefined` — so an assertion that a numeric property is carried
+ * would pass against a payload that dropped it.
+ */
+function attributeValue(attribute: Attribute): string | number | boolean | undefined {
+  return attribute.value.stringValue ?? attribute.value.doubleValue ?? attribute.value.boolValue;
+}
 
 function sentRecord(): Record<string, unknown> {
   const resourceLogs = sentBody().resourceLogs as [
@@ -28,16 +43,17 @@ function sentRecord(): Record<string, unknown> {
   return resourceLogs[0].scopeLogs[0].logRecords[0];
 }
 
-function sentResource(): Record<string, string> {
+/** Resource attributes are strings by construction, unlike the record's own. */
+function sentResource(): Record<string, string | undefined> {
   const resourceLogs = sentBody().resourceLogs as [{ resource: { attributes: Attribute[] } }];
   return Object.fromEntries(
     resourceLogs[0].resource.attributes.map((a) => [a.key, a.value.stringValue])
   );
 }
 
-function sentAttributes(): Record<string, string> {
+function sentAttributes(): Record<string, string | number | boolean | undefined> {
   return Object.fromEntries(
-    (sentRecord().attributes as Attribute[]).map((a) => [a.key, a.value.stringValue])
+    (sentRecord().attributes as Attribute[]).map((a) => [a.key, attributeValue(a)])
   );
 }
 
@@ -212,6 +228,8 @@ describe('the payload', () => {
       agent_type: 'claude',
       target: 'remote',
       outcome: 'failure',
+      failure_reason: 'install_command_failed',
+      duration_ms: durationMs(4200),
     });
 
     expect(sentResource()['service.version']).toBe('1.2.3');
@@ -220,6 +238,10 @@ describe('the payload', () => {
       agent_type: 'claude',
       target: 'remote',
       outcome: 'failure',
+      failure_reason: 'install_command_failed',
+      // A duration goes as a number, not as text: `4200` and not `"4200"`, so
+      // the far end can average it without parsing it back.
+      duration_ms: durationMs(4200),
       build: 'dev',
     });
   });

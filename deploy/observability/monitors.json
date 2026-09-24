@@ -148,6 +148,44 @@
     }
   },
   {
+    "name": "[Switch] the database is slow",
+    "type": "metric alert",
+    "query": "avg(last_10m):p95:switch.db.query.duration{service:switch-core} > 500",
+    "message": "The 95th percentile statement took more than half a second over ten minutes.\n\nDistinct from the pool alert beside it, and they fail in opposite directions: the pool one says this server is holding too many connections, this one says the database is taking too long to answer on the connections it has. A slow database exhausts the pool eventually, so this should fire first \u2014 which is the point of having it.\n\nBreak it down by operation on the dashboard. Statements that failed are not timed, so this is latency and never an error rate.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "thresholds": {
+        "critical": 500,
+        "warning": 200
+      },
+      "include_tags": true
+    }
+  },
+  {
+    "name": "[Switch] the API is slow",
+    "type": "metric alert",
+    "query": "avg(last_10m):p95:switch.http.request.duration{service:switch-core} > 2000",
+    "message": "The 95th percentile request took more than two seconds over ten minutes.\n\nThe one alert for the half of \"is it healthy\" that error rates cannot see: an endpoint answering 200 slowly is, from a user's side, an endpoint that is broken, and nothing else here fires on it.\n\np95 rather than an average, which one very slow request drags and a thousand fast ones hide. Across all routes rather than by route, because a per-route alert is thirteen alerts that each need their own threshold; break it down on the dashboard once this fires.\n\nThe agent event streams are excluded at the source \u2014 they are long polls held open for a duration the caller chose \u2014 so this is the routes where the number means something. Check the database query duration panel first: on this server a slow request is usually a slow query.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "thresholds": {
+        "critical": 2000,
+        "warning": 1000
+      },
+      "include_tags": true
+    }
+  },
+  {
     "name": "[Switch] server errors are elevated",
     "type": "metric alert",
     "query": "sum(last_10m):sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count() / sum:switch.http.requests{service:switch-core}.as_count() > 0.05",

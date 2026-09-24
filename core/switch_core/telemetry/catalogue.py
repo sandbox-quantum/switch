@@ -83,7 +83,12 @@ class TelemetryCatalogueError(Exception):
 
 # The five collaboration platforms, plus the absence of one. `none` rather than
 # omitting the property: see the module docstring on exact property sets.
-BRIDGE_PLATFORM = one_of("slack", "mattermost", "discord", "teams", "telegram", "none")
+# `unknown` is a third, distinct case — not "no bridge" but "there is one and
+# we could not resolve it" (e.g. the lookup itself failed) — so a transient
+# error is never misreported as an internal-only room.
+BRIDGE_PLATFORM = one_of(
+    "slack", "mattermost", "discord", "teams", "telegram", "none", "unknown"
+)
 
 CHANNEL_TYPE = one_of("channel_public", "channel_private", "direct", "none")
 
@@ -127,11 +132,23 @@ BRIDGE_FAILURE_REASON = one_of(
     "none", "auth_failed", "network", "platform_error", "config_invalid", "unknown"
 )
 
+# A yes/no fact the server sometimes cannot establish — a failed lookup reports
+# `unknown` rather than collapsing "could not tell" into `false`, a value the
+# code has no evidence for. Not BOOLEAN: a property that can be unknown is a
+# three-valued fact, not a boolean with a spare bit smuggled into it.
+TRISTATE = one_of("true", "false", "unknown")
+
 
 # ── The catalogue ────────────────────────────────────────────────────────────
 
 _SNAPSHOT_COUNTS = (
+    # How many tenants are actually behind every other number here, which is
+    # not how many the deployment has: a tenant whose queries fail is stepped
+    # over, and `tenant_failed_count` says how many. Without the pair a partial
+    # pass is a drop in every count at once with nothing to attribute it to —
+    # indistinguishable from a deployment losing its users.
     "tenant_count",
+    "tenant_failed_count",
     "user_count",
     "user_active_1d",
     "user_active_7d",
@@ -192,7 +209,15 @@ _SINCE_INSTALL: Mapping[str, PropertyType] = {"seconds_since_install": NUMBER}
 CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # ── The daily snapshot ───────────────────────────────────────────────────
     # Counted locally, where the ids are known; only totals are reported.
-    "usage_snapshot": {name: NUMBER for name in _SNAPSHOT_COUNTS},
+    # `duration_ms` is how long the pass took to collect. It is roughly fifteen
+    # queries per tenant, on a schedule, against the same database serving
+    # rooms — "what does this cost at scale" is an open question in
+    # `docs/old/telemetry-events.md`, and this is the only place it can be
+    # answered from.
+    "usage_snapshot": {
+        **{name: NUMBER for name in _SNAPSHOT_COUNTS},
+        "duration_ms": NUMBER,
+    },
     # ── Milestones ───────────────────────────────────────────────────────────
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.
@@ -235,7 +260,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "room_archived": {
         "bridge_platform": BRIDGE_PLATFORM,
         "age_days": NUMBER,
-        "was_ever_active": BOOLEAN,
+        "was_ever_active": TRISTATE,
     },
     "room_agents_added": {"agent_count": NUMBER, "added_by_kind": ACTOR_KIND},
     "room_agents_removed": {"agent_count": NUMBER, "removed_by_kind": ACTOR_KIND},
@@ -247,7 +272,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "channel_type": CHANNEL_TYPE,
         "created_by_kind": ACTOR_KIND,
         "age_days": NUMBER,
-        "was_ever_active": BOOLEAN,
+        "was_ever_active": TRISTATE,
         "agent_count": NUMBER,
     },
     "agent_deleted": {
@@ -260,8 +285,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "age_days": NUMBER,
         # Removed having never connected is a failed setup; removed after
-        # months is a decision.
-        "was_ever_connected": BOOLEAN,
+        # months is a decision. `unknown` when the durable record itself
+        # could not be read — that is not evidence either way, and reporting
+        # it as `false` would misfile a lookup failure as a failed setup.
+        "was_ever_connected": TRISTATE,
         "room_count": NUMBER,
     },
     "agent_registered": {
@@ -295,6 +322,15 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "outcome": OUTCOME,
         # `none` on success, so the property set stays exact either way.
         "failure_reason": BRIDGE_FAILURE_REASON,
+        # How long the attempt took. Nothing else times this: connecting a
+        # bridge is a background task rather than a request the server serves,
+        # so it is invisible to `switch.http.request.duration`, and a connect
+        # that succeeds after ninety seconds and one that succeeds in two are
+        # otherwise the same row. Measured on a monotonic clock, in whole
+        # milliseconds, on both outcomes — a failure's latency is the more
+        # interesting of the two, because a timeout and a refusal look identical
+        # in the failure code and nothing alike in the time.
+        "duration_ms": NUMBER,
     },
     # ── Resources, keys and groups ───────────────────────────────────────────
     # Creating is intent, attaching is use, and the gap between them is the

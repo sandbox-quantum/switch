@@ -29,6 +29,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from switch_core.bridges.agent.protocol.types import AgentEvent
+from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_EVENTS_DROPPED
 from switch_core.observability.metrics import metrics
 
@@ -484,14 +485,20 @@ class EventBuffer:
             for _ in range(overflow):
                 dropped_seq = events.popleft().seq
             metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "overflow"}, overflow)
-            logger.warning(
-                "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
-                "through seq=%s — readers resuming from before this will be "
-                "told they missed events",
-                agent_id,
-                self._max_events,
-                dropped_seq,
-            )
+            # The agent is a field as well as being in the message: this fires
+            # from the buffer's own bookkeeping rather than from anything the
+            # agent called, so there is no request context to inherit it from,
+            # and "which agent is falling behind" is the only question this
+            # line is ever read to answer.
+            with log_context(agent_id=agent_id):
+                logger.warning(
+                    "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
+                    "through seq=%s — readers resuming from before this will be "
+                    "told they missed events",
+                    agent_id,
+                    self._max_events,
+                    dropped_seq,
+                )
 
         if dropped_seq:
             self._dropped_through[agent_id] = max(

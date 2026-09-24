@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -61,6 +62,7 @@ from switch_core.db.stores.session_request_post_store import SessionRequestPostS
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
+    BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
     BRIDGE_EVENTS_IN,
     BRIDGE_EVENTS_OUT,
@@ -338,16 +340,27 @@ class BridgeCore:
 
     @contextmanager
     def _counted_outbound(self, kind: str) -> Iterator[None]:
-        """Count one relay out to the platform, and its failure if it fails.
+        """Count one relay out to the platform, time it, and count its failure.
 
         Placed around the relay call rather than at the top of the handler: a
         handler returns early for a puppet's own echo and for a room with no
         channel mapping, and neither of those is a message anybody sent
         outwards.
+
+        The duration is the platform's round trip, and it is the only place in
+        this process where an external API's latency is visible at all. A room
+        that feels unresponsive is usually Slack taking two seconds rather than
+        anything here being wrong, and without this the two are the same
+        picture — a healthy server, relays being counted, and people waiting.
+
+        Only a relay that succeeded is timed. A call that raised took however
+        long its own failure took, which is a different distribution living
+        under the same name; `switch.bridge.errors` is where that shows.
         """
         metrics().increment(
             BRIDGE_EVENTS_OUT, {"platform": self._bridge_type, "kind": kind}
         )
+        started = time.perf_counter()
         try:
             yield
         except Exception:
@@ -355,6 +368,11 @@ class BridgeCore:
                 BRIDGE_ERRORS, {"platform": self._bridge_type, "direction": "outbound"}
             )
             raise
+        metrics().observe(
+            BRIDGE_CALL_DURATION,
+            {"platform": self._bridge_type, "kind": kind},
+            (time.perf_counter() - started) * 1000.0,
+        )
 
     def _traced(
         self, kind: str, handler: Callable[[_InboundEventT], Awaitable[None]]
@@ -397,7 +415,12 @@ class BridgeCore:
                     if room_ids is None
                     else await self._room_tenant(room_ids[0])
                 )
-                with tenant_scope(tenant_id):
+                # `room_ids` is (Switch room id, transport room id); the log
+                # field is the first. None until the mapping exists, which is
+                # the honest reading for a channel whose room the handler is
+                # about to create.
+                room_id = room_ids[0] if room_ids else None
+                with tenant_scope(tenant_id), log_context(room_id=room_id):
                     try:
                         await handler(event)
                     except Exception:

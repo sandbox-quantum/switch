@@ -15,6 +15,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -354,8 +355,13 @@ class ClientLifecycleService:
         through an ordinary `tenant_session` under that tenant. An exemption
         call here would have been a question whose answer the caller was
         already holding.
+
+        The room goes with it for the same reason: the inbound handler that
+        mints a puppet has that room bound as log context, and the puppet's
+        own log lines must not name it for the rest of its life. Each delivery
+        binds its room.
         """
-        with no_tenant():
+        with no_tenant(), log_context(room_id=None):
             try:
                 await client.start()
             except Exception:

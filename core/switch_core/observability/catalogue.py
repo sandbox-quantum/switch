@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from switch_core.observability.otlp import SUB_MILLISECOND_BOUNDS_MS
+
 MetricKind = Literal["sum", "gauge", "histogram"]
 
 # A ceiling, not a target: crossing it means a call site is passing something
@@ -35,6 +37,12 @@ class MetricSpec:
     unit: str
     description: str
     attributes: frozenset[str] = field(default_factory=frozenset)
+    # Histograms only, and only where the default set cannot resolve the
+    # measurement: bounds are the resolution, and a histogram whose readings
+    # all land in one bucket reports that bucket for ever. None means the
+    # shared latency bounds, which suit anything measured in tens of
+    # milliseconds and upwards.
+    bounds: tuple[float, ...] | None = None
 
 
 def _spec(
@@ -43,6 +51,7 @@ def _spec(
     unit: str,
     description: str,
     *attributes: str,
+    bounds: tuple[float, ...] | None = None,
 ) -> MetricSpec:
     return MetricSpec(
         name=name,
@@ -50,6 +59,7 @@ def _spec(
         unit=unit,
         description=description,
         attributes=frozenset(attributes),
+        bounds=bounds,
     )
 
 
@@ -95,6 +105,22 @@ DB_POOL_OVERFLOW = _spec(
     "gauge",
     "{connection}",
     "Connections open beyond the pool's nominal size.",
+)
+# The pool gauges say whether connections are scarce; this says whether the
+# database is slow, which is the other half and the one a slow request is
+# usually about. `operation` is the statement's leading keyword mapped through
+# a fixed table — never the statement, which is unbounded and carries literals.
+DB_QUERY_DURATION = _spec(
+    "switch.db.query.duration",
+    "histogram",
+    "ms",
+    "Round trip for one statement, measured around the driver call. A "
+    "statement that raised is not timed: a query that failed in four "
+    "milliseconds is not evidence the database is fast. Not every statement "
+    "the process runs — see `observability/query.py` for what is outside it, "
+    "notably migrations and the message listener.",
+    "operation",
+    bounds=SUB_MILLISECOND_BOUNDS_MS,
 )
 
 # ── Message transport ────────────────────────────────────────────────────────
@@ -169,8 +195,20 @@ BRIDGES_RUNNING = _spec(
     "switch.bridges.running",
     "gauge",
     "{bridge}",
-    "Collaboration bridges with a live task. A configured bridge missing here "
-    "has crashed.",
+    "Collaboration bridges with a live task, by platform. A configured bridge "
+    "missing here has crashed — and without `platform` the total says how many "
+    "died and never which, which is the first thing anyone asks.",
+    "platform",
+)
+BRIDGE_CALL_DURATION = _spec(
+    "switch.bridge.call.duration",
+    "histogram",
+    "ms",
+    "Round trip for one outbound call to a collaboration platform. The bridge "
+    "counters say whether relays are failing; this says whether they are "
+    "arriving late, which is what a room that feels unresponsive actually is.",
+    "platform",
+    "kind",
 )
 
 # ── Agent protocol ───────────────────────────────────────────────────────────
@@ -273,6 +311,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
+        DB_QUERY_DURATION,
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
         SEND_FAILURES,
@@ -282,6 +321,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
+        BRIDGE_CALL_DURATION,
         AGENT_EVENTS_DROPPED,
         AGENT_CONNECTIONS_EXPIRED,
         AGENTS_CONNECTED,

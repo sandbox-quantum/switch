@@ -144,8 +144,12 @@ drop every live session to find that out.
 ## The three things it emits
 
 **Logs** go to the container's output, with `tenant_id`, `request_id`,
-`agent_id` and `user_id` stamped on every line by a filter on the handler — so
-records from libraries carry them too. A request from Switch Console also
+`agent_id`, `room_id` and `user_id` stamped on every line by a filter on the
+handler — so records from libraries carry them too. A room id is a log field
+and deliberately not a metric attribute: it is unbounded and belongs to one
+tenant, which rules it out of a dashboard label for the reasons under "Why
+there is a catalogue" — and following one room through a failure is the single
+most common thing anyone asks these logs for. A request from Switch Console also
 carries `console_id` and `console_name`: on a server a Console runs for its
 user, everyone with access to the host signs in as the one seeded account, so
 `user_id` cannot tell them apart and these can. They are attribution the caller
@@ -170,6 +174,26 @@ duration measures a parameter the client chose rather than anything this
 server did. In a latency histogram that is worse than useless: it would make
 those routes' percentiles meaningless and, sharing an axis, flatten every
 other route to the floor. They are counted like everything else.
+
+**What is timed, as against counted.** Four things: HTTP requests, message
+delivery lag, database statements and outbound calls to a collaboration
+platform. That set is chosen to answer "what is slow" without guessing — on
+this server a slow request is nearly always a slow query or a slow platform,
+and those are the two the process cannot see from a count alone. A database
+statement is timed around the driver call by SQLAlchemy's cursor events
+(`observability/query.py`), so what is measured is the round trip rather than
+the Python either side of it; the statement text never becomes an attribute,
+only its leading keyword mapped through a fixed table — with the per-transaction
+tenant `set_config` given a label of its own, because it is a third of all
+statements and always trivial, so counted as a `select` it drags the
+percentiles toward bookkeeping. A statement that raised is not timed, because a
+query that failed in four milliseconds is not evidence the database is fast.
+
+It is not every statement the process runs. Alembic builds its own engine, the
+message listener talks to asyncpg directly, `BEGIN`/`COMMIT` come from the
+dialect, and an `executemany` is one measurement for the whole batch because it
+is one round trip. Read the panel as "the application's queries", not "all
+database work".
 
 **Not every HTTP surface is counted.** `switch.http.*` comes from middleware on
 the FastAPI app, which is the agent bridge, the MCP mount and the gateway
@@ -319,6 +343,14 @@ application — it is infrastructure, tracked separately.
 and the relay Switch reports to does not serve `/v1/traces` — a POST there
 returns 404. Two things have to happen: the collector must accept the signal,
 and the server must produce spans.
+
+Tracing is the one observability item not built, and it was always scoped as
+optional. The order matters: spans built against a collector
+that 404s cannot be turned on, cannot be verified, and would be reviewed
+against nothing. The collector side is tracked with the infrastructure work
+(an agent that accepts OTLP traces directly is one of the two ways it closes);
+the server side is a day's work once there is somewhere to send them, and the
+log records already carry the fields to correlate against.
 
 There is deliberately **no** `OTLP_TRACES_ENABLED` setting in the meantime. A
 flag a deployment can turn on and see no difference from is a configuration

@@ -1,21 +1,45 @@
 import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
+import { TransportError } from '@switch-console/core/exec';
 import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { createRemoteHomePluginFs } from '@main/core/agent-runtime/impl/remote-home-plugin-fs';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import { startTimer } from '@main/core/telemetry/duration';
+import type {
+  TelemetryConnectorFailure,
+  TelemetryConnectorUpdateTrigger,
+} from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
-import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
-import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
-import type { SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
-import { marketplaceMatchesSource } from './switch-setup-service';
-
-const EXEC_TIMEOUT_MS = 120_000;
+import {
+  commandFailureCode,
+  CONNECTOR_UNSUPPORTED_RESULT,
+  type ConnectorRun,
+  connectorFailed,
+  type ConnectorRunResult,
+  connectorSucceeded,
+  connectorUnsupported,
+  declaresNoConnector,
+  EXEC_TIMEOUT_MS,
+  FilesConnectorUnimplementedError,
+  HostCliMissingError,
+  marketplaceFailed,
+  marketplaceMatchesSource,
+  runReportedOperation,
+  type SwitchSetupResult,
+  type SwitchSetupStatus,
+  unsupportedStatus,
+} from './connector-run';
+import {
+  cliRulesFor,
+  type InstalledPlugin,
+  type SwitchSetupCliRules,
+} from './switch-setup-cli-dialect';
 
 /** POSIX shells use 127 for "command not found". */
 const COMMAND_NOT_FOUND = 127;
@@ -24,16 +48,15 @@ const COMMAND_NOT_FOUND = 127;
  * The version stamped into a file-based connector install — the connector's own
  * artifact version, on a remote host exactly as locally, so the two report the
  * same number for the same connector.
+ *
+ * Takes the artifact rather than the agent id, matching the local helper of the
+ * same name: two functions that share a name, both taking a `string`, and
+ * disagreeing about which string is how a call site copied between the drivers
+ * compiles and silently versions the wrong thing.
  */
-function connectorVersion(agentId: string): string {
-  const descriptor = getPlugin(agentId).capabilities.switchSetup;
-  if (descriptor.kind !== 'files') {
-    throw new Error(`Agent '${agentId}' has no file-based Switch connector to version.`);
-  }
-  return artifactVersion(descriptor.artifact as ArtifactName);
+function connectorVersion(artifact: string): string {
+  return artifactVersion(artifact as ArtifactName);
 }
-
-type RunResult = { code: number; stdout: string; stderr: string };
 
 /**
  * Join path segments for the remote host, which is POSIX regardless of what
@@ -47,18 +70,6 @@ function posixJoin(...segments: string[]): string {
     )
     .filter((segment) => segment.length > 0)
     .join('/');
-}
-
-function unsupported(agentId: string): SwitchSetupStatus {
-  return {
-    agentId,
-    supported: false,
-    installed: false,
-    installedVersion: null,
-    latestVersion: null,
-    updateAvailable: false,
-    refreshError: null,
-  };
 }
 
 /**
@@ -110,18 +121,26 @@ export class RemoteSwitchSetupService {
 
   /**
    * The `files` connector behavior for an agent whose connector Switch Console
-   * writes itself, rooted at the remote host's home. Null for any other agent.
+   * writes itself. Mirrors the local driver: callers reach it only under a
+   * `kind === 'files'` test, a plugin that declares files and implements none is
+   * the one expected failure, and no filesystem is built here — on this side
+   * that matters more, because building one can fail on a dead SSH channel and
+   * that is not a fault in the plugin.
    */
-  private resolveFiles(agentId: string) {
+  private resolveFiles(agentId: string): { files: ISwitchSetupFilesBehavior; version: string } {
     const plugin = getPlugin(agentId);
-    if (plugin.capabilities.switchSetup.kind !== 'files') return null;
-    const files = plugin.behavior.switchSetup?.files;
-    if (!files) {
-      throw new Error(
-        `Agent '${agentId}' declares a file-based Switch connector but implements no behavior for it.`
-      );
+    const descriptor = plugin.capabilities.switchSetup;
+    if (descriptor.kind !== 'files') {
+      throw new Error(`Agent '${agentId}' has no file-based Switch connector.`);
     }
-    return { files, homeFs: createRemoteHomePluginFs(this.ctx) };
+    const files = plugin.behavior.switchSetup?.files;
+    if (!files) throw new FilesConnectorUnimplementedError(agentId);
+    return { files, version: connectorVersion(descriptor.artifact) };
+  }
+
+  /** The filesystem a file-based connector is written to on this host. */
+  private homeFs(): PluginFs {
+    return createRemoteHomePluginFs(this.ctx);
   }
 
   private async resolve(agentId: string) {
@@ -141,16 +160,31 @@ export class RemoteSwitchSetupService {
     };
   }
 
-  private async run(bin: string, args: string[]): Promise<RunResult> {
+  private async run(bin: string, args: string[]): Promise<ConnectorRunResult> {
     try {
       const { stdout, stderr } = await this.ctx.exec(bin, args, { timeout: EXEC_TIMEOUT_MS });
-      return { code: 0, stdout, stderr };
+      return { code: 0, stdout, stderr, notFound: false };
     } catch (err: unknown) {
+      // A broken pipe is not an answer about the connector. Everything below
+      // turns a failure into a `ConnectorRunResult`, and a status read then
+      // parses the empty stdout as "no plugin installed" — so a dead channel
+      // renders as "its Switch connector is not installed on <host>", which is
+      // a confident statement about the one thing the read failed to
+      // establish. `TransportError` exists to draw exactly this line
+      // ("probe-style callers can distinguish it from 'the command ran and
+      // failed'"), so it is re-raised: `listAgentTypeStatuses` catches it and
+      // the row says it could not be read.
+      //
+      // Only the transport. A shell exiting 127 IS an answer — a host without
+      // Codex is a normal host — and still comes back as a result below.
+      if (err instanceof TransportError) throw err;
       const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+      const code = e.code ?? 1;
       const result = {
-        code: e.code ?? 1,
+        code,
         stdout: e.stdout ?? '',
         stderr: e.stderr ?? e.message ?? '',
+        notFound: code === COMMAND_NOT_FOUND,
       };
       // A shell reports 127 when the binary is not on PATH. For "is this agent
       // type's connector installed?" that is the answer, not a fault: a host
@@ -175,6 +209,30 @@ export class RemoteSwitchSetupService {
   private async findInstalled(bin: string, ref: string, rules: SwitchSetupCliRules) {
     const { stdout } = await this.run(bin, ['plugin', 'list', '--json']);
     return rules.parsePluginList(parseJsonLoose(stdout)).find((p) => p.ref === ref) ?? null;
+  }
+
+  /**
+   * Read the true installed version from the plugin manifest on the host,
+   * falling back to the CLI's.
+   *
+   * The same two sources the local driver reads, in the same order, and for the
+   * same reason: the CLI reports the version it recorded when it installed the
+   * plugin, which is not updated in place, so the manifest is the accurate one.
+   * This feeds `updateAvailable`, so a driver preferring the CLI's number offers
+   * updates the other would not.
+   */
+  private async installedVersion(
+    entry: InstalledPlugin | null,
+    rules: SwitchSetupCliRules
+  ): Promise<string | null> {
+    if (!entry) return null;
+    if (entry.manifestPath) {
+      const manifest = await this.readRemoteJson<{ version?: string }>(
+        posixJoin(entry.manifestPath, rules.pluginManifestDir, 'plugin.json')
+      );
+      if (manifest?.version) return manifest.version;
+    }
+    return entry.version ?? null;
   }
 
   /**
@@ -239,9 +297,12 @@ export class RemoteSwitchSetupService {
     marketplaceSource: string,
     rules: SwitchSetupCliRules
   ): Promise<void> {
-    const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
+    const listed = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
+    // No binary on the host means no marketplace to repair and no plugin to
+    // install; every command after this one would fail the same way.
+    if (listed.notFound) throw new HostCliMissingError(bin);
     const existing = rules
-      .parseMarketplaceList(parseJsonLoose(stdout))
+      .parseMarketplaceList(parseJsonLoose(listed.stdout))
       .find((m) => m.name === marketplaceName);
     if (existing) {
       if (marketplaceMatchesSource(existing, marketplaceSource)) return;
@@ -269,10 +330,9 @@ export class RemoteSwitchSetupService {
    * there is, and an install stamped with an older one is what "update
    * available" means.
    */
-  private async filesStatus(agentId: string, version: string): Promise<SwitchSetupStatus> {
-    const resolved = this.resolveFiles(agentId);
-    if (!resolved) return unsupported(agentId);
-    const installedVersion = await resolved.files.installedVersion(resolved.homeFs);
+  private async filesStatus(agentId: string): Promise<SwitchSetupStatus> {
+    const { files, version } = this.resolveFiles(agentId);
+    const installedVersion = await files.installedVersion(this.homeFs());
     return {
       agentId,
       supported: true,
@@ -284,33 +344,46 @@ export class RemoteSwitchSetupService {
     };
   }
 
-  /** Install, update and uninstall for a file-based connector on this host. */
+  /**
+   * Install, update and uninstall for a file-based connector on this host.
+   * Classifies exactly as the local driver does — see the note there.
+   */
   private async runFiles(
     agentId: string,
-    action: (files: ISwitchSetupFilesBehavior, homeFs: PluginFs) => Promise<unknown>
-  ): Promise<SwitchSetupResult> {
-    const resolved = this.resolveFiles(agentId);
-    if (!resolved)
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+    failure: TelemetryConnectorFailure,
+    action: (
+      files: ISwitchSetupFilesBehavior,
+      homeFs: PluginFs,
+      version: string
+    ) => Promise<unknown>
+  ): Promise<ConnectorRun> {
+    let resolved: { files: ISwitchSetupFilesBehavior; version: string };
     try {
-      await action(resolved.files, resolved.homeFs);
-      return { success: true };
+      resolved = this.resolveFiles(agentId);
+    } catch (err) {
+      if (!(err instanceof FilesConnectorUnimplementedError)) throw err;
+      log.error('remote-switch-setup: file-based connector declares no behavior', { agentId, err });
+      return connectorFailed(err.message, 'files_unimplemented');
+    }
+    try {
+      await action(resolved.files, this.homeFs(), resolved.version);
+      return connectorSucceeded();
     } catch (err) {
       log.error('remote-switch-setup: file-based connector operation failed', { agentId, err });
-      return { success: false, message: err instanceof Error ? err.message : String(err) };
+      return connectorFailed(err instanceof Error ? err.message : String(err), failure);
     }
   }
 
   async getStatus(agentId: string): Promise<SwitchSetupStatus> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.filesStatus(agentId, connectorVersion(agentId));
+      return this.filesStatus(agentId);
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved) return unsupported(agentId);
+    if (!resolved) return unsupportedStatus(agentId);
     const { descriptor, bin, ref, rules } = resolved;
 
     const entry = await this.findInstalled(bin, ref, rules);
-    const installedVersion = entry?.version ?? null;
+    const installedVersion = await this.installedVersion(entry, rules);
     const latestVersion = await this.advertisedVersion(
       bin,
       descriptor.marketplaceName,
@@ -342,10 +415,10 @@ export class RemoteSwitchSetupService {
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     // A file-based connector ships inside the app: nothing to refresh.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.filesStatus(agentId, connectorVersion(agentId));
+      return this.filesStatus(agentId);
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved) return unsupported(agentId);
+    if (!resolved) return unsupportedStatus(agentId);
     const { descriptor, bin, marketplaceSource, rules } = resolved;
     let refreshError: string | null = null;
     try {
@@ -363,61 +436,51 @@ export class RemoteSwitchSetupService {
     return { ...(await this.getStatus(agentId)), refreshError };
   }
 
+  /**
+   * Install the connector on this host, reporting the outcome. The `none` guard
+   * and the reporting of `unsupported` mirror the local driver — both now come
+   * from the shared leaf rather than from two copies kept in step by hand.
+   */
   async install(agentId: string): Promise<SwitchSetupResult> {
-    const { result, attempted } = await this.runInstall(agentId);
-    // An agent type with no connector to install did not fail to install one.
-    if (attempted) {
-      trackEvent('connector_installed', {
-        agent_type: isValidProviderId(agentId) ? agentId : 'unknown',
-        target: 'remote',
-        outcome: result.success ? 'success' : 'failure',
-      });
-    }
-    return result;
+    if (declaresNoConnector(agentId)) return CONNECTOR_UNSUPPORTED_RESULT;
+    const elapsed = startTimer();
+    const run = await runReportedOperation('remote-switch-setup', agentId, () =>
+      this.runInstall(agentId)
+    );
+    trackEvent('connector_installed', {
+      agent_type: agentTypeOf(agentId),
+      target: 'remote',
+      outcome: run.result.success ? 'success' : 'failure',
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
+    });
+    return run.result;
   }
 
-  private async runInstall(
-    agentId: string
-  ): Promise<{ result: SwitchSetupResult; attempted: boolean }> {
+  private async runInstall(agentId: string): Promise<ConnectorRun> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      // `runFiles` resolves the behavior outside its own try, and that throws
-      // for a connector that declares files and implements none. An install the
-      // user asked for must come back as a failed result either way — a
-      // rejection here would skip the report and reach the UI as a stack.
-      try {
-        const version = connectorVersion(agentId);
-        const result = await this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
-        return { result, attempted: true };
-      } catch (err) {
-        return {
-          result: { success: false, message: String(err) },
-          attempted: true,
-        };
-      }
+      return this.runFiles(agentId, 'files_write_failed', (files, fs, version) =>
+        files.install(fs, { version })
+      );
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved)
-      return {
-        result: { success: false, message: 'Switch setup is not supported for this agent.' },
-        attempted: false,
-      };
+    if (!resolved) return connectorUnsupported();
     const { descriptor, bin, ref, marketplaceSource, rules } = resolved;
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
-      return {
-        result: { success: false, message: `Could not add marketplace: ${String(err)}` },
-        attempted: true,
-      };
+      // A dead channel says nothing about the marketplace; `runReportedOperation`
+      // reports it as `error`.
+      if (err instanceof TransportError) throw err;
+      return marketplaceFailed(err, `Could not add marketplace: ${String(err)}`);
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
-    return {
-      result:
-        res.code === 0
-          ? { success: true }
-          : { success: false, message: res.stderr.trim() || 'Install failed.' },
-      attempted: true,
-    };
+    return res.code === 0
+      ? connectorSucceeded()
+      : connectorFailed(
+          res.stderr.trim() || 'Install failed.',
+          commandFailureCode(res, 'install_command_failed')
+        );
   }
 
   /**
@@ -425,44 +488,57 @@ export class RemoteSwitchSetupService {
    * below resolves against whatever marketplace is registered, so a stale source
    * would otherwise fail it after the uninstall has already succeeded.
    */
-  async update(agentId: string): Promise<SwitchSetupResult> {
-    if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
-    }
-    const { result, wasReinstall } = await this.runUpdate(agentId);
+  async update(
+    agentId: string,
+    trigger: TelemetryConnectorUpdateTrigger
+  ): Promise<SwitchSetupResult> {
+    if (declaresNoConnector(agentId)) return CONNECTOR_UNSUPPORTED_RESULT;
+    const elapsed = startTimer();
+    const { run, wasReinstall } = await this.runUpdateReported(agentId);
     trackEvent('connector_updated', {
       agent_type: agentTypeOf(agentId),
       target: 'remote',
-      outcome: result.success ? 'success' : 'failure',
+      outcome: run.result.success ? 'success' : 'failure',
       was_reinstall: wasReinstall,
+      trigger,
+      failure_reason: run.failure,
+      duration_ms: elapsed(),
     });
-    return result;
+    return run.result;
   }
 
-  private async runUpdate(
+  /** `runUpdate` that always comes back as a result — see the local driver. */
+  private async runUpdateReported(
     agentId: string
-  ): Promise<{ result: SwitchSetupResult; wasReinstall: boolean }> {
+  ): Promise<{ run: ConnectorRun; wasReinstall: boolean }> {
+    let wasReinstall = false;
+    const run = await runReportedOperation('remote-switch-setup', agentId, async () => {
+      const outcome = await this.runUpdate(agentId);
+      wasReinstall = outcome.wasReinstall;
+      return outcome.run;
+    });
+    return { run, wasReinstall };
+  }
+
+  private async runUpdate(agentId: string): Promise<{ run: ConnectorRun; wasReinstall: boolean }> {
     // Installing overwrites in place, so update is the same operation — there
     // is no removed-but-not-reinstalled window to report on.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const version = connectorVersion(agentId);
-      const result = await this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
-      return { result, wasReinstall: false };
+      const run = await this.runFiles(agentId, 'files_write_failed', (files, fs, version) =>
+        files.install(fs, { version })
+      );
+      return { run, wasReinstall: false };
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved) {
-      return {
-        result: { success: false, message: 'Switch setup is not supported for this agent.' },
-        wasReinstall: false,
-      };
-    }
+    if (!resolved) return { run: connectorUnsupported(), wasReinstall: false };
     const { descriptor, bin, ref, marketplaceSource, rules } = resolved;
 
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
+      if (err instanceof TransportError) throw err;
       return {
-        result: { success: false, message: `Could not add marketplace: ${String(err)}` },
+        run: marketplaceFailed(err, `Could not add marketplace: ${String(err)}`),
         wasReinstall: false,
       };
     }
@@ -471,10 +547,13 @@ export class RemoteSwitchSetupService {
     if (updateArgs) {
       const res = await this.run(bin, updateArgs);
       return {
-        result:
+        run:
           res.code === 0
-            ? { success: true }
-            : { success: false, message: res.stderr.trim() || 'Update failed.' },
+            ? connectorSucceeded()
+            : connectorFailed(
+                res.stderr.trim() || 'Update failed.',
+                commandFailureCode(res, 'update_command_failed')
+              ),
         wasReinstall: false,
       };
     }
@@ -484,24 +563,41 @@ export class RemoteSwitchSetupService {
     const removed = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
     if (removed.code !== 0) {
       return {
-        result: {
-          success: false,
-          message: removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
-        },
+        run: connectorFailed(
+          removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
+          commandFailureCode(removed, 'uninstall_command_failed')
+        ),
         wasReinstall: true,
       };
     }
-    const added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
+    let added: ConnectorRunResult;
+    try {
+      added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
+    } catch (err) {
+      // The remove already went through, so this cannot escape as a plain
+      // `error`: the host may now have no connector, and the caller has to say so.
+      if (!(err instanceof TransportError)) throw err;
+      log.error('remote-switch-setup: connection dropped between remove and re-add', {
+        agentId,
+        err,
+      });
+      return {
+        run: connectorFailed(
+          'Update failed: the plugin was removed, then the connection to the host dropped before it could be reinstalled. Reconnect and install it again for this host.',
+          'error'
+        ),
+        wasReinstall: true,
+      };
+    }
     return {
-      result:
+      run:
         added.code === 0
-          ? { success: true }
-          : {
-              success: false,
-              message:
-                added.stderr.trim() ||
+          ? connectorSucceeded()
+          : connectorFailed(
+              added.stderr.trim() ||
                 'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
-            },
+              commandFailureCode(added, 'install_command_failed')
+            ),
       wasReinstall: true,
     };
   }
@@ -511,7 +607,22 @@ export class RemoteSwitchSetupService {
     const statuses: SwitchSetupStatus[] = [];
     for (const plugin of listPlugins()) {
       if (plugin.capabilities.switchSetup.kind === 'none') continue;
-      statuses.push(await this.getStatus(plugin.metadata.id));
+      const agentId = plugin.metadata.id;
+      // One agent type whose status cannot be read must not empty the panel.
+      // Such a row has every field at its empty value, so a consumer branching
+      // on `installed` alone reports "the connector is not installed" — a
+      // statement about the one thing the read failed to establish. Check
+      // `refreshError` first.
+      try {
+        statuses.push(await this.getStatus(agentId));
+      } catch (err) {
+        log.error('remote-switch-setup: could not read connector status', { agentId, err });
+        statuses.push({
+          ...unsupportedStatus(agentId),
+          supported: true,
+          refreshError: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     return statuses;
   }

@@ -1,3 +1,4 @@
+import { durationMs } from '@tooling/utils/telemetry-duration';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TelemetryConfig } from './config';
 import {
@@ -194,7 +195,13 @@ describe('the record that gets built', () => {
     // The guard drops any record with more than 128 attributes.
     const payload = buildOtlpPayload(
       'connector_installed',
-      { agent_type: 'claude', target: 'remote', outcome: 'success' },
+      {
+        agent_type: 'claude',
+        target: 'remote',
+        outcome: 'success',
+        failure_reason: 'none',
+        duration_ms: durationMs(4200),
+      },
       CONTEXT
     );
 

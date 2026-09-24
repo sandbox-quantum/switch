@@ -137,6 +137,95 @@ export type TelemetryCliFailure =
   | 'error';
 
 /**
+ * Why installing, updating or removing a **Switch connector** failed — not the
+ * agent's own CLI, which `TelemetryCliFailure` covers.
+ *
+ * Named at the point of failure rather than mapped from an error type: these
+ * paths report a message, and a message cannot be sent. The codes separate the
+ * walls that need different fixes, because "connector install failed" tells
+ * nobody which to look at.
+ *
+ * `uninstall_command_failed` and `install_command_failed` both occur on an
+ * update — a host with no update verb removes the connector and puts it back,
+ * and which half failed is the difference between "nothing changed" and "the
+ * agent now has no connector at all". `files_write_failed` and
+ * `files_remove_failed` draw that line for the connector the app writes itself.
+ *
+ * `error` is the only code not named at a branch, and deliberately a small
+ * residue. One that starts filling up means a wall people are hitting has no
+ * name yet — not a bucket to widen.
+ */
+export type TelemetryConnectorFailure =
+  | 'none'
+  /** The agent declares a connector but nothing could be resolved to manage it. */
+  | 'unsupported'
+  /**
+   * The agent's own CLI is not on the machine, so there is nothing to drive.
+   *
+   * Every command a marketplace-driven connector runs goes through that binary,
+   * so the first one fails and the rest are consequences. Without this the
+   * whole condition landed under whichever verb ran first — `marketplace_failed`
+   * for an install, `uninstall_command_failed` for a removal — which reads as a
+   * fault in the marketplace rather than as an agent nobody installed.
+   */
+  | 'host_cli_missing'
+  /** The plugin marketplace could not be registered or re-pointed at its source. */
+  | 'marketplace_failed'
+  | 'install_command_failed'
+  | 'update_command_failed'
+  | 'uninstall_command_failed'
+  /** The app writes this connector itself, and the write failed. */
+  | 'files_write_failed'
+  /** The app writes this connector itself, and removing it failed. */
+  | 'files_remove_failed'
+  /** The agent declares a file-based connector and implements no behavior for it. */
+  | 'files_unimplemented'
+  /** The operation threw instead of returning a result. */
+  | 'error';
+
+/**
+ * Who asked for a connector update.
+ *
+ * `catch_up` is the once-per-install sweep that brings every installed
+ * connector to the version this build ships. It goes through the same service
+ * method as the Update button, so without this the two are one number — and it
+ * runs unattended at launch, several connectors at a time, so its latencies and
+ * failures would be read as ones people sat through.
+ *
+ * The same reasoning as `TelemetryAgentRemoveTrigger`, which exists because a
+ * server teardown deleting a dozen agents looked identical to a dozen people
+ * giving up on them.
+ */
+export type TelemetryConnectorUpdateTrigger = 'user' | 'catch_up';
+
+/**
+ * How long an operation took, in whole milliseconds, on a monotonic clock.
+ *
+ * A number rather than a value from a fixed set, like `agent_count` and
+ * `result_count`, so how to read it matters.
+ * Nothing is bucketed and nothing is clamped: take percentiles, not means —
+ * some of these legitimately include a password prompt left on screen.
+ *
+ * Two things shape the distribution:
+ *
+ * - Every connector command carries `EXEC_TIMEOUT_MS` (120 s) and an operation
+ *   runs several in sequence, so the wall is a multiple: ~480000 for an
+ *   install, ~600000 for a reinstall. Pile-ups there are the timeout, not
+ *   latency.
+ * - The connector events time the whole operation, including registering the
+ *   marketplace — which clones a repository on a machine that has never had it
+ *   and is a no-op afterwards. The first install is legitimately much slower,
+ *   so a moving p50 can be a change in that mix rather than a regression.
+ *
+ * Branded so `startTimer()` is the only thing that can mint one. That is what
+ * stops a call site reaching for `Date.now() - startedAt`, which is not
+ * monotonic and across a clock step yields a negative number nothing at the far
+ * end can tell from data.
+ */
+declare const durationMsBrand: unique symbol;
+export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };
+
+/**
  * Which messaging platform a room or bridge is on.
  *
  * The server names the platform as free text, so this is narrowed at the emitter
@@ -319,10 +408,23 @@ export type TelemetryEventMap = {
     server_kind: 'local' | 'remote_managed' | 'external';
     outcome: TelemetryOutcome;
   };
+  /**
+   * A Switch connector was installed.
+   *
+   * `agent_type` is also what says *which kind* of connector ran: a host with a
+   * plugin marketplace is driven through its CLI, and a host without one has its
+   * connector written by the app. The two fail in entirely different places,
+   * which is what `failure_reason` separates.
+   *
+   * The denominator is every attempt: an operation that throws is caught at the
+   * driver boundary and reported as `error` rather than escaping unreported.
+   */
   connector_installed: {
     agent_type: TelemetryAgentType;
     target: TelemetryLocationKind;
     outcome: 'success' | 'failure';
+    failure_reason: TelemetryConnectorFailure;
+    duration_ms: TelemetryDurationMs;
   };
   /**
    * The app checked for an update. `trigger` separates a check someone asked for
@@ -379,6 +481,9 @@ export type TelemetryEventMap = {
     target: 'local' | 'remote';
     outcome: TelemetryOutcome;
     was_reinstall: boolean;
+    trigger: TelemetryConnectorUpdateTrigger;
+    failure_reason: TelemetryConnectorFailure;
+    duration_ms: TelemetryDurationMs;
   };
   /**
    * The connector was removed. The churn signal.
@@ -390,6 +495,8 @@ export type TelemetryEventMap = {
     agent_type: TelemetryAgentType;
     target: 'local';
     outcome: TelemetryOutcome;
+    failure_reason: TelemetryConnectorFailure;
+    duration_ms: TelemetryDurationMs;
   };
   /**
    * An agent was removed. `delete_in_switch` says whether its identity on the
@@ -453,6 +560,14 @@ export type TelemetryEventMap = {
    * connector, which `connector_installed` and friends report.
    *
    * The single biggest wall a new user hits, and until now entirely uncounted.
+   *
+   * `duration_ms` matters most here: a CLI install that takes four minutes and
+   * one that takes ten seconds are otherwise the same row, and a package manager
+   * getting slower is the kind of regression nobody reports because it never
+   * fails.
+   *
+   * A dependency manager that throws instead of returning a result is reported
+   * as `error` by `reportedCliAction`, so every attempt is in the denominator.
    */
   agent_cli_action: {
     agent_type: TelemetryAgentType;
@@ -461,6 +576,7 @@ export type TelemetryEventMap = {
     action: TelemetryCliAction;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryCliFailure;
+    duration_ms: TelemetryDurationMs;
   };
   /**
    * A room was created on a server. `bridge_unavailable` is the failure worth
@@ -605,15 +721,23 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   ],
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome'],
-  connector_installed: ['agent_type', 'target', 'outcome'],
+  connector_installed: ['agent_type', 'target', 'outcome', 'failure_reason', 'duration_ms'],
   update_checked: ['trigger', 'result'],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
-  connector_updated: ['agent_type', 'target', 'outcome', 'was_reinstall'],
-  connector_uninstalled: ['agent_type', 'target', 'outcome'],
+  connector_updated: [
+    'agent_type',
+    'target',
+    'outcome',
+    'was_reinstall',
+    'trigger',
+    'failure_reason',
+    'duration_ms',
+  ],
+  connector_uninstalled: ['agent_type', 'target', 'outcome', 'failure_reason', 'duration_ms'],
   agent_removed: [
     'agent_type',
     'location',
@@ -634,6 +758,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'action',
     'outcome',
     'failure_reason',
+    'duration_ms',
   ],
   room_created: [
     'server_kind',
