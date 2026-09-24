@@ -140,6 +140,36 @@ current version changes it in these places:
   text forward. The rule that no agent touches production stays, because it
   is this design's rule, not the SOP's.
 
+### Where this plan departs from the SOP's wording
+
+The team should know exactly where the plan does not do what the SOP's text
+says, and why. Each point is also a Phase 1 decision in the deploy guide.
+
+- **Setting the priority in PagerDuty does not, by itself, start anything in
+  Switch.** The SOP reads as if it does ("Switch will auto-create a dedicated
+  Slack channel"). Switch cannot see PagerDuty. The plan needs on-call to also
+  say it in the alert's thread, or PagerDuty to post a message that mentions
+  the agent. The first should go into the SOP now; the second after a drill.
+- **The Google Meet sits under the Switch step in the SOP.** Nothing on the
+  agent's host can create one without a calendar connector. So the agent
+  asks for one, and a person creates it.
+- **The channel name.** `<prefix> incident <number>`, not the SOP's
+  `[<Product>] [Incident #]`, because Switch turns brackets and spaces into
+  runs of hyphens when it derives a Slack channel name.
+- **"P0 / P1 / P2" is read as Sev0 / Sev1 / Sev2,** because PagerDuty has no
+  P0.
+- **Stakeholder updates and situation reports are one post.** The SOP asks for
+  "high-level status" updates to the stakeholder channel on the clock, and
+  separately for the situation report in both channels. The plan treats them
+  as the same post. If the team means two, the agent drafts both.
+- **Additions the SOP does not ask for,** each marked as a recommendation in
+  the bindings:
+  - one re-ping of an unanswered triage ping;
+  - inviting the people who answered in the alert's thread, as well as the
+    on-call engineers;
+  - a public war room;
+  - an agent that never posts to the stakeholder channel.
+
 ### The questions the SOP has not answered
 
 The earlier draft carried open review comments, and three were load-bearing:

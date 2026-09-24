@@ -196,6 +196,9 @@ and takes these values from here, never from a message.
   recoveries or no-data. <adjust>
 - When an alert's post is thin, look it up in: <Datadog | PagerDuty | nothing
   available>.
+- Dashboards, per service: <service → dashboard link, one line each>. The SOP
+  has on-call triage from logs, dashboards and runbooks, so the ping links
+  the service's dashboard.
 
 **PagerDuty** (MCP)
 - Service ids: <one per service in the SOP's severity table>
@@ -423,7 +426,8 @@ nobody, and stop.
 **5. Post the triage ping as a reply in the alert's thread.** Use the TRIAGE
 PING shape in "How to write". It must include: the handle tag; "this needs
 triaging"; what fired, on which service, since when; the service's owner per
-the SOP; the SOP's Sev1 threshold for that service, if it lists one; and the
+the SOP; the SOP's Sev1 threshold for that service, if it lists one; the
+service's dashboard from the bindings, or "no dashboard listed"; and the
 runbook, or "no runbook on file". Say nothing about whether customers are
 affected. That is their call.
 
@@ -723,7 +727,7 @@ none, it is probably two messages, or not worth posting.
 **TRIAGE PING**: alert hub only, as a reply in the alert's thread.
 
 > <!subteam^…> this needs triaging — <monitor> firing on <service> since HH:MM. <link>
-> Owner per the SOP: <owner>. Sev1 threshold: <threshold, or "none listed">. Runbook: <link, or "none on file">.
+> Owner per the SOP: <owner>. Sev1 threshold: <threshold, or "none listed">. Dashboard: <link, or "none listed">. Runbook: <link, or "none on file">.
 
 **BANNER**: alert hub only, one per incident, at the root.
 
@@ -1346,6 +1350,9 @@ invalidate a later phase.**
 - [ ] **The severity scale.** PagerDuty starts at P1. Decide between rewording
       the SOP to P1 / P2 / P3 and adding a P0 in PagerDuty. Having neither keeps
       two off-by-one scales in circulation.
+- [ ] **A Google Meet.** Can anything on the agent's host create one (a
+      Google Calendar connector)? If not, the SOP's "create a Google Meet"
+      stays a person's step, and Phase 1 should say so.
 - [ ] **Ownership.** Decide who owns the agent. If it stays admin-owned or
       personally owned for now, write down who maintains it and when to
       revisit.
@@ -1366,6 +1373,21 @@ Record each answer in the bindings or in the SOP document.
 - [ ] That "mitigated" is announced in the room by a person, since it stops the
       clock.
 - [ ] Where follow-up work is filed.
+- [ ] **How a declaration reaches Switch.** The SOP has on-call set the
+      priority in PagerDuty and then says Switch creates the war room. Switch
+      cannot see PagerDuty on its own. Either add a line to the SOP's
+      declaration step (reply in the alert's thread:
+      `@responder sev0 — <what customers see> — PD <number>`), or wire
+      PagerDuty to post a message mentioning the agent (section 8). Adding the
+      line now and the automation after the drill is the recommendation.
+- [ ] **Who creates the Google Meet.** The SOP lists it under the step Switch
+      performs. Nothing creates one unless the host has a calendar connector,
+      so either make it the on-call's step in the SOP or install one.
+- [ ] **One stakeholder post or two.** The SOP asks for high-level status
+      updates to the stakeholder channel on the clock, and separately for the
+      five-field situation report in both channels. This design treats them
+      as one post. If they are two, the agent drafts a one-line stakeholder
+      status alongside each report.
 
 ### Phase 2 — the host
 
