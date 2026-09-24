@@ -685,6 +685,8 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
     expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
     expect(host.turns[0]!.text).toContain('in thread "thread"');
+    expect(host.turns[0]!.text).toContain('@person:test');
+    expect(host.turns[0]!.text).toContain('your session has been reset');
     // Asked again (a relay retried), the follow-up is not sent twice.
     await host.parent.ask({ type: 'command', command: reset });
     await new Promise((resolve) => setTimeout(resolve, 300));

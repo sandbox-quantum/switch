@@ -8,15 +8,15 @@ export function roomControlFollowup(input: {
   action: 'reset' | 'compact';
   roomId: string;
   threadId: string | null;
+  actorId: string;
 }): string {
-  const where = input.threadId
-    ? `in the room, in thread ${JSON.stringify(input.threadId)},`
-    : 'in the room';
+  const done = input.action === 'reset' ? 'has been reset' : 'has been compacted';
+  const thread = input.threadId ? ` in thread ${JSON.stringify(input.threadId)}` : '';
   return [
     `The requested ${input.action} completed successfully.`,
     `Connect to Switch room ${JSON.stringify(input.roomId)} (reuse its connection if already connected) and read_context before responding.`,
     `If you held a role in that room before the ${input.action}, re-assume it and follow its instructions; if it is unavailable, report that clearly instead of claiming it was restored.`,
-    `Send a short message ${where} confirming the ${input.action} succeeded and whether you are ready to continue.`,
+    `Then reply to the person who asked (Matrix ID ${input.actorId}; list_participants gives their name) with a short targeted message${thread} saying your session ${done} and whether you are ready to continue.`,
   ].join(' ');
 }
 

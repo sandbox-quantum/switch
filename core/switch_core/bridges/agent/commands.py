@@ -443,7 +443,7 @@ async def _dispatch_control_command(
                 client,
                 room,
                 event,
-                f"{command.capitalize()} command sent to the session. Check the session for its outcome.",
+                ack,
             )
         else:
             await _reply(
