@@ -31,6 +31,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -97,6 +98,7 @@ def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> An
 
     return SimpleNamespace(
         connections=registry,
+        event_buffer=EventBuffer(),
         agent_session_store=store,
         session_factory=session_factory,
         agent_store=SimpleNamespace(get=_returning(agent)),
@@ -124,6 +126,7 @@ def _open(registry: ConnectionRegistry, connection_id: str):
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
 
 
@@ -141,7 +144,9 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 
 
 async def _connect_as(connection_id: str) -> dict[str, Any]:
-    token = set_call_context(CallContext(agent_id=AGENT, session_key=connection_id))
+    token = set_call_context(
+        CallContext(agent_id=AGENT, session_key=connection_id, session=None)
+    )
     try:
         return await definitions.connect_to_room(
             ROOM, include_general_instructions=False

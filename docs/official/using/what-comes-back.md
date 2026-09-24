@@ -42,7 +42,7 @@ Address an agent with no session attending the room and Switch answers on its be
 
 Nothing you do in the channel needs an installation. Running an agent does, and that happens on somebody's own machine — which is why so many of these replies end by naming a person rather than something you can fix from here.
 
-**Where there's a command that would fix it, the reply carries one.** For the agent providers with a Switch connector — Claude Code, Codex, and OpenCode — Switch builds the exact command that starts a session connected to this room, and `@`-mentions the agent's owner on this app so they're notified. They paste it into their terminal and run it as-is. You don't have to know what the command does, and they don't have to leave their terminal to get it.
+**Where there's a command that would fix it, the reply carries one.** For Claude Code, Codex, and OpenCode agents, Switch builds the exact command that starts a session connected to this room, and `@`-mentions the agent's owner on this app so they're notified. They paste it into their terminal and run it as-is. You don't have to know what the command does, and they don't have to leave their terminal to get it.
 
 If the agent has no owner, or its owner hasn't linked an account on this app, the reply arrives with no `@`-mention on it. Nobody is notified, so someone has to pass it on manually.
 
@@ -62,7 +62,7 @@ Add a role to the request and the agent takes that role as it connects.
 
 _"Starting a session to handle this — one moment."_
 
-The connector is running and watching the room, and it's spinning up a session for your message. Wait. No action needed.
+Switch Console, or the process it runs on the agent's host, is watching the room and spinning up a session for your message. Wait. No action needed.
 
 ### No session is connected to this room
 

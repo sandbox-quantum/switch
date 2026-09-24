@@ -31,8 +31,11 @@ export async function prepareCodexSessionHome(input: {
   }
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
+  // The session host registers its own `switch` server; an entry of that name
+  // in the user's config would be merged into it rather than replaced.
   const servers = config.mcp_servers as Record<string, unknown> | undefined;
   if (servers) delete servers.switch;
+  // The connector plugin Switch used to ship; kept off for installs that still have it.
   const plugins = config.plugins as Record<string, { enabled?: boolean }> | undefined;
   for (const [name, plugin] of Object.entries(plugins ?? {})) {
     if (name.includes('switch-connector')) plugin.enabled = false;

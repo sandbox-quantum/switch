@@ -128,16 +128,16 @@ class AddressingResolver:
         client_store: ClientStore,
         agent_store: AgentStore,
         external_user_store: ExternalUserStore,
-        live_agent_ids: Callable[[], set[str]],
+        live_connection_ids: Callable[[], set[str]],
     ) -> None:
         self._room_store = room_store
         self._room_role_store = room_role_store
         self._client_store = client_store
         self._agent_store = agent_store
         self._external_user_store = external_user_store
-        # A callable rather than a set: a role only routes while its holder's
-        # session is live, and that changes between one message and the next.
-        self._live_agent_ids = live_agent_ids
+        # A callable rather than a set: a role only routes while its holder is
+        # live, and that changes between one message and the next.
+        self._live_connection_ids = live_connection_ids
 
     # ── Addressed ─────────────────────────────────────────────────────────────
 
@@ -257,12 +257,13 @@ class AddressingResolver:
         live lease counts, which makes "held" mean the same thing here as in
         `!roles`: a stale lease — session gone, role auto-released, shown free
         — does not route here. A holder whose session merely hopped to another
-        room still matches, because the renewal loop keeps that lease alive.
+        room still matches, because liveness follows the holder rather than
+        the room it is attending.
         """
         if "@" not in message.body:
             return False
         role_name = await self._room_role_store.agent_room_role(
-            session, room_id, agent.id, self._live_agent_ids()
+            session, room_id, agent.id, self._live_connection_ids()
         )
         if not role_name:
             return False

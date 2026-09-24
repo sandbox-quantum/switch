@@ -8,9 +8,11 @@ import {
   serverEventSchema,
 } from '@switch-console/shared/session-v1';
 import type {
+  Answer,
   Attachment,
   Command,
   HostBody,
+  Origin,
   Request,
   ServerEvent,
   Session,
@@ -47,6 +49,19 @@ export type HostSessionStart = {
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
 };
 type PendingQuestion = { request: Request; options: Map<string, string> };
+/**
+ * What Switch recorded for a request: for an approval, `answer` is the chosen
+ * option; for questions, `answers` holds one answer per question. Both are
+ * null for an expiry.
+ */
+export type ApprovalOutcome = {
+  requestId: string;
+  kind: 'approval' | 'questions';
+  state: 'answered' | 'expired';
+  answer: string | null;
+  answers: Answer[] | null;
+  answeredBy: string | null;
+};
 
 /** Execution owner for a local-only session. Shared server leases are an external boundary. */
 export class HostedSession {
@@ -58,6 +73,7 @@ export class HostedSession {
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
+  private readonly listeners = new Set<(event: ServerEvent) => void>();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -126,6 +142,15 @@ export class HostedSession {
     this.projector = new ChatProjector(config.session);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
+      // Process cleanup leaves this conversation available for recovery.
+      // An explicit session.stop is handled before shutdown and remains terminal.
+      if (
+        this.shuttingDown &&
+        !this.stopped &&
+        (event.type === 'session.exited' ||
+          (event.type === 'session.state.changed' && event.status === 'stopped'))
+      )
+        return;
       this.eventSerial = this.eventSerial
         .then(() => this.providerEvent(event))
         .catch((error: unknown) => this.fail(error));
@@ -332,6 +357,15 @@ export class HostedSession {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
   }
 
+  roomDeliveryResumed(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'ROOM_DELIVERY_RESUMED',
+      message: 'Room messages are reaching this session again.',
+    });
+  }
+
   roomBacklogDelivered(count: number): Promise<void> {
     return this.publish({
       type: 'notice',
@@ -354,6 +388,113 @@ export class HostedSession {
       events: structuredClone(this.events.records.filter((event) => event.sequence > after)),
       throughSequence: this.replica.snapshot().throughSequence,
     };
+  }
+
+  /** Hear every event as it is recorded, after it is on disk. Returns the unsubscribe. */
+  onPublished(listener: (event: ServerEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Where the command that started `turnId` came from, if a command started it. */
+  originOf(turnId: string): Origin | null {
+    return this.commands.get(turnId)?.origin ?? null;
+  }
+
+  /**
+   * Apply what Switch recorded for one of this session's approval requests:
+   * a person's answer, or the request running out of time. Serialised with
+   * commands, since both settle the same requests. Returns false when the
+   * request is no longer open here — already answered another way, or
+   * resolved by the provider — which leaves nothing to apply.
+   */
+  applyApprovalOutcome(outcome: ApprovalOutcome): Promise<boolean> {
+    const result = this.serial.then(() => this.applyOutcome(outcome));
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
+  private async applyOutcome(outcome: ApprovalOutcome): Promise<boolean> {
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
+    const pending = this.questions.get(outcome.requestId);
+    const current = this.snapshot().requests.find((r) => r.requestId === outcome.requestId);
+    if (!pending || current?.state !== 'open') return false;
+    const content = pending.request.content;
+    if (content.kind !== outcome.kind)
+      throw new Error(
+        `INVALID_ANSWER: Switch recorded a ${outcome.kind} outcome for request ${outcome.requestId}, which asks for ${content.kind}.`
+      );
+    const sessionId = this.config.session.sessionId;
+    const commandId = `approval:${outcome.requestId}`;
+    let respond: () => Promise<void>;
+    let settled: Extract<HostBody, { type: 'request.settled' }>['outcome'];
+    let result: Extract<HostBody, { type: 'request.settled' }>['result'];
+    if (outcome.state === 'expired') {
+      // Declined rather than cancelled, and questions left unanswered: a
+      // cancel interrupts the whole turn, and nobody answering is not a reason
+      // to stop the agent's other work.
+      respond =
+        content.kind === 'approval'
+          ? () => this.adapter.respondToRequest(sessionId, outcome.requestId, 'decline')
+          : () => this.adapter.respondToUserInput(sessionId, outcome.requestId, {});
+      settled = 'expired';
+      result = null;
+    } else if (content.kind === 'approval') {
+      const option = content.options.find((x) => x.optionId === outcome.answer);
+      if (!option)
+        throw new Error(
+          `INVALID_ANSWER: Switch recorded option ${outcome.answer} for request ${outcome.requestId}, which it never offered.`
+        );
+      respond = () => this.adapter.respondToRequest(sessionId, outcome.requestId, option.decision);
+      const cancelled = option.decision === 'cancel';
+      settled = cancelled ? 'cancelled' : 'answered';
+      result = cancelled ? null : { kind: 'approval', optionId: option.optionId };
+    } else {
+      const answers = outcome.answers;
+      if (answers === null)
+        throw new Error(
+          `INVALID_ANSWER: Switch recorded request ${outcome.requestId} as answered without any answers.`
+        );
+      checkQuestionAnswers(content, answers);
+      const provided = userInputAnswers(pending, answers);
+      respond = () => this.adapter.respondToUserInput(sessionId, outcome.requestId, provided);
+      settled = 'answered';
+      result = { kind: 'questions', answers };
+    }
+    // An expiry is marked submitting too, so the provider resolving the
+    // request as a result is not read as it resolving the request on its own.
+    const fromConsole = outcome.answeredBy?.startsWith('user:') ?? false;
+    await this.publish({
+      type: 'request.submitting',
+      requestId: outcome.requestId,
+      revision: current.revision,
+      commandId,
+      actorId: outcome.answeredBy ?? 'switch',
+      surface: fromConsole ? 'console' : 'switch-web',
+    });
+    try {
+      await respond();
+    } catch (error) {
+      await this.publish({
+        type: 'request.settled',
+        requestId: outcome.requestId,
+        revision: current.revision + 1,
+        outcome: 'provider-error',
+        commandId,
+        result: null,
+      });
+      throw error;
+    }
+    await this.publish({
+      type: 'request.settled',
+      requestId: outcome.requestId,
+      revision: current.revision + 1,
+      outcome: settled,
+      commandId,
+      result,
+    });
+    this.questions.delete(outcome.requestId);
+    return true;
   }
 
   command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -825,32 +966,8 @@ export class HostedSession {
         )
       )
         throw new Error('INVALID_ANSWER');
-    } else if (body.answer.kind === 'questions' && pending.request.content.kind === 'questions') {
-      const answers = body.answer.answers;
-      if (
-        new Set(answers.map((a) => a.questionId)).size !==
-          pending.request.content.questions.length ||
-        answers.length !== pending.request.content.questions.length
-      )
-        throw new Error('INVALID_ANSWER');
-      for (const question of pending.request.content.questions) {
-        const answer = answers.find((a) => a.questionId === question.questionId);
-        if (!answer) throw new Error('INVALID_ANSWER');
-        const custom = Boolean(answer.customText?.trim());
-        if (custom && !question.allowCustomAnswer) throw new Error('INVALID_ANSWER');
-        if (
-          answer.selectedOptionIds.some((id) => !question.options.some((o) => o.optionId === id)) ||
-          new Set(answer.selectedOptionIds).size !== answer.selectedOptionIds.length
-        )
-          throw new Error('INVALID_ANSWER');
-        if (
-          question.multiSelect
-            ? !custom && !answer.selectedOptionIds.length
-            : Number(custom) + answer.selectedOptionIds.length !== 1
-        )
-          throw new Error('INVALID_ANSWER');
-      }
-    }
+    } else if (body.answer.kind === 'questions' && pending.request.content.kind === 'questions')
+      checkQuestionAnswers(pending.request.content, body.answer.answers);
     return pending;
   }
 
@@ -876,17 +993,11 @@ export class HostedSession {
       cancelled = option.decision === 'cancel';
       await this.adapter.respondToRequest(command.sessionId, body.requestId, option.decision);
     } else if (body.answer.kind === 'questions') {
-      const answers: UserInputAnswers = {};
-      for (const answer of body.answer.answers) {
-        const values = answer.selectedOptionIds.map((id) => pending.options.get(id)!);
-        if (answer.customText?.trim()) values.push(answer.customText.trim());
-        const question =
-          pending.request.content.kind === 'questions'
-            ? pending.request.content.questions.find((q) => q.questionId === answer.questionId)!
-            : null;
-        answers[answer.questionId] = question?.multiSelect ? values : values[0];
-      }
-      await this.adapter.respondToUserInput(command.sessionId, body.requestId, answers);
+      await this.adapter.respondToUserInput(
+        command.sessionId,
+        body.requestId,
+        userInputAnswers(pending, body.answer.answers)
+      );
     }
     await this.publish({
       type: 'request.settled',
@@ -917,6 +1028,7 @@ export class HostedSession {
       serverEventSchema.parse(event);
       await this.events.append(event);
       this.replica.apply(event);
+      for (const listener of this.listeners) listener(event);
     });
     this.publishing = pending.catch(() => {});
     return pending;
@@ -949,4 +1061,48 @@ export class HostedSession {
     await this.publishing;
     this.unsubscribe();
   }
+}
+
+type QuestionsContent = Extract<Request['content'], { kind: 'questions' }>;
+
+/** Throws INVALID_ANSWER unless `answers` answers every question once, with what it offers. */
+function checkQuestionAnswers(content: QuestionsContent, answers: Answer[]): void {
+  if (
+    new Set(answers.map((a) => a.questionId)).size !== content.questions.length ||
+    answers.length !== content.questions.length
+  )
+    throw new Error('INVALID_ANSWER');
+  for (const question of content.questions) {
+    const answer = answers.find((a) => a.questionId === question.questionId);
+    if (!answer) throw new Error('INVALID_ANSWER');
+    const custom = Boolean(answer.customText?.trim());
+    if (custom && !question.allowCustomAnswer) throw new Error('INVALID_ANSWER');
+    if (
+      answer.selectedOptionIds.some((id) => !question.options.some((o) => o.optionId === id)) ||
+      new Set(answer.selectedOptionIds).size !== answer.selectedOptionIds.length
+    )
+      throw new Error('INVALID_ANSWER');
+    if (
+      question.multiSelect
+        ? !custom && !answer.selectedOptionIds.length
+        : Number(custom) + answer.selectedOptionIds.length !== 1
+    )
+      throw new Error('INVALID_ANSWER');
+  }
+}
+
+/** Checked answers, as the provider takes them: its own option values and any custom text. */
+function userInputAnswers(pending: PendingQuestion, answers: Answer[]): UserInputAnswers {
+  const provided: UserInputAnswers = {};
+  const content = pending.request.content;
+  for (const answer of answers) {
+    const values = answer.selectedOptionIds.map((id) => pending.options.get(id)!);
+    if (answer.customText?.trim()) values.push(answer.customText.trim());
+    const question =
+      content.kind === 'questions'
+        ? content.questions.find((q) => q.questionId === answer.questionId)!
+        : null;
+    provided[answer.questionId] = question?.multiSelect ? values : values[0];
+  }
+  return provided;
 }

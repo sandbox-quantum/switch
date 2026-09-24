@@ -301,7 +301,6 @@ class SwitchConfig(BaseSettings):
     # fixture's request there as a real card, to exercise the answer path
     # against a real workspace. It needs the repository checkout for the
     # fixtures, and it says in the log that there is no session behind the card.
-    session_demo_enabled: bool = False
 
     # Upper bound on a template document uploaded to the registry. The column
     # itself is unbounded, so raising this is a deploy-time change and never a

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import type { HttpMcpServerSpec } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
@@ -15,13 +16,25 @@ export const sharedConfigSchema = z.strictObject({
   resumeOperationId: z.string().uuid().optional(),
   start: startSchema,
   roomConnection: roomConnectionSchema.optional(),
+  /**
+   * The room delivery this session was started to answer, and the right the
+   * server issued to start it.
+   *
+   * Sent with the session's first claim, so the session is created already
+   * holding the room instead of created empty and then binding it: between
+   * those two writes the room is free, and the next delivery for it would be
+   * answered by starting a second session. Absent from a session nobody
+   * addressed a room message to.
+   */
+  grant: z.strictObject({ roomId: z.string().min(1), messageId: z.string().min(1) }).optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),
       inheritEnv: z.array(z.string()),
       shellSetup: z.string().optional(),
       binaryPath: z.string().min(1).optional(),
-      mcpRuntime: z.string().min(1),
+      /** Written by Consoles that registered an npx runtime; read by nothing. */
+      mcpRuntime: z.string().min(1).optional(),
       codexConfig: z.string(),
       skill: z.string(),
       context: z.string(),
@@ -33,7 +46,16 @@ export const sharedConfigSchema = z.strictObject({
 });
 export type SharedHostConfig = z.infer<typeof sharedConfigSchema>;
 
-export async function prepareSharedConfig(root: string, config: SharedHostConfig) {
+/**
+ * What the provider is started with. Its Switch tools are `runtime`, the MCP
+ * server this host serves on loopback: no Switch credential, connection or
+ * session name reaches the CLI or its environment.
+ */
+export async function prepareSharedConfig(
+  root: string,
+  config: SharedHostConfig,
+  runtime: HttpMcpServerSpec
+) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
   let agentApiUrl = process.env.SWITCH_API_ENDPOINT;
@@ -59,20 +81,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
       execution.shellSetup,
       execution.inheritEnv
     );
-    const switchEnv = {
-      ...credentials,
-      SWITCH_CONNECTION_ID: config.roomConnection?.connectionId ?? '',
-      SWITCH_CHANNEL_DISABLE_POLL: '1',
-    };
-    if (!switchEnv.SWITCH_CONNECTION_ID)
-      throw new Error('Shared SDK execution requires a persistent room connection.');
-    input.env = { ...inherited, ...input.env, ...switchEnv };
-    input.mcpServers.switch = {
-      transport: 'stdio',
-      command: 'npx',
-      args: ['-y', execution.mcpRuntime],
-      envVars: Object.keys(switchEnv),
-    };
+    input.env = { ...inherited, ...input.env };
     if (config.start.provider === 'codex')
       input.env.CODEX_HOME = await prepareCodexSessionHome({
         root: join(root, 'provider-home'),
@@ -83,6 +92,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
       });
     if (config.start.provider !== 'codex') input.systemContext = execution.context;
   }
+  input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };

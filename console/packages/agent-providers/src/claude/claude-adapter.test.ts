@@ -138,6 +138,33 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
   });
 
+  it('reaches the host’s Switch server over HTTP with its bearer, the connector plugin off', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        mcpServers: {
+          switch: {
+            transport: 'http',
+            url: 'http://127.0.0.1:4567/mcp',
+            headers: { Authorization: 'Bearer per-session' },
+          },
+        },
+      })
+    );
+    const options = sdk.options();
+    expect(options.mcpServers).toEqual({
+      switch: {
+        type: 'http',
+        url: 'http://127.0.0.1:4567/mcp',
+        headers: { Authorization: 'Bearer per-session' },
+      },
+    });
+    expect(options.settings).toEqual({
+      enabledPlugins: { 'switch-connector@switch-plugins': false },
+    });
+  });
+
   it('resolves the variables a stdio server asks to forward into its env', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });

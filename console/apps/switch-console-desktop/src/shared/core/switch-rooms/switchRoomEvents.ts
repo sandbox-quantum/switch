@@ -1,3 +1,4 @@
+import type { RoomHealthSnapshot } from '@shared/core/switch-rooms/connection-health';
 import { defineEvent } from '@shared/lib/ipc/events';
 
 /**
@@ -31,3 +32,12 @@ export const sessionDeeplinkChannel = defineEvent<{
    */
   coldStart: boolean;
 }>('switch-room:session-deeplink');
+
+/**
+ * A server's room health changed: one of its agents' room watchers changed
+ * its connection state or placements. Published with the server id as its
+ * topic, carrying the whole snapshot.
+ */
+export const roomHealthChangedChannel = defineEvent<RoomHealthSnapshot>(
+  'switch-room:room-health-changed'
+);

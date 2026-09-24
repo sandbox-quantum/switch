@@ -1,9 +1,15 @@
+import {
+  CommandNotRecordedError,
+  sessionCommandStatus,
+  submitSessionCommand,
+} from './session-commands';
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
-import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
+import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
-import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
+import { deploySharedHost } from './shared-host-deployment';
+import { withSidecar } from './sidecar-control';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
@@ -13,16 +19,8 @@ import {
   sharedSessionRoot,
   type SharedHostConfig,
 } from '@switch-console/agent-providers';
-import { ANTIGRAVITY_SKILL_CONTENT } from '@switch-console/plugins/agents/antigravity/skill';
-import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
-import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
-import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
-import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
-import {
-  commandStatusSchema,
-  snapshotSchema,
-  type Snapshot,
-} from '@switch-console/shared/session-v1';
+import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins/switch-skill';
+import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
@@ -34,19 +32,17 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
+import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
+import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import {
-  fetchSdkCommandStatus,
-  fetchSdkSnapshot,
-  GatewayError,
-  submitSdkCommand,
-} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { JournalUnavailableError } from './host-journal';
+import { currentSnapshot } from './transcripts';
 
 /** A host that stopped on an interrupted reset is online and waits for the user's explicit reset. */
 function awaitingResetDecision(snapshot: Snapshot): boolean {
@@ -130,12 +126,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error('Link this agent to a Switch server before starting a session.');
     this.server = await getServer(agent.serverId);
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
-    const server = this.server;
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
-    const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
-    const previousEpoch = restart
-      ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
-      : null;
+    const config = await buildSharedHostConfig(session, this.params, this.transport);
+    const previousEpoch = restart ? await journalEpoch(session.agentId, session.id) : null;
     let root: string;
     let readFailure: () => Promise<unknown>;
     this.startupStage = restart
@@ -162,12 +155,10 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         ]);
         return JSON.parse(result.stdout);
       };
-      await runSharedHostCommand(
-        this.transport,
-        deployed,
-        config,
-        restart ? '--restart' : '--ensure',
-        isResuming
+      // Started by the agent's sidecar, which is then its parent: it talks to
+      // the session over IPC, and Console reaches it through the sidecar.
+      await withSidecar(session.agentId, (client) =>
+        client.ensure({ config, resuming: isResuming, restart })
       );
     } else {
       // A local session is supervised by Console, so it ends when Console does.
@@ -193,6 +184,11 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     let snapshot;
     const deadline = Date.now() + 120000;
     let nextFailureCheck = 0;
+    // Quick at first, when the host usually answers within a beat, then
+    // slower: a host still installing its provider can take a minute, and
+    // every wait here is a read of the whole session from Switch.
+    let pause = 50;
+    let reported = '';
     while (Date.now() < deadline) {
       if (Date.now() >= nextFailureCheck) {
         const failure = await readFailure();
@@ -201,7 +197,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         nextFailureCheck = Date.now() + 2000;
       }
       try {
-        snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id));
+        snapshot = await currentSnapshot(session.agentId, session.id);
         if (
           snapshot.session.epoch !== previousEpoch &&
           snapshot.session.connectivity === 'online' &&
@@ -219,8 +215,18 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
           break;
       } catch (error) {
         if (Date.now() + 500 >= deadline) throw error;
+        // No journal yet is the host not having started, which is the wait itself.
+        const notYet = error instanceof JournalUnavailableError;
+        if (!notYet && String(error) !== reported) {
+          reported = String(error);
+          log.warn('Shared SDK host readiness check failed; still waiting', {
+            sessionId: session.id,
+            error: reported,
+          });
+        }
       }
-      await delay(50);
+      await delay(pause);
+      pause = Math.min(pause * 1.5, 1000);
     }
     if (
       !snapshot ||
@@ -233,14 +239,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       );
     await bindRoom();
     if (!awaitingResetDecision(snapshot))
-      await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
+      await this.deliverInitialPrompt(session, initialPrompt, snapshot);
   }
 
   private async deliverInitialPrompt(
     session: Session,
     initialPrompt: string | undefined,
-    snapshot: Snapshot,
-    server: SwitchServer
+    snapshot: Snapshot
   ): Promise<void> {
     const epoch = snapshot.session.epoch;
     const saved = (await loadSessionWithAgent(session.id))?.row.config;
@@ -254,9 +259,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       hasPriorActivity: snapshot.turns.length > 0 || snapshot.items.length > 0,
       lookup: async (commandId) => {
         try {
-          const status = commandStatusSchema.parse(
-            await fetchSdkCommandStatus(server, session.id, commandId)
-          );
+          const status = await sessionCommandStatus(session.agentId, session.id, commandId);
           return {
             recorded: true,
             status: status.status,
@@ -264,14 +267,14 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
             message: status.message,
           };
         } catch (error) {
-          if (error instanceof GatewayError && isCommandNotFound(error)) return { recorded: false };
+          if (error instanceof CommandNotRecordedError) return { recorded: false };
           throw error;
         }
       },
       persist: (record) => setInitialPromptDelivery(session.id, record),
       submit: async (commandId, commandEpoch) => {
         const receipt = commandStatusSchema.parse(
-          await submitSdkCommand(server, {
+          await submitSessionCommand(session.agentId, {
             contractVersion: 1,
             sessionId: session.id,
             epoch: commandEpoch,
@@ -337,8 +340,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   }
   async stop(): Promise<void> {
     if (this.starting) await this.starting.catch(() => {});
-    await this.resolveServer();
-    await stopSharedSession(this.server!, this.params.sessionId);
+    const joined = await loadSessionWithAgent(this.params.sessionId);
+    if (!joined) throw new Error('The session is no longer recorded in Console.');
+    await stopSharedSession(joined.row.agentId, this.params.sessionId);
   }
   private async resolveServer(): Promise<void> {
     if (this.server) return;
@@ -351,8 +355,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
 export async function buildSharedHostConfig(
   session: Pick<Session, 'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId'>,
   params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
-  transport: LocationTransport,
-  intended: { rooms: string[]; startCursor?: number }
+  transport: LocationTransport
 ): Promise<SharedHostConfig> {
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
@@ -390,6 +393,7 @@ export async function buildSharedHostConfig(
       : undefined;
   const optionKey = provider === 'opencode' ? 'variant' : 'effort';
   const optionValue = specialization[optionKey];
+  const persistedRoom = await getPersistedRoomConnection(session.id);
   const config: SharedHostConfig = {
     session: {
       sessionId: session.id,
@@ -432,10 +436,14 @@ export async function buildSharedHostConfig(
           : {}),
       },
     },
+    // Every session of an agent is reached over that agent's one connection,
+    // held by its controller, so the identity is derived rather than minted:
+    // a session that restarts binds to the same one it did before.
     roomConnection: {
-      connectionId: randomUUID(),
-      rooms: intended.rooms,
-      startCursor: intended.startCursor,
+      connectionId: controllerConnectionId(agent.switchAgentId),
+      ...(persistedRoom?.switchAgentId === agent.switchAgentId
+        ? { restoreRoomId: persistedRoom.roomId }
+        : {}),
     },
     execution: {
       credentialsPath: (transport.kind === 'ssh' ? posix.join : join)(
@@ -453,7 +461,6 @@ export async function buildSharedHostConfig(
         'TERM',
         'SSH_AUTH_SOCK',
       ],
-      mcpRuntime: SWITCH_AGENT_RUNTIME_PIN,
       ...(binaryPath ? { binaryPath } : {}),
       ...(params.shellSetup ? { shellSetup: params.shellSetup } : {}),
       ...(getPlugin(provider).behavior.repoAgents
@@ -465,15 +472,11 @@ export async function buildSharedHostConfig(
           }
         : {}),
       codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
-      skill: provider === 'codex' ? CODEX_SKILL_CONTENT : '',
+      // Codex and OpenCode load the skill as a file; the others take it as
+      // system context.
+      skill: provider === 'codex' || provider === 'opencode' ? SWITCH_SKILL_FILE : '',
       context: [
-        provider === 'claude'
-          ? CLAUDE_SKILL_CONTENT
-          : provider === 'antigravity'
-            ? ANTIGRAVITY_SKILL_CONTENT
-            : provider === 'cursor'
-              ? CURSOR_SKILL_CONTENT
-              : '',
+        provider === 'codex' || provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
         specialization.instructions,
       ]
         .filter(Boolean)
@@ -481,4 +484,14 @@ export async function buildSharedHostConfig(
     },
   };
   return config;
+}
+
+/** The generation a session's host last recorded, or null if it has recorded none. */
+async function journalEpoch(agentId: string, sessionId: string): Promise<string | null> {
+  try {
+    return (await currentSnapshot(agentId, sessionId)).session.epoch;
+  } catch (error) {
+    if (error instanceof JournalUnavailableError) return null;
+    throw error;
+  }
 }

@@ -33,7 +33,6 @@ describe('pluginRegistry', () => {
     for (const d of pluginRegistry.getAll()) {
       const { capabilities } = d;
       expect(capabilities.hostDependency).toBeDefined();
-      expect(capabilities.hooks).toBeDefined();
       expect(capabilities.mcp).toBeDefined();
       expect(capabilities.plugins).toBeDefined();
       expect(['supported', 'none']).toContain(capabilities.autoApprove.kind);

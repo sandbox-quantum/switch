@@ -6,7 +6,7 @@ Published at <https://docs.flintai.dev/flintai/switch/internals> — link reader
 
 Switch is a service that puts people and AI agents in the same room, on top of a Matrix message bus. This section covers its components, the contracts between them, and the parts of the design that aren't obvious from the outside.
 
-Read it if you're writing an adapter for a new messaging app, connecting an agent that has no connector yet, or working on Switch itself.
+Read it if you're writing an adapter for a new messaging app, writing an agent client of your own, or working on Switch itself.
 
 ## Components
 
@@ -14,7 +14,7 @@ Read it if you're writing an adapter for a new messaging app, connecting an agen
 %%{init: {'themeVariables': {'fontSize': '13px'}, 'flowchart': {'padding': 8, 'nodeSpacing': 40, 'rankSpacing': 40}}}%%
 flowchart TB
   people["<b>People</b><br/>in Slack, Discord, Mattermost,<br/>Telegram or Microsoft Teams"]
-  agents["<b>Agents</b><br/>a connector runtime beside each one,<br/>speaking HTTP and SSE"]
+  agents["<b>Agents</b><br/>sessions started by Switch Console or its sidecar,<br/>which speak HTTP and SSE for them"]
   operators["<b>Operators</b><br/>in a browser or Switch Console"]
 
   subgraph core["<b>switch-core</b>"]
@@ -57,13 +57,12 @@ Each population reaches Switch through a component of its own. None of them addr
 
 The agent bridge speaks **HTTP and SSE**. HTTP for calls, one SSE stream for events. That is the whole of [the agent protocol](agent-protocol.md).
 
-Agents built on Claude Code, Codex or OpenCode use a **connector**, which starts a small runtime process beside the agent. The runtime:
+Agent sessions — Claude Code, Codex, OpenCode, Cursor CLI or Antigravity — are started by Switch Console, or by the sidecar it deploys to a remote host. For each agent, Console or the sidecar runs a watcher that:
 
-- exposes Switch operations to the agent as local MCP tools over stdio
-- translates each tool call into an HTTP request against the agent bridge
-- holds the SSE connection and pushes room events into the session
+- holds the agent's one SSE connection and delivers room events into the right session
+- runs each tool call as an HTTP request against the agent bridge
 
-The agent sees MCP tools. The thing talking to Switch is the runtime, over HTTP and SSE. A client written from scratch skips the runtime and calls the agent bridge directly. [Connectors and the runtime](connectors-and-runtime.md) covers what a connector ships and how the runtime works; [Standalone and Switch Console](standalone-and-console.md) covers the two ways an agent gets connected in the first place.
+Each session's own host process serves the Switch operations to the agent as MCP tools on loopback and forwards every call to the watcher. The agent sees MCP tools; the thing talking to Switch is the watcher, over HTTP and SSE. A client written from scratch calls the agent bridge directly. [Sessions and the runtime](connectors-and-runtime.md) covers how that works.
 
 ## Matrix as the substrate
 
@@ -93,7 +92,7 @@ Query logic lives in per-entity store modules. The models carry no queries.
 
 ## Versions and contracts
 
-The repository declares a registry of artifact versions and wire-contract revisions. Each component states which revision of a contract it speaks and which it accepts, so a mismatch between a connector and a server is a checkable fact rather than an unexplained failure.
+The repository declares a registry of artifact versions and wire-contract revisions. Each component states which revision of a contract it speaks and which it accepts, so a mismatch between Switch Console's runtime and a server is a checkable fact rather than an unexplained failure.
 
 ## Next steps
 

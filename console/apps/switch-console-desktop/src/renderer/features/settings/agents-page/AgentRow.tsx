@@ -2,7 +2,7 @@ import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import type { AgentPayload } from '@shared/core/providers/agent-payload';
 import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { AgentRowStatus } from './AgentRowStatus';
+import { InstalledBadge, UninstalledBadge } from './agent-status-badge';
 
 export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: () => void }) => {
   const isInstalled = agent.status === 'available';
@@ -21,11 +21,7 @@ export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: ()
         <div className="flex w-full items-center justify-between">
           <span className="text-sm text-foreground">{agent.name}</span>
           <div className="flex items-center gap-1.5">
-            <AgentRowStatus
-              agentId={agent.id}
-              supportsSwitch={agent.capabilities.switchSetup.kind !== 'none'}
-              cliInstalled={isInstalled}
-            />
+            {isInstalled ? <InstalledBadge /> : <UninstalledBadge />}
           </div>
         </div>
         <ProviderConnectionStatus

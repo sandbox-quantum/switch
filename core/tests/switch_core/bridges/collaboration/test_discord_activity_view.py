@@ -48,6 +48,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     ACTIVITY_UNREADABLE,
 )
 
+from .session_fixtures import _item, _turn
 from .test_discord_sdk_only import (
     CHANNEL_ID,
     DM_CHANNEL_ID,
@@ -62,7 +63,6 @@ from .test_discord_sdk_only import (
     _http_error,
     _Thread,
 )
-from .test_session_activity import _item, _turn
 
 READER_ID = 8181
 OTHER_READER_ID = 8282

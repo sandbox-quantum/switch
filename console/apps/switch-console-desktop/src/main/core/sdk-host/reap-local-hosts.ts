@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { log } from '@main/lib/logger';
-import { localStateBase, savedAgentId, writeWatchEnabled } from './local-host';
+import { localStateBase, savedAgentId, writeWatchFlags } from './local-host';
 import { ownedElsewhere } from './local-host-owners';
 
 const STOP_ATTEMPTS = 100;
@@ -12,15 +12,15 @@ const STOP_INTERVAL_MS = 200;
 
 /**
  * Asks a detached watcher to stop by clearing its enabled flag, which is the
- * same signal the SSH path uses. Its worker leaves the poll loop, its
- * supervisor sees a clean exit, and both release their owner records.
+ * same signal the SSH path uses. Its worker is watching the file and returns,
+ * its supervisor sees a clean exit, and both release their owner records.
  */
 async function stopDetachedWatcher(root: string): Promise<void> {
   if (!(await ownedElsewhere(root))) return;
   log.warn('Stopping a detached watcher that an earlier build left running for a local agent', {
     root,
   });
-  await writeWatchEnabled(root, false);
+  await writeWatchFlags(root, { enabled: false, spawn: false });
   for (let attempt = 0; attempt < STOP_ATTEMPTS; attempt++) {
     if (!(await ownedElsewhere(root))) return;
     await delay(STOP_INTERVAL_MS);

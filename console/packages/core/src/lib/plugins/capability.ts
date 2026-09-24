@@ -7,7 +7,7 @@ import type z from 'zod';
  * Curried so the behavior type can be supplied explicitly while the id and
  * schema types are inferred from the arguments:
  *
- *   const hooksCapability = definePluginCapability<IHooksBehavior>()('hooks', schema);
+ *   const mcpCapability = definePluginCapability<IMcpBehavior>()('mcp', schema);
  *   const autoApprove = definePluginCapability()('auto-approve', schema); // no behavior
  */
 export function definePluginCapability<TBehavior = never>() {

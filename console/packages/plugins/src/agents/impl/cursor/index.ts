@@ -20,9 +20,6 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hooks: {
-      kind: 'none',
-    },
     hostDependency: {
       id: 'cursor',
       binaryNames: ['agent', 'cursor-agent'],
@@ -69,7 +66,6 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    switchSetup: { kind: 'none' },
   },
   { icon }
 );

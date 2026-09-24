@@ -48,14 +48,26 @@ export interface HostEndpoint {
 const folder = (root: string, sessionId: string) =>
   join(root, 'sessions', createHash('sha256').update(sessionId).digest('hex'));
 
-export function adapterFor(provider: Session['provider'], binaryPath?: string): ProviderAdapter {
+/**
+ * The adapter for one provider. `skill` is the Switch skill file for a provider
+ * that loads skills from a directory it is given (OpenCode), or '' for none;
+ * Codex takes it through its session home instead.
+ */
+export function adapterFor(
+  provider: Session['provider'],
+  binaryPath: string | undefined,
+  skill: string
+): ProviderAdapter {
   switch (provider) {
     case 'claude':
       return createClaudeAdapter({ claudeExecutablePath: binaryPath });
     case 'codex':
       return createCodexAdapter({ binaryPath });
     case 'opencode':
-      return createOpencodeAdapter({ binaryPath });
+      return createOpencodeAdapter({
+        binaryPath,
+        skills: skill ? [{ name: 'switch', content: skill }] : [],
+      });
     case 'antigravity':
       return createAntigravityAdapter({ binaryPath });
     case 'cursor':
@@ -97,7 +109,7 @@ export async function startHostServer(
         throw new Error(
           'Shared Switch sessions require the server lease and command transport; local bypass is not permitted.'
         );
-      const adapter = adapterFor(input.provider);
+      const adapter = adapterFor(input.provider, undefined, '');
       const path = folder(root, input.input.sessionId);
       await mkdir(path, { recursive: true, mode: 0o700 });
       await writeFile(join(path, 'config.json'), JSON.stringify(input), { mode: 0o600 });

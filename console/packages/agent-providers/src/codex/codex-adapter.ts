@@ -235,16 +235,13 @@ export class CodexAdapter implements ProviderAdapter {
     if (this.sessions.has(input.sessionId)) {
       throw new ProviderSessionError(PROVIDER, input.sessionId, 'session already started');
     }
-    const args = [
-      'app-server',
-      ...featureArgs(this.features),
-      ...mcpServerConfigArgs(input.mcpServers),
-    ];
+    const mcp = mcpServerConfigArgs(input.mcpServers);
+    const args = ['app-server', ...featureArgs(this.features), ...mcp.args];
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
       args,
       cwd: input.cwd,
-      env: input.env,
+      env: { ...input.env, ...mcp.env },
       logger: this.logger,
       onExit: (reason) => this.handleProcessExit(input.sessionId, reason),
     });

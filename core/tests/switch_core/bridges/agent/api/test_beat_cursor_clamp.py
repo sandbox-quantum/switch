@@ -61,15 +61,20 @@ def _connect(protocol: _Protocol, cursor: int = 0) -> Any:
         spawn_capable=False,
         cursor=cursor,
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
     )
     conn.stream_attached = True
     return conn
 
 
 async def _beat(protocol: _Protocol, cursor: int) -> Any:
+    # Fenced with the only incarnation these tests ever open. A client that
+    # declares the current revision and then ticks without one is refused, and
+    # nothing here is about that.
+    current = protocol.connections.require(AGENT_ID, CONN_ID).stream_generation
     return await connection_beat(
         AGENT_ID,
-        ConnectionBeatRequest(connection_id=CONN_ID, cursor=cursor),
+        ConnectionBeatRequest(connection_id=CONN_ID, cursor=cursor, generation=current),
         SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]
     )

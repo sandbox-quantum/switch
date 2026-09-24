@@ -79,10 +79,10 @@ export type HostSetupStepState =
   | 'skipped';
 
 /** What kind of thing a step manages, for rendering and for install routing. */
-export type HostSetupStepKind = 'core-dependency' | 'agent-cli' | 'agent-plugin';
+export type HostSetupStepKind = 'core-dependency' | 'agent-cli';
 
 export type HostSetupStep = {
-  /** Stable within a plan. Dependency id for deps; `<agentId>:plugin` for plugins. */
+  /** Stable within a plan: the dependency id. */
   id: string;
   kind: HostSetupStepKind;
   /** Display name, resolved when the plan is built. */
@@ -103,7 +103,7 @@ export type HostSetupStep = {
    * True only when a newer version is known to exist. Never inferred from a
    * missing `latestVersion`: not knowing is not evidence of currency.
    *
-   * Deliberately does not make a step unsatisfied. An out-of-date connector
+   * Deliberately does not make a step unsatisfied. An out-of-date CLI
    * still works, so an available update is information, not a blocker — a host
    * is not "setup required" because something on it could be newer.
    */
@@ -168,13 +168,6 @@ export function outstandingRequiredSteps(plan: HostSetupPlan): HostSetupStep[] {
   return plan.steps.filter((step) => !step.optional && step.state !== 'satisfied');
 }
 
-const AGENT_PLUGIN_STEP_SUFFIX = ':plugin';
-
-/** Step id for an agent type's Switch connector plugin. */
-export function agentPluginStepId(agentId: string): string {
-  return `${agentId}${AGENT_PLUGIN_STEP_SUFFIX}`;
-}
-
 /**
  * Whether a step describes the host itself rather than one agent type.
  *
@@ -191,11 +184,6 @@ export function isHostLevelStep(step: HostSetupStep): boolean {
 /** The agent type a step belongs to, or null when the step is host-level. */
 export function agentIdForStep(step: HostSetupStep): string | null {
   if (step.kind === 'agent-cli') return step.id;
-  if (step.kind === 'agent-plugin') {
-    return step.id.endsWith(AGENT_PLUGIN_STEP_SUFFIX)
-      ? step.id.slice(0, -AGENT_PLUGIN_STEP_SUFFIX.length)
-      : step.id;
-  }
   return null;
 }
 
@@ -204,7 +192,7 @@ export function hostLevelSteps(plan: HostSetupPlan): HostSetupStep[] {
   return plan.steps.filter(isHostLevelStep);
 }
 
-/** One agent type's steps: its CLI and its Switch connector. */
+/** One agent type's steps. */
 export function agentTypeSteps(plan: HostSetupPlan, agentId: string): HostSetupStep[] {
   return plan.steps.filter((step) => agentIdForStep(step) === agentId);
 }

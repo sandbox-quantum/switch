@@ -66,6 +66,10 @@ class CallContextMiddleware(Middleware):
                 session_key=(
                     fastmcp_context.session_id if fastmcp_context is not None else None
                 ),
+                # An MCP transport session is not an SDK session: there is no
+                # host lease behind it, so it has no fenced room binding of its
+                # own and resolves its room from the transport as it always has.
+                session=None,
             )
         ):
             return await call_next(context)

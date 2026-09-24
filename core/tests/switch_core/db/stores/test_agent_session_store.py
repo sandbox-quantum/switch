@@ -8,7 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.server_connectors.core import (
     CONNECTOR_POLL_TIMEOUT_SECONDS,
 )
-from switch_core.db.models import Agent, AgentSession, ApiKey, Client, Room, User
+from switch_core.db.models import (
+    Agent,
+    AgentSession,
+    ApiKey,
+    Client,
+    Room,
+    User,
+)
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 
 

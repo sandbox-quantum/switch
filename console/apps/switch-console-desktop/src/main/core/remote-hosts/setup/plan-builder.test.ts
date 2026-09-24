@@ -4,7 +4,7 @@ import { listPlugins } from '@main/core/providers/plugin-registry';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import type { HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan, HostSetupStep } from '@shared/core/remote-hosts/setup';
-import { agentPluginStepId, buildSetupPlan, reconcileInterruptedPlan } from './plan-builder';
+import { buildSetupPlan, reconcileInterruptedPlan } from './plan-builder';
 
 const NOW = '2026-02-02T00:00:00.000Z';
 
@@ -13,7 +13,7 @@ const CORE = [
   { id: 'node', name: 'Node.js' },
   { id: 'gh', name: 'GitHub CLI' },
 ];
-const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code', connectorRequired: true }];
+const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code' }];
 
 function build(existing: HostSetupPlan | null = null) {
   return buildSetupPlan({
@@ -26,14 +26,8 @@ function build(existing: HostSetupPlan | null = null) {
 }
 
 describe('buildSetupPlan', () => {
-  it('orders core tools first, then each agent CLI before its plugin', () => {
-    expect(build().steps.map((s) => s.id)).toEqual([
-      'git',
-      'node',
-      'gh',
-      'claude-code',
-      agentPluginStepId('claude-code'),
-    ]);
+  it('orders core tools first, then each agent CLI', () => {
+    expect(build().steps.map((s) => s.id)).toEqual(['git', 'node', 'gh', 'claude-code']);
   });
 
   it('leaves every core tool required, so none can strand a host silently', () => {
@@ -54,11 +48,6 @@ describe('buildSetupPlan', () => {
     expect(cli.dependsOn).toContain('node');
   });
 
-  it('declares that a plugin needs its own CLI', () => {
-    const plugin = build().steps.find((s) => s.id === agentPluginStepId('claude-code'))!;
-    expect(plugin.dependsOn).toEqual(['claude-code']);
-  });
-
   it('starts every step pending with no outcome', () => {
     for (const step of build().steps) {
       expect(step.state).toBe('pending');
@@ -70,7 +59,6 @@ describe('buildSetupPlan', () => {
     const kinds = Object.fromEntries(build().steps.map((s) => [s.id, s.kind]));
     expect(kinds.git).toBe('core-dependency');
     expect(kinds['claude-code']).toBe('agent-cli');
-    expect(kinds[agentPluginStepId('claude-code')]).toBe('agent-plugin');
   });
 });
 
@@ -238,12 +226,8 @@ describe('buildSetupPlan — against the real registry', () => {
   /** The same filter `plannableAgentTypes` applies before building a plan. */
   const switchSupported = () =>
     listPlugins()
-      .filter((plugin) => plugin.capabilities.switchSetup.kind === 'cli')
-      .map((plugin) => ({
-        agentId: plugin.metadata.id,
-        name: plugin.metadata.id,
-        connectorRequired: true,
-      }));
+      .filter((plugin) => plugin.capabilities.hostDependency.binaryNames.length > 0)
+      .map((plugin) => ({ agentId: plugin.metadata.id, name: plugin.metadata.id }));
 
   const realPlan = () =>
     buildSetupPlan({
@@ -290,24 +274,22 @@ describe('buildSetupPlan — against the real registry', () => {
   });
 });
 
-it('offers ACP providers without requiring a separate connector installation', () => {
+it('gives every agent type a CLI step and nothing else', () => {
   const plan = buildSetupPlan({
     sshHost: 'example-host',
     coreDependencies: CORE,
     agentTypes: [
-      { agentId: 'cursor', name: 'Cursor', connectorRequired: false },
-      { agentId: 'antigravity', name: 'Antigravity', connectorRequired: false },
-      { agentId: 'claude', name: 'Claude', connectorRequired: true },
+      { agentId: 'cursor', name: 'Cursor' },
+      { agentId: 'antigravity', name: 'Antigravity' },
+      { agentId: 'claude', name: 'Claude' },
     ],
     existing: null,
     now: NOW,
   });
-  expect(plan.steps.filter((step) => step.kind === 'agent-cli').map((step) => step.id)).toEqual([
-    'cursor',
-    'antigravity',
-    'claude',
-  ]);
-  expect(plan.steps.filter((step) => step.kind === 'agent-plugin').map((step) => step.id)).toEqual([
-    'claude:plugin',
-  ]);
+  expect(
+    plan.steps.filter((step) => step.kind !== 'core-dependency').map((step) => step.id)
+  ).toEqual(['cursor', 'antigravity', 'claude']);
+  expect(
+    plan.steps.every((step) => step.kind === 'core-dependency' || step.kind === 'agent-cli')
+  ).toBe(true);
 });

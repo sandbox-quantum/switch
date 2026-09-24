@@ -4,6 +4,9 @@ dist/
 out/
 /release/
 
+# The connection-model benchmark's own bundle of its host entrypoint.
+packages/*/dist-bench/
+
 # App-specific outputs
 apps/*/out/
 apps/*/release/

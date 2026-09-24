@@ -67,6 +67,7 @@ def _session_factory(fail: bool = False):
 def _probes(**overrides) -> RuntimeProbes:
     defaults = dict(
         listener_connected=lambda: True,
+        session_activity_listener_connected=lambda: True,
         bridges_running=lambda: 2,
         bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
         bridges_configured=lambda: 2,

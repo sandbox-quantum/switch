@@ -17,7 +17,7 @@ export type DiscoveredLocationAgent = {
    * definition with no Switch setup, which is adoptable anywhere. */
   credentialEndpoint: string | null;
   /** Whether the definition can join Switch (its tools allowlist keeps the
-   * connector's MCP tools, or it inherits all tools). */
+   * Switch MCP tools, or it inherits all tools). */
   eligible: boolean;
   /** Whether Switch Console already has an agent row for this definition in this dir,
    * on the server being onboarded to. */

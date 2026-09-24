@@ -47,10 +47,30 @@ export type { HostEndpoint, HostStartRequest } from './host/server';
 export { connectHost } from './host/launcher';
 export { runSharedHost } from './host/shared-host';
 export type { SharedHostOptions } from './host/shared-host';
-export { detachedSupervision, ensureSharedProcess, sharedSessionRoot } from './host/launch';
+export {
+  detachedSupervision,
+  ensureSharedProcess,
+  liveSupervisor,
+  sharedSessionRoot,
+} from './host/launch';
 export type { Supervision } from './host/launch';
 export { runSharedWatcher } from './host/shared-watcher';
+export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export {
+  readWatchFlags,
+  WATCH_FLAGS_FILE,
+  type WatchFlags,
+  watchFlagsSchema,
+} from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
+export { SessionLinks, SessionUnavailableError, type SessionRequest } from './host/session-channel';
+export {
+  WatcherControl,
+  type PlaceOutcome,
+  type WatcherHealth,
+  type WatcherState,
+  watcherHealthSchema,
+} from './host/watcher-tools';
 
 export { prepareCodexSessionHome } from './codex/home';
 export { sharedConfigSchema } from './host/shared-config';
@@ -58,3 +78,4 @@ export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
+export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';

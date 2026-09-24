@@ -61,7 +61,7 @@ Match the question to the source. Getting this wrong is how you end up confident
   abstract pitch about vision and platforms.
 - **How it is built, what the API and bridges do** → `docs/` in the clone.
 - **How it actually behaves right now, when the docs are silent or look wrong** → the source
-  under `core/switch_core/` and `connectors/`. Say when you are reading code rather than
+  under `core/switch_core/` and `console/`. Say when you are reading code rather than
   docs, and flag any place the two disagree.
 - **How to shape a good setup — judgement, not mechanics** → `switch-expert/knowledge/`
   (patterns, recipes, checklist, gotchas). This is the part that is genuinely yours.

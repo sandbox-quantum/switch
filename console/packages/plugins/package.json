@@ -15,29 +15,9 @@
       "types": "./dist/agents.d.mts",
       "default": "./dist/agents.mjs"
     },
-    "./agents/opencode/skill": {
-      "types": "./dist/opencode-skill.d.mts",
-      "default": "./dist/opencode-skill.mjs"
-    },
-    "./distribution": {
-      "types": "./dist/distribution.d.mts",
-      "default": "./dist/distribution.mjs"
-    },
-    "./agents/codex/skill": {
-      "types": "./dist/codex-skill.d.mts",
-      "default": "./dist/codex-skill.mjs"
-    },
-    "./agents/antigravity/skill": {
-      "types": "./dist/antigravity-skill.d.mts",
-      "default": "./dist/antigravity-skill.mjs"
-    },
-    "./agents/cursor/skill": {
-      "types": "./dist/cursor-skill.d.mts",
-      "default": "./dist/cursor-skill.mjs"
-    },
-    "./agents/claude/skill": {
-      "types": "./dist/claude-skill.d.mts",
-      "default": "./dist/claude-skill.mjs"
+    "./switch-skill": {
+      "types": "./dist/switch-skill.d.mts",
+      "default": "./dist/switch-skill.mjs"
     }
   },
   "scripts": {

@@ -34,6 +34,7 @@ from switch_core.observability.health import (
     connectors_check,
     database_check,
     message_listener_check,
+    session_activity_listener_check,
 )
 from switch_core.observability.logs import (
     DEFAULT_BATCH_SIZE,
@@ -75,6 +76,7 @@ class RuntimeProbes:
     """
 
     listener_connected: Callable[[], bool]
+    session_activity_listener_connected: Callable[[], bool]
     bridges_running: Callable[[], int]
     bridges_running_by_platform: Callable[[], Mapping[str, int]]
     bridges_configured: Callable[[], int]
@@ -147,6 +149,7 @@ def start_observability(
         checks=[
             database_check(session_factory),
             message_listener_check(probes.listener_connected),
+            session_activity_listener_check(probes.session_activity_listener_connected),
             bridges_check(probes.bridges_running, probes.bridges_configured),
             connectors_check(probes.connectors_running, probes.connectors_configured),
         ],

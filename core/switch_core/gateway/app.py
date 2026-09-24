@@ -27,6 +27,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
@@ -45,12 +46,11 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
-from switch_core.gateway.sessions import router as sessions_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.room_service import RoomService
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 
 
 def create_gateway_app(
@@ -115,7 +115,9 @@ def create_gateway_app(
         register_oidc_client(config)
 
     app.add_exception_handler(SessionError, session_error_response)
-    app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
+    app.include_router(
+        agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
+    )
     app.include_router(auth_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])

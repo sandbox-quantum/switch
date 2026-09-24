@@ -81,8 +81,10 @@ artifacts:
       switch-core: 0.27.0
 
   agent-runtime:
-    description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.4.3
+    description: >-
+      The Switch protocol client and the MCP tool surface each session host
+      serves. Bundled into Switch Console and its sidecar, not published.
+    version: 0.7.0
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -125,33 +127,55 @@ artifacts:
     version_from: switch-core
     published_as: standalone-compose
 
-  switch-connector:
-    description: The Claude Code connector plugin.
-    version: 0.9.16
-    declared_in: connectors/claude-code-plugin/.claude-plugin/plugin.json
-
-  switch-connector-codex:
-    description: The Codex connector plugin.
-    version: 0.3.17
-    declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
-
-  switch-connector-opencode:
-    description: >-
-      The OpenCode connector. Unlike the other two it is written by Switch
-      Console rather than installed from the marketplace, because OpenCode has
-      no plugin marketplace to install it from.
-    version: 0.1.12
-    declared_in: connectors/opencode-plugin/package.json
-
 contracts:
   agent-protocol:
     description: >-
       The wire protocol between switch-core's agent bridge and an agent
       runtime: the event stream, its frame shapes, the resume cursor, and the
       tool-call channel.
+    # Revision 2 adds the connection incarnation: the server publishes it on
+    # `connection_state`, the client returns it on every heartbeat, and a tick
+    # bearing a superseded one — or, from a client that declares this revision,
+    # none at all — is refused. The same revision gives the `evicted` frame a
+    # stable `code` and the room it applies to, and gives a refused heartbeat
+    # the same treatment (`taken_over`, `no_stream`, `unfenced`), so a client
+    # no longer decides recoverable-or-fatal by matching prose. `taken_over` is
+    # the one ending a client must not answer by reopening: reopening is itself
+    # a takeover. All of it is additive and `accepts` stays at 1: a revision-1
+    # client sends no incarnation and is recorded as unfenceable rather than
+    # refused.
+    #
+    # Revision 3 moves unread accounting onto the wire. A delivered frame may
+    # carry `missed` — how far behind the reader is on unaddressed chatter in
+    # that frame's room, as a count that may be null with a reason — and a gap
+    # frame may carry `rooms`, naming which rooms lost events. Both are
+    # additive and `accepts` stays at 1: a client that reads neither behaves as
+    # it did, and a server that sends neither leaves the client with no count
+    # to render rather than a wrong one.
+    #
+    # Revision 4 adds the `approval_outcome` frame on an agent's own stream
+    # (scope "all"): an answer to, or the expiry of, an approval request the
+    # agent's host opened, owed until the host acknowledges it. It is sent only
+    # to a client that declares this revision — an older client hands frames it
+    # does not recognise to its room-event path, and one without a `type`
+    # breaks it — so `accepts` stays at 1 and nothing changes for them.
+    #
+    # Revision 5 adds the `session_command` frame on an agent's own stream
+    # (scope "all"): a command for one of the agent's sessions, sent by its
+    # owner from Switch Console and relayed without being stored. Sessions no
+    # longer fetch commands from a queue on the server. Sent only to a client
+    # that declares this revision, for the same reason as revision 4.
+    #
+    # Revision 6 moves session placement to the agent's watcher. Delivered
+    # events no longer carry `session_id`; the watcher states its placements on
+    # `POST /agents/{id}/connection/placements`, and a connection whose room
+    # claim or session placement another connection took over is sent
+    # `room_released` (`room_id`, and the session placed there or null). The
+    # frame is sent only to a client that declares this revision, for the same
+    # reason as revision 4.
     artifacts:
-      switch-core: { speaks: 1, accepts: 1 }
-      agent-runtime: { speaks: 1, accepts: 1 }
+      switch-core: { speaks: 6, accepts: 1 }
+      agent-runtime: { speaks: 6, accepts: 1 }
 
   gateway-api:
     description: >-

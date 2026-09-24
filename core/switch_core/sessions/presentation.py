@@ -12,7 +12,7 @@ from switch_core.db.models import (
     ExternalUser,
     ExternalUserClaim,
 )
-from switch_core.sessions.contract import Origin, Session, TurnUpsert
+from switch_core.sessions.contract import TurnUpsert
 
 
 def session_console_url(
@@ -40,21 +40,23 @@ async def notification_recipient(
     *,
     bridge_id: str,
     room_id: str,
-    origin: Origin,
+    surface: str,
+    actor_id: str | None,
     agent: Agent,
     thread_id: str | None,
 ) -> str | None:
-    """Slack participants follow replies by default; mention only other origins.
+    """Slack participants follow replies by default; mention only elsewhere.
 
-    Whoever asked is named first. They are the one waiting on the answer, and
-    on a platform where a mention is the whole notification they are also the
-    one most likely to be looking. The agent's owner is the fallback, so a turn
-    started by someone who has claimed no account here still reaches somebody.
+    Whoever asked (`actor_id`, their room identity, when it is known) is named
+    first. They are the one waiting on the answer, and on a platform where a
+    mention is the whole notification they are also the one most likely to be
+    looking. The agent's owner is the fallback, so a turn started by someone
+    who has claimed no account here still reaches somebody.
 
     Membership and bridge checks prevent mentioning identities from another
     room or workspace. No follower API is needed for the usual threaded case.
     """
-    if origin.surface == "slack" and thread_id:
+    if surface == "slack" and thread_id:
         return None
     members = (
         select(ExternalUser.external_user_id)
@@ -63,7 +65,6 @@ async def notification_recipient(
     )
 
     async def claimed_by(user_id: str | None) -> str | None:
-        # Console commands identify their user directly rather than a puppet.
         if not user_id:
             return None
         claimant: str | None = await db.scalar(
@@ -77,39 +78,25 @@ async def notification_recipient(
         return claimant
 
     async def initiator() -> str | None:
+        if actor_id is None:
+            return None
         actor = await db.scalar(
             members.join(Client, Client.id == ExternalUser.client_id)
-            .where(Client.matrix_user_id == origin.actor_id)
+            .where(Client.matrix_user_id == actor_id)
             .order_by(ExternalUser.id)
             .limit(1)
         )
-        return actor or await claimed_by(origin.actor_id)
+        return actor or await claimed_by(actor_id)
 
     return await initiator() or await claimed_by(agent.owner_id)
 
 
-def activity_error_summary(
-    turn: TurnUpsert, session: Session, *, online: bool, unconfirmed: bool
-) -> str | None:
-    """Describe state without leaking provider notices or session-private output.
-
-    `unconfirmed` is the one state that is neither running nor finished: the
-    command left Switch and no acknowledgement came back, so whether the agent
-    ever saw it is unknown and stays unknown. It reads as a failure otherwise —
-    the turn is carried as an error for want of anywhere else to put it — and
-    saying the request could not be completed asserts something nobody here
-    knows. What the reader can act on is that Switch will not resend it.
-    """
-    if unconfirmed:
-        return "Switch could not confirm the agent received this. It will not be resent; send it again if you still want it."
+def activity_error_summary(turn: TurnUpsert, *, online: bool) -> str | None:
+    """Describe state without leaking provider notices or session-private output."""
     if turn.status == "error":
         return "The agent could not complete this request. Open Switch Console for details."
     if turn.status not in {"queued", "running"}:
         return None
     if not online:
         return "The agent host is offline. This request cannot continue until it reconnects."
-    if session.status == "error":
-        return (
-            "The agent session encountered an error. Open Switch Console for details."
-        )
     return None

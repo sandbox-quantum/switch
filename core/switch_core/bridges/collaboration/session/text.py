@@ -18,6 +18,7 @@ The forms:
     R43 1,3            more than one option, where the card allows it
     R43 q1=2; q2=1,3   one part per question, questions numbered as the card is
     R43 q3="staging"   an answer written out, where the question invites one
+    A7 yes             the same forms for an approval card, whose handles start with A
 
 Nothing here resolves anything. A handle is whatever token was typed, and it
 means a request only once it has been looked up within the bridge it was minted
@@ -142,7 +143,7 @@ def parse_text_answer(body: str) -> TextAnswer | None:
     if not rest:
         return _bare(head)
     handle = head.rstrip(_SEPARATOR_CHARS)
-    if re.fullmatch(r"[Rr][1-9][0-9]*", handle) is None:
+    if re.fullmatch(r"[RrAa][1-9][0-9]*", handle) is None:
         return None
 
     # "R42 yes" is the one form that is a word rather than a selection, and it

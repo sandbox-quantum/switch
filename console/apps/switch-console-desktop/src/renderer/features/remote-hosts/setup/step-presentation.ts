@@ -10,8 +10,8 @@
 
 import type { StatusTone } from '@renderer/lib/ui/status-badge';
 import {
-  agentPluginStepId,
   hostLevelSteps,
+  isStepInFlight,
   type DependencyCheckOutcome,
   type HostSetupPlan,
   type HostSetupStep,
@@ -172,46 +172,22 @@ export function stepBadge(step: HostSetupStep): BadgeSpec {
   }
 }
 
-/**
- * An agent type as one row: its CLI and its Switch connector are two steps, but
- * a user thinks of them as one thing being usable or not. Mirrors how the
- * agents settings page presents a local agent.
- */
+/** An agent type as one row, standing for its CLI step. */
 export type AgentTypeRow = {
   agentId: string;
   name: string;
   cli: HostSetupStep;
-  /** Null only if the plan predates connector steps. */
-  plugin: HostSetupStep | null;
 };
 
 /**
- * Combined status for an agent type.
- *
- * An installed CLI is not usable on its own — without the Switch connector the
- * agent starts and has no Switch tools. That intermediate state gets its own
- * label rather than being rounded up to "installed".
+ * Combined status for an agent type. A newer release of the agent's own CLI
+ * changes nothing about whether the agent works here, so an installed CLI reads
+ * "Installed" whether or not an update exists.
  */
 export function agentTypeBadge(row: AgentTypeRow): BadgeSpec {
-  const inFlight = [row.cli, row.plugin].find(
-    (step) =>
-      step?.state === 'checking' || step?.state === 'installing' || step?.state === 'updating'
-  );
-  if (inFlight) return stepBadge(inFlight);
-
-  const failed = [row.cli, row.plugin].find((step) => step?.state === 'failed');
-  if (failed) return { tone: 'danger', label: outcomeLabel(failed.outcome) };
-
+  if (isStepInFlight(row.cli)) return stepBadge(row.cli);
+  if (row.cli.state === 'failed') return { tone: 'danger', label: outcomeLabel(row.cli.outcome) };
   if (row.cli.state !== 'satisfied') return stepBadge(row.cli);
-  if (row.plugin && row.plugin.state !== 'satisfied') {
-    return { tone: 'warning', label: 'Switch setup required' };
-  }
-  // Only the connector. A newer release of the agent's own CLI changes nothing
-  // about whether the agent works here, and reporting it in place of
-  // "Installed" made a working host look like it needed attention.
-  if (row.plugin?.updateAvailable) {
-    return { tone: 'warning', label: 'Connector update' };
-  }
   return { tone: 'success', label: 'Installed' };
 }
 
@@ -231,14 +207,7 @@ export function groupPlanSteps(plan: HostSetupPlan | null): GroupedPlan {
 
   const agentTypes = plan.steps
     .filter((step) => step.kind === 'agent-cli')
-    .map((cli) => ({
-      agentId: cli.id,
-      name: cli.name,
-      cli,
-      plugin:
-        plan.steps.find((s) => s.kind === 'agent-plugin' && s.id === agentPluginStepId(cli.id)) ??
-        null,
-    }));
+    .map((cli) => ({ agentId: cli.id, name: cli.name, cli }));
 
   return { prerequisites, agentTypes };
 }

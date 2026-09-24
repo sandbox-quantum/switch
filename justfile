@@ -68,16 +68,15 @@ reset:
 
 # ── Run switch-core locally ────────────────────────────────────────────────────
 # The Python project lives in core/; `--project core` selects that environment
-# while keeping the repo root as the working directory (so paths like connectors/
-# stay natural). Tool configs are passed explicitly since the repo root no longer
+# while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
 # holds pyproject.toml / alembic.ini.
 run:
     uv run --project core python -m switch_core.main
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
-# right config per file (core/, the connector sub-projects, and the
-# root ruff.toml fallback).
+# right config per file (core/, the sub-projects that carry their own, and
+# the root ruff.toml fallback).
 format:
     uv run --project core ruff format .
     uv run --project core ruff check --fix .
@@ -89,7 +88,7 @@ check:
 
 # ── Run mypy type checks ──────────────────────────────────────────────────────
 typecheck:
-    uv run --project core mypy --config-file core/pyproject.toml core/switch_core/ connectors/
+    uv run --project core mypy --config-file core/pyproject.toml core/switch_core/
 
 # ── Regenerate everything declared in artifacts.yaml ──────────────────────────
 # artifacts.yaml is the only authored copy of what each artifact is and what it
@@ -101,7 +100,7 @@ artifacts:
 # ── Verify the registry, the generated modules and the declared versions ──────
 # Fails when artifacts.yaml changed without regenerating, when a generated
 # module was hand-edited, or when a file a packaging ecosystem owns (pyproject,
-# package.json, plugin.json) disagrees with the registry.
+# package.json) disagrees with the registry.
 artifacts-check:
     uv run --project core python scripts/gen_artifacts.py --check
 
@@ -131,6 +130,12 @@ test *args:
 # works under Docker Desktop / OrbStack / colima without extra setup.
 test-integration *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/integration -m integration {{ args }}
+
+# ── Run the connection-model benchmark (real Postgres, real socket) ────────────
+# Reports connection/process/CPU/RSS/latency figures for the revision it is run
+# on. It measures rather than asserts, so it is excluded from `just test`.
+bench *args:
+    uv run --project core pytest -c core/pyproject.toml core/tests/benchmarks -m benchmark -s {{ args }}
 
 # ── Gateway UI ─────────────────────────────────────────────────────────────────
 gateway-install:

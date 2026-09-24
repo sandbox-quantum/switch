@@ -224,21 +224,25 @@ describe('the payload', () => {
   });
 
   it('carries the event, the build and the app version', async () => {
-    await telemetryService.track('connector_installed', {
+    await telemetryService.track('agent_cli_action', {
       agent_type: 'claude',
       target: 'remote',
+      install_method: 'unspecified',
+      action: 'install',
       outcome: 'failure',
-      failure_reason: 'install_command_failed',
+      failure_reason: 'command_failed',
       duration_ms: durationMs(4200),
     });
 
     expect(sentResource()['service.version']).toBe('1.2.3');
     expect(sentAttributes()).toEqual({
-      'event.name': 'switch_console.connector_installed',
+      'event.name': 'switch_console.agent_cli_action',
       agent_type: 'claude',
       target: 'remote',
+      install_method: 'unspecified',
+      action: 'install',
       outcome: 'failure',
-      failure_reason: 'install_command_failed',
+      failure_reason: 'command_failed',
       // A duration goes as a number, not as text: `4200` and not `"4200"`, so
       // the far end can average it without parsing it back.
       duration_ms: durationMs(4200),

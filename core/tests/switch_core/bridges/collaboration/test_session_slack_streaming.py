@@ -43,7 +43,6 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentWedged,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.bridges.collaboration.slack.adapter import (
     _MAX_OPEN_STREAMS,
     _MAX_WEDGED_MESSAGES,
@@ -2004,34 +2003,3 @@ async def test_a_stranded_stream_closed_but_not_redrawn_in_time_is_waited_out() 
     assert waiting.value.retry_after == 8
     assert len(client.stopped) == 1
     assert ref not in adapter._unredrawable
-
-
-# ── End to end, through the publisher ────────────────────────────────────────
-
-
-async def test_a_turn_published_from_start_to_finish_is_one_streamed_message() -> None:
-    """What a reader ends up with: one message, opened once, never rebuilt."""
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    activity = SessionTurnActivity(adapter)
-    kwargs = dict(
-        session_id="session",
-        channel_id=CHANNEL,
-        thread_root_id=THREAD,
-        asked_on=None,
-        agent_name="Agent",
-    )
-    read = _tool("t1", "Read")
-
-    await activity.publish([read], _turn(), elapsed_seconds=0, **kwargs)
-    await activity.publish([read], _turn(), elapsed_seconds=5, **kwargs)
-    done = read.model_copy(update={"revision": 2, "status": "completed"})
-    await activity.publish([done], _turn("completed"), elapsed_seconds=12, **kwargs)
-
-    assert client.posted == []
-    assert client.updated == []
-    assert len(client.started) == 1
-    assert len(client.stopped) == 1
-    assert [
-        [chunk["type"] for chunk in call["chunks"]] for call in client.appended
-    ] == [["blocks"], ["blocks"], ["blocks"]]
