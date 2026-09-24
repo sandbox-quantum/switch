@@ -60,22 +60,10 @@ from switch_core.gateway.schemas import (
     TenantMembershipResponse,
 )
 from switch_core.telemetry import emit_safely
+from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
-
-
-def _age_hours(created_at: object) -> float:
-    """How long an invitation sat before it was accepted. Zero if unknown.
-
-    Hours rather than days: the interesting range is "immediately" to "a
-    couple of days", and a figure that reads 0.1 for most of it says less than
-    one that reads 2.4.
-    """
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 3600.0, 0.0)
 
 
 router = APIRouter()
@@ -440,7 +428,7 @@ async def accept_invitation(
             emit_safely(
                 current_telemetry(),
                 "invitation_accepted",
-                {"age_hours": _age_hours(invitation.created_at)},
+                {"age_hours": age_hours(invitation.created_at)},
             )
         else:
             role = existing_role

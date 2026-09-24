@@ -560,11 +560,15 @@ async def create_room_role(
 ) -> list[RoomRoleDetail]:
     await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
-        emit_safely(
-            current_telemetry(), "room_role_defined", {"exclusive": req.exclusive}
-        )
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
+        )
+        # After the write succeeds but before the outer commit — the same
+        # convention as room_role_deleted below, chosen so a request that
+        # fails validation (e.g. a duplicate name) never reports an event for
+        # a role that was never defined.
+        emit_safely(
+            current_telemetry(), "room_role_defined", {"exclusive": req.exclusive}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

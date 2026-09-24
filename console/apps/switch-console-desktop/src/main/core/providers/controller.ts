@@ -5,11 +5,7 @@ import type {
   HostDependencySelection,
   InstallOverride,
 } from '@switch-console/core/deps/runtime';
-import { agentTypeOf } from '@main/core/telemetry/agent-type';
-import { cliFailureReason } from '@main/core/telemetry/cli-failure';
-import type { TelemetryCliAction } from '@main/core/telemetry/events';
-import { installMethodOf } from '@main/core/telemetry/narrow';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { reportedCliAction } from '@main/core/telemetry/cli-action';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -19,7 +15,6 @@ import { getDependencyManager } from '../dependencies/dependency-managers';
 import { hostDependencyStore } from '../dependencies/host-dependency-store';
 import { providerOverrideSettings } from '../settings/provider-settings-service';
 import {
-  buildAgentMetadataList,
   buildAgentPayload,
   buildAgentPayloads,
   toAgentInstallationStatus,
@@ -32,28 +27,13 @@ const enrichHostDep = (
 ) => agentUpdateService.enrichHostDependency(id, hostDep);
 
 /**
- * Report installing, updating or removing an agent's CLI.
+ * The target every CLI action reported from here carries.
  *
- * `target` is always local here. This controller accepts a connection id and
- * discards it — `getDependencyManager` returns the local manager whatever it is
- * given — so nothing reached through it runs anywhere else. The genuinely remote
- * equivalents live on the remote-hosts controller and report themselves.
+ * Always local. This controller accepts a connection id and discards it —
+ * `getDependencyManager` returns the local manager whatever it is given — so
+ * nothing reached through it runs anywhere else.
  */
-function reportCliAction(
-  action: TelemetryCliAction,
-  id: string,
-  method: InstallMethod | undefined,
-  result: { success: boolean; error?: { type?: string } }
-): void {
-  trackEvent('agent_cli_action', {
-    agent_type: agentTypeOf(id),
-    target: 'local',
-    install_method: installMethodOf(method),
-    action,
-    outcome: result.success ? 'success' : 'failure',
-    failure_reason: cliFailureReason(result),
-  });
-}
+const TARGET = 'local';
 
 export const providersController = createRPCController({
   // ── Metadata ────────────────────────────────────────────────────────────────
@@ -83,23 +63,13 @@ export const providersController = createRPCController({
       });
   },
 
-  getAgentInstallationStatus: async (id: string, connectionId?: string) => {
-    const mgr = await getDependencyManager(connectionId);
-    const state = mgr.get(id as DependencyId);
-    if (!state) return null;
-    const rawHostDep = mgr.getHostDependency(id as DependencyId);
-    const hostDep = rawHostDep
-      ? agentUpdateService.enrichHostDependency(id as DependencyId, rawHostDep)
-      : undefined;
-    return toAgentInstallationStatus(id, connectionId, state, hostDep);
-  },
-
   // ── Install / update ─────────────────────────────────────────────────────────
 
   install: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
-    const result = await mgr.install(id, method);
-    reportCliAction('install', id, method, result);
+    const result = await reportedCliAction('install', TARGET, id, method, () =>
+      mgr.install(id, method)
+    );
     if (result.success) {
       // Persist the chosen method as an override, or clear to auto when no method was chosen.
       // Do NOT auto-promote the inferred method — that would freeze a heuristic guess.
@@ -112,16 +82,12 @@ export const providersController = createRPCController({
 
   update: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
-    const result = await mgr.update(id, method);
-    reportCliAction('update', id, method, result);
-    return result;
+    return reportedCliAction('update', TARGET, id, method, () => mgr.update(id, method));
   },
 
   uninstall: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
-    const result = await mgr.uninstall(id, method);
-    reportCliAction('uninstall', id, method, result);
-    return result;
+    return reportedCliAction('uninstall', TARGET, id, method, () => mgr.uninstall(id, method));
   },
 
   // ── Settings ─────────────────────────────────────────────────────────────────
@@ -157,11 +123,6 @@ export const providersController = createRPCController({
     await agentUpdateService.refreshLatestVersion(id, connectionId);
   },
 
-  probe: async (id: DependencyId, connectionId?: string) => {
-    const mgr = await getDependencyManager(connectionId);
-    return mgr.probe(id);
-  },
-
   probeOverride: async (
     id: DependencyId,
     selection: { path?: string; cli?: string },
@@ -174,9 +135,5 @@ export const providersController = createRPCController({
   probeAll: async (connectionId?: string, options?: DependencyProbeOptions) => {
     const mgr = await getDependencyManager(connectionId);
     return mgr.probeAll(options);
-  },
-
-  listMetadata: async () => {
-    return buildAgentMetadataList();
   },
 });

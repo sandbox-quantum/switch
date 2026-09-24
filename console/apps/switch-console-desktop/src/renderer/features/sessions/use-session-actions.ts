@@ -45,8 +45,6 @@ export function useSessionActionProps(
       if (isActive) navigate('location', { locationId });
       void sessionManager?.archiveSession(sessionId);
     },
-    onReconnect: undefined,
-    onConvertAutomation: undefined,
     onDelete: () =>
       showDeleteSession({
         locationId,

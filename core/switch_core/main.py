@@ -132,6 +132,7 @@ from switch_core.observability.bootstrap import (
     start_observability,
 )
 from switch_core.observability.pool import pool_stats
+from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -336,9 +337,24 @@ async def run(config: SwitchConfig) -> None:
     engine = create_engine_from_config(config)
     await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
+    # Wired here rather than inside the engine factory, so the database layer
+    # keeps knowing nothing about observability. Unconditional: the listeners
+    # record into whatever registry is installed, which is the null one until
+    # `start_observability` runs and stays null when export is off — measured
+    # at 0.3 µs per statement against a 130 µs statement, so a server that
+    # reports nothing pays nothing worth counting, and turning export on does
+    # not change how queries execute.
+    instrument_queries(engine)
+
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
     # subscription exists before the first consumer needs it.
+    #
+    # Deliberately NOT instrumented for query timing: `MessageListener` takes
+    # the raw asyncpg connection off this engine and issues `LISTEN` and its
+    # heartbeat through the driver, so SQLAlchemy's cursor events never fire
+    # and the listeners would record nothing at all. That this connection is
+    # alive is answered by the `message_listener` readiness check instead.
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     # The same arrangement for session activity and approval requests: their
     # tables announce each change with the row attached, and this pushes it on.
@@ -684,6 +700,7 @@ async def run(config: SwitchConfig) -> None:
         listener_connected=message_listener.connected.is_set,
         session_activity_listener_connected=session_activity_listener.connected.is_set,
         bridges_running=collab_lifecycle.running_count,
+        bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         clients_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,

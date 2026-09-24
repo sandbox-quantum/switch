@@ -1,26 +1,8 @@
-import type { InstallMethod } from '@switch-console/core/deps';
-import type {
-  DependencyCategory,
-  DependencyInstallResult,
-  DependencyStatus,
-  DependencyUninstallResult,
-  DependencyUpdateResult,
-} from '@switch-console/core/deps/runtime';
-import { detectSwitchAgentRemote } from '@main/core/agents/detect-remote';
-import {
-  evictRemoteDependencyManager,
-  getRemoteDependencyManager,
-  remoteDependencyDescriptor,
-} from '@main/core/dependencies/remote-dependency-manager';
-import { agentTypeOf } from '@main/core/telemetry/agent-type';
-import { cliFailureReason } from '@main/core/telemetry/cli-failure';
-import type { TelemetryCliAction } from '@main/core/telemetry/events';
-import { installMethodOf } from '@main/core/telemetry/narrow';
+import { evictRemoteDependencyManager } from '@main/core/dependencies/remote-dependency-manager';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import type { SwitchAgentConfig } from '@shared/switch-agents';
 import { listSshConfigHosts } from './list-ssh-config-hosts';
 import { hostReachabilityService } from './production-host-reachability';
 import { deletePersistedReachability } from './reachability-store';
@@ -37,20 +19,6 @@ import {
 } from './setup/host-setup-service';
 import { listRemoteHosts, removeRemoteHost, upsertRemoteHost, type RemoteHost } from './store';
 
-/** A single dependency's status on a remote host, enriched for the UI. */
-export type RemoteDependencyView = {
-  id: string;
-  name: string;
-  category: DependencyCategory;
-  status: DependencyStatus;
-  version: string | null;
-  path: string | null;
-  error?: string;
-  docUrl?: string;
-  /** True when Switch Console has an install command for this host's platform. */
-  canInstall: boolean;
-};
-
 export type TestConnectionResult = { ok: true } | { ok: false; message: string };
 
 /**
@@ -65,66 +33,12 @@ async function testConnection(sshHost: string): Promise<TestConnectionResult> {
   return { ok: false, message: reachability.lastError ?? hostBlockedReason(reachability) };
 }
 
-async function probeDeps(sshHost: string): Promise<RemoteDependencyView[]> {
-  const manager = await getRemoteDependencyManager(sshHost);
-  await manager.probeAll();
-  const views = [...manager.getAll().values()].map((state): RemoteDependencyView => {
-    const descriptor = remoteDependencyDescriptor(state.id);
-    return {
-      id: state.id,
-      name: descriptor?.name ?? state.id,
-      category: state.category,
-      status: state.status,
-      version: state.version,
-      path: state.path,
-      error: state.error,
-      docUrl: descriptor?.docUrl,
-      canInstall: manager.getInstallOptions(state.id).length > 0,
-    };
-  });
-
-  return views;
-}
-
-/**
- * Report a CLI action that really did run on a remote host.
- *
- * The local controller's equivalent always reports `local`; this one always
- * reports `remote`, which is the only difference between them. The host is never
- * named — `remote` is the whole of what is said about where.
- *
- * The id here is a dependency id, which may be a core dependency rather than an
- * agent, so it goes through the same narrowing as anywhere else and reports
- * `unknown` when it is not a provider we know.
- */
-function reportRemoteCliAction(
-  action: TelemetryCliAction,
-  id: string,
-  method: InstallMethod | undefined,
-  result: { success: boolean; error?: { type?: string } }
-): void {
-  trackEvent('agent_cli_action', {
-    agent_type: agentTypeOf(id),
-    target: 'remote',
-    install_method: installMethodOf(method),
-    action,
-    outcome: result.success ? 'success' : 'failure',
-    failure_reason: cliFailureReason(result),
-  });
-}
-
 export const remoteHostsController = createRPCController({
   /** SSH aliases from ~/.ssh/config, for the onboarding picker. */
   listSshConfigHosts: (): Promise<string[]> => listSshConfigHosts(),
 
   /** Onboarded remote hosts. */
   listHosts: (): Promise<RemoteHost[]> => listRemoteHosts(),
-
-  testConnection: (sshHost: string): Promise<TestConnectionResult> => testConnection(sshHost),
-
-  /** Modeled reachability for one host — the state the UI gates its display on. */
-  getReachability: (sshHost: string): Promise<HostReachability> =>
-    Promise.resolve(hostReachabilityService.get(sshHost)),
 
   /** Every host the reachability model knows about, for the initial UI hydrate. */
   listReachability: (): Promise<HostReachability[]> =>
@@ -216,45 +130,4 @@ export const remoteHostsController = createRPCController({
   /** Move past a step the user has chosen not to fix, unblocking the rest. */
   skipSetupStep: (params: { sshHost: string; stepId: string }): Promise<HostSetupPlan> =>
     skipSetupStep(params.sshHost, params.stepId),
-
-  /**
-   * Detect the Switch agent configured in a remote working directory (reads its
-   * `.claude/settings.local.json` over SSH). Used by the add-agent modal to
-   * detect + server-verify a remote agent without any local directory.
-   */
-  detectRemoteAgent: (params: {
-    sshHost: string;
-    remoteRepoDir: string;
-  }): Promise<SwitchAgentConfig | null> =>
-    detectSwitchAgentRemote(params.sshHost, params.remoteRepoDir),
-
-  probeDeps: (sshHost: string): Promise<RemoteDependencyView[]> => probeDeps(sshHost),
-
-  installDep: async (params: {
-    sshHost: string;
-    id: string;
-    method?: InstallMethod;
-  }): Promise<DependencyInstallResult> => {
-    const manager = await getRemoteDependencyManager(params.sshHost);
-    const result = await manager.install(params.id, params.method);
-    reportRemoteCliAction('install', params.id, params.method, result);
-    return result;
-  },
-
-  updateDep: async (params: { sshHost: string; id: string }): Promise<DependencyUpdateResult> => {
-    const manager = await getRemoteDependencyManager(params.sshHost);
-    const result = await manager.update(params.id);
-    reportRemoteCliAction('update', params.id, undefined, result);
-    return result;
-  },
-
-  uninstallDep: async (params: {
-    sshHost: string;
-    id: string;
-  }): Promise<DependencyUninstallResult> => {
-    const manager = await getRemoteDependencyManager(params.sshHost);
-    const result = await manager.uninstall(params.id);
-    reportRemoteCliAction('uninstall', params.id, undefined, result);
-    return result;
-  },
 });

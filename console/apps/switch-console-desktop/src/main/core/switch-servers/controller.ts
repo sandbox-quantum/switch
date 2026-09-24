@@ -1,24 +1,11 @@
 import type { Result } from '@switch-console/shared';
-import { foreignCredentialsOwner } from '@main/core/agents/agent-credentials-slot';
-import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
-import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
-import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
-import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
-import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch-settings';
-import {
-  writeNeutralAgentSettingsFs,
-  writeSwitchSettings,
-} from '@main/core/agents/write-switch-settings';
 import { appService } from '@main/core/app/service';
-import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import {
   isManagedServerRunning,
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryAuthMethod,
@@ -33,13 +20,10 @@ import type {
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   AddressingPolicy,
   AddServerParams,
-  AgentDefaults,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
   AgentIconBackfill,
@@ -54,9 +38,6 @@ import type {
   DeleteBridgeResult,
   LinkedIdentity,
   PasswordLoginParams,
-  ProvisionAgentParams,
-  ProvisionAgentResult,
-  ProvisionRemoteAgentParams,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -89,7 +70,6 @@ import {
   deleteBridge,
   deleteRoom,
   fetchAddressingPolicy,
-  fetchAgentDetail,
   fetchAgentRooms,
   fetchAgents,
   fetchAllExternalUsers,
@@ -423,12 +403,6 @@ export const switchServersController = createRPCController({
 
   listRemoteAgents: async (serverId: string): Promise<RemoteAgentSummary[]> =>
     fetchAgents(await requireServer(serverId)),
-
-  getRemoteAgent: async (params: {
-    serverId: string;
-    agentId: string;
-  }): Promise<RemoteAgentSummary> =>
-    fetchAgentDetail(await requireServer(params.serverId), params.agentId),
 
   listRemoteRooms: async (serverId: string): Promise<RemoteRoomSummary[]> =>
     fetchRooms(await requireServer(serverId)),
@@ -812,122 +786,5 @@ export const switchServersController = createRPCController({
       }
       throw cause;
     }
-  },
-
-  suggestAgentDefaults: async (params: {
-    dir: string;
-    providerId: AgentProviderId;
-  }): Promise<AgentDefaults> => suggestAgentDefaults(params.dir, params.providerId),
-
-  /**
-   * Register a new agent on the chosen server (owned by the signed-in user) and
-   * write its credentials into the directory's `.claude/settings.local.json`.
-   * Recoverable gateway failures are mapped to a typed result; the minted
-   * token is written to disk and never returned.
-   */
-  provisionAgent: async (params: ProvisionAgentParams): Promise<ProvisionAgentResult> => {
-    const server = await requireServer(params.serverId);
-
-    const conflict = await foreignCredentialsOwner(null, params.dir, params.name, server.apiUrl);
-    if (conflict !== null) return { kind: 'credentials-conflict', endpoint: conflict };
-
-    const registered = await registerAgentIdentity(server, {
-      name: params.name,
-      description: params.description,
-      repoDir: params.dir,
-      autoSession: params.autoSession,
-      iconUrl: agentAvatarUrlForName(params.name),
-      // This flow asks for a name and nothing else, so there is no label to send.
-      displayName: null,
-      // Provisioning writes `.claude/settings.local.json` — this is the Claude
-      // Code path by construction, not a fallback.
-      agentType: knownAgentTypeForProvider('claude'),
-    });
-    if (registered.kind !== 'created') return registered;
-
-    // The agent's SWITCH_API_ENDPOINT must point at the Switch core (agent
-    // bridge), which is a distinct endpoint from the gateway.
-    await writeSwitchSettings({
-      dir: params.dir,
-      apiEndpoint: server.apiUrl,
-      agentId: registered.id,
-    });
-
-    // The settings file above carries no token (CHOO-1962), so the per-agent
-    // credentials file is what actually provisions this agent.
-    const workspace = await resolveWorkspaceFsFor(null, params.dir);
-    try {
-      await writeNeutralAgentSettingsFs(workspace.fs, {
-        slug: params.name,
-        apiEndpoint: server.apiUrl,
-        apiToken: registered.apiKey,
-        agentId: registered.id,
-      });
-    } finally {
-      workspace.close();
-    }
-
-    return { kind: 'created', agentId: registered.id };
-  },
-
-  /**
-   * Register a new Claude Code agent and write its credentials into a REMOTE
-   * working directory over SSH — the remote-host equivalent of `provisionAgent`.
-   * The agent has no local directory: its `.claude/settings.local.json` is
-   * written on the host, where the runtime sidecar reads it (CHOO-1059).
-   */
-  provisionRemoteAgent: async (
-    params: ProvisionRemoteAgentParams
-  ): Promise<ProvisionAgentResult> => {
-    const server = await requireServer(params.serverId);
-
-    const conflict = await foreignCredentialsOwner(
-      params.sshHost,
-      params.remoteRepoDir,
-      params.name,
-      server.apiUrl
-    );
-    if (conflict !== null) return { kind: 'credentials-conflict', endpoint: conflict };
-
-    const registered = await registerAgentIdentity(server, {
-      name: params.name,
-      description: params.description,
-      repoDir: params.remoteRepoDir,
-      autoSession: params.autoSession,
-      iconUrl: agentAvatarUrlForName(params.name),
-      // As locally: a name is all this flow collects.
-      displayName: null,
-      // Remote provisioning likewise writes `.claude/settings.local.json`.
-      agentType: knownAgentTypeForProvider('claude'),
-    });
-    if (registered.kind !== 'created') return registered;
-
-    const proxy = await ensureSshConnected(sshConnectionIdForHost(params.sshHost), params.sshHost);
-    const fs = new SshFileSystem(proxy, params.remoteRepoDir);
-    try {
-      await writeRemoteSwitchSettings(fs, {
-        apiEndpoint: server.apiUrl,
-        agentId: registered.id,
-      });
-    } finally {
-      fs.close();
-    }
-
-    // As locally: the settings file names the agent, the per-agent credentials
-    // file carries its token — here in the VM's own working directory, which is
-    // where its sessions will look.
-    const workspace = await resolveWorkspaceFsFor(params.sshHost, params.remoteRepoDir);
-    try {
-      await writeNeutralAgentSettingsFs(workspace.fs, {
-        slug: params.name,
-        apiEndpoint: server.apiUrl,
-        apiToken: registered.apiKey,
-        agentId: registered.id,
-      });
-    } finally {
-      workspace.close();
-    }
-
-    return { kind: 'created', agentId: registered.id };
   },
 });

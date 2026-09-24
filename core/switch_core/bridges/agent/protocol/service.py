@@ -102,6 +102,7 @@ from switch_core.events import (
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
@@ -132,19 +133,6 @@ if TYPE_CHECKING:
     from switch_core.session_activity.outcomes import ApprovalOutcomes
 
 logger = logging.getLogger(__name__)
-
-
-def _age_days(created_at: object) -> float:
-    """How old a row is, in days, for reporting. Zero if unknown.
-
-    Takes `object` because the timestamp columns are annotated `Mapped[str]`
-    while carrying real `datetime`s, so the honest signature is "whatever the
-    column hands back", checked here rather than trusted.
-    """
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
 
 
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
@@ -951,7 +939,7 @@ class ProtocolService:
         # runtime or its age says almost nothing.
         removed: dict[str, str | int | float | bool] = {
             "known_agent_type": normalise_known_agent_type(agent.metadata_),
-            "age_days": _age_days(agent.created_at),
+            "age_days": age_days(agent.created_at),
             "had_parent": agent.parent_agent_id is not None,
         }
         removed["room_count"] = await self._room_count_for(resolved_id)

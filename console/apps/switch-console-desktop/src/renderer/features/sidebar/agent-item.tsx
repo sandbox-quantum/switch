@@ -29,7 +29,6 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/lib/ui/context-menu';
-import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
@@ -210,10 +209,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                 </SidebarItemMiniButton>
               }
             />
-            <TooltipContent>
-              New Session
-              <BoundShortcut settingsKey="newSession" variant="badge" />
-            </TooltipContent>
+            <TooltipContent>New Session</TooltipContent>
           </Tooltip>
           {hasSessions && (
             <SidebarItemMiniButton

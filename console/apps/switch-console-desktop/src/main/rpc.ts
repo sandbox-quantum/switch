@@ -5,10 +5,8 @@ import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
 import { filesController } from './core/fs/controller';
 import { locationsController } from './core/locations/controller';
-import { locationRuntimeSettingsController } from './core/locations/location-runtime-settings-controller';
 import { localSwitchServerController } from './core/managed-switch-server/controller';
 import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
-import { promptLibraryController } from './core/prompt-library/controller';
 import { providersController } from './core/providers/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
@@ -17,7 +15,6 @@ import { sdkHostController } from './core/sdk-host/controller';
 import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
 import { appSettingsController } from './core/settings/controller';
-import { providerSettingsController } from './core/settings/provider-settings-controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
 import { telemetryController } from './core/telemetry/controller';
@@ -31,16 +28,13 @@ export const rpcRouter = createRPCRouter({
   agentTemplates: agentTemplatesController,
   app: appController,
   appSettings: appSettingsController,
-  providerSettings: providerSettingsController,
   update: updateController,
   resourceMonitor: resourceMonitorController,
-  promptLibrary: promptLibraryController,
   locations: locationsController,
   sessions: sessionController,
   viewState: viewStateController,
   search: searchController,
   switchRooms: switchRoomsController,
-  locationRuntimeSettings: locationRuntimeSettingsController,
   switchServers: switchServersController,
   agentTypes: agentTypesController,
   localSwitchServer: localSwitchServerController,

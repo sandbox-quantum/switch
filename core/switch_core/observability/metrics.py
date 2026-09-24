@@ -152,7 +152,7 @@ class MetricsRegistry:
                 return
             histogram = series.get(key)
             if histogram is None:
-                histogram = _Histogram(DEFAULT_LATENCY_BOUNDS_MS)
+                histogram = _Histogram(spec.bounds or DEFAULT_LATENCY_BOUNDS_MS)
                 series[key] = histogram
             histogram.record(value)
 

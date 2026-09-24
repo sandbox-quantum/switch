@@ -16,13 +16,25 @@ something nobody needs within a day.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, case, distinct, exists, func, select
+from sqlalchemy import (
+    CompoundSelect,
+    Select,
+    and_,
+    case,
+    distinct,
+    exists,
+    func,
+    select,
+    union_all,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from switch_core.db.models import (
     Agent,
@@ -67,7 +79,24 @@ _WEEK = timedelta(days=7)
 class UsageCounts:
     """The snapshot's numbers, accumulated across tenants."""
 
+    # How many tenants actually made it into the sums below — not how many
+    # tenants the deployment has. `collect_usage` collects one tenant at a
+    # time into a scratch instance of this class and only folds it in once
+    # that tenant's queries all succeed, so a tenant excluded after a failure
+    # is excluded here too. That is what makes a partial pass a visibly
+    # smaller number instead of the full tenant count sitting on top of an
+    # undercounted everything else.
     tenant_count: int = 0
+    # Tenants whose queries raised and were stepped over. Sits beside
+    # `tenant_count` so a pass that excluded some is self-describing on the
+    # wire: without it, a partial pass is every count dropping at once with
+    # nothing to attribute it to.
+    tenant_failed_count: int = 0
+    # Wall time to collect the whole pass. Roughly fifteen queries per tenant
+    # against the database that is also serving rooms, so what it costs at
+    # scale is a real question — and a background task is invisible to the
+    # HTTP request histogram that times everything else.
+    duration_ms: int = 0
     user_count: int = 0
     user_active_1d: int = 0
     user_active_7d: int = 0
@@ -109,6 +138,8 @@ class UsageCounts:
         """Flatten to exactly the properties `usage_snapshot` declares."""
         properties: dict[str, float] = {
             "tenant_count": self.tenant_count,
+            "tenant_failed_count": self.tenant_failed_count,
+            "duration_ms": self.duration_ms,
             "user_count": self.user_count,
             "user_active_1d": self.user_active_1d,
             "user_active_7d": self.user_active_7d,
@@ -156,7 +187,7 @@ class UsageCounts:
 
 @dataclass(frozen=True)
 class NewlyActiveRoom:
-    """A room whose first human interaction happened in the window just read."""
+    """A room that became active in the window just read. See `newly_active_rooms`."""
 
     # The milestone is measured from this, not from when the pass ran: a pass
     # is up to a whole interval late, always in the same direction.
@@ -168,53 +199,108 @@ class NewlyActiveRoom:
     created_by_kind: str
 
 
-def _room_has_an_agent(tenant_id: str) -> Select[tuple[str]]:
-    """Correlated subquery: the message's room has an agent in it."""
-    return (
+def _rooms_with_an_agent(tenant_id: str) -> CompoundSelect:
+    """Room ids with an agent in them now, or that an agent has posted in.
+
+    Uncorrelated, and matched with `IN` rather than as an `OR` of two
+    `EXISTS`, so Postgres plans it as one semi-join: hashed across the tenant
+    for the snapshot, or narrowed to the single room `room_had_human_activity`
+    asks about. An `OR` of correlated probes cannot be planned that way and
+    re-runs both for every human message, which on a large room with no agent
+    is quadratic — and that check runs on every room archive and delete.
+
+    Aliased so neither arm correlates with the human's `Client` and `Message`
+    in the enclosing query.
+    """
+    member = aliased(Client)
+    poster = aliased(Client)
+    agent_message = aliased(Message)
+    return union_all(
         select(ClientRoom.room_id)
-        .join(Client, Client.id == ClientRoom.client_id)
+        .join(member, member.id == ClientRoom.client_id)
         .where(
-            ClientRoom.room_id == Message.room_id,
             ClientRoom.tenant_id == tenant_id,
-            Client.type == AGENT_CLIENT_TYPE,
-            Client.tenant_id == tenant_id,
-        )
+            member.type == AGENT_CLIENT_TYPE,
+            member.tenant_id == tenant_id,
+        ),
+        select(agent_message.room_id)
+        .join(poster, poster.id == agent_message.sender_client_id)
+        .where(
+            agent_message.tenant_id == tenant_id,
+            agent_message.seq > 0,
+            poster.type == AGENT_CLIENT_TYPE,
+            poster.tenant_id == tenant_id,
+        ),
+    )
+
+
+def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
+    """The one definition of "a human used this room", shared by all four paths
+    that ask it: the two room-activity gauges, the once-per-room activation
+    event, and the "was this room ever active" check on deletion and archival.
+    They must agree, or the same room reads as active in one figure and
+    never-active in another. Assumes the caller has already joined `Client` on
+    `Message.sender_client_id`.
+
+    Both conditions are kept:
+
+    - **The room must have an agent in it, or have had one post in it.** A
+      message from a bridge relay or the admin client is not a person, and a
+      person talking in a room with no agent is not using the product this
+      telemetry is about — two agents talking to each other is likewise not
+      activity, which is why this keys on the human side only. Membership
+      alone would make the lifetime questions depend on who is in the room at
+      the moment they are asked: a busy room whose agents were removed before
+      it was archived would read as never used. An agent's messages outlive
+      its membership, so they answer for the room's history.
+    - **`seq` must be positive.** `MessageStore.create_historical` backfills
+      imported history with a negative `seq`, and a backfill is not someone
+      using the product today. Nothing calls it yet, so this half is a latent
+      guard rather than a live one — but it costs nothing to apply everywhere
+      a message is read as activity, and every count in this module that
+      already reads live traffic (`collect_tenant_counts`'s message and turn
+      counts) applies the identical filter, so leaving it off here would be
+      the inconsistent choice.
+    """
+    return (
+        *_human_message_conditions(tenant_id),
+        Message.room_id.in_(_rooms_with_an_agent(tenant_id)),
+    )
+
+
+def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
+    """The message half of `_human_activity_conditions`: a person sent it, and
+    it is live traffic rather than a backfill."""
+    return (
+        Client.type == HUMAN_CLIENT_TYPE,
+        Client.tenant_id == tenant_id,
+        Message.seq > 0,
     )
 
 
 def _human_interaction(tenant_id: str, since: datetime) -> Select[tuple[str]]:
-    """Room ids a human spoke in since `since`.
-
-    "Interaction" is a human posting in a room that has an agent in it. Both
-    halves matter: a message from a bridge relay or the admin client is not a
-    person, and a person talking in a room with no agent is not using the
-    product this telemetry is about. Two agents talking to each other is
-    likewise not activity, which is why this keys on the human side only.
-    """
+    """Room ids a human used since `since`. See `_human_activity_conditions`."""
     return (
         select(distinct(Message.room_id))
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
-            Client.type == HUMAN_CLIENT_TYPE,
-            Client.tenant_id == tenant_id,
-            exists(_room_has_an_agent(tenant_id)),
+            *_human_activity_conditions(tenant_id),
         )
     )
 
 
 def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
-    """Distinct human clients who interacted since `since`."""
+    """Distinct human clients who used a room since `since`. See
+    `_human_activity_conditions`."""
     return (
         select(distinct(Message.sender_client_id))
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
-            Client.type == HUMAN_CLIENT_TYPE,
-            Client.tenant_id == tenant_id,
-            exists(_room_has_an_agent(tenant_id)),
+            *_human_activity_conditions(tenant_id),
         )
     )
 
@@ -523,37 +609,106 @@ async def _collect_turns(
 async def room_had_human_activity(
     session: AsyncSession, tenant_id: str, room_id: str
 ) -> bool:
-    """Whether a human has ever posted in this room.
+    """Whether this room has ever seen human activity. See
+    `_human_activity_conditions`.
 
     The session must already be bound to `tenant_id`; the predicate is named
     anyway, for the reason `collect_tenant_counts` gives.
+
+    The agent condition is asked of the one room rather than of each message.
+    Uncorrelated, Postgres evaluates it once before reading anything, so a
+    room with no agent is answered without scanning its history — this runs
+    on every archive and delete.
     """
+    agent_rooms = _rooms_with_an_agent(tenant_id).subquery()
     found = await session.execute(
         select(Message.id)
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.room_id == room_id,
-            Message.seq > 0,
-            Client.type == HUMAN_CLIENT_TYPE,
-            Client.tenant_id == tenant_id,
+            *_human_message_conditions(tenant_id),
+            exists(
+                select(agent_rooms.c.room_id).where(agent_rooms.c.room_id == room_id)
+            ),
         )
         .limit(1)
     )
     return found.scalar_one_or_none() is not None
 
 
+def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
+    """Fold one tenant's collected numbers into the running deployment totals.
+
+    Every field sums across tenants except `room_users_max` — the busiest room
+    in the deployment is the largest of each tenant's busiest room, not their
+    sum — and `connector_counts`, which sums per platform rather than as a
+    dict. Neither `tenant_count` nor `user_count` is touched here: the first is
+    the caller's to advance once a tenant's merge succeeds, and the second is
+    never collected per tenant at all.
+    """
+    skip = {
+        "tenant_count",
+        "tenant_failed_count",
+        "duration_ms",
+        "user_count",
+        "room_users_max",
+        "connector_counts",
+    }
+    for f in fields(UsageCounts):
+        if f.name in skip:
+            continue
+        setattr(total, f.name, getattr(total, f.name) + getattr(tenant, f.name))
+    total.room_users_max = max(total.room_users_max, tenant.room_users_max)
+    for platform, count in tenant.connector_counts.items():
+        total.connector_counts[platform] += count
+
+
 async def collect_usage(
     session_factory: async_sessionmaker[AsyncSession], *, now: datetime | None = None
 ) -> UsageCounts:
-    """Every tenant's numbers, summed into one set of deployment totals."""
+    """Every tenant's numbers, summed into one set of deployment totals.
+
+    One tenant's failure does not take the whole pass down. Its queries run
+    against a scratch `UsageCounts` rather than the running total, so a query
+    that raises partway through a tenant leaves nothing from that tenant
+    behind — not the fields collected before the failure, not any after —
+    and the loop moves on to the next tenant with the total untouched. See
+    `UsageCounts.tenant_count` and `tenant_failed_count` for how that failure
+    is disclosed rather than swallowed.
+    """
     moment = now or datetime.now(UTC)
+    # Monotonic, not the wall clock: an NTP step mid-pass would otherwise
+    # produce a duration the pass did not take, and a negative one is worse
+    # than none at all — nothing at the far end can tell it from data.
+    started = time.monotonic()
     counts = UsageCounts()
     tenant_ids = await all_tenant_ids(session_factory)
-    counts.tenant_count = len(tenant_ids)
+    failed_tenants: list[str] = []
     for tenant_id in tenant_ids:
-        async with tenant_session(session_factory, tenant_id) as session:
-            await collect_tenant_counts(session, tenant_id, counts, moment)
+        tenant_counts = UsageCounts()
+        try:
+            async with tenant_session(session_factory, tenant_id) as session:
+                await collect_tenant_counts(session, tenant_id, tenant_counts, moment)
+        except Exception:
+            logger.exception(
+                "Usage snapshot: failed to collect counts for tenant %s", tenant_id
+            )
+            failed_tenants.append(tenant_id)
+            continue
+        _merge_tenant_counts(counts, tenant_counts)
+        counts.tenant_count += 1
+    if failed_tenants:
+        logger.error(
+            "Usage snapshot: excluded %d of %d tenant(s) from this pass: %s. "
+            "tenant_count on the emitted snapshot reports only what was "
+            "counted, so it will read lower than the deployment's real "
+            "tenant count until this is fixed.",
+            len(failed_tenants),
+            len(tenant_ids),
+            ", ".join(failed_tenants),
+        )
+    counts.tenant_failed_count = len(failed_tenants)
     # `users` carries no tenant, so it is counted once for the deployment
     # rather than per tenant — summing a global table over tenants would
     # multiply it by however many there are.
@@ -561,6 +716,7 @@ async def collect_usage(
         counts.user_count = await _scalar(
             session, select(func.count()).select_from(User)
         )
+    counts.duration_ms = round((time.monotonic() - started) * 1000)
     return counts
 
 
@@ -570,83 +726,166 @@ async def newly_active_rooms(
     since: datetime,
     now: datetime | None = None,
 ) -> list[NewlyActiveRoom]:
-    """Rooms whose *first* human interaction happened after `since`.
+    """Rooms that became active after `since`.
+
+    A room becomes active the moment it has both a human message and an agent:
+    the later of its earliest human message and the earliest sign of an agent
+    (the first agent to join among its current members, or the first agent
+    message, whichever came first). Taking the later of the two is what lets a
+    room where somebody spoke before any agent was added still be reported,
+    once the agent arrives.
 
     The window is what makes this once-per-room without storing anything: a
-    room qualifies only if its earliest human message falls inside it, and each
-    window starts where the last one ended. A room that was already active
-    before `since` has an earlier first message and is skipped for good.
+    room qualifies only if it became active inside it, and each window starts
+    where the last one ended. A room that was already active before `since` is
+    skipped for good.
 
     The cost of that is a room can be reported late — up to one window — and
     cannot be reported at all if the deployment was down when the window that
     covered it would have run. Both are acceptable for a figure nobody reads
-    inside a day, and neither can produce a duplicate.
+    inside a day. One duplicate is possible: an agent that never posted,
+    removed and added back, moves its room's join time later, and the room can
+    be reported a second time.
+
+    One tenant's failure is contained to that tenant, the same as
+    `collect_usage`: its rooms are collected into a scratch list first and only
+    folded into the result if every query for it succeeds, so a query that
+    raises partway through never contributes a partial set of rooms. The
+    caller advances its watermark regardless, so a contained tenant's rooms
+    for this window are never reported — logged as an error rather than
+    crashing the pass.
     """
     moment = now or datetime.now(UTC)
     found: list[NewlyActiveRoom] = []
+    tenant_ids = await all_tenant_ids(session_factory)
+    failed_tenants: list[str] = []
 
-    for tenant_id in await all_tenant_ids(session_factory):
-        async with tenant_session(session_factory, tenant_id) as session:
-            first_interaction = (
-                select(
-                    Message.room_id.label("room_id"),
-                    func.min(Message.sent_at).label("first_at"),
+    for tenant_id in tenant_ids:
+        tenant_found: list[NewlyActiveRoom] = []
+        try:
+            async with tenant_session(session_factory, tenant_id) as session:
+                first_interaction = (
+                    select(
+                        Message.room_id.label("room_id"),
+                        func.min(Message.sent_at).label("first_at"),
+                    )
+                    .join(Client, Client.id == Message.sender_client_id)
+                    .where(
+                        Message.tenant_id == tenant_id,
+                        *_human_activity_conditions(tenant_id),
+                    )
+                    .group_by(Message.room_id)
+                    .subquery()
                 )
-                .join(Client, Client.id == Message.sender_client_id)
-                .where(
-                    Message.tenant_id == tenant_id,
-                    Client.tenant_id == tenant_id,
-                    Client.type == HUMAN_CLIENT_TYPE,
-                    Message.seq > 0,
+                agent_joined = (
+                    select(
+                        ClientRoom.room_id.label("room_id"),
+                        func.min(ClientRoom.joined_at).label("at"),
+                    )
+                    .join(Client, Client.id == ClientRoom.client_id)
+                    .where(
+                        ClientRoom.tenant_id == tenant_id,
+                        Client.type == AGENT_CLIENT_TYPE,
+                        Client.tenant_id == tenant_id,
+                    )
+                    .group_by(ClientRoom.room_id)
+                    .subquery()
                 )
-                .group_by(Message.room_id)
-                .subquery()
-            )
-            agent_count = (
-                select(func.count())
-                .select_from(ClientRoom)
-                .join(Client, Client.id == ClientRoom.client_id)
-                .where(
-                    ClientRoom.room_id == Room.id,
-                    ClientRoom.tenant_id == tenant_id,
-                    Client.type == AGENT_CLIENT_TYPE,
-                    Client.tenant_id == tenant_id,
+                agent_posted = (
+                    select(
+                        Message.room_id.label("room_id"),
+                        func.min(Message.sent_at).label("at"),
+                    )
+                    .join(Client, Client.id == Message.sender_client_id)
+                    .where(
+                        Message.tenant_id == tenant_id,
+                        Message.seq > 0,
+                        Client.type == AGENT_CLIENT_TYPE,
+                        Client.tenant_id == tenant_id,
+                    )
+                    .group_by(Message.room_id)
+                    .subquery()
                 )
-                .scalar_subquery()
-            )
-            rows = await session.execute(
-                select(
-                    Room.created_at,
-                    first_interaction.c.first_at,
-                    Room.channel_type,
-                    Room.bridge_id,
-                    Room.metadata_["created_by_kind"].astext,
-                    agent_count,
+                # LEAST and GREATEST skip NULLs, so a room with no agent at all
+                # would otherwise become active at its first human message.
+                agent_since = func.least(agent_joined.c.at, agent_posted.c.at)
+                activated_at = func.greatest(first_interaction.c.first_at, agent_since)
+                agent_count = (
+                    select(func.count())
+                    .select_from(ClientRoom)
+                    .join(Client, Client.id == ClientRoom.client_id)
+                    .where(
+                        ClientRoom.room_id == Room.id,
+                        ClientRoom.tenant_id == tenant_id,
+                        Client.type == AGENT_CLIENT_TYPE,
+                        Client.tenant_id == tenant_id,
+                    )
+                    .scalar_subquery()
                 )
-                .join(first_interaction, first_interaction.c.room_id == Room.id)
-                .where(
-                    and_(
-                        Room.tenant_id == tenant_id,
-                        first_interaction.c.first_at > since,
-                        first_interaction.c.first_at <= moment,
+                rows = await session.execute(
+                    select(
+                        Room.created_at,
+                        activated_at,
+                        Room.channel_type,
+                        Room.bridge_id,
+                        Room.metadata_["created_by_kind"].astext,
+                        agent_count,
+                    )
+                    .join(first_interaction, first_interaction.c.room_id == Room.id)
+                    .outerjoin(agent_joined, agent_joined.c.room_id == Room.id)
+                    .outerjoin(agent_posted, agent_posted.c.room_id == Room.id)
+                    .where(
+                        and_(
+                            Room.tenant_id == tenant_id,
+                            agent_since.is_not(None),
+                            activated_at > since,
+                            activated_at <= moment,
+                        )
                     )
                 )
-            )
 
-            platforms = await _bridge_platforms(session)
-            for created_at, first_at, channel_type, bridge_id, kind, agents in rows:
-                found.append(
-                    NewlyActiveRoom(
-                        first_active_at=as_utc(first_at),
-                        seconds_since_room_created=max(
-                            (first_at - created_at).total_seconds(), 0.0
-                        ),
-                        bridge_platform=normalise_platform(platforms.get(bridge_id)),
-                        channel_type=normalise_channel_type(channel_type),
-                        agent_count=int(agents or 0),
-                        created_by_kind=normalise_actor_kind(kind),
+                platforms = await _bridge_platforms(session)
+                for (
+                    created_at,
+                    active_at,
+                    channel_type,
+                    bridge_id,
+                    kind,
+                    agents,
+                ) in rows:
+                    tenant_found.append(
+                        NewlyActiveRoom(
+                            first_active_at=as_utc(active_at),
+                            seconds_since_room_created=max(
+                                (active_at - created_at).total_seconds(), 0.0
+                            ),
+                            bridge_platform=normalise_platform(
+                                platforms.get(bridge_id)
+                            ),
+                            channel_type=normalise_channel_type(channel_type),
+                            agent_count=int(agents or 0),
+                            created_by_kind=normalise_actor_kind(kind),
+                        )
                     )
-                )
+        except Exception:
+            logger.exception(
+                "Usage snapshot: failed to collect newly-active rooms for tenant %s",
+                tenant_id,
+            )
+            failed_tenants.append(tenant_id)
+            continue
+        found.extend(tenant_found)
+
+    if failed_tenants:
+        logger.error(
+            "Usage snapshot: could not check %d of %d tenant(s) for "
+            "newly-active rooms: %s. Any room of theirs that went active in "
+            "this window will never be reported as room_became_active: the "
+            "next window starts where this one ends.",
+            len(failed_tenants),
+            len(tenant_ids),
+            ", ".join(failed_tenants),
+        )
     return found
 
 

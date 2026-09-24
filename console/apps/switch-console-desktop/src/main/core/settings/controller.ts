@@ -27,10 +27,6 @@ function reportConsent(previous: TelemetrySettings, next: TelemetrySettings): vo
 }
 
 export const appSettingsController = createRPCController({
-  get: <T extends AppSettingsKey>(key: T): Promise<AppSettings[T]> => appSettingsService.get(key),
-
-  getAll: (): Promise<AppSettings> => appSettingsService.getAll(),
-
   getWithMeta: <T extends AppSettingsKey>(
     key: T
   ): Promise<{

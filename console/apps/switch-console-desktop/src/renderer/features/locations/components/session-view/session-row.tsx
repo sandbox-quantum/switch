@@ -64,7 +64,6 @@ export const SessionRow = observer(function SessionRow({
       onRename={handleRename}
       onArchive={handleArchive}
       onRestore={handleRestore}
-      onConvertAutomation={undefined}
       onDelete={handleDelete}
     >
       <button

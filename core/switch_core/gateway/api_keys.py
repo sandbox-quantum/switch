@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,6 +27,7 @@ from switch_core.gateway.schemas import (
     RevealKeyResponse,
 )
 from switch_core.telemetry import emit_safely
+from switch_core.telemetry.ages import age_days
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,6 @@ def _key_type(value: str) -> str:
     what the key is *for*, which is a fixed set the code chooses.
     """
     return value if value in ("agent", "registration", "bootstrap") else "other"
-
-
-def _age_days(created_at: object) -> float:
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
 
 
 router = APIRouter()
@@ -142,6 +135,6 @@ async def delete_api_key(
     emit_safely(
         current_telemetry(),
         "api_key_revoked",
-        {"key_type": _key_type(key.type), "age_days": _age_days(key.created_at)},
+        {"key_type": _key_type(key.type), "age_days": age_days(key.created_at)},
     )
     return {"ok": True}
