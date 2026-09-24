@@ -1,8 +1,15 @@
 import { expect, it, vi } from 'vitest';
-import { sharedSessionTransport } from './shared-session-transport';
+import { hostJournalTransport, sharedSessionTransport } from './shared-session-transport';
 
 const upload = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/lib/ipc', () => ({ rpc: { sdkHost: { uploadAttachment: upload } } }));
+const ipc = vi.hoisted(() => ({
+  journalSnapshot: vi.fn(),
+  journalEvents: vi.fn(),
+  sharedSnapshot: vi.fn(),
+  sharedEvents: vi.fn(),
+  sharedSubmit: vi.fn(),
+}));
+vi.mock('@renderer/lib/ipc', () => ({ rpc: { sdkHost: { uploadAttachment: upload, ...ipc } } }));
 
 it('preserves the server attachment digest for provider staging', async () => {
   const attachment = {
@@ -39,4 +46,38 @@ it('rejects a malformed attachment digest before composer delivery', async () =>
       data: 'ZGF0YQ==',
     })
   ).rejects.toThrow();
+});
+
+it('reads the host journal but still sends commands through Switch', async () => {
+  const transport = hostJournalTransport('agent', 'server');
+  ipc.journalSnapshot.mockResolvedValueOnce('snapshot');
+  expect(await transport.snapshot('session', null)).toBe('snapshot');
+  expect(ipc.journalSnapshot).toHaveBeenCalledWith('agent', 'session');
+
+  ipc.journalEvents.mockResolvedValue([]);
+  const cursor = vi.fn();
+  const stop = transport.subscribe('session', 7, vi.fn(), vi.fn(), cursor);
+  await vi.waitFor(() => expect(cursor).toHaveBeenCalledWith(7));
+  stop();
+  expect(ipc.journalEvents).toHaveBeenCalledWith('agent', 'session', 7);
+  expect(ipc.sharedEvents).not.toHaveBeenCalled();
+
+  ipc.sharedSubmit.mockResolvedValueOnce({
+    type: 'command.status',
+    commandId: 'c',
+    status: 'accepted',
+    code: null,
+    message: null,
+  });
+  await transport.submit({
+    contractVersion: 1,
+    commandId: 'c',
+    sessionId: 'session',
+    epoch: 'epoch',
+    body: { type: 'turn.interrupt', turnId: 'turn' },
+  } as never);
+  expect(ipc.sharedSubmit).toHaveBeenCalledWith(
+    'server',
+    expect.objectContaining({ commandId: 'c' })
+  );
 });

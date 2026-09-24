@@ -145,15 +145,48 @@ The session status line reuses the existing `agent_runtime_states` table
      backs off from 50 ms to 1 s, fails at once on 401/403, and logs any
      error other than the expected 404 instead of swallowing it.
 
+6. Step 6 — Console reads transcripts from the host's journal:
+   - `console/apps/switch-console-desktop/src/main/core/sdk-host/host-journal.ts`:
+     `HostJournals` keeps one long-lived `node -e TAIL_SCRIPT` per open
+     session, run through the agent's execution context (local, or its SSH
+     host). The script tails `<sdk-sessions>/<sha256(id)>/events.jsonl`, and
+     every 2 s reports whether the supervisor is alive and the last lease's
+     `roomIds` / `retired`. `JournalTail.snapshot()` replays the journal the
+     way `HostedSession` does (a reset's new epoch rebuilds the replica), and
+     sets `connectivity` from the supervisor. A tail nobody has read for 60 s
+     is closed.
+   - RPCs `sdkHost.transcriptSource`, `journalSnapshot`, `journalEvents`
+     (the last two keep `syncSdkSessionActivity`).
+   - `hostJournalTransport(agentId, serverId)`: reads from the journal,
+     while submit, reconcile, command status and attachments still go through
+     Switch, the only place the host takes commands from.
+     `SharedSessionPanel` asks `transcriptSource` once per client (and again
+     when the host reports ready). It falls back to Switch when the journal
+     is not on the agent's host, and shows a line saying why when the journal
+     should have been readable but wasn't.
+   - Known gap: host liveness reaches the open view only through the next
+     snapshot, since there is no `session.connectivity` event in the journal.
+
 ## What is left
 
-### Step 6 — Console reads transcripts locally
-
-`SharedSessionPanel` always uses `sharedSessionTransport` (reads switch-core,
-polls every 500 ms). Add a local-host and a sidecar `SessionTransport` reading
-the host's own journal; choose by where the session runs.
-
 ### Step 7 — remove the server-side session layer
+
+**Deliberately not started on this branch.** Deployed Consoles (0.35 and
+earlier) read transcripts, submit commands and answer requests only through
+the `/sessions/*` and `/gateway/sessions/*` routes and the snapshot tables,
+and the host still gates its work on the `/sessions/events` receipt. Removing
+them in the same release as steps 4–6 would break every Console that has not
+updated. Order:
+
+1. Release steps 4–6: switch-core, agent-runtime 0.7.0, a Console that
+   reports activity and reads its journal.
+2. Wait until the Consoles in use speak agent-protocol 4 (the stream records
+   each client's `speaks`).
+3. Move the remaining host dependencies off the snapshot: gate room work on
+   the lease rather than the `session.upsert` receipt, and send commands
+   another way than the snapshot command queue.
+4. Then carry out the removal below.
+
 
 Once 4–6 ship: drop `sdk_sessions` / `sdk_session_events` /
 `sdk_session_commands` / `sdk_room_admissions` usage, `SessionAuthority`,
