@@ -328,6 +328,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       ...(permissionMode ? { permissionMode } : {}),
       strictMcpConfig: false,
+      // The connector plugin Switch used to ship would add a second Switch
+      // server with its own connection; kept off for installs that still have it.
+      ...(mcpServers.switch
+        ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
+        : {}),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

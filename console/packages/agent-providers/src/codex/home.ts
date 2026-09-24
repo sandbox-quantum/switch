@@ -35,6 +35,11 @@ export async function prepareCodexSessionHome(input: {
   // in the user's config would be merged into it rather than replaced.
   const servers = config.mcp_servers as Record<string, unknown> | undefined;
   if (servers) delete servers.switch;
+  // The connector plugin Switch used to ship; kept off for installs that still have it.
+  const plugins = config.plugins as Record<string, { enabled?: boolean }> | undefined;
+  for (const [name, plugin] of Object.entries(plugins ?? {})) {
+    if (name.includes('switch-connector')) plugin.enabled = false;
+  }
   await writeFile(join(home, 'config.toml'), stringify(config), { mode: 0o600 });
   for (const name of ['AGENTS.md', 'rules', 'plugins', 'hooks.json'])
     await linkHomeAsset(join(input.sourceHome, name), join(home, name));
