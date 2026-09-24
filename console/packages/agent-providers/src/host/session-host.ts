@@ -11,6 +11,7 @@ import type {
   Attachment,
   Command,
   HostBody,
+  Origin,
   Request,
   ServerEvent,
   Session,
@@ -47,6 +48,12 @@ export type HostSessionStart = {
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
 };
 type PendingQuestion = { request: Request; options: Map<string, string> };
+export type ApprovalOutcome = {
+  requestId: string;
+  state: 'answered' | 'expired';
+  answer: string | null;
+  answeredBy: string | null;
+};
 
 /** Execution owner for a local-only session. Shared server leases are an external boundary. */
 export class HostedSession {
@@ -372,6 +379,105 @@ export class HostedSession {
       events: structuredClone(this.events.records.filter((event) => event.sequence > after)),
       throughSequence: this.replica.snapshot().throughSequence,
     };
+  }
+
+  /** Where the command that started `turnId` came from, if a command started it. */
+  originOf(turnId: string): Origin | null {
+    return this.commands.get(turnId)?.origin ?? null;
+  }
+
+  /**
+   * Apply what Switch recorded for one of this session's approval requests:
+   * a person's answer, or the request running out of time. Serialised with
+   * commands, since both settle the same requests. Returns false when the
+   * request is no longer open here — already answered another way, or
+   * resolved by the provider — which leaves nothing to apply.
+   */
+  applyApprovalOutcome(outcome: ApprovalOutcome): Promise<boolean> {
+    const result = this.serial.then(() => this.applyOutcome(outcome));
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
+  private async applyOutcome(outcome: ApprovalOutcome): Promise<boolean> {
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
+    const pending = this.questions.get(outcome.requestId);
+    const current = this.snapshot().requests.find((r) => r.requestId === outcome.requestId);
+    if (!pending || current?.state !== 'open' || pending.request.content.kind !== 'approval')
+      return false;
+    const options = pending.request.content.options;
+    const commandId = `approval:${outcome.requestId}`;
+    if (outcome.state === 'expired') {
+      // Marked submitting first, like an answer, so the provider resolving the
+      // request as a result is not read as it resolving the request on its own.
+      await this.publish({
+        type: 'request.submitting',
+        requestId: outcome.requestId,
+        revision: current.revision,
+        commandId,
+        actorId: 'switch',
+        surface: 'switch-web',
+      });
+      // Declined rather than cancelled: a cancel interrupts the whole turn,
+      // and nobody answering is not a reason to stop the agent's other work.
+      await this.adapter.respondToRequest(
+        this.config.session.sessionId,
+        outcome.requestId,
+        'decline'
+      );
+      await this.publish({
+        type: 'request.settled',
+        requestId: outcome.requestId,
+        revision: current.revision + 1,
+        outcome: 'expired',
+        commandId,
+        result: null,
+      });
+      this.questions.delete(outcome.requestId);
+      return true;
+    }
+    const option = options.find((x) => x.optionId === outcome.answer);
+    if (!option)
+      throw new Error(
+        `INVALID_ANSWER: Switch recorded option ${outcome.answer} for request ${outcome.requestId}, which it never offered.`
+      );
+    const fromConsole = outcome.answeredBy?.startsWith('user:') ?? false;
+    await this.publish({
+      type: 'request.submitting',
+      requestId: outcome.requestId,
+      revision: current.revision,
+      commandId,
+      actorId: outcome.answeredBy ?? 'switch',
+      surface: fromConsole ? 'console' : 'switch-web',
+    });
+    try {
+      await this.adapter.respondToRequest(
+        this.config.session.sessionId,
+        outcome.requestId,
+        option.decision
+      );
+    } catch (error) {
+      await this.publish({
+        type: 'request.settled',
+        requestId: outcome.requestId,
+        revision: current.revision + 1,
+        outcome: 'provider-error',
+        commandId,
+        result: null,
+      });
+      throw error;
+    }
+    const cancelled = option.decision === 'cancel';
+    await this.publish({
+      type: 'request.settled',
+      requestId: outcome.requestId,
+      revision: current.revision + 1,
+      outcome: cancelled ? 'cancelled' : 'answered',
+      commandId,
+      result: cancelled ? null : { kind: 'approval', optionId: option.optionId },
+    });
+    this.questions.delete(outcome.requestId);
+    return true;
   }
 
   command(input: Command): Promise<Snapshot['commandStatuses'][number]> {

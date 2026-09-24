@@ -900,3 +900,109 @@ it.each(['session.exited', 'session.state.changed'] as const)(
     ).toBe(false);
   }
 );
+
+async function openApproval(
+  emit: (event: Record<string, unknown>) => void,
+  host: HostedSession
+): Promise<void> {
+  emit({
+    type: 'request.opened',
+    turnId: 'turn',
+    requestId: 'permission',
+    requestType: 'tool_approval',
+    title: 'Write file',
+    options: [
+      { decision: 'accept', label: 'Allow' },
+      { decision: 'decline', label: 'Deny' },
+    ],
+  });
+  await vi.waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+}
+
+it('applies an answer Switch recorded for an approval, once', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('turn'));
+  await openApproval(emit, host);
+  const outcome = {
+    requestId: 'permission',
+    state: 'answered' as const,
+    answer: '1',
+    answeredBy: '@person:test',
+  };
+
+  expect(await host.applyApprovalOutcome(outcome)).toBe(true);
+  expect(await host.applyApprovalOutcome(outcome)).toBe(false);
+
+  expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+    'session',
+    'permission',
+    'decline'
+  );
+  expect(host.snapshot().requests[0]).toMatchObject({
+    state: 'resolved',
+    result: { outcome: 'answered', result: { kind: 'approval', optionId: '1' } },
+    decidedBy: { actorId: '@person:test', surface: 'switch-web' },
+  });
+});
+
+it('declines an approval Switch says expired, without interrupting the turn', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('turn'));
+  await openApproval(emit, host);
+
+  expect(
+    await host.applyApprovalOutcome({
+      requestId: 'permission',
+      state: 'expired',
+      answer: null,
+      answeredBy: null,
+    })
+  ).toBe(true);
+
+  expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+    'session',
+    'permission',
+    'decline'
+  );
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  expect(host.snapshot().requests[0]).toMatchObject({
+    state: 'closed',
+    result: { outcome: 'expired', result: null },
+  });
+});
+
+it('leaves an approval already answered another way alone', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('turn'));
+  await openApproval(emit, host);
+  await host.command({
+    ...message('answer'),
+    body: {
+      type: 'request.answer',
+      requestId: 'permission',
+      expectedRevision: 1,
+      answer: { kind: 'approval', optionId: '0' },
+    },
+  });
+
+  expect(
+    await host.applyApprovalOutcome({
+      requestId: 'permission',
+      state: 'answered',
+      answer: '1',
+      answeredBy: '@person:test',
+    })
+  ).toBe(false);
+  expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+    'session',
+    'permission',
+    'accept'
+  );
+});
+
+it('knows which command started a turn', async () => {
+  const { host } = await start('claude');
+  await host.command(message('turn'));
+  expect(host.originOf('turn')).toEqual(message('turn').origin);
+  expect(host.originOf('unknown')).toBeNull();
+});

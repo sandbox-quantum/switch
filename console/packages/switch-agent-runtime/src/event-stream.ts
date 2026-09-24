@@ -140,6 +140,31 @@ export interface EventStreamLogger {
   error(message: string, meta?: Record<string, unknown>): void;
 }
 
+export interface ApprovalOutcome {
+  session_id: string;
+  request_id: string;
+  state: 'answered' | 'expired';
+  answer: string | null;
+  answered_by: string | null;
+  answered_at: string | null;
+}
+
+function approvalOutcome(data: Record<string, unknown>): ApprovalOutcome | null {
+  const text = (value: unknown) => (typeof value === 'string' ? value : null);
+  const sessionId = text(data.session_id);
+  const requestId = text(data.request_id);
+  if (!sessionId || !requestId || (data.state !== 'answered' && data.state !== 'expired'))
+    return null;
+  return {
+    session_id: sessionId,
+    request_id: requestId,
+    state: data.state,
+    answer: text(data.answer),
+    answered_by: text(data.answered_by),
+    answered_at: text(data.answered_at),
+  };
+}
+
 export interface SwitchEventStreamDeps {
   creds: SwitchCredentials;
   /** Chosen by us and reused across reconnects — that is what makes the
@@ -175,6 +200,12 @@ export interface SwitchEventStreamDeps {
   onEvent(event: AgentBridgeEvent): Promise<void> | void;
   /** A hint to fetch a session's durable command queue; independent of rooms/cursors. */
   onCommands?: (sessionIds: string[]) => Promise<void> | void;
+  /**
+   * A person answered one of this agent's approval requests, or it expired.
+   * Sent again until the session reports it delivered, so it may repeat.
+   * Only a connection speaking agent-protocol 4 with scope `all` receives it.
+   */
+  onApprovalOutcome?: (outcome: ApprovalOutcome) => Promise<void> | void;
   /**
    * The rooms the server says this connection covers — on connect, and again
    * whenever they change. The server is the authority here: a room claimed by
@@ -690,7 +721,24 @@ export class SwitchEventStream {
         });
         return;
       }
+      case 'approval_outcome': {
+        const outcome = approvalOutcome(frame.data);
+        if (outcome) await this.deps.onApprovalOutcome?.(outcome);
+        else
+          log.warn('SwitchEventStream: unreadable approval outcome dropped', {
+            event: 'switch_stream_bad_outcome',
+          });
+        return;
+      }
       default:
+        if (typeof frame.data.type !== 'string') {
+          // A frame this runtime does not know and cannot read as a room event.
+          log.warn('SwitchEventStream: unknown frame dropped', {
+            event: 'switch_stream_unknown_frame',
+            frame: frame.event,
+          });
+          return;
+        }
         await onEvent(frame.data as unknown as AgentBridgeEvent);
     }
   }

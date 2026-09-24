@@ -6,7 +6,12 @@ import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import { SwitchRoomAdmissions } from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
-import { COMMAND_WAKE_FILE, declareHandoffCapability, HANDOFF_FILE } from './handoff';
+import {
+  APPROVALS_WAKE_FILE,
+  COMMAND_WAKE_FILE,
+  declareHandoffCapability,
+  HANDOFF_FILE,
+} from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
 import {
@@ -1617,6 +1622,40 @@ it('wakes only locally configured sessions of its agent without starting a sessi
     await streams[0]!.onCommands!([own.sessionId, other.sessionId, randomUUID()]);
     expect(await readFile(join(own.sessionRoot, COMMAND_WAKE_FILE), 'utf8')).toBeTruthy();
     await expect(readFile(join(other.sessionRoot, COMMAND_WAKE_FILE))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('wakes the session an approval answer is for, and only that one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-approvals-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config, true);
+  const otherConfig = structuredClone(config);
+  otherConfig.session.agentId = randomUUID();
+  const other = await existing(root, otherConfig, true);
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  const outcome = (sessionId: string) => ({
+    session_id: sessionId,
+    request_id: 'permission',
+    state: 'answered' as const,
+    answer: '0',
+    answered_by: '@person:test',
+    answered_at: null,
+  });
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onApprovalOutcome!(outcome(own.sessionId));
+    await streams[0]!.onApprovalOutcome!(outcome(other.sessionId));
+    expect(await readFile(join(own.sessionRoot, APPROVALS_WAKE_FILE), 'utf8')).toBeTruthy();
+    await expect(readFile(join(other.sessionRoot, APPROVALS_WAKE_FILE))).rejects.toMatchObject({
       code: 'ENOENT',
     });
     expect(ensureSharedProcess).not.toHaveBeenCalled();

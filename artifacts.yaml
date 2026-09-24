@@ -82,7 +82,7 @@ artifacts:
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.6.1
+    version: 0.7.0
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -177,7 +177,7 @@ contracts:
     # breaks it — so `accepts` stays at 1 and nothing changes for them.
     artifacts:
       switch-core: { speaks: 4, accepts: 1 }
-      agent-runtime: { speaks: 3, accepts: 1 }
+      agent-runtime: { speaks: 4, accepts: 1 }
 
   gateway-api:
     description: >-

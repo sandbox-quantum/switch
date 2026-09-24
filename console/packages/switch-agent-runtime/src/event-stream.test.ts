@@ -1241,3 +1241,62 @@ it('routes command wakeups separately from room events and their cursor', async 
     abort.abort();
   }
 });
+
+function streaming(...frames: Uint8Array[]) {
+  return vi.fn(async (url: string) =>
+    url.includes('/events')
+      ? new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(connected());
+              for (const frame of frames) controller.enqueue(frame);
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } }
+        )
+      : Response.json({})
+  );
+}
+
+it('hands an approval outcome to its own callback, not the room-event path', async () => {
+  const onApprovalOutcome = vi.fn();
+  const onEvent = vi.fn();
+  const outcome = {
+    session_id: 'session',
+    request_id: 'permission',
+    state: 'answered',
+    answer: '0',
+    answered_by: '@person:test',
+    answered_at: '2026-09-24T12:00:00Z',
+  };
+  const { abort } = makeStream(streaming(encodeFrame('approval_outcome', outcome)), {
+    rooms: [],
+    scope: 'all',
+    onApprovalOutcome,
+    onEvent,
+  });
+  try {
+    await vi.waitFor(() => expect(onApprovalOutcome).toHaveBeenCalledWith(outcome));
+    expect(onEvent).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+  }
+});
+
+it('drops a frame it does not know that is not a room event', async () => {
+  const onEvent = vi.fn();
+  const { abort } = makeStream(
+    streaming(
+      encodeFrame('something_new', { detail: 'from a later server' }),
+      encodeFrame('approval_outcome', { session_id: 'session' }),
+      encodeFrame('message', { type: 'message', room_id: 'room', payload: {} })
+    ),
+    { rooms: [], scope: 'all', onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
+    expect(onEvent).toHaveBeenCalledWith({ type: 'message', room_id: 'room', payload: {} });
+  } finally {
+    abort.abort();
+  }
+});

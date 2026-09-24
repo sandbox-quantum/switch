@@ -9,6 +9,7 @@ import {
   HANDOFF_PROTOCOL,
   HandoffInbox,
   readsHandoffs,
+  wakeApprovals,
   wakeCommands,
 } from './handoff';
 
@@ -243,6 +244,23 @@ it('wakes for commands without adding a room delivery', async () => {
     expect(inbox.takeCommandWake()).toBe(true);
     expect(inbox.takeCommandWake()).toBe(false);
     expect(await inbox.drain()).toEqual([]);
+  } finally {
+    stop.abort();
+  }
+});
+
+it('wakes for approval answers apart from commands', async () => {
+  const session = await root();
+  const inbox = new HandoffInbox(session);
+  const stop = new AbortController();
+  inbox.listen(stop.signal);
+  try {
+    const waiting = inbox.idle(5000, stop.signal);
+    await wakeApprovals(session);
+    await waiting;
+    expect(inbox.takeApprovalWake()).toBe(true);
+    expect(inbox.takeApprovalWake()).toBe(false);
+    expect(inbox.takeCommandWake()).toBe(false);
   } finally {
     stop.abort();
   }

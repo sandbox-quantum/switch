@@ -6,6 +6,7 @@ import type { Command, HostEvent, Session } from '@switch-console/shared/session
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { sessionSelectorPath } from './shared-config';
 import { runSharedHost } from './shared-host';
 
@@ -73,7 +74,11 @@ function adapterFor(): ProviderAdapter {
     startSession: vi.fn(async () => {
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: randomUUID() };
+      return {
+        provider: 'claude',
+        sessionId: 'session',
+        nativeSessionId: randomUUID(),
+      };
     }),
     sendTurn: vi.fn(async ({ turnId }) => ({ turnId })),
     respondToRequest: vi.fn(async () => {}),
@@ -109,13 +114,16 @@ it('publishes the epoch the server minted, not the one the host proposed', async
   // with that worker, so it must not survive into this one's startup window.
   await writeFile(
     sessionSelectorPath(root),
-    JSON.stringify({ session_id: 'session', host_id: 'host', epoch: 'worker-that-died' })
+    JSON.stringify({
+      session_id: 'session',
+      host_id: 'host',
+      epoch: 'worker-that-died',
+    })
   );
   const stop = new AbortController();
   const seen: string[] = [];
   let atBind: Record<string, string> | null | 'never-bound' = 'never-bound';
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       seen.push(path);
@@ -203,8 +211,7 @@ it('republishes the epoch a reset rotated into', async () => {
     },
     body: { type: 'session.reset' },
   };
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))

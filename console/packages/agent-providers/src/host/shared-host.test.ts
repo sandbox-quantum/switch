@@ -6,6 +6,7 @@ import type { Command, HostEvent, Session } from '@switch-console/shared/session
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { declareHandoffCapability, handOff, readsHandoffs, wakeCommands } from './handoff';
 import { runSharedHost, SharedHostUnavailableError } from './shared-host';
 
@@ -55,7 +56,11 @@ it('executes server commands and uploads cancellation without server-owned event
     startSession: vi.fn(async () => {
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+      return {
+        provider: 'claude',
+        sessionId: 'session',
+        nativeSessionId: 'native',
+      };
     }),
     sendTurn: vi.fn(async ({ turnId }) => {
       emit({ type: 'turn.started', turnId });
@@ -118,8 +123,7 @@ it('executes server commands and uploads cancellation without server-owned event
     },
     body,
   });
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       let result: unknown;
@@ -230,7 +234,12 @@ it('runs a room message handed back by its admission, and not again when it is r
   roots.push(root);
   await writeFile(
     join(root, 'room-inbox.jsonl'),
-    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+    JSON.stringify({
+      type: 'received',
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'message',
+    }) + '\n'
   );
   const stop = new AbortController();
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
@@ -257,7 +266,11 @@ it('runs a room message handed back by its admission, and not again when it is r
     startSession: vi.fn(async () => {
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+      return {
+        provider: 'claude',
+        sessionId: 'session',
+        nativeSessionId: 'native',
+      };
     }),
     sendTurn: vi.fn(async ({ turnId }) => {
       ranBeforeAnyFetchCouldSupplyIt ??= !offeredByFetch;
@@ -311,11 +324,15 @@ it('runs a room message handed back by its admission, and not again when it is r
       threadId: null,
       messageId: 'message',
     },
-    body: { type: 'message.send', delivery: 'queue', text: 'Run the check', attachments: [] },
+    body: {
+      type: 'message.send',
+      delivery: 'queue',
+      text: 'Run the check',
+      attachments: [],
+    },
   };
   let admissions = 0;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -386,9 +403,13 @@ it('runs a room message handed back by its admission, and not again when it is r
     (error: unknown) => error
   );
   try {
-    await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
     expect(ranBeforeAnyFetchCouldSupplyIt).toBe(true);
-    await vi.waitFor(() => expect(offeredByFetch).toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(offeredByFetch).toBe(true), {
+      timeout: 3000,
+    });
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(adapter.sendTurn).toHaveBeenCalledTimes(1);
     expect(admissions).toBe(1);
@@ -422,7 +443,11 @@ function roomWorker() {
     startSession: vi.fn(async () => {
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+      return {
+        provider: 'claude',
+        sessionId: 'session',
+        nativeSessionId: 'native',
+      };
     }),
     sendTurn: vi.fn(async ({ turnId, text }) => {
       ran.push(text);
@@ -473,8 +498,7 @@ const startingSession: Session = {
 /** Admits whatever it is given and hands the command back in the same response. */
 function admittingServer() {
   const admitted: string[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -515,7 +539,12 @@ function admittingServer() {
               threadId: null,
               messageId,
             },
-            body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+            body: {
+              type: 'message.send',
+              delivery: 'queue',
+              text: messageId,
+              attachments: [],
+            },
           },
         });
       }
@@ -569,7 +598,9 @@ it('runs what its controller routed to it, once however often it is handed over'
   try {
     // Said before anything is routed here: a controller that finds no declaration
     // takes the legacy path and the session never hears about the message.
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     const routed = { sequence: 5, roomId: 'room', messageId: 'routed' };
     await handOff(root, routed);
     await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
@@ -590,13 +621,19 @@ it('runs what was routed to it while it was down', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-host-handoff-down-'));
   roots.push(root);
   await declareHandoffCapability(root);
-  await handOff(root, { sequence: 5, roomId: 'room', messageId: 'routed-while-down' });
+  await handOff(root, {
+    sequence: 5,
+    roomId: 'room',
+    messageId: 'routed-while-down',
+  });
   const stop = new AbortController();
   const { adapter, ran } = roomWorker();
   const { admitted } = admittingServer();
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(ran).toEqual(['routed-while-down']), { timeout: 3000 });
+    await vi.waitFor(() => expect(ran).toEqual(['routed-while-down']), {
+      timeout: 3000,
+    });
     expect(admitted).toEqual(['routed-while-down']);
   } finally {
     stop.abort();
@@ -615,8 +652,7 @@ it('gives back a delivery the room moved away from, and runs it when the room co
   const notices: string[] = [];
   const admitted: string[] = [];
   let elsewhere = true;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -666,7 +702,12 @@ it('gives back a delivery the room moved away from, and runs it when the room co
               threadId: null,
               messageId,
             },
-            body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+            body: {
+              type: 'message.send',
+              delivery: 'queue',
+              text: messageId,
+              attachments: [],
+            },
           },
         });
       }
@@ -678,7 +719,9 @@ it('gives back a delivery the room moved away from, and runs it when the room co
   );
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     const routed = { sequence: 5, roomId: 'room', messageId: 'moved' };
     await handOff(root, routed);
     await vi.waitFor(() => expect(notices).toHaveLength(1), { timeout: 3000 });
@@ -701,7 +744,12 @@ it('fetches a room command the admission handed nothing back for', async () => {
     join(root, 'room-inbox.jsonl'),
     ['old-server', 'behind-other-work']
       .map((messageId, index) =>
-        JSON.stringify({ type: 'received', sequence: index + 1, roomId: 'room', messageId })
+        JSON.stringify({
+          type: 'received',
+          sequence: index + 1,
+          roomId: 'room',
+          messageId,
+        })
       )
       .join('\n') + '\n'
   );
@@ -729,7 +777,11 @@ it('fetches a room command the admission handed nothing back for', async () => {
     startSession: vi.fn(async () => {
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+      return {
+        provider: 'claude',
+        sessionId: 'session',
+        nativeSessionId: 'native',
+      };
     }),
     sendTurn: vi.fn(async ({ turnId, text }) => {
       ran.push(text);
@@ -784,11 +836,15 @@ it('fetches a room command the admission handed nothing back for', async () => {
       threadId: null,
       messageId,
     },
-    body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+    body: {
+      type: 'message.send',
+      delivery: 'queue',
+      text: messageId,
+      attachments: [],
+    },
   });
   const admitted: string[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -889,8 +945,7 @@ it('starts, and says so, when its controller is not there yet to bind to', async
   const { adapter } = roomWorker();
   const notices: string[] = [];
   let refuse = true;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -907,7 +962,10 @@ it('starts, and says so, when its controller is not there yet to bind to', async
       if (path.endsWith('/room-connection'))
         return refuse
           ? Response.json(
-              { code: 'NOT_AUTHORIZED', detail: 'The SDK room connection is not live.' },
+              {
+                code: 'NOT_AUTHORIZED',
+                detail: 'The SDK room connection is not live.',
+              },
               { status: 403 }
             )
           : Response.json({ rooms: ['room'] });
@@ -923,7 +981,9 @@ it('starts, and says so, when its controller is not there yet to bind to', async
   );
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(notices).toEqual(['ROOM_DELIVERY_FAILED']), { timeout: 12000 });
+    await vi.waitFor(() => expect(notices).toEqual(['ROOM_DELIVERY_FAILED']), {
+      timeout: 12000,
+    });
     expect(adapter.startSession).toHaveBeenCalled();
     refuse = false;
     await vi.waitFor(
@@ -950,8 +1010,7 @@ it('says in the transcript when its room connection is refused, and when it is b
   const notices: string[] = [];
   let binds = 0;
   let refuse = false;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -969,7 +1028,10 @@ it('says in the transcript when its room connection is refused, and when it is b
         binds += 1;
         return refuse
           ? Response.json(
-              { code: 'NOT_AUTHORIZED', detail: 'The SDK room connection is not live.' },
+              {
+                code: 'NOT_AUTHORIZED',
+                detail: 'The SDK room connection is not live.',
+              },
               { status: 403 }
             )
           : Response.json({ rooms: ['room'] });
@@ -988,7 +1050,9 @@ it('says in the transcript when its room connection is refused, and when it is b
   try {
     await vi.waitFor(() => expect(binds).toBe(1), { timeout: 3000 });
     refuse = true;
-    await vi.waitFor(() => expect(notices).toEqual(['ROOM_DELIVERY_FAILED']), { timeout: 12000 });
+    await vi.waitFor(() => expect(notices).toEqual(['ROOM_DELIVERY_FAILED']), {
+      timeout: 12000,
+    });
     refuse = false;
     await vi.waitFor(
       () => expect(notices).toEqual(['ROOM_DELIVERY_FAILED', 'ROOM_DELIVERY_RESUMED']),
@@ -1000,7 +1064,12 @@ it('says in the transcript when its room connection is refused, and when it is b
   }
 }, 30000);
 
-type Owed = { room_id: string; message_id: string; sequence: number; expired: boolean };
+type Owed = {
+  room_id: string;
+  message_id: string;
+  sequence: number;
+  expired: boolean;
+};
 
 /** Every record this session's room inbox has written, in order. */
 async function inboxRecords(root: string): Promise<{ type: string; messageId?: string }[]> {
@@ -1032,8 +1101,7 @@ function owingServer(server: {
   const notices: string[] = [];
   const pulled: unknown[] = [];
   const commandPolls: unknown[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/claim'))
@@ -1090,7 +1158,12 @@ function owingServer(server: {
               threadId: null,
               messageId,
             },
-            body: { type: 'message.send', delivery: 'queue', text: messageId, attachments: [] },
+            body: {
+              type: 'message.send',
+              delivery: 'queue',
+              text: messageId,
+              attachments: [],
+            },
           },
         });
       }
@@ -1124,7 +1197,10 @@ it('asks Switch what its own rooms owe it, and runs what it is told', async () =
     expect(server.admitted).toEqual(['owed']);
     // Asked for under the same lease everything else is: a session that cannot
     // prove it holds the room is told nothing about what the room owes.
-    expect(server.pulled[0]).toEqual({ host_id: 'host', epoch: 'server-epoch' });
+    expect(server.pulled[0]).toEqual({
+      host_id: 'host',
+      epoch: 'server-epoch',
+    });
   } finally {
     stop.abort();
     expect(await outcome).toBeNull();
@@ -1148,9 +1224,13 @@ it('runs a delivery once, however often it is offered again', async () => {
   const outcome = startWorker(root, adapter, stop.signal);
   try {
     await vi.waitFor(() => expect(ran).toEqual(['owed']), { timeout: 3000 });
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, routed);
-    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), { timeout: 12000 });
+    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), {
+      timeout: 12000,
+    });
     expect(ran).toEqual(['owed']);
     expect(server.admitted).toEqual(['owed']);
     expect(
@@ -1173,7 +1253,12 @@ it('holds a delivery Switch will not take yet and makes it behind the one before
   roots.push(root);
   await writeFile(
     join(root, 'room-inbox.jsonl'),
-    JSON.stringify({ type: 'received', sequence: 2, roomId: 'room', messageId: 'second' }) + '\n'
+    JSON.stringify({
+      type: 'received',
+      sequence: 2,
+      roomId: 'room',
+      messageId: 'second',
+    }) + '\n'
   );
   const stop = new AbortController();
   const { adapter, ran } = roomWorker();
@@ -1184,7 +1269,9 @@ it('holds a delivery Switch will not take yet and makes it behind the one before
   });
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(ran).toEqual(['first', 'second']), { timeout: 5000 });
+    await vi.waitFor(() => expect(ran).toEqual(['first', 'second']), {
+      timeout: 5000,
+    });
     expect(server.admitted).toEqual(['first', 'second']);
     const records = await inboxRecords(root);
     expect(records.filter((record) => record.type === 'release')).toEqual([]);
@@ -1210,9 +1297,13 @@ it('says once that a delivery Switch stopped promising was never made', async ()
   });
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(server.notices).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(server.notices).toHaveLength(1), {
+      timeout: 3000,
+    });
     expect(server.notices[0]).toContain('lapsed');
-    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), { timeout: 12000 });
+    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), {
+      timeout: 12000,
+    });
     expect(server.notices).toHaveLength(1);
     expect(ran).toEqual([]);
     expect(server.admitted).toEqual([]);
@@ -1232,11 +1323,19 @@ it('stops asking a server that cannot say what a session is owed, and says so on
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const stop = new AbortController();
   const { adapter, ran } = roomWorker();
-  const server = owingServer({ owed: () => [], pullStatus: () => 404, blocked: () => false });
+  const server = owingServer({
+    owed: () => [],
+    pullStatus: () => 404,
+    blocked: () => false,
+  });
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), {
+      timeout: 3000,
+    });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
     await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
     await new Promise((resolve) => setTimeout(resolve, 6000));
@@ -1270,18 +1369,26 @@ it('keeps serving what it is routed while Switch will not say what it is owed', 
   });
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), {
+      timeout: 3000,
+    });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
     await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 5000 });
     expect(server.admitted).toEqual(['routed']);
     const polledWhileFailing = server.commandPolls.length;
     // Asked again on the poll's own cadence rather than in a tight loop, and
     // the work it was owed all along arrives once the route comes back.
-    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), { timeout: 12000 });
+    await vi.waitFor(() => expect(server.pulled.length).toBeGreaterThan(1), {
+      timeout: 12000,
+    });
     expect(server.commandPolls.length).toBeGreaterThan(polledWhileFailing);
     reachable = true;
-    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 12000 });
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), {
+      timeout: 12000,
+    });
     expect(server.admitted).toEqual(['routed', 'owed']);
     expect(
       warn.mock.calls.filter(
@@ -1301,7 +1408,9 @@ it('keeps serving what it is routed while Switch will not say what it is owed', 
 function stalling(released: Promise<void>) {
   return (signal: AbortSignal) =>
     new Promise<number>((resolve, reject) => {
-      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      signal.addEventListener('abort', () => reject(signal.reason), {
+        once: true,
+      });
       void released.then(() => resolve(200));
     });
 }
@@ -1326,8 +1435,12 @@ it('keeps running while the pull hangs, and takes up its answer when it lands', 
   });
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), {
+      timeout: 3000,
+    });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
     // The pull is still outstanding, and the pushed message has been run and
     // submitted anyway.
@@ -1340,7 +1453,9 @@ it('keeps running while the pull hangs, and takes up its answer when it lands', 
     expect(server.pulled).toHaveLength(1);
 
     answer();
-    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 3000 });
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), {
+      timeout: 3000,
+    });
     expect(server.admitted).toEqual(['routed', 'owed']);
     expect(server.commandPolls.length).toBeGreaterThan(polledWhileWaiting);
   } finally {
@@ -1367,7 +1482,9 @@ it('settles its outstanding pull when the host stops, and acts on nothing after'
     blocked: () => false,
   });
   const outcome = startWorker(root, adapter, stop.signal);
-  await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+  await vi.waitFor(() => expect(server.pulled).toHaveLength(1), {
+    timeout: 3000,
+  });
 
   stop.abort();
   expect(await outcome).toBeNull();
@@ -1388,8 +1505,7 @@ it('restores the saved room with the acquired lease before binding, without send
   admittingServer();
   const server = globalThis.fetch;
   let restored = false;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/restore-legacy-room')) {
@@ -1419,8 +1535,7 @@ it('restores the saved room with the acquired lease before binding, without send
 function restoreAnswering(response: () => Response, boundRoom: string) {
   const { admitted } = admittingServer();
   const server = globalThis.fetch;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/restore-legacy-room')) return response();
@@ -1441,7 +1556,9 @@ it('runs what is routed to it when the server cannot restore a saved room', asyn
   const { admitted } = restoreAnswering(restoreRouteMissing, 'room');
   const outcome = startWorker(root, adapter, stop.signal, 'room');
   try {
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, { sequence: 5, roomId: 'room', messageId: 'routed' });
     await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
     expect(adapter.startSession).toHaveBeenCalledOnce();
@@ -1491,12 +1608,13 @@ it.each([
 function renewing(answer: (epoch: string) => unknown) {
   const renewals: { query: string; epoch: string }[] = [];
   const server = globalThis.fetch;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const parsed = new URL(url);
       if (parsed.pathname.endsWith('/renew')) {
-        const { epoch } = JSON.parse(options.body as string) as { epoch: string };
+        const { epoch } = JSON.parse(options.body as string) as {
+          epoch: string;
+        };
         renewals.push({ query: parsed.search, epoch });
         return Response.json(answer(epoch));
       }
@@ -1515,14 +1633,25 @@ it('asks for its rooms’ work only while a renewal says some is owed', async ()
   const stop = new AbortController();
   const { adapter, ran } = roomWorker();
   let owed: Owed[] = [];
-  const server = owingServer({ owed: () => owed, pullStatus: () => 200, blocked: () => false });
-  const renewals = renewing(() => ({ leaseSeconds: 30, roomWork: owed.length > 0 }));
+  const server = owingServer({
+    owed: () => owed,
+    pullStatus: () => 200,
+    blocked: () => false,
+  });
+  const renewals = renewing(() => ({
+    leaseSeconds: 30,
+    roomWork: owed.length > 0,
+  }));
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
     await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
-    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(3), { timeout: 12000 });
+    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(3), {
+      timeout: 12000,
+    });
     expect(server.pulled).toEqual([]);
     expect(renewals.every((renewal) => renewal.query === '?room_work=true')).toBe(true);
 
@@ -1530,7 +1659,9 @@ it('asks for its rooms’ work only while a renewal says some is owed', async ()
     // and that is the ask that finds it.
     owed = [{ room_id: 'room', message_id: 'owed', sequence: 4, expired: false }];
     const saidNothing = renewals.length;
-    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 8000 });
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), {
+      timeout: 8000,
+    });
     expect(server.pulled.length).toBeGreaterThanOrEqual(1);
     expect(server.pulled.length).toBeLessThanOrEqual(renewals.length - saidNothing);
     expect(server.admitted).toEqual(['routed', 'owed']);
@@ -1556,8 +1687,12 @@ it('asks once for each renewal that says work is owed, and no more', async () =>
   const renewals = renewing(() => ({ leaseSeconds: 30, roomWork: true }));
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(3), { timeout: 12000 });
-    await vi.waitFor(() => expect(server.pulled.length).toBe(renewals.length), { timeout: 2000 });
+    await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(3), {
+      timeout: 12000,
+    });
+    await vi.waitFor(() => expect(server.pulled.length).toBe(renewals.length), {
+      timeout: 2000,
+    });
     await new Promise((resolve) => setTimeout(resolve, 1000));
     expect(server.pulled.length).toBeLessThanOrEqual(renewals.length);
     expect(server.pulled.length).toBeGreaterThanOrEqual(renewals.length - 1);
@@ -1581,7 +1716,11 @@ it.each([
     const stop = new AbortController();
     const { adapter, ran } = roomWorker();
     let owed: Owed[] = [];
-    const server = owingServer({ owed: () => owed, pullStatus: () => 200, blocked: () => false });
+    const server = owingServer({
+      owed: () => owed,
+      pullStatus: () => 200,
+      blocked: () => false,
+    });
     renewing(() => answer);
     const outcome = startWorker(root, adapter, stop.signal);
     try {
@@ -1630,9 +1769,13 @@ it('keeps renewing and serving handoffs while an ask the renewal started hangs',
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   const outcome = startWorker(root, adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(server.pulled).toHaveLength(1), {
+      timeout: 3000,
+    });
     const renewedBefore = renewals.length;
-    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+    await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+      timeout: 3000,
+    });
     await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
     await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
     await vi.waitFor(() => expect(renewals.length).toBeGreaterThanOrEqual(renewedBefore + 2), {
@@ -1642,7 +1785,9 @@ it('keeps renewing and serving handoffs while an ask the renewal started hangs',
     expect(server.pulled.length).toBeLessThanOrEqual(renewals.length);
 
     answer();
-    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), { timeout: 8000 });
+    await vi.waitFor(() => expect(ran).toEqual(['routed', 'owed']), {
+      timeout: 8000,
+    });
     expect(server.admitted).toEqual(['routed', 'owed']);
     expect(mostOutstanding).toBe(1);
   } finally {
@@ -1704,8 +1849,7 @@ it.each([
     let resetting = false;
     let reset = false;
     const owing = globalThis.fetch;
-    vi.stubGlobal(
-      'fetch',
+    stubSwitchFetch(
       vi.fn(async (url: string, options: RequestInit) => {
         const path = new URL(url).pathname;
         if (path.endsWith('/room-reservations')) {
@@ -1747,10 +1891,16 @@ it.each([
     );
     const outcome = startWorker(root, adapter, stop.signal);
     try {
-      await vi.waitFor(() => expect(server.pulled).toHaveLength(1), { timeout: 3000 });
-      await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), { timeout: 3000 });
+      await vi.waitFor(() => expect(server.pulled).toHaveLength(1), {
+        timeout: 3000,
+      });
+      await vi.waitFor(() => expect(readsHandoffs(root)).resolves.toBe(true), {
+        timeout: 3000,
+      });
       await handOff(root, { sequence: 3, roomId: 'room', messageId: 'routed' });
-      await vi.waitFor(() => expect(ran).toEqual(['routed']), { timeout: 3000 });
+      await vi.waitFor(() => expect(ran).toEqual(['routed']), {
+        timeout: 3000,
+      });
       resetting = true;
       await vi.waitFor(
         () => expect(renewals.some((renewal) => renewal.epoch === 'epoch-2')).toBe(true),
@@ -1780,8 +1930,12 @@ it.each([
         ran,
         JSON.stringify((await inboxRecords(root)).slice(-4))
       );
-      await vi.waitFor(() => expect(ran).toEqual(['routed', 'after']), { timeout: 3000 });
-      await vi.waitFor(() => expect(renewals.length).toBeGreaterThan(renewed), { timeout: 7000 });
+      await vi.waitFor(() => expect(ran).toEqual(['routed', 'after']), {
+        timeout: 3000,
+      });
+      await vi.waitFor(() => expect(renewals.length).toBeGreaterThan(renewed), {
+        timeout: 7000,
+      });
       expect(renewals.at(-1)?.epoch).toBe('epoch-2');
     } finally {
       stop.abort();
@@ -1795,11 +1949,14 @@ it('stops when an ask under the lease it holds says that lease is gone', async (
   const root = await mkdtemp(join(tmpdir(), 'shared-host-hint-offline-'));
   roots.push(root);
   const { adapter } = roomWorker();
-  const server = owingServer({ owed: () => [], pullStatus: () => 200, blocked: () => false });
+  const server = owingServer({
+    owed: () => [],
+    pullStatus: () => 200,
+    blocked: () => false,
+  });
   renewing(() => ({ leaseSeconds: 30, roomWork: true }));
   const owing = globalThis.fetch;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       if (new URL(url).pathname.endsWith('/room-reservations')) {
         await owing(url, options);
@@ -1831,8 +1988,7 @@ it('checks commands on wake instead of polling while idle and recovers a missed 
   const originalFetch = globalThis.fetch;
   let polls = 0;
   let queued: Command[] = [];
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       if (new URL(url).pathname.endsWith('/commands')) {
         polls += 1;
@@ -1851,8 +2007,19 @@ it('checks commands on wake instead of polling while idle and recovers a missed 
     commandId: id,
     sessionId: 'session',
     epoch: 'server-epoch',
-    origin: { actorId: 'owner', surface: 'console', roomId: null, threadId: null, messageId: null },
-    body: { type: 'message.send', delivery: 'queue', text: id, attachments: [] },
+    origin: {
+      actorId: 'owner',
+      surface: 'console',
+      roomId: null,
+      threadId: null,
+      messageId: null,
+    },
+    body: {
+      type: 'message.send',
+      delivery: 'queue',
+      text: id,
+      attachments: [],
+    },
   });
   try {
     await vi.waitFor(() => expect(polls).toBe(1));
@@ -1860,11 +2027,15 @@ it('checks commands on wake instead of polling while idle and recovers a missed 
     expect(polls).toBe(1);
     queued.push(command('notified'));
     await wakeCommands(root);
-    await vi.waitFor(() => expect(ran).toEqual(['notified']), { timeout: 1500 });
+    await vi.waitFor(() => expect(ran).toEqual(['notified']), {
+      timeout: 1500,
+    });
     // Let the successful batch drain to an empty response before losing a hint.
     await vi.waitFor(() => expect(polls).toBe(3));
     queued.push(command('missed-wakeup'));
-    await vi.waitFor(() => expect(ran).toEqual(['notified', 'missed-wakeup']), { timeout: 6500 });
+    await vi.waitFor(() => expect(ran).toEqual(['notified', 'missed-wakeup']), {
+      timeout: 6500,
+    });
   } finally {
     stop.abort();
     expect(await outcome).toBeNull();
@@ -1876,7 +2047,12 @@ it('waits for Core to acknowledge readiness before admitting room work', async (
   roots.push(root);
   await writeFile(
     join(root, 'room-inbox.jsonl'),
-    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'raced' }) + '\n'
+    JSON.stringify({
+      type: 'received',
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'raced',
+    }) + '\n'
   );
   admittingServer();
   const originalFetch = globalThis.fetch;
@@ -1890,8 +2066,7 @@ it('waits for Core to acknowledge readiness before admitting room work', async (
   });
   let injected = false;
   let ready = false;
-  vi.stubGlobal(
-    'fetch',
+  stubSwitchFetch(
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/events')) {
@@ -1922,3 +2097,208 @@ it('waits for Core to acknowledge readiness before admitting room work', async (
     expect(await outcome).toBeNull();
   }
 });
+
+it('reports activity and approvals to Switch and applies the answer it records', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const events: HostEvent[] = [];
+  let issued = false;
+  let listener: (event: ProviderRuntimeEvent) => void = () => {};
+  let live = false;
+  const emit = (event: Record<string, unknown>) =>
+    listener({
+      ...event,
+      sessionId: 'session',
+      provider: 'claude',
+      eventId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    } as ProviderRuntimeEvent);
+  const adapter: ProviderAdapter = {
+    provider: 'claude',
+    capabilities: {
+      resume: true,
+      steering: false,
+      approvals: true,
+      userInput: true,
+      modelSwitchInSession: false,
+    },
+    startSession: vi.fn(async () => {
+      live = true;
+      emit({ type: 'session.state.changed', status: 'ready' });
+      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+    }),
+    sendTurn: vi.fn(async ({ turnId }) => {
+      emit({ type: 'turn.started', turnId });
+      emit({
+        type: 'request.opened',
+        turnId,
+        requestId: 'permission',
+        requestType: 'tool_approval',
+        title: 'Write file',
+        options: [
+          { decision: 'accept', label: 'Allow' },
+          { decision: 'decline', label: 'Deny' },
+        ],
+      });
+      return { turnId };
+    }),
+    respondToRequest: vi.fn(async () => {}),
+    respondToUserInput: vi.fn(async () => {}),
+    interruptTurn: vi.fn(async () => {}),
+    stopSession: vi.fn(async () => {
+      live = false;
+    }),
+    stopAll: vi.fn(async () => {}),
+    hasSession: () => live,
+    subscribe: (fn) => {
+      listener = fn;
+      return () => {
+        listener = () => {};
+      };
+    },
+  };
+  const session: Session = {
+    sessionId: 'session',
+    agentId: 'agent',
+    hostId: 'host',
+    epoch: 'proposed',
+    provider: 'claude',
+    status: 'starting',
+    connectivity: 'online',
+    pendingRequestIds: [],
+    capabilities: {
+      input: 'queue',
+      approvals: true,
+      questions: true,
+      interrupt: false,
+      reset: false,
+      compact: false,
+      modelChange: false,
+      attachmentMimeTypes: [],
+    },
+  };
+  const switchCore = stubSwitchFetch(
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      let result: unknown = { leaseSeconds: 30 };
+      if (path.endsWith('/claim'))
+        result = {
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...session, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        };
+      else if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        events.push(event);
+        result = { throughHostSequence: event.hostSequence };
+      } else if (path.endsWith('/commands')) {
+        const ready = events.some(
+          (event) => event.body.type === 'session.upsert' && event.body.session.status === 'ready'
+        );
+        result = [];
+        if (ready && !issued) {
+          issued = true;
+          result = [
+            {
+              contractVersion: 1,
+              commandId: 'turn',
+              sessionId: 'session',
+              epoch: 'server-epoch',
+              origin: {
+                actorId: '@person:test',
+                surface: 'slack',
+                roomId: 'room',
+                threadId: null,
+                messageId: 'sw_asked',
+              },
+              body: { type: 'message.send', delivery: 'queue', text: 'Hello', attachments: [] },
+            } satisfies Command,
+          ];
+        }
+      }
+      return Response.json(result);
+    })
+  );
+  const running = runSharedHost(
+    {
+      root: join(root, 'session'),
+      agentApiUrl: 'http://127.0.0.1/agent',
+      token: randomUUID(),
+      session,
+      input: {
+        sessionId: 'session',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+      },
+    },
+    adapter,
+    stop.signal
+  );
+  const outcome = running.then(
+    () => null,
+    (error: unknown) => error
+  );
+  try {
+    await vi.waitFor(
+      () => expect(switchCore.calls.some((c) => c.path.endsWith('/approvals'))).toBe(true),
+      { timeout: 5000 }
+    );
+    expect(switchCore.calls.find((c) => c.path.endsWith('/activity'))).toMatchObject({
+      method: 'POST',
+      path: '/agent/agent-sessions/session/activity',
+      body: { type: 'turn.started', turn_id: 'turn', room_id: 'room', thread_id: 'sw_asked' },
+    });
+    expect(switchCore.calls.find((c) => c.path.endsWith('/approvals'))?.body).toEqual({
+      request_id: 'permission',
+      question: 'Write file',
+      options: [
+        { id: '0', label: 'Allow', decision: 'accept' },
+        { id: '1', label: 'Deny', decision: 'decline' },
+      ],
+      room_id: 'room',
+      thread_id: 'sw_asked',
+      expires_at: null,
+    });
+
+    switchCore.state.outcomes = [
+      {
+        sessionId: 'session',
+        requestId: 'permission',
+        state: 'answered',
+        answer: '0',
+        answeredBy: '@person:test',
+        answeredAt: '2026-09-24T12:00:00Z',
+        expiresAt: null,
+        deliveredAt: null,
+      },
+    ];
+    await vi.waitFor(
+      () =>
+        expect(
+          switchCore.calls.some((c) => c.path.endsWith('/approvals/permission/delivered'))
+        ).toBe(true),
+      { timeout: 8000 }
+    );
+    expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+      'session',
+      'permission',
+      'accept'
+    );
+    await vi.waitFor(() =>
+      expect(switchCore.calls.some((c) => c.path.endsWith('/approvals/permission/close'))).toBe(
+        true
+      )
+    );
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+}, 20000);

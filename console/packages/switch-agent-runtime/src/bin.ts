@@ -1356,6 +1356,7 @@ async function handleFrame(frame: SseFrame): Promise<void> {
         // a drop stays correct even though Switch Console is doing the telling.
         return;
       }
+      if (typeof frame.data.type !== 'string') return;
       await handleEvent(frame.data as unknown as AgentEvent);
   }
 }

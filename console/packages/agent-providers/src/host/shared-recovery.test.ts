@@ -7,6 +7,7 @@ import type { Command, HostEvent, Session, Snapshot } from '@switch-console/shar
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { SharedRoomInbox } from './room-inbox';
 import { runSharedHost } from './shared-host';
 
@@ -64,7 +65,11 @@ async function fixture() {
     startSession: vi.fn(async () => {
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'saved-native' };
+      return {
+        provider: 'claude',
+        sessionId: 'session',
+        nativeSessionId: 'saved-native',
+      };
     }),
     sendTurn: vi.fn(async ({ turnId }) => {
       emit({ type: 'turn.started', turnId });
@@ -90,8 +95,19 @@ async function fixture() {
     commandId: 'turn',
     sessionId: 'session',
     epoch,
-    origin: { actorId: 'owner', surface: 'console', roomId: null, threadId: null, messageId: null },
-    body: { type: 'message.send', text: 'Once', attachments: [], delivery: 'queue' },
+    origin: {
+      actorId: 'owner',
+      surface: 'console',
+      roomId: null,
+      threadId: null,
+      messageId: null,
+    },
+    body: {
+      type: 'message.send',
+      text: 'Once',
+      attachments: [],
+      delivery: 'queue',
+    },
   };
   const events: HostEvent[] = [];
   let loseEventAck = true;
@@ -130,7 +146,7 @@ async function fixture() {
     }
     return Response.json({ leaseSeconds: 30, quiesced: true });
   });
-  vi.stubGlobal('fetch', fetchMock);
+  stubSwitchFetch(fetchMock);
   return {
     root,
     emit,
@@ -230,7 +246,9 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   const f = await fixture();
   const stop = new AbortController();
   const outcome = runSharedHost(f.options, f.adapter, stop.signal).catch((error) => error);
-  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), {
+    timeout: 10_000,
+  });
   f.setExpired(true);
   expect(await outcome).toMatchObject({ name: 'SharedHostUnavailableError' });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
@@ -303,9 +321,13 @@ it('releases a faulted host instead of renewing its room claim forever', async (
   const result = runSharedHost(f.options, f.adapter, new AbortController().signal).catch(
     (error) => error
   );
-  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), {
+    timeout: 10_000,
+  });
   f.emit({ type: 'session.state.changed', status: 'error' });
-  expect(await result).toMatchObject({ message: expect.stringContaining('HOST_FAULTED') });
+  expect(await result).toMatchObject({
+    message: expect.stringContaining('HOST_FAULTED'),
+  });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
   expect(f.fetchMock.mock.calls.some(([url]) => url.endsWith('/quiesce'))).toBe(true);
   expect(
@@ -334,13 +356,21 @@ it('retains an unverified room event when server replay evidence is unavailable'
   const f = await fixture();
   await writeFile(
     join(f.root, 'room-inbox.jsonl'),
-    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+    JSON.stringify({
+      type: 'received',
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'message',
+    }) + '\n'
   );
   const original = f.fetchMock.getMockImplementation()!;
   f.fetchMock.mockImplementation(async (url, options) => {
     if (new URL(url).pathname.endsWith('/room-message'))
       return Response.json(
-        { code: 'ROOM_EVENT_UNAVAILABLE', message: 'Room event is no longer retained' },
+        {
+          code: 'ROOM_EVENT_UNAVAILABLE',
+          message: 'Room event is no longer retained',
+        },
         { status: 409 }
       );
     return original(url, options);
@@ -407,7 +437,12 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
   );
   await writeFile(
     join(f.root, 'room-inbox.jsonl'),
-    line({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' })
+    line({
+      type: 'received',
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'message',
+    })
   );
   const submitted: Array<{ messageId: string; announced: boolean }> = [];
   let decision: Command | null = null;
@@ -420,7 +455,10 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
       recoveries += 1;
       if (recoveries === 1) return response;
       const body = (await response.json()) as Snapshot;
-      return Response.json({ ...body, session: { ...body.session, epoch: 'epoch-3' } });
+      return Response.json({
+        ...body,
+        session: { ...body.session, epoch: 'epoch-3' },
+      });
     }
     if (path.endsWith('/commands')) return Response.json(decision ? [decision] : []);
     if (path.endsWith('/room-message')) {
@@ -467,7 +505,9 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
       epoch: 'epoch-2',
       body: { type: 'session.reset' },
     };
-    await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(submitted).toHaveLength(1), {
+      timeout: 10_000,
+    });
     expect(submitted[0]).toEqual({ messageId: 'message', announced: true });
     expect(f.adapter.startSession).toHaveBeenCalledTimes(1);
     expect(vi.mocked(f.adapter.startSession).mock.calls[0][0].resume).toBeUndefined();

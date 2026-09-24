@@ -12,6 +12,7 @@ import {
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import { ActivityReporter, type Report } from './activity-reporter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { declareHandoffCapability, HandoffInbox } from './handoff';
 import { Journal } from './journal';
@@ -57,6 +58,15 @@ class RequestError extends Error {
  */
 const ROOM_PULL_MS = 5000;
 const roomWorkSchema = z.object({ roomWork: z.boolean() });
+const approvalOutcomesSchema = z.array(
+  z.object({
+    sessionId: z.string(),
+    requestId: z.string(),
+    state: z.enum(['answered', 'expired']),
+    answer: z.string().nullable(),
+    answeredBy: z.string().nullable(),
+  })
+);
 export class SharedHostUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -102,13 +112,18 @@ export async function runSharedHost(
   // the host would land an answer in a process that has stopped reading.
   let pulling: Promise<void> | null = null;
   const sessionPath = `/${encodeURIComponent(options.session.sessionId)}`;
-  const requestOnce = async (path: string, body: unknown, abort: AbortSignal): Promise<unknown> => {
+  const callOnce = async (
+    route: string,
+    method: 'GET' | 'POST',
+    body: unknown,
+    abort: AbortSignal
+  ): Promise<unknown> => {
     let response: Response;
     try {
-      response = await fetch(`${base.href.replace(/\/$/, '')}/sessions${path}`, {
-        method: 'POST',
+      response = await fetch(`${base.href.replace(/\/$/, '')}${route}`, {
+        method,
         headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        body: method === 'POST' ? JSON.stringify(body) : undefined,
         signal: AbortSignal.any([abort, AbortSignal.timeout(5000)]),
         redirect: 'error',
       });
@@ -129,7 +144,7 @@ export async function runSharedHost(
         }
         if (body && typeof body === 'object' && 'code' in body && body.code === 'HOST_OFFLINE')
           throw new SharedHostUnavailableError(
-            `Switch rejected ${path} (${response.status}): ${text}`
+            `Switch rejected ${route} (${response.status}): ${text}`
           );
       }
       let code = '';
@@ -146,6 +161,8 @@ export async function runSharedHost(
     }
     return response.json();
   };
+  const requestOnce = (path: string, body: unknown, abort: AbortSignal): Promise<unknown> =>
+    callOnce(`/sessions${path}`, 'POST', body, abort);
   /**
    * One attempt, behind the same fences as a retried one.
    *
@@ -163,11 +180,20 @@ export async function runSharedHost(
     }
     return requestOnce(path, body, executionSignal);
   };
-  const request = async (path: string, body: unknown): Promise<unknown> => {
+  const request = (path: string, body: unknown): Promise<unknown> =>
+    retried(() => attempt(path, body));
+  /** The `/agent-sessions` routes: activity, approvals and their outcomes. */
+  const agentSessions = (path: string, method: 'GET' | 'POST', body: unknown) =>
+    retried(() => {
+      executionSignal.throwIfAborted();
+      if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
+      return callOnce(`/agent-sessions${path}`, method, body, executionSignal);
+    });
+  const retried = async (call: () => Promise<unknown>): Promise<unknown> => {
     let disconnected = false;
     while (true) {
       try {
-        const result = await attempt(path, body);
+        const result = await call();
         if (disconnected) console.info('Shared host connection restored.');
         return result;
       } catch (error) {
@@ -669,10 +695,98 @@ export async function runSharedHost(
       adapter
     );
     starting = false;
+    const reporter = await ActivityReporter.load(options.root);
+    // A session first reporting here may have a long history behind it, and
+    // reporting that would put cards up for requests settled long ago.
+    if (reporter.fresh) await reporter.advance(host.replay(0).throughSequence);
+    let reportingUnsupported = false;
+    const unsupported = (error: unknown): boolean => {
+      if (!(error instanceof RequestError) || error.status !== 404 || error.code) return false;
+      reportingUnsupported = true;
+      console.warn(
+        'This Switch server does not accept session activity or approval requests, so messaging platforms show this session only through its event upload.'
+      );
+      return true;
+    };
+    const send = async (report: Report): Promise<void> => {
+      if (report.kind === 'activity')
+        await agentSessions(`${sessionPath}/activity`, 'POST', report.line);
+      else if (report.kind === 'approval.open')
+        await agentSessions(`${sessionPath}/approvals`, 'POST', report.body);
+      else
+        await agentSessions(
+          `${sessionPath}/approvals/${encodeURIComponent(report.requestId)}/close`,
+          'POST',
+          null
+        );
+    };
+    const report = async () => {
+      if (reportingUnsupported) return;
+      const { events } = host!.replay(reporter.cursor);
+      if (!events.length) return;
+      for (const event of events) {
+        for (const item of reporter.reports(event, (turnId) => host!.originOf(turnId))) {
+          try {
+            await send(item);
+          } catch (error) {
+            if (!(error instanceof RequestError)) throw error;
+            if (unsupported(error)) return;
+            // Closing a question, which Switch never tracked, is expected to miss.
+            if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
+            console.warn(
+              `Switch refused ${item.kind} from session event ${event.sequence}; it is not shown on messaging platforms: ${error.message}`
+            );
+          }
+        }
+      }
+      await reporter.advance(events.at(-1)!.sequence);
+    };
+    let outcomesCheckedAt = -Infinity;
+    const applyOutcomes = async (force: boolean) => {
+      if (reportingUnsupported) return;
+      const woken = handoffs?.takeApprovalWake() ?? false;
+      const waiting = host!
+        .snapshot()
+        .requests.some((r) => r.state === 'open' && r.content.kind === 'approval');
+      // The watcher's wake is the prompt route; the interval only covers a
+      // wake that was lost, and only while a person's answer is awaited.
+      if (!force && !woken && !(waiting && performance.now() - outcomesCheckedAt >= 5000)) return;
+      outcomesCheckedAt = performance.now();
+      let listed: unknown;
+      try {
+        listed = await agentSessions('/approvals/outcomes', 'GET', null);
+      } catch (error) {
+        if (unsupported(error)) return;
+        throw error;
+      }
+      for (const outcome of approvalOutcomesSchema.parse(listed)) {
+        if (outcome.sessionId !== options.session.sessionId) continue;
+        try {
+          await host!.applyApprovalOutcome({
+            requestId: outcome.requestId,
+            state: outcome.state,
+            answer: outcome.answer,
+            answeredBy: outcome.answeredBy,
+          });
+        } catch (error) {
+          if (String(error).includes('HOST_STOPPING')) throw error;
+          console.error(
+            `Could not apply the answer to request ${outcome.requestId}; it is settled as a provider error: ${String(error)}`
+          );
+        }
+        await agentSessions(
+          `${sessionPath}/approvals/${encodeURIComponent(outcome.requestId)}/delivered`,
+          'POST',
+          null
+        );
+      }
+    };
     const flush = async () => {
       for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
       await upload(false);
+      await report();
     };
+    await applyOutcomes(true);
     let heldForDecision = false;
     let commandsCheckedAt = -Infinity;
     // A refusal from before the provider existed had no transcript to be said
@@ -680,6 +794,7 @@ export async function runSharedHost(
     if (unreachable) await discloseRefusal();
     while (!executionSignal.aborted) {
       await flush();
+      await applyOutcomes(false);
       if (roomConnection && performance.now() - boundAt >= 5000) await assertRoomBinding();
       if (host.snapshot().session.status === 'stopped') break;
       if (host.snapshot().session.status === 'error' && !host.resetDecisionPending)

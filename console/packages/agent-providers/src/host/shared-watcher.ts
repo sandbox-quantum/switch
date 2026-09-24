@@ -11,7 +11,7 @@ import {
   type RoomReservation,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
-import { wakeCommands } from './handoff';
+import { wakeApprovals, wakeCommands } from './handoff';
 import { declareHandoffCapability, handOff, readsHandoffs, type Handoff } from './handoff';
 import { Journal } from './journal';
 import {
@@ -536,6 +536,27 @@ export async function runSharedWatcher(
     fault = error;
     stop.abort(error);
   };
+  /** Wake the worker serving `sessionId`, if this agent has one here. */
+  const wakeWorker = async (
+    sessionId: string,
+    wake: (root: string) => Promise<void>,
+    what: string
+  ): Promise<void> => {
+    const workerRoot = sharedSessionRoot(sessionId);
+    try {
+      const saved = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(workerRoot, 'config.json'), 'utf8'))
+      );
+      if (
+        saved.session.agentId === template.session.agentId &&
+        saved.session.sessionId === sessionId
+      )
+        await wake(workerRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+        console.warn(`Could not wake session ${what}: ${String(error)}`);
+    }
+  };
   try {
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
@@ -878,22 +899,10 @@ export async function runSharedWatcher(
       signal: stop.signal,
       log: console,
       onCommands: async (sessionIds) => {
-        for (const sessionId of sessionIds) {
-          const workerRoot = sharedSessionRoot(sessionId);
-          try {
-            const saved = sharedConfigSchema.parse(
-              JSON.parse(await readFile(join(workerRoot, 'config.json'), 'utf8'))
-            );
-            if (
-              saved.session.agentId === template.session.agentId &&
-              saved.session.sessionId === sessionId
-            )
-              await wakeCommands(workerRoot);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-              console.warn(`Could not wake session commands: ${String(error)}`);
-          }
-        }
+        for (const sessionId of sessionIds) await wakeWorker(sessionId, wakeCommands, 'commands');
+      },
+      onApprovalOutcome: async (outcome) => {
+        await wakeWorker(outcome.session_id, wakeApprovals, 'approval answers');
       },
       onEvent: (event) => {
         // Read as the event arrives rather than when its turn comes: what is

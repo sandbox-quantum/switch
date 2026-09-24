@@ -33,6 +33,7 @@ export {
   EVICTION_HEARTBEAT_LAPSED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
+  type ApprovalOutcome,
   type DeliveryFilter,
   type EventStreamLogger,
   type Eviction,

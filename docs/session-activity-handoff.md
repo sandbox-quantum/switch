@@ -106,33 +106,47 @@ The session status line reuses the existing `agent_runtime_states` table
      (`removes_answered_cards`), and the unconfirmed-card notice the old path
      posts. Teams and Telegram still lack `find_request_card`.
 
+5. Step 5 — the host reports activity and approvals, and applies answers:
+   - `console/packages/agent-providers/src/host/activity-reporter.ts` maps
+     the session's own journal events to reports: `turn.upsert` running /
+     terminal → `turn.started` / `turn.finished`; a tool item's first
+     revision → `tool.called`, its first terminal status → `tool.finished`;
+     `notice` → `notice` (attached to the running turn); approval
+     `request.opened` → open; every `request.settled` → close (a question
+     Switch never tracked answers NOT_FOUND, which is ignored). Line `seq` is
+     `event.sequence * 2 + i`, so a replay is recorded once. Room and thread
+     come from the origin of the command that started the turn
+     (`HostedSession.originOf`; thread = origin thread, else the message).
+     Progress is kept in `activity-reported.jsonl`; a session reporting for
+     the first time starts at the end of its journal rather than replaying
+     its history.
+   - `shared-host.ts` sends them after each upload (`/agent-sessions`
+     helpers alongside the `/sessions` ones). A server without the routes
+     (404 with no code) turns reporting off with a warning; a refused line is
+     logged and skipped.
+   - Outcomes: the watcher's stream (`SwitchEventStream.onApprovalOutcome`,
+     agent-protocol 4) wakes the worker through `approvals.wake`; the worker
+     then reads `GET /agent-sessions/approvals/outcomes` (the server is the
+     record, so the wake carries nothing), applies each of its own with
+     `HostedSession.applyApprovalOutcome` (answer → the option's decision;
+     expiry → `decline`, not `cancel`, which would interrupt the turn) and
+     posts `/delivered`. It also reads once at start, and every 5 s while an
+     approval is waiting, in case a wake was lost.
+   - The runtime drops a frame without a string `type` instead of handing it
+     to the room-event path, in both `event-stream.ts` and `bin.ts`.
+   - agent-runtime speaks agent-protocol 4 and is 0.7.0 (`artifacts.yaml`,
+     regenerated). **Not released**: tag `switch-agent-runtime-v0.7.0`.
+   - The old `/sessions/events` upload is unchanged: the host gates work on
+     its `session.upsert` receipt, and Console still reads transcripts
+     through it.
+
 ## What is left
 
-### Step 5 — the host sends activity and approvals (Switch Console)
+### Step 5 (rest) — Console polling
 
-- In `console/packages/agent-providers/src/host/` (`shared-host.ts`,
-  `session-host.ts`): alongside the existing upload, POST activity lines
-  (mapping: turn.upsert running → turn.started, terminal → turn.finished;
-  tool-activity item in-progress → tool.called, done → tool.finished; notice →
-  notice; never an empty summary) and open/close approval requests
-  (`request.opened` → `POST /agent-sessions/{sid}/approvals` with option
-  `decision`; non-answered `request.settled` → `/close`). `requestOnce`
-  hard-codes the `/sessions` prefix — add a variant.
-- Handle `approval_outcome` in `switch-agent-runtime/src/event-stream.ts`
-  (new callback; also make the default branch drop frames without `type`),
-  route by `session_id` in `shared-watcher.ts` to the worker (own durable
-  file, or bump `HANDOFF_PROTOCOL`), apply via the provider
-  (`respondToRequest` with the option's decision; expired → cancel/decline and
-  settle `expired`), then `POST …/approvals/{rid}/delivered`.
-- Bump agent-runtime to agent-protocol 4 in `artifacts.yaml`, `just artifacts`,
-  release the runtime (tag `switch-agent-runtime-v<version>`).
-- The old `/sessions/events` upload **cannot be removed yet**: the host gates
-  work on its `session.upsert` receipt, the old answer path validates against
-  the snapshot, and Console reads transcripts through it.
-- Also fix the Console polling found in 0.35: session list every 2 s **per
-  linked agent** with no backoff (`remote-session-reconciler.ts`), 50 ms
-  startup loop ignoring 404 (`shared-agent-runtime.ts`), 250 ms command loop
-  (`shared-host.ts`, replaced by #528's wake hints).
+- Session list every 2 s **per linked agent** with no backoff
+  (`remote-session-reconciler.ts`), 50 ms startup loop ignoring 404
+  (`shared-agent-runtime.ts`).
 
 ### Step 6 — Console reads transcripts locally
 

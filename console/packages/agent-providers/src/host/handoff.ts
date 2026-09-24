@@ -11,6 +11,12 @@ export const COMMAND_WAKE_FILE = 'commands.wake';
 export async function wakeCommands(root: string): Promise<void> {
   await writeFile(join(root, COMMAND_WAKE_FILE), randomUUID(), { mode: 0o600 });
 }
+export const APPROVALS_WAKE_FILE = 'approvals.wake';
+
+/** A lossy wakeup only. Outcomes stay owed in Core until the worker says they are delivered. */
+export async function wakeApprovals(root: string): Promise<void> {
+  await writeFile(join(root, APPROVALS_WAKE_FILE), randomUUID(), { mode: 0o600 });
+}
 export const CAPABILITY_FILE = 'worker.json';
 const NEWLINE = 0x0a;
 
@@ -165,10 +171,17 @@ export class HandoffInbox {
   private offset = 0;
   private appended = false;
   private commands = false;
+  private approvals = false;
 
   takeCommandWake(): boolean {
     const pending = this.commands;
     this.commands = false;
+    return pending;
+  }
+
+  takeApprovalWake(): boolean {
+    const pending = this.approvals;
+    this.approvals = false;
     return pending;
   }
   private watcher: FSWatcher | null = null;
@@ -199,6 +212,10 @@ export class HandoffInbox {
           this.commands = true;
           this.wake?.();
         }
+        if (filename === null || filename === APPROVALS_WAKE_FILE) {
+          this.approvals = true;
+          this.wake?.();
+        }
         if (filename !== null && filename !== HANDOFF_FILE) return;
         this.appended = true;
         this.wake?.();
@@ -221,7 +238,7 @@ export class HandoffInbox {
   idle(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);
-      if (this.appended || this.commands) return resolve();
+      if (this.appended || this.commands || this.approvals) return resolve();
       const finish = (error?: unknown) => {
         clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
