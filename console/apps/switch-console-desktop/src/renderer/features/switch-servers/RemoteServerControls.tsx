@@ -129,6 +129,13 @@ export const RemoteServerControls = observer(function RemoteServerControls({
           </Alert>
         )}
 
+        {status.recordWarning && !transitioning && (
+          <Alert>
+            <TriangleAlert className="size-4 text-amber-500" />
+            <AlertTitle>{status.recordWarning}</AlertTitle>
+          </Alert>
+        )}
+
         {status.message && transitioning && (
           <div className="flex items-center gap-2 text-sm text-foreground-muted">
             <Spinner className="size-3.5" />

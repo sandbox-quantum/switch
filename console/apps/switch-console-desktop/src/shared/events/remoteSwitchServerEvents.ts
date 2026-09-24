@@ -13,6 +13,15 @@ export type RemoteServerStatus = LocalServerStatus & {
    * transport error naming a local port.
    */
   notice: string | null;
+  /**
+   * Why this Console could not record what it did on the stack's host, or
+   * null (CHOO-2893). The operation itself went ahead — a stack is still
+   * started or stopped when its record cannot be written — but the other
+   * Consoles sharing it will not see it in the server's users or activity,
+   * which is what they rely on before stopping or resetting it. Cleared by
+   * the next record that succeeds.
+   */
+  recordWarning: string | null;
 };
 
 export const remoteServerStatusChannel = defineEvent<RemoteServerStatus>(

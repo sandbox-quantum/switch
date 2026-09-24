@@ -39,6 +39,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     message: null,
     error: null,
     notice: null,
+    recordWarning: null,
   };
 }
 

@@ -24,8 +24,7 @@ vi.mock('./stack-state', async (importOriginal) => ({
   writeStateVolume,
 }));
 
-const { RECORD_SCRIPT, readRegister, recordOnHost, writeRecord } =
-  await import('./console-register');
+const { RECORD_SCRIPT, readRegister, writeRecord } = await import('./console-register');
 
 const SELF = '3f2a9c1e-5b7d-4e8f-a1b2-c3d4e5f6a7b8';
 
@@ -127,17 +126,6 @@ describe('recording a Console on the host', () => {
 
     await expect(writeRecord(h, 'started')).rejects.toThrow(/not one/);
     expect(writeStateVolume).not.toHaveBeenCalled();
-  });
-
-  it('does not fail the operation it describes when the record cannot be written', async () => {
-    writeStateVolume.mockRejectedValueOnce(new Error('volume busy'));
-    const { host: h } = host();
-
-    await expect(recordOnHost(h, 'reset')).resolves.toBeUndefined();
-    expect(logWarn).toHaveBeenCalledWith(
-      expect.stringContaining('could not record reset on vm-1'),
-      expect.anything()
-    );
   });
 });
 

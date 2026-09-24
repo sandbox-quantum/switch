@@ -118,7 +118,8 @@ function hostAccount(host: StackStateHost): Promise<string> {
  * Record this Console on the stack's host: refresh its register entry and,
  * for anything but a quiet sighting (`action` null), add a line of activity.
  * A disconnect adds its line and takes the entry out instead of refreshing it.
- * Throws on failure; {@link recordOnHost} is the caller-facing form.
+ * Throws on failure: the supervisor decides what a failed record means for
+ * the operation it describes.
  */
 export async function writeRecord(
   host: StackStateHost,
@@ -152,26 +153,6 @@ export async function writeRecord(
     identity.id,
     recordModeFor(action),
   ]);
-}
-
-/**
- * {@link writeRecord}, for the lifecycle operations. A record that cannot be
- * written does not undo or fail the operation it describes — the stack was
- * still started or stopped — so the failure is logged, and the register simply
- * lacks the entry.
- */
-export async function recordOnHost(
-  host: StackStateHost,
-  action: StackActivityAction | null
-): Promise<void> {
-  try {
-    await writeRecord(host, action);
-  } catch (error) {
-    log.warn(
-      `remote-switch-server: could not record ${action ?? 'this Console'} on ${host.label}`,
-      { error }
-    );
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

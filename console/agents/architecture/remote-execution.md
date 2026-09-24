@@ -139,7 +139,8 @@ per-person accounts would hide each person's sessions from the others. Instead:
   stops, resets and disconnects. A disconnect takes the Console off the
   register and keeps its line of activity. A reset keeps the activity. The
   record is for people, never a control, and a write that fails does not fail
-  the operation.
+  the operation: the server page says what could not be recorded
+  (`recordWarning`) until a later record gets through.
 
 **Several Consoles, one agent.** Under one account, each Console holds its own
 row for the same agent and writes the agent's one watcher on the host. Model

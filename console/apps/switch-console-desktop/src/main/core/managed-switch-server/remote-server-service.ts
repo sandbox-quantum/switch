@@ -22,6 +22,7 @@ import {
   type ConnectRemoteServerResult,
   type DockerAvailability,
   type RemoteStackProbe,
+  type StackActivityAction,
   type StackRegister,
   type StartLocalServerResult,
   matrixMigrationFailedMessage,
@@ -32,7 +33,7 @@ import {
   remoteServerLogChannel,
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
-import { readRegister, recordOnHost } from './console-register';
+import { readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
@@ -45,6 +46,7 @@ import {
   inspectStack,
   probeFromStack,
   type StackOnHost,
+  type StackStateHost,
   unsharedStackMessage,
 } from './stack-state';
 import { readDeployedTelemetry } from './telemetry-consent';
@@ -69,7 +71,35 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     message: null,
     error: null,
     notice: null,
+    recordWarning: null,
   };
+}
+
+const RECORDED_AS: Record<StackActivityAction, string> = {
+  started: 'started it',
+  connected: 'connected to it',
+  stopped: 'stopped it',
+  reset: 'reset it',
+  disconnected: 'disconnected from it',
+};
+
+/** What the server page says when this Console's record of `action` could not
+ * be written to the host — and what that costs the other people sharing it. */
+function recordWarningFor(
+  hostLabel: string,
+  action: StackActivityAction | null,
+  reason: string
+): string {
+  if (action === null) {
+    return (
+      `Could not record on ${hostLabel} that this Console uses the server, so others may not ` +
+      `see it among its users: ${reason}`
+    );
+  }
+  return (
+    `This Console could not record on ${hostLabel} that it ${RECORDED_AS[action]}, so others ` +
+    `using the server will not see that in its activity: ${reason}`
+  );
 }
 
 /**
@@ -137,6 +167,32 @@ class RemoteServerService {
     const next = { ...this.getStatus(sshHost), ...patch, sshHost };
     this.statuses.set(sshHost, next);
     events.emit(remoteServerStatusChannel, next);
+  }
+
+  /**
+   * Record this Console, and what it did, on the stack's host. A record that
+   * cannot be written does not undo or fail the operation it describes — the
+   * stack was still started or stopped — so the failure is logged and shown on
+   * the server page, where it stays until a later record succeeds.
+   */
+  private async record(
+    sshHost: string,
+    host: StackStateHost,
+    action: StackActivityAction | null
+  ): Promise<void> {
+    try {
+      await writeRecord(host, action);
+      this.setStatus(sshHost, { recordWarning: null });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.warn(
+        `remote-switch-server: could not record ${action ?? 'this Console'} on ${host.label}`,
+        {
+          error,
+        }
+      );
+      this.setStatus(sshHost, { recordWarning: recordWarningFor(host.label, action, reason) });
+    }
   }
 
   async detectDocker(sshHost: string): Promise<DockerAvailability> {
@@ -283,7 +339,7 @@ class RemoteServerService {
         // Only for a running stack: a stopped one sends nothing, so it
         // cannot be out of step with the user's answer.
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
-        await recordOnHost(host, null);
+        await this.record(sshHost, host, null);
       } else {
         this.releaseHost(sshHost, live);
         this.setStatus(sshHost, {
@@ -410,7 +466,7 @@ class RemoteServerService {
           drift: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
-        await recordOnHost(host, 'started');
+        await this.record(sshHost, host, 'started');
       }
       reportManagedServerStart('remote', result);
       return result;
@@ -468,7 +524,7 @@ class RemoteServerService {
         });
         this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
-        await recordOnHost(host, 'connected');
+        await this.record(sshHost, host, 'connected');
         return result;
       }
       host.dispose();
@@ -509,7 +565,13 @@ class RemoteServerService {
       // leaving must not wait on, or fail for, a host that is out of reach.
       const live = this.hosts.get(sshHost) ?? null;
       if (live && !hostReachabilityService.isBlocked(sshHost)) {
-        await recordOnHost(live, 'disconnected');
+        // Logged only: the server leaves this Console with the disconnect, so
+        // there is no page left to show a failure on.
+        await writeRecord(live, 'disconnected').catch((error) => {
+          log.warn(`remote-switch-server: could not record disconnected on ${live.label}`, {
+            error,
+          });
+        });
       }
       this.releaseHost(sshHost, live);
       const server = await getRemoteManagedServer(sshHost);
@@ -548,7 +610,7 @@ class RemoteServerService {
         notice: null,
         deployedTelemetry: null,
       });
-      await recordOnHost(host, 'stopped');
+      await this.record(sshHost, host, 'stopped');
       reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
@@ -592,7 +654,7 @@ class RemoteServerService {
       });
       // Kept through the reset on purpose: who destroyed a shared server is
       // exactly what its other users will ask.
-      await recordOnHost(host, 'reset');
+      await this.record(sshHost, host, 'reset');
       reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
