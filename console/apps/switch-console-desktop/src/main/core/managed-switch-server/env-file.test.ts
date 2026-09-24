@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile, readStackEnv } from './env-file';
+import { buildEnvFile, keysDisagreeing, readStackEnv } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -268,5 +268,67 @@ describe('readStackEnv', () => {
 
     expect(reading.kind).toBe('incomplete');
     expect(reading.kind === 'incomplete' && reading.missing).toHaveLength(10);
+  });
+});
+
+describe('keysDisagreeing', () => {
+  const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+  const written = buildEnvFile({
+    version: '1.2.3',
+    registry: 'ghcr.io',
+    namespace: 'sandbox-quantum',
+    ports,
+    secrets,
+    sessionDemo: false,
+    telemetryEnabled: true,
+  });
+
+  it('finds nothing wrong with a copy of the same settings', () => {
+    expect(keysDisagreeing(written, { ports, secrets })).toEqual([]);
+  });
+
+  it('names the ports and credentials a copy of another generation gets wrong', () => {
+    const copy = {
+      ports: { ...ports, gateway: 3300 },
+      secrets: { ...secrets, dbPassword: 'old-owner-pw', gatewayAdminPassword: 'old-admin' },
+    };
+
+    expect(keysDisagreeing(written, copy).sort()).toEqual([
+      'DB_OWNER_PASSWORD',
+      'GATEWAY_ADMIN_PASSWORD',
+      'GATEWAY_HOST_PORT',
+    ]);
+  });
+
+  it('judges only what the file carries, and not what a start rewrites', () => {
+    const partial = written
+      .replace(/^JWT_SECRET_KEY=.*$/m, '')
+      .replace('SWITCH_VERSION=1.2.3', 'SWITCH_VERSION=0.0.1');
+
+    expect(keysDisagreeing(partial, { ports, secrets: { ...secrets, jwtSecretKey: 'x' } })).toEqual(
+      []
+    );
+  });
+
+  it('reads DB_PASSWORD as the owner’s in a file written before the role split', () => {
+    const legacy = written
+      .replace('DB_USER=switch_app', 'DB_USER=postgres')
+      .replace(`DB_PASSWORD=${secrets.dbRuntimePassword}`, `DB_PASSWORD=${secrets.dbPassword}`)
+      .replace(/^DB_OWNER_USER=.*$/m, '')
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(keysDisagreeing(legacy, { ports, secrets })).toEqual([]);
+    expect(
+      keysDisagreeing(legacy, { ports, secrets: { ...secrets, dbPassword: 'other' } })
+    ).toEqual(['DB_PASSWORD']);
+  });
+
+  it('reads DB_PASSWORD as the runtime role’s when the owner’s line is what is missing', () => {
+    const partial = written.replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(keysDisagreeing(partial, { ports, secrets })).toEqual([]);
+    expect(
+      keysDisagreeing(partial, { ports, secrets: { ...secrets, dbRuntimePassword: 'other' } })
+    ).toEqual(['DB_PASSWORD']);
   });
 });

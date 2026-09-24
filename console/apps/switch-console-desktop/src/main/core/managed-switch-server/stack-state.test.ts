@@ -345,16 +345,18 @@ describe('inspectStack', () => {
   });
 
   it('names what a partial published copy is missing', async () => {
+    const partial = envFor().replace(/^JWT_SECRET_KEY=.*$/m, '');
     const { host } = fakeHost({
       dataVolumes: [`${PROJECT}_pgdata`],
       stateVolume: true,
-      published: envFor().replace(/^JWT_SECRET_KEY=.*$/m, ''),
+      published: partial,
     });
 
     expect(await inspectStack(host)).toEqual({
       kind: 'incomplete',
       source: 'published',
       missing: ['JWT_SECRET_KEY'],
+      raw: partial,
       running: false,
     });
   });

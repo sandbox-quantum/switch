@@ -203,6 +203,40 @@ function readDatabasePasswords(
 }
 
 /**
+ * The keys of a stack's `.env` whose values differ from a copy of its settings
+ * — empty when the copy agrees with everything the file does carry.
+ *
+ * For a `.env` that is incomplete: a desktop's copy may fill what the file is
+ * missing only when it is demonstrably the same stack's, since a copy from
+ * before someone else reset the stack would lock it out of the database the
+ * reset created. Only what pins the stack is compared — ports and credentials
+ * — not what a start rewrites anyway, such as the version.
+ */
+export function keysDisagreeing(
+  env: string,
+  copy: { ports: LocalServerPorts; secrets: LocalServerSecrets }
+): string[] {
+  const expected = new Map<string, string>();
+  for (const [field, key] of PORT_KEYS) expected.set(key, String(copy.ports[field]));
+  for (const [field, key] of SECRET_KEYS) expected.set(key, copy.secrets[field]);
+  // Which password `DB_PASSWORD` is depends on the layout that wrote the file.
+  if (readEnvValue(env, 'DB_OWNER_PASSWORD') !== null) {
+    expected.set('DB_OWNER_PASSWORD', copy.secrets.dbPassword);
+    expected.set('DB_PASSWORD', copy.secrets.dbRuntimePassword);
+  } else if (readEnvValue(env, 'DB_USER') === 'postgres') {
+    expected.set('DB_PASSWORD', copy.secrets.dbPassword);
+  } else {
+    expected.set('DB_PASSWORD', copy.secrets.dbRuntimePassword);
+  }
+  const disagreeing: string[] = [];
+  for (const [key, value] of expected) {
+    const found = readEnvValue(env, key);
+    if (found !== null && found !== value) disagreeing.push(key);
+  }
+  return disagreeing;
+}
+
+/**
  * Read a stack's generated `.env` back into the values {@link buildEnvFile}
  * wrote it from — the inverse of that function, kept beside it so the two
  * cannot drift.

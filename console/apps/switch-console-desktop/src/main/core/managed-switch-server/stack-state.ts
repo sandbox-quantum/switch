@@ -316,8 +316,16 @@ export type StackOnHost =
    * `ownerDir` is that working dir when the containers still say it. Starting
    * here would recreate that stack with new credentials, so nothing may. */
   | { kind: 'unshared'; ownerDir: string | null; running: boolean }
-  /** A `.env` was found but does not carry everything the stack needs. */
-  | { kind: 'incomplete'; source: StackEnvSource; missing: string[]; running: boolean }
+  /** A `.env` was found but does not carry everything the stack needs. `raw`
+   * is its text, so a start can check a copy of the settings against what it
+   * does carry before filling the gaps from that copy. */
+  | {
+      kind: 'incomplete';
+      source: StackEnvSource;
+      missing: string[];
+      raw: string;
+      running: boolean;
+    }
   /** The host could not be asked. Distinct from `absent`, for the reason
    * `readDeployedVersion` keeps them apart: an unreachable daemon is not an
    * empty host. */
@@ -379,7 +387,7 @@ function fromEnvText(
 ): StackOnHost {
   const reading = readStackEnv(raw);
   if (reading.kind === 'incomplete') {
-    return { kind: 'incomplete', source, missing: reading.missing, running };
+    return { kind: 'incomplete', source, missing: reading.missing, raw, running };
   }
   return { kind: 'present', env: reading.env, raw, source, running, published };
 }

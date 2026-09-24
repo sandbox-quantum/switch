@@ -20,7 +20,7 @@ import {
   LOCAL_SERVER_ADMIN_EMAIL,
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
-import { buildEnvFile } from './env-file';
+import { buildEnvFile, keysDisagreeing } from './env-file';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
@@ -191,9 +191,10 @@ type StartPlan =
   /** Nothing on the host, or the local stack, which nobody else shares: this
    * desktop's copy, or new credentials when it has none. */
   | { kind: 'fresh' }
-  /** The host could not say, and this desktop holds a copy of what the stack
-   * last ran with. The copy is used — refusing would make a stack its own
-   * starter can no longer start — and the degradation is logged. */
+  /** The host could not say, or its settings have gaps, and this desktop
+   * holds a copy of what the stack last ran with — one that agrees with every
+   * setting the host does hold. The copy is used — refusing would make a stack
+   * its own starter can no longer start — and the degradation is logged. */
   | { kind: 'cached'; reason: string }
   /** Starting here could replace the credentials of a stack that is already
    * there. Nothing may be written. */
@@ -215,21 +216,39 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
         stack.kind === 'incomplete'
           ? `its settings are missing ${stack.missing.join(', ')}`
           : stack.reason;
-      if ((await readSecrets(host)) !== null && (await readPersistedPorts(host)) !== null) {
-        log.warn(
-          `managed-switch-server: could not read the stack's settings on ${host.label}; ` +
-            `starting from this desktop's copy of them`,
-          { reason }
-        );
-        return { kind: 'cached', reason };
+      const secrets = await readSecrets(host);
+      const ports = await readPersistedPorts(host);
+      if (secrets === null || ports === null) {
+        return {
+          kind: 'refused',
+          message:
+            `Could not read the Switch server's settings on ${host.label} (${reason}). ` +
+            `Starting without them could replace the credentials of a server that is already ` +
+            `there, so nothing was changed.`,
+        };
       }
-      return {
-        kind: 'refused',
-        message:
-          `Could not read the Switch server's settings on ${host.label} (${reason}). ` +
-          `Starting without them could replace the credentials of a server that is already ` +
-          `there, so nothing was changed.`,
-      };
+      // A copy that disagrees with what the host does hold is from another
+      // generation of the stack — typically from before someone else reset it
+      // — and starting from it would lock the stack out of its database.
+      if (stack.kind === 'incomplete') {
+        const disagreeing = keysDisagreeing(stack.raw, { secrets, ports });
+        if (disagreeing.length > 0) {
+          return {
+            kind: 'refused',
+            message:
+              `The Switch server's settings on ${host.label} are missing ` +
+              `${stack.missing.join(', ')}, and this desktop's copy of them is out of date ` +
+              `(${disagreeing.join(', ')} differ from the host's), so it cannot fill the gap. ` +
+              `Starting from it would lock the server out of its database, so nothing was changed.`,
+          };
+        }
+      }
+      log.warn(
+        `managed-switch-server: could not read the stack's settings on ${host.label}; ` +
+          `starting from this desktop's copy of them`,
+        { reason }
+      );
+      return { kind: 'cached', reason };
     }
   }
 }

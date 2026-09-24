@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as AppIdentity from '@shared/app-identity';
+import type * as EnvFile from './env-file';
 import type { StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
 import type { LocalServerSecrets } from './secret-values';
@@ -53,7 +54,10 @@ vi.mock('./deployed-version', () => ({
 vi.mock('./compose', () => ({ composeUp: composeUpMock, composeDown: composeDownMock }));
 vi.mock('./health', () => ({ waitForHealth: waitForHealthMock }));
 vi.mock('./bundled-compose', () => ({ bundledComposeYaml: () => 'services: {}' }));
-vi.mock('./env-file', () => ({ buildEnvFile: buildEnvFileMock }));
+vi.mock('./env-file', async (importOriginal) => ({
+  ...(await importOriginal<typeof EnvFile>()),
+  buildEnvFile: buildEnvFileMock,
+}));
 vi.mock('./secrets', () => ({
   loadOrCreateSecrets: loadOrCreateSecretsMock,
   readSecrets: readSecretsMock,
@@ -308,6 +312,8 @@ describe('starting a shared stack', () => {
       kind: 'incomplete',
       source: 'working-dir',
       missing: ['JWT_SECRET_KEY'],
+      // Everything the host does hold agrees with the copy.
+      raw: 'GATEWAY_HOST_PORT=3300\nGATEWAY_ADMIN_PASSWORD=cached-pw\nDB_OWNER_PASSWORD=host-owner-pw\n',
       running: false,
     });
     readSecretsMock.mockResolvedValue(cachedSecrets);
@@ -322,6 +328,30 @@ describe('starting a shared stack', () => {
       expect.stringContaining("this desktop's copy"),
       expect.objectContaining({ reason: 'its settings are missing JWT_SECRET_KEY' })
     );
+  });
+
+  it('refuses to fill a partial settings file from a copy of another generation', async () => {
+    // The host's file lost a key after someone else reset the stack and
+    // started it again; this desktop's copy is from before the reset.
+    inspectStackMock.mockResolvedValue({
+      kind: 'incomplete',
+      source: 'published',
+      missing: ['JWT_SECRET_KEY'],
+      raw: 'GATEWAY_HOST_PORT=3300\nGATEWAY_ADMIN_PASSWORD=host-admin-pw\n',
+      running: false,
+    });
+    readSecretsMock.mockResolvedValue(cachedSecrets);
+    readPersistedPortsMock.mockResolvedValue(cachedPorts);
+    const { host, writeFile } = sharedHost();
+
+    const result = await startStack(startOptions(host));
+
+    expect(result.kind === 'error' && result.message).toMatch(
+      /missing JWT_SECRET_KEY.*out of date \(GATEWAY_ADMIN_PASSWORD differ.*nothing was changed/
+    );
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(publishEnvMock).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
   });
 
   it('does not count a copy without its ports as one to fall back on', async () => {
@@ -417,6 +447,7 @@ describe('connecting to a shared stack', () => {
       kind: 'incomplete',
       source: 'published',
       missing: ['DB_PASSWORD'],
+      raw: 'DB_OWNER_PASSWORD=host-owner-pw\n',
       running: true,
     });
     const { host } = sharedHost();
