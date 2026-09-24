@@ -7,6 +7,10 @@ standalone Docker Compose file. The Switch Console desktop app releases separate
 
 ## Versioning
 
+For how the artifacts depend on each other, how each one reaches its
+consumers, what checks compatibility today and where it can break, see
+[`docs/ARTIFACT_VERSIONING.md`](docs/ARTIFACT_VERSIONING.md).
+
 - Switch follows [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
   Every artifact carries three parts and a changelog, without exception.
 - The canonical `switch-core` version is `version` in `core/pyproject.toml`.
