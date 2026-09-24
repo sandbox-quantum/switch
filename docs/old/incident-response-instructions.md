@@ -364,8 +364,10 @@ and handles are in the bindings.
   is technically on a rota but outside coverage is worse than no name, because
   it reads as an answer.
 
-**Mention a handle with the exact tag in the bindings**, `<!subteam^…>`.
-Writing `@handle` as text reaches Slack as plain text and notifies nobody.
+**Mention a group handle with the exact tag in the bindings**, `<!subteam^…>`.
+Writing a group's `@handle` as text reaches Slack as plain text and notifies
+nobody. (A person's `@name` is different: Switch turns it into a real mention.
+If the bindings give a person rather than a group, mention them by name.)
 
 ## Waking up
 
@@ -452,13 +454,16 @@ convention, say so once and carry on.
 runbooks, and to escalate to the service owner if stuck for an hour or more.
 - Post the **BANNER** at the hub's root.
 - In the banner's thread, name the service owner and the time an escalation
-  would fall due (declaration + 1 hour).
-- Post `next update due HH:MM`: four hours from now.
+  would fall due: declaration plus the bindings' escalation time (an hour,
+  in the SOP).
+- Post `next update due HH:MM`, one Sev1 interval from now (four hours in
+  the SOP; the bindings say).
 - Run the update clock and situation reports **in the banner's thread**.
   A draft is marked as a draft. When a person replies "send", repost it
   unmarked in the same thread. A person posts it to the stakeholder channel.
-- An hour in, if nobody has said it is mitigated, post the **ESCALATION
-  NOTICE** in the thread: the SOP says to escalate to the service owner now.
+- When the escalation time comes and nobody has said it is mitigated, post
+  the **ESCALATION NOTICE** in the thread: the SOP says to escalate to the
+  service owner now.
 
 **Sev2:** post one line in the thread: noted, no war room and no update
 cadence under the SOP. Then stop.
@@ -557,7 +562,7 @@ survives your session ending and a missed timer.
 - **A severity change changes the interval** from that moment.
 
 **Layer 2: your own timer.** Keep one durable recurring job in this session,
-firing about every 10 minutes. It is a poll, not an alarm. Each time it fires,
+firing about every 10 minutes, or as often as the bindings say. It is a poll, not an alarm. Each time it fires,
 compare the deadline you posted with the time now, and act only if something
 is due. Its prompt:
 
@@ -565,10 +570,11 @@ is due. Its prompt:
 > a person has said the issue is mitigated, or asked you to stop the reports,
 > stop the clock: say so once, and delete this job. If the room has no open
 > incident, delete this job and say nothing. Otherwise, compare the
-> `next update due` line you last posted with the time now. If nothing is due, say nothing. If an update is due
-> or overdue: re-read the incident in PagerDuty (its severity may have moved),
-> post a situation-report draft, and post the new deadline. In the alert hub,
-> also carry any war-room milestones into their banner threads.
+> `next update due` line you last posted with the time now. If nothing is
+> due, say nothing. If an update is due or overdue: re-read the incident in
+> PagerDuty (its severity may have moved), post a situation-report draft, and
+> post the new deadline. In the alert hub, also carry any war-room milestones
+> into their banner threads.
 
 Why a frequent poll rather than a timer set to the SOP's interval:
 - A timer fires only while you are idle, so an hourly timer slips while you are
