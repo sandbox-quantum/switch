@@ -539,6 +539,24 @@ def test_send_message_top_level_has_no_thread_ts() -> None:
     assert fake.calls[0]["thread_ts"] is None
 
 
+def test_a_room_wide_mention_in_a_group_dm_is_not_auto_threaded() -> None:
+    # A group DM threads an agent's reply under the last person's message,
+    # and Slack sends no channel-wide alert from a thread.
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+    adapter._channel_type_cache["G1"] = "mpim"
+    adapter._last_user_message_ts["G1"] = "100.1"
+
+    _run(
+        adapter.send_message("G1", "agent-bot", "<!channel> hi", room_wide_mention=True)
+    )
+    _run(adapter.send_message("G1", "agent-bot", "hi"))
+
+    assert fake.calls[0]["thread_ts"] is None
+    assert fake.calls[1]["thread_ts"] == "100.1"
+
+
 # ── Thinking indicator threading ─────────────────────────────────────────────
 
 

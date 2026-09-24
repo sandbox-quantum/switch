@@ -15,8 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.db.models import Agent, ApiKey, Room
 from switch_core.db.stores.room_role_store import RoomRoleStore, validate_role_name
+from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
     defuse_mass_mention_words,
+    defuse_mass_mention_words_in_prose,
     reject_reserved_mention_name,
     strip_room_wide_target,
 )
@@ -43,34 +46,54 @@ RESERVED = ["everyone", "channel", "here", "all", "Everyone", "CHANNEL"]
         # `@channel.` pages the channel just as `@channel` does.
         ("ping @all.", f"ping @{ZWSP}all."),
         ("ping @channel-", f"ping @{ZWSP}channel-"),
-        ("mail@here", f"mail@{ZWSP}here"),
-        # Not a URL: a host starts with a letter or digit.
-        ("http://@channel", f"http://@{ZWSP}channel"),
-        ("see https://x.io then @here", f"see https://x.io then @{ZWSP}here"),
+        # Strict means everywhere: each of these pages a Mattermost channel,
+        # and each got past an exemption that tried to recognise code or a
+        # link the way Markdown does.
+        ("[docs](https://x.com),@channel", f"[docs](https://x.com),@{ZWSP}channel"),
+        ("\\`@channel\\`", f"\\`@{ZWSP}channel\\`"),
+        ("x ~~~ @channel ~~~", f"x ~~~ @{ZWSP}channel ~~~"),
+        ("`@here`", f"`@{ZWSP}here`"),
     ],
 )
-def test_the_words_are_defused(text: str, expected: str) -> None:
+def test_the_strict_form_defuses_the_words_everywhere(text: str, expected: str) -> None:
     assert defuse_mass_mention_words(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["@allison", "@all-hands", "@everyone2", "@channels", "no mention here"]
+)
+def test_longer_handles_are_never_touched(text: str) -> None:
+    assert defuse_mass_mention_words(text) == text
+    assert defuse_mass_mention_words_in_prose(text, keep=CODE_AND_URLS) == text
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "@allison",
-        "@all-hands",
-        "@everyone2",
-        "@channels",
         "`@here`",
         "```\n@all\n```",
         "~~~\nnpm i @here/sdk\n~~~",
         "https://www.npmjs.com/package/@here/harp.gl",
         "[profile](https://mastodon.social/@all)",
+        "ops@here",
         "alice@here.com",
-        "no mention here",
     ],
 )
-def test_longer_handles_and_code_are_left_alone(text: str) -> None:
-    assert defuse_mass_mention_words(text) == text
+def test_the_prose_form_leaves_code_links_and_addresses_exact(text: str) -> None:
+    assert defuse_mass_mention_words_in_prose(text, keep=CODE_AND_URLS) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ping @here, please", f"ping @{ZWSP}here, please"),
+        ("see https://x.io then @here", f"see https://x.io then @{ZWSP}here"),
+        # Not a URL: a host starts with a letter or digit.
+        ("http://@channel", f"http://@{ZWSP}channel"),
+    ],
+)
+def test_the_prose_form_still_defuses_prose(text: str, expected: str) -> None:
+    assert defuse_mass_mention_words_in_prose(text, keep=CODE_AND_URLS) == expected
 
 
 def test_defusing_is_idempotent() -> None:
@@ -130,6 +153,19 @@ async def test_define_role_refuses_a_reserved_name(
         await session.flush()
         with pytest.raises(ValueError, match="reserved"):
             await RoomRoleStore().define_role(session, room.id, "here", "x", False)
+
+
+async def test_create_room_refuses_a_reserved_alias_before_provisioning() -> None:
+    # A bare service: had the check come after anything touched a store, a
+    # bridge or the transport, this would fail on the missing attribute
+    # instead, having left a channel and a room behind in real life.
+    svc = object.__new__(RoomService)
+    config = RoomCreateConfig(
+        name="r", description="r", agent_names=["bot"], aliases={"bot": "here"}
+    )
+
+    with pytest.raises(AliasError, match="reserved"):
+        await svc.create_room(config)
 
 
 class TestAgentNames:

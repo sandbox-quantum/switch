@@ -1200,10 +1200,12 @@ class CollaborationAdapter(ABC):
     def defuse_mass_mentions(self, text: str) -> str:
         """Break every channel-wide mention in text on its way to the platform.
 
-        The base rule defuses the words — `@everyone`, `@channel`, `@here`,
-        `@all` — which is all Mattermost needs and harmless where they mean
-        nothing. A platform with a syntax of its own for the same thing
-        (Slack's `<!channel>`) adds that on top and calls up to this.
+        Safe by default: the words — `@everyone`, `@channel`, `@here`, `@all`
+        — are defused everywhere, code and URLs included, which is what a
+        platform that pages from plain text (Mattermost) needs. A platform
+        whose text cannot page on its own overrides this to leave code, URLs
+        and addresses exact, and one with a syntax of its own for the same
+        thing (Slack's `<!channel>`) escapes that too.
         """
         return defuse_mass_mention_words(text)
 

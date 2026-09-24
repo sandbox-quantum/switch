@@ -1426,8 +1426,13 @@ class ProtocolService:
         roles = target_roles or []
         if not target_names and not roles:
             raise ValueError("at least one of target_names / target_roles is required")
-        room_wide = any(n.casefold() == ROOM_WIDE_TARGET for n in target_names)
-        target_names = [n for n in target_names if n.casefold() != ROOM_WIDE_TARGET]
+        # `@everyone` too: agents write the sigil out of habit.
+        room_wide = any(
+            n.lstrip("@").casefold() == ROOM_WIDE_TARGET for n in target_names
+        )
+        target_names = [
+            n for n in target_names if n.lstrip("@").casefold() != ROOM_WIDE_TARGET
+        ]
         if room_wide and thread_id is not None:
             # Slack sends no channel-wide alert from a thread, and Discord's
             # reaches only people already in it: a threaded room-wide mention
@@ -1460,7 +1465,7 @@ class ProtocolService:
         if unknown:
             hint = (
                 f" For a room-wide mention, target {ROOM_WIDE_TARGET!r}."
-                if any(is_reserved_mention_name(n) for n in unknown)
+                if any(is_reserved_mention_name(n.lstrip("@")) for n in unknown)
                 else ""
             )
             raise ValueError(

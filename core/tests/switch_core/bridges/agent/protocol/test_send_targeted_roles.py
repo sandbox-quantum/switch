@@ -392,6 +392,21 @@ class TestRoomWideMentionStatus:
             await svc.send_targeted_message("sender", "room-1", ["channel"], "hi")
         assert bodies == []
 
+    async def test_the_sigil_is_forgiven(self) -> None:
+        # Agents write `@` out of habit; `@everyone` means the same thing.
+        svc, bodies = _build_service(
+            participants=[_participant("alice", "agent", AgentStatus.LIVE)],
+            roles=[],
+            holders={},
+            agents={},
+        )
+        svc.collab_lifecycle = SimpleNamespace(get=lambda _b: None)  # type: ignore[assignment]
+        result = await svc.send_targeted_message(
+            "sender", "room-1", ["@Everyone"], "hi"
+        )
+        assert bodies == ["@everyone hi"]
+        assert result.target_statuses == {"everyone": RoomWideMentionStatus.NO_BRIDGE}
+
     async def test_a_thread_is_refused(self) -> None:
         # Slack sends no channel-wide alert from a thread, and Discord's
         # reaches only the thread's members, so it would report "sent" having

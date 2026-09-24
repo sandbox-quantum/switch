@@ -62,6 +62,10 @@ from switch_core.bridges.collaboration.slack.agent_groups import (
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -521,7 +525,12 @@ class SlackAdapter(CollaborationAdapter):
                 if ":" in thread_root_id
                 else thread_root_id
             )
-        elif self._channel_type_cache.get(channel_id) in ("im", "mpim"):
+        elif (
+            self._channel_type_cache.get(channel_id) in ("im", "mpim")
+            and not room_wide_mention
+        ):
+            # Not for a room-wide mention: Slack sends no channel-wide alert
+            # from a thread.
             thread_ts = self._last_user_message_ts.get(channel_id)
 
         agent = await self.agent_rendering(sender_name)
@@ -2493,15 +2502,17 @@ class SlackAdapter(CollaborationAdapter):
         return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
 
     def defuse_mass_mentions(self, text: str) -> str:
-        """Escape Slack's own channel-wide syntax, over the base defusal.
+        """Escape Slack's own channel-wide syntax; defuse the words as prose.
 
         `<!channel>`, `<!here>`, `<!everyone>` and the legacy `<!group>` page
-        a channel from any text Slack parses, and this runs on the finished mrkdwn because the
-        translation can write one: a Markdown link to `!channel` comes out of
-        it as `<!channel|…>`. Escaping shows the token as written rather than
-        hiding it."""
-        return super().defuse_mass_mentions(
-            _SLACK_MASS_MENTION.sub(r"&lt;\1&gt;", text)
+        a channel from any text Slack parses, and this runs on the finished
+        mrkdwn because the translation can write one: a Markdown link to
+        `!channel` comes out of it as `<!channel|…>`. Escaping shows the token
+        as written rather than hiding it. The words themselves page nobody on
+        Slack, so they are defused only where that leaves code and links
+        exact."""
+        return defuse_mass_mention_words_in_prose(
+            _SLACK_MASS_MENTION.sub(r"&lt;\1&gt;", text), keep=CODE_AND_URLS
         )
 
     def escape_label_for_body(self, label: str) -> str:

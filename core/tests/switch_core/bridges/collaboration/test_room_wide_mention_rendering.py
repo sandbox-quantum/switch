@@ -174,12 +174,31 @@ def test_handles_that_merely_start_with_a_reserved_word_are_left_alone(
     assert ZWSP not in rendered
 
 
-@pytest.mark.parametrize("platform", ["slack", "mattermost", "discord", "teams"])
+@pytest.mark.parametrize("platform", ["slack", "discord", "teams"])
 def test_code_keeps_its_text_exactly(platform: str) -> None:
-    # `npm install @here/sdk` copied out of a message must not carry a
-    # zero-width space with it; no platform resolves a mention in code anyway.
+    # Where text cannot page anyone on its own, `npm install @here/sdk`
+    # copied out of a message must not carry a zero-width space with it.
     rendered = ADAPTERS[platform]().translate_outbound("run `npm i @here/sdk`")
     assert ZWSP not in rendered
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[docs](https://x.com),@channel",
+        "\\`@channel\\`",
+        "x ~~~ @channel ~~~",
+        "run `npm i @here/sdk`",
+    ],
+)
+def test_mattermost_defuses_the_words_even_in_code_and_links(body: str) -> None:
+    # On Mattermost the text is the only guard, and telling code from prose
+    # the way its Markdown does is a near miss away from paging the room. An
+    # invisible character in a pasted command is the cheaper failure.
+    rendered = _mattermost().translate_outbound(body)
+    assert f"@{ZWSP}" in rendered
+    for word in ("channel", "here"):
+        assert f"@{word}" not in rendered
 
 
 @pytest.mark.parametrize(

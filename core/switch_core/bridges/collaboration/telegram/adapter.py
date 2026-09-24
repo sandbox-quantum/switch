@@ -82,12 +82,19 @@ from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
     chunk_message,
 )
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
-# Code as `_render_outbound` leaves it: rendered HTML, not Markdown.
-_TELEGRAM_CODE = re.compile(r"<pre>.*?</pre>|<code>.*?</code>", re.DOTALL)
+# Code and links as `_render_outbound` leaves them: rendered HTML, not Markdown.
+_TELEGRAM_KEEP = re.compile(
+    rf"<pre>.*?</pre>|<code>.*?</code>|{CODE_AND_URLS.pattern}",
+    re.DOTALL | re.IGNORECASE,
+)
 
 # A caption over this is posted as its own message ahead of the file. The
 # message-length cap lives in `chunking`, which owns the splitting.
@@ -2188,19 +2195,13 @@ class TelegramAdapter(CollaborationAdapter):
         return text
 
     def defuse_mass_mentions(self, text: str) -> str:
-        """The base defusal, outside the code this adapter has already rendered.
+        """Defuse the words as prose: Telegram has no channel-wide mention.
 
-        By the time it runs a code span is `<code>` or `<pre>` HTML rather than
-        backticks, so the base rule's own code check cannot see it, and a
-        command copied out of the message would carry the zero-width space."""
-        parts: list[str] = []
-        last = 0
-        for span in _TELEGRAM_CODE.finditer(text):
-            parts.append(super().defuse_mass_mentions(text[last : span.start()]))
-            parts.append(span.group(0))
-            last = span.end()
-        parts.append(super().defuse_mass_mentions(text[last:]))
-        return "".join(parts)
+        What it does to a public `@here` is link it, so the words are still
+        defused, but outside code and links. By the time this runs a code span
+        is `<code>` or `<pre>` HTML rather than backticks, which is why its
+        pattern is this adapter's own."""
+        return defuse_mass_mention_words_in_prose(text, keep=_TELEGRAM_KEEP)
 
     def _render_mention(self, match: re.Match[str]) -> str:
         """An `@name` we can resolve becomes a real mention; anything else is

@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.clients.mentions import NAME_CHAR
 
 ROOM_WIDE_TARGET = "everyone"
@@ -35,22 +36,21 @@ RESERVED_MENTION_NAMES = frozenset({ROOM_WIDE_TARGET, "channel", "here", "all"})
 # decide whether to render the platform's channel-wide mention.
 ROOM_WIDE_MENTION_MARKER = "com.switch.room_wide_mention"
 
-_ZERO_WIDTH_SPACE = "\u200b"
+_WORD = rf"(?:{'|'.join(sorted(RESERVED_MENTION_NAMES))})[._-]*(?!{NAME_CHAR})"
 
 # A reserved word after `@`, allowing the trailing `.`, `-` or `_` a platform
 # strips before matching (Mattermost pages the channel for `@channel.`), but
 # not a longer handle that merely starts with one (`@allison`, `@all-hands`).
-_MASS_MENTION_AT = re.compile(
-    rf"@(?=(?:{'|'.join(sorted(RESERVED_MENTION_NAMES))})[._-]*(?!{NAME_CHAR}))",
-    re.IGNORECASE,
-)
+_ANY_AT = re.compile(rf"@(?={_WORD})", re.IGNORECASE)
 
-# Left exactly as written. No platform resolves a mention inside code or a
-# URL, and those are where a defused `@` would do harm: `npm install
-# @here/sdk` copied out of a message, or a link to `…/package/@here/sdk`,
-# would carry the zero-width space with it. A URL must start its host with a
-# letter or digit, so `http://@channel` is not one.
-_UNTOUCHED = re.compile(
+# The same, only where a word starts, so `ops@here` is left an address.
+_WORD_START_AT = re.compile(rf"(?<![A-Za-z0-9])@(?={_WORD})", re.IGNORECASE)
+
+# Code and URLs, approximately. Only good enough for a platform whose text
+# cannot page anyone anyway, where this keeps a copied command or a link to
+# `…/package/@here/sdk` exact; it does not follow Markdown's rules, so a
+# platform that pages from text must not rely on it.
+CODE_AND_URLS = re.compile(
     r"```.*?```|~~~.*?~~~|`[^`\n]*`|https?://[A-Za-z0-9]\S*",
     re.DOTALL | re.IGNORECASE,
 )
@@ -91,19 +91,32 @@ def strip_room_wide_target(body: str) -> str:
 
 
 def defuse_mass_mention_words(text: str) -> str:
-    """Break every `@everyone`, `@channel`, `@here` and `@all` outside code
-    and URLs.
+    """Break every `@everyone`, `@channel`, `@here` and `@all`, wherever it is.
 
     A zero-width space after the `@` leaves the word legible and the mention
     dead, the same defusal `defuse_label_markup` applies to display names.
+    This is the form for a platform where the text is the only guard: no
+    exemption for code or URLs, because deciding what counts as either means
+    parsing Markdown the way that platform does, and a near miss pages a room.
+    """
+    return _ANY_AT.sub("@" + ZERO_WIDTH_SPACE, text)
+
+
+def defuse_mass_mention_words_in_prose(text: str, *, keep: re.Pattern[str]) -> str:
+    """The words where a word starts, outside the spans `keep` matches.
+
+    For a platform whose text cannot page anyone on its own — Slack pages only
+    on `<!channel>`, Discord only when the request permits it — so defusing is
+    about how the message reads, and leaving code, URLs and addresses exact
+    matters more.
     """
     parts: list[str] = []
     last = 0
-    for span in _UNTOUCHED.finditer(text):
+    for span in keep.finditer(text):
         parts.append(
-            _MASS_MENTION_AT.sub("@" + _ZERO_WIDTH_SPACE, text[last : span.start()])
+            _WORD_START_AT.sub("@" + ZERO_WIDTH_SPACE, text[last : span.start()])
         )
         parts.append(span.group(0))
         last = span.end()
-    parts.append(_MASS_MENTION_AT.sub("@" + _ZERO_WIDTH_SPACE, text[last:]))
+    parts.append(_WORD_START_AT.sub("@" + ZERO_WIDTH_SPACE, text[last:]))
     return "".join(parts)

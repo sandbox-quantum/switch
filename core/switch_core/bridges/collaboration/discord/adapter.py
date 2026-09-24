@@ -72,6 +72,10 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -2496,6 +2500,14 @@ class DiscordAdapter(CollaborationAdapter):
             return f"<@&{role_id}>" if role_id else match.group(0)
 
         return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Defuse the words as prose: `allowed_mentions` is Discord's guard.
+
+        Every send refuses `@everyone` and `@here` on the request unless the
+        server marked the message, so the words are defused only for how they
+        read, leaving code and links exact."""
+        return defuse_mass_mention_words_in_prose(text, keep=CODE_AND_URLS)
 
     def escape_label_for_body(self, label: str) -> str:
         """Defuse Discord's markdown, mentions and `<…>` entity syntax.

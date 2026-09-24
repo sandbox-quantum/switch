@@ -81,6 +81,10 @@ from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
 )
 from switch_core.bridges.collaboration.teams.graph import GraphClient
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -2160,6 +2164,14 @@ class TeamsAdapter(CollaborationAdapter):
 
     def _render_outbound(self, content: str) -> str:
         return self._mark_mentions(content)
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Defuse the words as prose: Teams pages nobody from text.
+
+        A Teams mention needs an entity alongside the `<at>` markup, and there
+        is no entity for a whole channel, so the words are defused only for
+        how they read, leaving code and links exact."""
+        return defuse_mass_mention_words_in_prose(text, keep=CODE_AND_URLS)
 
     def escape_label_for_body(self, label: str) -> str:
         """Add the `<at>` tag to what the base class already defuses.
