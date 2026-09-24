@@ -92,7 +92,12 @@ def _build_service(
         return list(participants)
 
     async def _send_message(
-        _agent_id: str, _room_id: str, body: str, thread_id: str | None = None
+        _agent_id: str,
+        _room_id: str,
+        body: str,
+        thread_id: str | None = None,
+        *,
+        extra_content: dict[str, object] | None = None,
     ) -> str:
         sent_bodies.append(body)
         return "evt-1"

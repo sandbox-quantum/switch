@@ -106,13 +106,17 @@ _UNKNOWN_MESSAGE_CODE = 10008
 # and not the reader's.
 _UNKNOWN_MEMBER_CODE = 10007
 
-# Applied to the bot posts that inline an agent's name into the body — the DM
-# path, which has no webhook identity to carry it. Escaping the text is not
-# enough on its own: Discord decides who a message pings from the raw content
-# it receives, so `@everyone` in a name is refused here rather than in markup.
-# Only the mass mentions are withheld; a user or role the agent deliberately
-# mentioned still resolves.
+# Applied to every post that carries text Switch did not write: the DM path,
+# which inlines an agent's name into the body, and the webhook path agents'
+# messages take. Escaping the text is not enough on its own: Discord decides
+# who a message pings from the raw content it receives, so `@everyone` is
+# refused here rather than in markup. Only the mass mentions are withheld; a
+# user or role the agent deliberately mentioned still resolves.
 _NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
+
+# The one exception, for a message the server marked as a room-wide mention.
+# Discord needs both halves: `@everyone` in the text and this on the request.
+_ROOM_WIDE_MENTION = discord.AllowedMentions(everyone=True)
 
 # Inserted after the `<` of anything that looks like a Discord entity. Discord
 # has no escape for `<`, so the syntax is broken rather than escaped — the same
@@ -467,6 +471,7 @@ class DiscordAdapter(CollaborationAdapter):
     # channel root is in none of those, so a reply that names nobody reaches
     # nobody.
     notifies_only_by_mention: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "@everyone"
 
     # The status is the turn's one post, so the clock rides along with the next
     # real change rather than rewriting a message somebody is reading. See the
@@ -696,6 +701,8 @@ class DiscordAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         try:
             target = await self._get_channel(int(channel_id))
@@ -743,6 +750,9 @@ class DiscordAdapter(CollaborationAdapter):
         # chunk and could split one message across two different avatars.
         agent = await self.agent_rendering(sender_name)
         identity = _WebhookIdentity(agent.field_label, sender_name)
+        allowed_mentions = (
+            _ROOM_WIDE_MENTION if room_wide_mention else _NO_MASS_MENTIONS
+        )
         return await self._send_chunked(
             content,
             lambda part: identity.send(
@@ -751,6 +761,7 @@ class DiscordAdapter(CollaborationAdapter):
                     "content": part,
                     "avatar_url": agent.icon_url,
                     "suppress_embeds": True,
+                    "allowed_mentions": allowed_mentions,
                     "wait": True,
                     **kwargs,
                 },
@@ -956,7 +967,9 @@ class DiscordAdapter(CollaborationAdapter):
 
         return await self._send_chunked(
             self._admin_body(self.translate_outbound(content), drawn),
-            lambda part: target.send(part, suppress_embeds=True),
+            lambda part: target.send(
+                part, suppress_embeds=True, allowed_mentions=_NO_MASS_MENTIONS
+            ),
             where=f"channel {channel_id}",
         )
 
@@ -2479,7 +2492,9 @@ class DiscordAdapter(CollaborationAdapter):
             role_id = self._agent_role_ids.get(match.group(1).casefold())
             return f"<@&{role_id}>" if role_id else match.group(0)
 
-        return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+        return self.defuse_mass_mentions(
+            re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+        )
 
     def escape_label_for_body(self, label: str) -> str:
         """Defuse Discord's markdown, mentions and `<…>` entity syntax.

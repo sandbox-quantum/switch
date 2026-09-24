@@ -59,6 +59,8 @@ class _RecordingAdapter:
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         self.message_calls.append(content)
         return "ref-msg"

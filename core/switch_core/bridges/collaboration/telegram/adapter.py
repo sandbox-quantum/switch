@@ -474,6 +474,7 @@ class TelegramAdapter(CollaborationAdapter):
     #: named, so a mention is an emphasis rather than the only route to a
     #: reader. Naming the asker still happens; it is not what delivery rests on.
     notifies_only_by_mention: ClassVar[bool] = False
+    every_message_notifies_members: ClassVar[bool] = True
 
     #: The status is the turn's one post, so the seconds ride along with the
     #: next real change rather than rewriting it on a timer. Telegram's edit
@@ -944,6 +945,8 @@ class TelegramAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         """Post as the bot with the agent's name at the head of the message.
 
@@ -2176,6 +2179,8 @@ class TelegramAdapter(CollaborationAdapter):
 
         text = self._LINK_RE.sub(_link, text)
         text = self._MENTION_RE.sub(self._render_mention, text)
+        # Before the stash is restored, so code spans keep their text exactly.
+        text = self.defuse_mass_mentions(text)
 
         for index, rendered in enumerate(stash):
             text = text.replace(f"\x00{index}\x00", rendered)

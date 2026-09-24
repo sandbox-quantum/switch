@@ -33,6 +33,11 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.room_wide_mention import (
+    ROOM_WIDE_TARGET,
+    defuse_mass_mention_words,
+    strip_room_wide_target,
+)
 from switch_core.sessions.contract import (
     Item,
     SnapshotRequest,
@@ -306,6 +311,18 @@ class CollaborationAdapter(ABC):
     #: them is a notification they already had.
     notifies_only_by_mention: ClassVar[bool] = False
 
+    #: The token that pages every member of a channel, for a room-wide mention.
+    #:
+    #: None where the platform has none a bot can send. A room-wide mention
+    #: there still posts, opening with an inert `@everyone`, and the agent is
+    #: told it paged nobody — unless `every_message_notifies_members` says the
+    #: platform does that work itself.
+    channel_mention: ClassVar[str | None] = None
+
+    #: Whether every message already notifies every member of the chat, so a
+    #: room-wide mention needs no token of its own to reach them all.
+    every_message_notifies_members: ClassVar[bool] = False
+
     #: Whether a ticking clock is reason enough to redraw a running turn.
     #:
     #: True where the status is a small line of its own that a reader watches
@@ -557,6 +574,8 @@ class CollaborationAdapter(ABC):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         """Post a message to the external channel.
 
@@ -564,6 +583,11 @@ class CollaborationAdapter(ABC):
         thread root (e.g. Mattermost root_id) — the message should be posted as
         a reply within that thread. Adapters whose platform does not support
         threads ignore it.
+
+        room_wide_mention is set when `content` came from
+        `render_room_wide_mention`, for a platform that has to permit a
+        channel-wide mention on the request as well as write it in the text
+        (Discord's `allowed_mentions`). Everywhere else the text alone does it.
         """
         ...
 
@@ -1159,7 +1183,43 @@ class CollaborationAdapter(ABC):
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
 
     @abstractmethod
-    def translate_outbound(self, content: str) -> str: ...
+    def translate_outbound(self, content: str) -> str:
+        """Render a Switch body in this platform's markup.
+
+        Every implementation finishes with `defuse_mass_mentions`, so that
+        nothing a body says can page a channel: only `render_room_wide_mention`
+        does that, for a message the server marked.
+        """
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Break every channel-wide mention in text on its way to the platform.
+
+        The base rule defuses the words — `@everyone`, `@channel`, `@here`,
+        `@all` — which is all Mattermost needs and harmless where they mean
+        nothing. A platform with a syntax of its own for the same thing
+        (Slack's `<!channel>`) adds that on top and calls up to this.
+        """
+        return defuse_mass_mention_words(text)
+
+    def render_room_wide_mention(self, body: str) -> str:
+        """The platform text of a message the server marked as room-wide.
+
+        The body opens with the `@everyone` the server wrote. That token is
+        taken off before translation, so a person on the platform who happens
+        to be called `everyone` is not the one it resolves to, and the
+        platform's own channel-wide mention goes in its place after
+        translation, so the defusal the rest of the body gets cannot break it.
+        """
+        rest = self.translate_outbound(strip_room_wide_target(body))
+        opening = self.channel_mention or defuse_mass_mention_words(
+            f"@{ROOM_WIDE_TARGET}"
+        )
+        return f"{opening} {rest}" if rest else opening
+
+    @property
+    def room_wide_mention_notifies(self) -> bool:
+        """Whether a room-wide mention reaches every member here."""
+        return self.channel_mention is not None or self.every_message_notifies_members
 
     @abstractmethod
     def translate_inbound(self, raw_message: str) -> str: ...

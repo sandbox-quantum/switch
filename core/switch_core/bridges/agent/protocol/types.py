@@ -120,9 +120,29 @@ class AgentStatus(StrEnum):
     NOT_PERMITTED = "not_permitted"
 
 
+class RoomWideMentionStatus(StrEnum):
+    """What a room-wide mention did, reported under `everyone`.
+
+    What Switch sent, not what the platform confirmed: the bridge posts after
+    `send_targeted_message` has returned.
+    """
+
+    # The bridge posts it as the platform's channel-wide mention, or the
+    # platform already notifies every member of every message (Telegram).
+    SENT = "sent"
+    # The platform has no channel-wide mention a bot can send (Teams). The
+    # message still posts; nobody is paged by it.
+    UNSUPPORTED = "unsupported"
+    # The room has no chat platform, so there is nobody to page.
+    NO_BRIDGE = "no_bridge"
+    # The room's bridge is not running, so the message reaches the room but
+    # not its chat platform.
+    BRIDGE_UNAVAILABLE = "bridge_unavailable"
+
+
 class SendTargetedResult(BaseModel):
     event_id: str
-    target_statuses: dict[str, AgentStatus]
+    target_statuses: dict[str, AgentStatus | RoomWideMentionStatus]
 
 
 class DelegateTaskResult(BaseModel):

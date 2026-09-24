@@ -661,6 +661,10 @@ async def send_targeted_message(
             this tool adds them for each target.
         target_names: Agent or user names (the `name` field from
             list_participants, not ids) to address. Prepended as `@name`.
+            The reserved name `everyone` is a room-wide mention: it notifies
+            every person in the room on its chat platform (`@channel` on Slack
+            and Mattermost, `@everyone` on Discord) and wakes no agent. Use it
+            only when every person there genuinely needs to see the message.
         target_roles: Role names (from list_roles) to address. Each is
             prepended as `@role` and fans out to every live holder of that
             role — the single holder for an exclusive role, all current
@@ -687,6 +691,14 @@ async def send_targeted_message(
         sent, and it will answer in the room saying it cannot act on it — so
         read its reply rather than treating this as a failed send. Reaching it
         another way is a matter for whoever owns it, not for a retry.
+
+        A room-wide mention reports under `everyone`: `sent` (the platform
+        pages the room, or — on Telegram — already notifies every member of
+        every message), `unsupported` (the platform has no channel-wide
+        mention a bot can send, as on Teams; the message still posts),
+        `no_bridge` (the room has no chat platform) or `bridge_unavailable`
+        (its bridge is down, so the message never reaches the platform). It
+        says what Switch sent, not what the platform confirmed.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()

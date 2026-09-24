@@ -33,6 +33,7 @@ from switch_core.db.models import Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
@@ -451,6 +452,8 @@ class RoomService:
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
+        for spec in config.roles or []:
+            validate_role_name(spec.name)
         # Validate the group up front so a bad id fails before we provision a
         # Matrix room / external channel.
         if config.group_id is not None:

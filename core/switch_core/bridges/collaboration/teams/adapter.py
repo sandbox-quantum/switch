@@ -1189,6 +1189,8 @@ class TeamsAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         if self._connector is None:
             raise RuntimeError("Cannot send message: Teams adapter not started")
@@ -2157,7 +2159,7 @@ class TeamsAdapter(CollaborationAdapter):
         return self._mention_pattern
 
     def translate_outbound(self, content: str) -> str:
-        return self._mark_mentions(content)
+        return self.defuse_mass_mentions(self._mark_mentions(content))
 
     def escape_label_for_body(self, label: str) -> str:
         """Add the `<at>` tag to what the base class already defuses.

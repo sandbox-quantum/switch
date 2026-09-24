@@ -10,6 +10,8 @@ case-insensitive, mirroring the mention regex.
 
 import re
 
+from switch_core.room_wide_mention import is_reserved_mention_name
+
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -18,11 +20,17 @@ class AliasError(ValueError):
 
 
 def validate_alias_format(alias: str) -> None:
-    """Raise AliasError unless `alias` is a single `@`-token-safe handle."""
+    """Raise AliasError unless `alias` is a single `@`-token-safe handle that
+    is not one of the room-wide mention words."""
     if not _ALIAS_RE.match(alias or ""):
         raise AliasError(
             f"Invalid alias '{alias}': aliases may contain only letters, digits, "
             "'.', '-' and '_' (no spaces or '@')."
+        )
+    if is_reserved_mention_name(alias):
+        raise AliasError(
+            f"Alias '{alias}' is reserved: `@{alias.casefold()}` notifies every "
+            "person in a room, so it cannot name an agent."
         )
 
 

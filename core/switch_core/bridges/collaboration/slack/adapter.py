@@ -66,6 +66,12 @@ from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
+# A channel-wide mention in Slack's own syntax, with or without the `|label`
+# a client may add.
+_SLACK_MASS_MENTION = re.compile(
+    r"<(!(?:channel|here|everyone)(?:\|[^>]*)?)>", re.IGNORECASE
+)
+
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
 _AGENT_GROUP_MARKER = "Switch agent — "
@@ -312,6 +318,7 @@ class _ActivityStream:
 class SlackAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "<!channel>"
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
@@ -498,6 +505,8 @@ class SlackAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         if not self._web_client:
             logger.error("Cannot send message: Slack client not connected")
@@ -2481,7 +2490,21 @@ class SlackAdapter(CollaborationAdapter):
     # ── Translation ──────────────────────────────────────────────────────────
 
     def translate_outbound(self, content: str) -> str:
-        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+        return self.defuse_mass_mentions(
+            self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+        )
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Escape Slack's own channel-wide syntax, over the base defusal.
+
+        `<!channel>`, `<!here>` and `<!everyone>` page a channel from any text
+        Slack parses, and this runs on the finished mrkdwn because the
+        translation can write one: a Markdown link to `!channel` comes out of
+        it as `<!channel|…>`. Escaping shows the token as written rather than
+        hiding it."""
+        return super().defuse_mass_mentions(
+            _SLACK_MASS_MENTION.sub(r"&lt;\1&gt;", text)
+        )
 
     def escape_label_for_body(self, label: str) -> str:
         """Escape the three characters Slack reserves, over the base defusal.
