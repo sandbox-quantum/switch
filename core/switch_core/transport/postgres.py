@@ -594,6 +594,7 @@ class PostgresTransport:
         body: str,
         *,
         sender_name: str,
+        metered: bool,
         format: MessageFormat = "text",
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
@@ -607,7 +608,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def send_event(
         self,
@@ -615,7 +618,9 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
     ) -> SendResult:
-        return await self._send(room_id, event_type, content, self.display_name)
+        return await self._send(
+            room_id, event_type, content, self.display_name, metered=False
+        )
 
     async def send_media(
         self,
@@ -626,6 +631,7 @@ class PostgresTransport:
         size: int,
         *,
         sender_name: str,
+        metered: bool,
         msgtype: str,
         caption: str | None = None,
         thread_root_id: str | None = None,
@@ -642,7 +648,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             group=group,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def _send(
         self,
@@ -650,6 +658,8 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
         sender_name: str,
+        *,
+        metered: bool,
     ) -> SendResult:
         """Write the event, which is what sending it means here.
 
@@ -700,7 +710,7 @@ class PostgresTransport:
                 await self._message_store.create(
                     session, message, attachments_in(content)
                 )
-                if kind in _METERED_KINDS:
+                if metered and kind in _METERED_KINDS:
                     await self._usage_store.record(
                         session,
                         tenant_id=tenant_id,

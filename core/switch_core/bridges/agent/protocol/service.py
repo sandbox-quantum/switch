@@ -1142,7 +1142,7 @@ class ProtocolService:
         bridges — the resource manager isn't a bridge participant, so its own
         notices wouldn't reach Slack/Mattermost."""
         try:
-            await client.send_message(matrix_room_id, body)
+            await client.send_message(matrix_room_id, body, metered=False)
         except Exception:
             logger.exception(
                 "Failed to post agent activity notice to %s", matrix_room_id
@@ -1205,7 +1205,10 @@ class ProtocolService:
                 client, room.matrix_room_id, thread_id
             )
         event_id = await client.send_message(
-            room.matrix_room_id, content, thread_root_id=thread_root_id
+            room.matrix_room_id,
+            content,
+            thread_root_id=thread_root_id,
+            metered=True,
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -1299,6 +1302,7 @@ class ProtocolService:
                     if group_id is not None
                     else None
                 ),
+                metered=True,
             )
             if event_id is None:
                 raise ValueError(f"Failed to send media message for '{filename}'")
@@ -1566,7 +1570,9 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        await client.send_message(room.matrix_room_id, f"*{detail}*", format="markdown")
+        await client.send_message(
+            room.matrix_room_id, f"*{detail}*", format="markdown", metered=True
+        )
 
     async def set_runtime_state(
         self,
@@ -2298,7 +2304,9 @@ class ProtocolService:
                     "outcome": outcome,
                 },
             )
-            await client.send_message(room.matrix_room_id, outcome, format="markdown")
+            await client.send_message(
+                room.matrix_room_id, outcome, format="markdown", metered=True
+            )
 
     async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
         """Cancel a task (requester only)."""
