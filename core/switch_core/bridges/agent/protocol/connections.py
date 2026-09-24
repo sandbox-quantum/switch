@@ -29,7 +29,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from switch_core.artifacts import contract_range
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_EXPIRED
@@ -69,6 +69,10 @@ FENCED_PROTOCOL_REVISION = 2
 # is withheld from anything older: those clients route unrecognised frames to
 # their room-event path, and a frame without a `type` breaks it.
 APPROVAL_OUTCOME_PROTOCOL_REVISION = 4
+
+# The revision from which a client takes a `session_command` frame: a command
+# for one of the agent's sessions, relayed from Switch Console.
+SESSION_COMMAND_PROTOCOL_REVISION = 5
 
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
@@ -406,6 +410,8 @@ class Connection:
     # empty declaration, which means unknown — never "current".
     declaration: ClientDeclaration = field(default_factory=lambda: ClientDeclaration())
     wake: asyncio.Event = field(default_factory=asyncio.Event)
+    # Commands relayed to this connection and not yet written to its stream.
+    session_commands: list[dict[str, Any]] = field(default_factory=list)
 
     def is_alive(self, now: float) -> bool:
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
@@ -771,6 +777,24 @@ class ConnectionRegistry:
             for cid in self._by_agent.get(agent_id, set())
             if (conn := self._by_id.get(cid)) is not None and conn.is_alive(now)
         ]
+
+    def relay_session_command(self, agent_id: str, frame: dict[str, Any]) -> bool:
+        """Hand a session command to the agent's watcher stream. False if none is attached.
+
+        Not stored anywhere else: a command relayed to nobody is refused to
+        whoever sent it, rather than held for a watcher that may not return.
+        """
+        watchers = [
+            conn
+            for conn in self.for_agent(agent_id)
+            if conn.scope == "all"
+            and conn.stream_attached
+            and (conn.declaration.speaks or 0) >= SESSION_COMMAND_PROTOCOL_REVISION
+        ]
+        for conn in watchers:
+            conn.session_commands.append(frame)
+            conn.wake.set()
+        return bool(watchers)
 
     # ------------------------------------------------------------------
     # Room slots

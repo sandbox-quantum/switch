@@ -175,8 +175,14 @@ contracts:
     # to a client that declares this revision — an older client hands frames it
     # does not recognise to its room-event path, and one without a `type`
     # breaks it — so `accepts` stays at 1 and nothing changes for them.
+    #
+    # Revision 5 adds the `session_command` frame on an agent's own stream
+    # (scope "all"): a command for one of the agent's sessions, sent by its
+    # owner from Switch Console and relayed without being stored. Sessions no
+    # longer fetch commands from a queue on the server. Sent only to a client
+    # that declares this revision, for the same reason as revision 4.
     artifacts:
-      switch-core: { speaks: 4, accepts: 1 }
+      switch-core: { speaks: 5, accepts: 1 }
       agent-runtime: { speaks: 4, accepts: 1 }
 
   gateway-api:

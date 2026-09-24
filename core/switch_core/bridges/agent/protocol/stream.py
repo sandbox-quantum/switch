@@ -276,6 +276,12 @@ async def _event_stream(
                 commands.clear()
                 yield _frame("session_commands", {"session_ids": session_ids})
 
+            if conn.session_commands:
+                relayed = list(conn.session_commands)
+                conn.session_commands.clear()
+                for frame in relayed:
+                    yield _frame("session_command", frame)
+
             if resync[0] and approvals is not None:
                 resync[0] = False
                 for outcome in await approvals.undelivered(agent_id):
