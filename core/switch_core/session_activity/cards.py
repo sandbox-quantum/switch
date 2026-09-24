@@ -1,14 +1,14 @@
-"""An approval request as the platform renderers draw it.
+"""A request (approval or questions) as the platform renderers draw it.
 
 The renderers take the session contract's `SnapshotRequest`, so a row is
 translated into one rather than each of the five platforms learning a second
-shape. What a row does not carry is filled in plainly: the request is its own
-turn, and it is at revision 1 while open and 2 once settled.
+shape. What a row does not carry is filled in plainly: it is at revision 1
+while open and 2 once settled.
 """
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import Literal, get_args
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,16 +24,27 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.sessions.contract import (
+    Answer,
     ApprovalContent,
     ApprovalOption,
     ApprovalResult,
     DecidedBy,
+    Question,
+    QuestionOption,
+    QuestionsContent,
+    QuestionsResult,
     RequestSettled,
     SnapshotRequest,
     Surface,
 )
 
 _SURFACES: frozenset[str] = frozenset(get_args(Surface))
+_STATES: dict[str, Literal["open", "resolved", "closed"]] = {
+    "open": "open",
+    "answered": "resolved",
+    "expired": "resolved",
+    "closed": "closed",
+}
 
 
 def approval_request(
@@ -41,14 +52,13 @@ def approval_request(
 ) -> SnapshotRequest:
     settled: RequestSettled | None = None
     if row.state == "answered":
-        assert row.answer is not None
         settled = RequestSettled(
             type="request.settled",
             request_id=row.request_id,
             revision=2,
             outcome="answered",
             command_id=None,
-            result=ApprovalResult(kind="approval", option_id=row.answer),
+            result=_result(row),
         )
     elif row.state in ("expired", "closed"):
         settled = RequestSettled(
@@ -61,18 +71,22 @@ def approval_request(
         )
     return SnapshotRequest(
         request_id=row.request_id,
-        turn_id=row.request_id,
+        turn_id=row.turn_id,
         revision=1 if row.state == "open" else 2,
-        state={
-            "open": "open",
-            "answered": "resolved",
-            "expired": "resolved",
-            "closed": "closed",
-        }[row.state],
-        content=ApprovalContent(
+        state=_STATES[row.state],
+        content=_content(row),
+        expires_at=row.expires_at.isoformat() if row.expires_at else None,
+        result=settled,
+        decided_by=decided_by if row.state == "answered" else None,
+    )
+
+
+def _content(row: ApprovalRequest) -> ApprovalContent | QuestionsContent:
+    if row.kind == "approval":
+        return ApprovalContent(
             kind="approval",
-            title=row.question,
-            detail=None,
+            title=row.title,
+            detail=row.detail,
             options=[
                 ApprovalOption(
                     option_id=option["id"],
@@ -81,10 +95,46 @@ def approval_request(
                 )
                 for option in row.options
             ],
-        ),
-        expires_at=row.expires_at.isoformat() if row.expires_at else None,
-        result=settled,
-        decided_by=decided_by if row.state == "answered" else None,
+        )
+    return QuestionsContent(
+        kind="questions",
+        title=row.title,
+        questions=[
+            Question(
+                question_id=question["id"],
+                title=question["title"],
+                prompt=question["prompt"],
+                options=[
+                    QuestionOption(
+                        option_id=option["id"],
+                        label=option["label"],
+                        description=option["description"],
+                    )
+                    for option in question["options"]
+                ],
+                multi_select=question["multi_select"],
+                allow_custom_answer=question["allow_custom_answer"],
+            )
+            for question in row.questions
+        ],
+    )
+
+
+def _result(row: ApprovalRequest) -> ApprovalResult | QuestionsResult:
+    if row.kind == "approval":
+        assert row.answer is not None
+        return ApprovalResult(kind="approval", option_id=row.answer)
+    assert row.answers is not None
+    return QuestionsResult(
+        kind="questions",
+        answers=[
+            Answer(
+                question_id=answer["question_id"],
+                selected_option_ids=answer["selected_option_ids"],
+                custom_text=answer["custom_text"],
+            )
+            for answer in row.answers
+        ],
     )
 
 
@@ -141,9 +191,15 @@ def approval_card(
     *,
     decided_by: DecidedBy | None,
     responder_external_id: str | None,
+    unavailable_reason: str | None,
+    notify_external_id: str | None,
+    notify_unreachable: bool,
 ) -> RequestCard:
     return RequestCard(
         approval_request(row, decided_by),
         RequestReference(token=post.token, handle=post.handle),
         responder_external_id=responder_external_id,
+        unavailable_reason=unavailable_reason,
+        notify_external_id=notify_external_id,
+        notify_unreachable=notify_unreachable,
     )

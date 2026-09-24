@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
+from switch_core.bridges.agent.commands import stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     CollaborationAdapter,
@@ -29,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
+from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
@@ -59,8 +61,12 @@ from switch_core.session_activity.bridge_publisher import (
     SessionActivityBridgePublisher,
 )
 from switch_core.session_activity.listener import SessionActivityListener
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.service import (
+    PlatformPerson,
+    SessionActivityService,
+)
 from switch_core.sessions.attachments import normalise_mime_type
+from switch_core.sessions.errors import SessionError
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport import (
     InboundMedia as TransportMedia,
@@ -74,6 +80,7 @@ from switch_core.transport import (
 )
 
 if TYPE_CHECKING:
+    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
 
@@ -167,6 +174,7 @@ class BridgeCore:
         max_attachment_bytes: int,
         session_activity_listener: SessionActivityListener,
         session_activity_service: SessionActivityService,
+        connections: ConnectionRegistry,
         gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
@@ -230,17 +238,22 @@ class BridgeCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
-        # Approval cards and turn status from the tables the host reports to,
-        # pushed as they change. Only where the platform draws request cards.
+        # Turns and request cards from the tables the host reports to, pushed
+        # as they change. Only where the platform draws session activity.
+        self._connections = connections
+        self._session_activity_service = session_activity_service
         self._activity_publisher = (
             SessionActivityBridgePublisher(
                 adapter=adapter,
                 bridge_id=bridge_id,
+                bridge_type=bridge_type,
                 tenant_id=bridge_tenant_id,
                 listener=session_activity_listener,
                 session_factory=session_factory,
+                agent_online=connections.is_live,
+                gateway_public_url=gateway_public_url,
             )
-            if adapter.publishes_sdk_sessions
+            if adapter.draws_session_activity
             else None
         )
         self._approval_answers = (
@@ -251,7 +264,7 @@ class BridgeCore:
                 identify=self._identify_actor,
                 is_first_reply=adapter.is_first_reply,
             )
-            if adapter.publishes_sdk_sessions
+            if adapter.draws_session_activity
             else None
         )
 
@@ -353,6 +366,10 @@ class BridgeCore:
         if self._approval_answers is not None:
             self._adapter.set_interaction_handler(
                 self._traced("interaction", self._handle_inbound_interaction)
+            )
+        if self._activity_publisher is not None:
+            self._adapter.set_activity_resolver(
+                self._activity_publisher.activity_shown_at
             )
         await self._adapter.start(
             on_message=self._traced("message", self._handle_inbound_message),
@@ -1319,7 +1336,10 @@ class BridgeCore:
     async def _handle_inbound_interaction(
         self, interaction: InboundInteraction
     ) -> None:
-        """Someone operated a control on an approval card this bridge posted."""
+        """Someone operated a control on a message this bridge posted."""
+        if interaction.action_id == INTERRUPT_ACTION:
+            await self._handle_stop_press(interaction)
+            return
         if self._approval_answers is None:
             return
         answered = await self._approval_answers.for_press(interaction)
@@ -1327,6 +1347,100 @@ class BridgeCore:
             await self._tell_refused(
                 interaction, answered, thread_ref=interaction.thread_ref
             )
+
+    async def _handle_stop_press(self, interaction: InboundInteraction) -> None:
+        """Someone pressed Stop on the message showing a turn.
+
+        Two things are taken from the press: which message it was on, and who
+        the platform says pressed it. The session and room come from the turn
+        behind that message; the turn to stop is the one the control named
+        when it was drawn, and a press naming a turn that is no longer running
+        is refused rather than stopping whatever runs now. The press is then
+        judged like the room's own `!interrupt`, by the agent's addressing
+        policy, and relayed to the session over its agent's stream.
+        """
+        publisher = self._activity_publisher
+        if publisher is None or interaction.message_ref is None:
+            return
+
+        async def tell(text: str) -> None:
+            await self._adapter.tell_actor(
+                interaction.channel_id,
+                interaction.sender_id,
+                interaction.sender_name,
+                interaction.thread_ref,
+                text,
+            )
+
+        target = await publisher.stop_target(
+            interaction.channel_id, interaction.message_ref
+        )
+        if target is None:
+            logger.warning(
+                "Ignoring a stop press in %s on bridge %s: message %s shows no "
+                "turn this bridge can still reach.",
+                interaction.channel_id,
+                self._bridge_id,
+                interaction.message_ref,
+            )
+            await tell(
+                "That message is no longer connected to a live session, so "
+                "there is nothing here to stop."
+            )
+            return
+        actor_id = await self._identify_actor(interaction)
+        if actor_id is None:
+            logger.warning(
+                "Ignoring a stop press on session %s: no Switch identity for %s "
+                "on bridge %s.",
+                target.session_id,
+                interaction.sender_id,
+                self._bridge_id,
+            )
+            await tell(
+                "Switch does not know who this account belongs to, and "
+                "stopping an agent is only ever recorded against someone it "
+                "can name."
+            )
+            return
+        if (
+            target.running_turn_id is None
+            or target.running_turn_id != interaction.value
+        ):
+            await tell(
+                "The agent was not stopped (TURN_NOT_RUNNING): the turn that "
+                "control was drawn for is no longer running."
+            )
+            return
+        try:
+            await self._session_activity_service.authorize_room_control(
+                target.agent_id,
+                target.room_id,
+                PlatformPerson(actor_id),
+                doing="stop it",
+            )
+        except SessionError as error:
+            await tell(f"The agent was not stopped ({error.code}): {error}")
+            return
+        frame = stop_control_frame(
+            agent_id=target.agent_id,
+            session_id=target.session_id,
+            room_id=target.room_id,
+            actor_id=actor_id,
+            message_ref=interaction.message_ref,
+            turn_id=interaction.value,
+            thread_id=target.thread_id,
+            surface=self._bridge_type,
+        )
+        if not self._connections.relay_session_command(target.agent_id, frame):
+            await tell(
+                "The agent was not stopped: its controller is not connected to Switch."
+            )
+            return
+        await tell(
+            "Switch has asked the agent to stop its current work. The activity "
+            "message will say when it has."
+        )
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """An answer to an approval card, typed rather than pressed.

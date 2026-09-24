@@ -1,11 +1,12 @@
-"""Answers to approval cards, given on a platform, recorded against the request.
+"""Answers to request cards, given on a platform, recorded against the request.
 
 The inbound half of `bridge_publisher`. A press carries the card's token and
-the option; a typed answer names the card by its handle (`A3 yes`), or is a
-bare "yes" / "no" as the first reply to the card. Either resolves to one
-`approval_request_posts` row, and from there to the request itself, which
-`SessionActivityService.answer_approval` checks: open, unexpired, one of its
-options, and from someone who may address the agent.
+the option; a typed answer names the card by its handle (`A3 yes`, `A3 q1=2
+q2=use staging`), or is a bare "yes" / "no" as the first reply to an approval
+card. Either resolves to one `approval_request_posts` row, and from there to
+the request itself, which `SessionActivityService.answer_approval` checks:
+open, unexpired, fits what was asked, and from someone who may address the
+agent.
 
 `None` from either entry point means the event is not an answer to a card
 of this kind, and the caller carries on with whatever else it might be.
@@ -51,7 +52,7 @@ from switch_core.session_activity.service import (
     PlatformPerson,
     SessionActivityService,
 )
-from switch_core.sessions.contract import ApprovalResult, RequestResult
+from switch_core.sessions.contract import RequestResult
 from switch_core.sessions.errors import SessionError
 
 logger = logging.getLogger(__name__)
@@ -183,8 +184,6 @@ class ApprovalAnswers:
             return Refused(
                 reason=answer.reason, handle=post.handle, card_ref=post.external_post_id
             )
-        if not isinstance(answer, ApprovalResult):
-            raise TypeError(f"An approval card resolved to {type(answer).__name__}")
         mxid = await self._identify(actor)
         if mxid is None:
             logger.warning(
@@ -201,7 +200,7 @@ class ApprovalAnswers:
                 post.agent_id,
                 post.session_id,
                 post.request_id,
-                answer=answer.option_id,
+                answer=answer,
                 answerer=PlatformPerson(mxid),
             )
         except SessionError as error:

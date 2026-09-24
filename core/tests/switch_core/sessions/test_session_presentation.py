@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from switch_core.sessions.contract import Origin, TurnUpsert
+from switch_core.sessions.contract import TurnUpsert
 from switch_core.sessions.presentation import (
     activity_error_summary,
     notification_recipient,
@@ -31,16 +31,6 @@ def test_console_link_does_not_invent_a_server(server):
     assert session_console_url(server, "agent", "room", "session") is None
 
 
-def origin(surface="slack"):
-    return Origin(
-        surface=surface,
-        actor_id="@actor:switch",
-        room_id="room",
-        thread_id=None,
-        message_id="message",
-    )
-
-
 async def test_slack_thread_participant_needs_no_mention_or_identity_lookup():
     db = AsyncMock()
     assert (
@@ -48,7 +38,8 @@ async def test_slack_thread_participant_needs_no_mention_or_identity_lookup():
             db,
             bridge_id="bridge",
             room_id="room",
-            origin=origin(),
+            surface="slack",
+            actor_id="@actor:switch",
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="123.456",
         )
@@ -65,7 +56,8 @@ async def test_other_origin_prefers_actor_and_scopes_mapping_to_bridge_and_membe
             db,
             bridge_id="bridge",
             room_id="room",
-            origin=origin("console"),
+            surface="console",
+            actor_id="@actor:switch",
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="123.456",
         )
@@ -88,7 +80,8 @@ async def test_missing_actor_falls_back_to_claimed_owner_in_same_room():
             db,
             bridge_id="bridge",
             room_id="room",
-            origin=origin("console"),
+            surface="console",
+            actor_id="@actor:switch",
             agent=SimpleNamespace(owner_id="owner"),
             thread_id=None,
         )
@@ -117,7 +110,8 @@ async def test_the_asker_leads_even_where_a_mention_is_the_whole_notification():
             db,
             bridge_id="bridge",
             room_id="room",
-            origin=origin("mattermost"),
+            surface="mattermost",
+            actor_id="@actor:switch",
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="root-1",
         )
@@ -139,7 +133,8 @@ async def test_an_asker_with_no_account_here_still_reaches_the_owner():
             db,
             bridge_id="bridge",
             room_id="room",
-            origin=origin("mattermost"),
+            surface="mattermost",
+            actor_id="@actor:switch",
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="root-1",
         )
@@ -148,44 +143,39 @@ async def test_an_asker_with_no_account_here_still_reaches_the_owner():
 
 
 @pytest.mark.parametrize(
-    "turn_status,session_status,online,expected",
+    "turn_status,online,expected",
     [
-        ("error", "ready", True, "could not complete"),
-        ("running", "error", True, "session encountered an error"),
-        ("running", "running", False, "host is offline"),
-        ("queued", "ready", False, "host is offline"),
-        ("completed", "error", False, None),
-        ("running", "running", True, None),
+        ("error", True, "could not complete"),
+        ("running", False, "host is offline"),
+        ("queued", False, "host is offline"),
+        ("completed", False, None),
+        ("running", True, None),
     ],
 )
-def test_error_summary_uses_only_state(turn_status, session_status, online, expected):
+def test_error_summary_uses_only_state(turn_status, online, expected):
     turn = TurnUpsert(
         type="turn.upsert", turn_id="turn", command_id="command", status=turn_status
     )
-    result = activity_error_summary(
-        turn, SimpleNamespace(status=session_status), online=online, unconfirmed=False
-    )
+    result = activity_error_summary(turn, online=online)
     if expected is None:
         assert result is None
     else:
         assert expected in result
 
 
-def test_an_unacknowledged_command_is_not_reported_as_a_failed_one():
-    """Nobody here knows whether the agent saw it, so nothing may claim it didn't.
-
-    The turn is carried as an error because there is no other status to carry
-    it as, which is exactly why the sentence cannot be read off the status.
-    """
-    turn = TurnUpsert(
-        type="turn.upsert", turn_id="turn", command_id="command", status="error"
+async def test_an_unknown_asker_reaches_the_owner():
+    db = AsyncMock()
+    db.scalar.side_effect = ["UOWNER"]
+    assert (
+        await notification_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            surface="mattermost",
+            actor_id=None,
+            agent=SimpleNamespace(owner_id="owner"),
+            thread_id="root-1",
+        )
+        == "UOWNER"
     )
-
-    summary = activity_error_summary(
-        turn, SimpleNamespace(status="ready"), online=True, unconfirmed=True
-    )
-
-    assert summary is not None
-    assert "could not complete" not in summary
-    assert "could not confirm" in summary
-    assert "not be resent" in summary
+    assert db.scalar.call_count == 1

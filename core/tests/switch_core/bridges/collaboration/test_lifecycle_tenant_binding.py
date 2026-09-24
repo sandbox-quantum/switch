@@ -70,6 +70,7 @@ def _service(
         client_factory=MagicMock(),
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
+        connections=MagicMock(),
     )
 
 

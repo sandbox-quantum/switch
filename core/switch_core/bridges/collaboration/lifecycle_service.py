@@ -37,6 +37,7 @@ from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
+    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
     from switch_core.session_activity.listener import SessionActivityListener
@@ -123,6 +124,7 @@ class CollaborationBridgeLifecycleService:
         client_factory: ClientFactory,
         session_activity_listener: SessionActivityListener,
         session_activity_service: SessionActivityService,
+        connections: ConnectionRegistry,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self._bridge_store = bridge_store
@@ -140,6 +142,7 @@ class CollaborationBridgeLifecycleService:
         self._client_factory = client_factory
         self._session_activity_listener = session_activity_listener
         self._session_activity_service = session_activity_service
+        self._connections = connections
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -607,6 +610,7 @@ class CollaborationBridgeLifecycleService:
             gateway_public_url=self._config.gateway_public_url,
             session_activity_listener=self._session_activity_listener,
             session_activity_service=self._session_activity_service,
+            connections=self._connections,
         )
 
         bridge_client = BridgeClient(

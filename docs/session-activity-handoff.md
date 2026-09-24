@@ -40,10 +40,10 @@ All tenant-scoped with row-level security; one migration,
 
 | Table | Purpose |
 |---|---|
-| `approval_requests` | A question a session waits on: `question`, `options` `[{id,label,decision}]`, `state` open/answered/expired/closed, `expires_at`, `answer`, `answered_by` (`mxid` or `user:<id>`), `delivered_at` (null = still owed to the agent) |
-| `session_activity_events` | Append-only short lines: `seq` (host's counter, idempotency key), `type` turn.started/tool.called/tool.finished/turn.finished/notice, `summary` (≤2000), `detail`, `room_id`, `thread_id`, `turn_id` |
-| `approval_request_posts` | Where a request's card is on a bridge: `token` (in button payloads), `handle` `A<n>` (typed answers), `external_post_id` (null until confirmed), `thread_ref` |
-| `turn_status_posts` | The one status message per turn per bridge: `external_post_id`, `thread_ref`, `tool_calls`, `finished` |
+| `approval_requests` | A request a session waits on: `kind` approval/questions, `turn_id`, `title`, `detail`, `options` `[{id,label,decision}]` (approvals), `questions` (questions), `state` open/answered/expired/closed, `expires_at`, `answer` (approvals) or `answers` (questions), `answered_by` (`mxid` or `user:<id>`), `delivered_at` (null = still owed to the agent) |
+| `session_activity_items` | One row per turn step (the turn itself, a message, a tool call, a notice), upserted by `revision`; see "Display parity" |
+| `approval_request_posts` | Where a request's card is on a bridge: `token` (in button payloads), `handle` `A<n>` (typed answers), `external_post_id` (null until confirmed), `thread_ref`, `removed_at`, `unconfirmed_notice_at` |
+| `turn_status_posts` | The message a turn is drawn in, per bridge: `external_post_id`, `thread_ref`, `reaction_message_ref`, `mark`, `attention_post_id` |
 
 The session status line reuses the existing `agent_runtime_states` table
 (working / awaiting-input / idle per agent and room) rather than a new one.
@@ -255,3 +255,186 @@ Compatibility with deployed Consoles is waived (owner's call).
 Store tests use testcontainers Postgres. If Docker is not found, set
 `DOCKER_HOST` to your Docker socket (and `TESTCONTAINERS_RYUK_DISABLED=true`
 if Ryuk cannot start).
+
+## Display parity
+
+Messaging platforms must show what they showed before the server-side session
+layer went: each turn drawn step by step (tool calls with status, agent
+messages, plan), question cards as well as approval cards, the working/queued
+marker on the asking message, the "turn is stuck" notice, a working Stop
+button, answered cards taken off the platform, and the notice for a card whose
+delivery could not be confirmed. Only the mechanism changed: the host reports
+small rows, and the bridge redraws from them with the existing renderers
+(`bridges/collaboration/session/renderers/`). The deleted publisher
+(`git show e36ffe1d~1:core/switch_core/bridges/collaboration/session/outbound.py`,
+`.../sessions/publication.py`, `.../session/inbound.py`) is the reference for
+behaviour; its tables do not come back.
+
+Migration `545f80e11f13` is unreleased, so it is edited in place rather than
+followed by another revision.
+
+### Contract: host → Switch
+
+`POST /agent-sessions/{session_id}/activity` — one row per turn step,
+replacing the old activity lines. Upserted on
+`(agent, session, turn_id, item_id)`; a row with a lower `revision` than the
+stored one is ignored (`recorded: false`), an equal one is a no-op.
+
+```
+{
+  "turn_id": str,
+  "item_id": str,        // "turn" for the turn itself, "notice:<event sequence>" for a notice, else the item's id
+  "kind": "turn" | "user-message" | "assistant-message" | "tool-activity" | "notice",
+  "revision": int >= 0,  // turn: the host event sequence; item: item.revision; notice: 0
+  "status": str,         // turn: queued|running|completed|interrupted|error
+                         // item: in-progress|completed|failed|declined
+                         // notice: info|warning|error
+  "title": str,          // <= 500 chars, host truncates with "…"
+  "text": str,           // <= 8000 chars, host truncates with "…"
+  "command_id": str | null,   // turn rows only
+  "room_id": str | null,      // from the turn's origin
+  "thread_id": str | null,    // origin thread, else origin message
+  "message_id": str | null,   // the message that asked (where the marker goes)
+  "occurred_at": datetime
+}
+```
+
+Table `session_activity_items` (replaces `session_activity_events`): the
+fields above plus `created_at`/`updated_at`; primary key
+`(tenant_id, agent_id, session_id, turn_id, item_id)`, which also serves as
+the index for reading a turn. NOTIFY on insert/update carries
+`agent_id, session_id, turn_id`. Pruned 7 days after `updated_at`.
+
+`POST /agent-sessions/{session_id}/approvals` — a request a person can answer
+(approval or questions):
+
+```
+{
+  "request_id": str,
+  "turn_id": str,
+  "kind": "approval" | "questions",
+  "title": str,                    // <= 500
+  "detail": str | null,            // <= 4000
+  "options": [{"id", "label", "decision"}],   // approval: >= 1; questions: []
+  "questions": [{"id", "title", "prompt",
+                 "options": [{"id", "label", "description"}],
+                 "multi_select": bool, "allow_custom_answer": bool}],  // questions: >= 1; approval: []
+  "room_id": str | null,
+  "thread_id": str | null,
+  "expires_at": datetime | null
+}
+```
+
+`approval_requests` gains `turn_id`, `kind`, `title` (replacing `question`),
+`detail`, `questions` (JSONB) and `answers` (JSONB, questions only:
+`[{"question_id", "selected_option_ids", "custom_text"}]`). `answer` stays the
+chosen option id for approvals. Outcomes (`approval_outcome` frame and
+`GET /agent-sessions/approvals/outcomes`) carry `kind` and `answers` too; the
+host applies a questions outcome as the request's answer.
+
+### Platform notes
+
+- `approval_request_posts` gains `removed_at` and `unconfirmed_notice_at`.
+- `turn_status_posts` drops `tool_calls`/`finished` and gains
+  `reaction_message_ref` (the asking message, as posted on this platform),
+  `mark` (`queued` | `working` | null, what is on it now) and
+  `attention_post_id` (the separate stuck-turn message, if any).
+
+## Next: the watcher hosts the runtime (planned, owner agreed on direction)
+
+Console (local) or the sidecar (remote) serves the Switch MCP runtime itself,
+one per agent, in the watcher's process: streamable-HTTP MCP on
+`127.0.0.1:<free port>/mcp`, one bearer token per session host (minted at
+spawn, revoked on exit, passed as `SWITCH_RUNTIME_URL` / `SWITCH_RUNTIME_TOKEN`
+in the host's env). No Node/npx needed on the machine. Every adapter already
+maps an `HttpMcpServerSpec` (Claude `type:'http'`, Codex `url` +
+`env_http_headers`/`bearer_token_env_var`, OpenCode `type:'remote'`, ACP
+`type:'http'` when `mcpCapabilities.http`). Managed sessions run no plugin
+hooks today (the Claude adapter disables the connector plugin), so the
+python hook script only concerns standalone sessions.
+
+- `switch-agent-runtime`: split `bin.ts` into a hostable `hosted.ts`
+  (per-caller context instead of module constants) and the standalone binary.
+- Watcher: `SessionPlacements` (room ↔ session, `placements.json` for
+  restart only). `connect_to_room` is handled in-process: place locally,
+  forward to Switch, roll back if refused. Routing is `sessionIn(room)`; the
+  event `session_id` tag and `routePlaced` go.
+- Host → watcher IPC gains `identity` (session, host, epoch; replaces the
+  selector file) and `turn-end` (typing off).
+- Switch: drop the event tag and the gateway `place` route; add
+  `POST /agents/{id}/connection/placements` (full replacement, restated on
+  reconnect) and a `room_released` frame for cross-machine takeover.
+- Console "move session" goes to the watcher (control message `place` for
+  remote).
+
+Owner's decision (supersedes the transport above): Claude sessions get the
+Switch tools and hooks in code through the Agent SDK (in-process MCP server
+and hook callbacks), forwarded up the host's IPC pipe to the watcher. Codex,
+OpenCode, Cursor and Antigravity get an MCP server hosted by the session host
+itself on loopback (per-session token), passed to the CLI as a URL through its
+SDK/launch config; Codex's experimental `dynamicTools` is not relied on. Both
+front doors forward over the same pipe: host → watcher → Switch. The watcher
+(Console or sidecar) stays the only thing talking to Switch and owns the room
+map. No Node/npx and no credentials in the CLI's environment.
+
+### Server side (done, uncommitted)
+
+- Tables and the frozen NOTIFY DDL as above, edited into `545f80e11f13`.
+  The trigger on `session_activity_items` announces
+  `{tenant_id, agent_id, session_id, key: turn_id}` only; approval requests
+  still ride with their row (or by key when too large).
+- Routes: `POST /agent-sessions/{session}/activity` and `/approvals` take the
+  bodies above. Outcomes (`GET /agent-sessions/approvals/outcomes`, camelCase
+  outer keys) carry `kind` and `answers`, whose entries keep the stored
+  snake_case keys. The `approval_outcome` frame keeps its snake_case outer
+  keys (what `switch-agent-runtime`'s `event-stream.ts` reads) and gains
+  `kind` and `answers`.
+- Console: `POST /gateway/agent-sessions/{agent}/{session}/approvals/{request}/answer`
+  takes `{"answer": "<option id>"}` for an approval or
+  `{"answers": [{"questionId", "selectedOptionIds", "customText"}]}` for
+  questions (exactly one). `GET /gateway/agent-sessions/approvals` returns
+  `kind`, `turnId`, `title`, `detail`, `questions`, `answers`.
+- `session_activity/bridge_publisher.py` draws each turn from its rows
+  (`bridge_turns.py` builds the `TurnUpsert` / `Item`s) through the adapters'
+  own `post_rich` / `update_rich`, with the stop control naming the session's
+  running turn, the elapsed time, and the Console link; the queued/working
+  marker; the attention message (`separate_attention_slot`); the frozen-stream
+  notice; question cards; answered-card removal; the unconfirmed-card search
+  or notice; and the "host offline" card state. A 5-second tick redraws
+  running turns where the platform redraws for the clock, and anything whose
+  agent went offline or came back.
+- Stop: a press (`INTERRUPT_ACTION`) resolves its turn from
+  `turn_status_posts`, is refused if that turn is no longer running, is
+  judged by the agent's addressing policy in the room (as `!interrupt` is),
+  and is relayed over the agent's stream as a `session_command`
+  (`bridges/agent/commands.py`, `stop_control_frame`: epoch and turn
+  `current`, origin `messageId` null).
+- The adapters' "view activity" read-back (`set_activity_resolver`) answers
+  from the same rows.
+- `publishes_sdk_sessions` is now `draws_session_activity`.
+
+### What the rows cannot say
+
+- Elapsed time is measured on the server from the first step of a turn to be
+  recorded to when its end was recorded (rows carry no start time), so a
+  turn's queued-to-running gap before its first step is counted.
+- The "stuck" notice covers a failed turn and an agent with no live
+  connection. The old path also said so for an unacknowledged command and
+  for a session in error; the rows carry neither.
+- The person to mention on a stuck turn or a new card is the asking
+  message's sender (looked up in `messages` by `message_id`), else the owner.
+- A turn message's delivery is recorded only after the platform confirms it
+  (no reservation token column), so a crash between the two posts it again.
+  The frozen-stream notice is remembered in memory: a restart within the hour
+  can repeat it.
+- The stop control is drawn whenever a turn runs: the rows do not say
+  whether the provider can be interrupted, so the host refuses it there.
+- Notices (`kind: notice`) are stored but not drawn, as before.
+
+
+Terminal sessions are dropped entirely (owner's call), Claude's included:
+remove Console's PTY session path, its hook server, and the plugin hook
+script's role in managed sessions. Each session host's MCP server listens on
+`127.0.0.1:0` before the CLI is launched and passes the bound URL straight
+into the CLI's launch config (no port files); a restart gets a fresh port and
+token. Test: several concurrent sessions each reach their own server.

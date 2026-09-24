@@ -11,7 +11,7 @@ from switch_core.db.models import (
     ApiKey,
     ApprovalRequest,
     Client,
-    SessionActivityEvent,
+    SessionActivityItem,
     Tenant,
     User,
 )
@@ -22,6 +22,8 @@ from switch_core.session_activity.service import (
 )
 from switch_core.sessions.errors import SessionError
 from switch_core.tenant_context import tenant_scope
+
+from .conftest import pick
 
 
 async def _seed(harness, tenant: str) -> SessionActivityService:
@@ -66,23 +68,31 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
     services = {t: await _seed(rls_harness, t) for t in ("tenant-a", "tenant-b")}
     for tenant, service in services.items():
         with tenant_scope(tenant):
-            await service.report_activity(
+            await service.report_item(
                 tenant,
                 "session-demo",
-                seq=1,
-                type="notice",
-                summary=f"hello from {tenant}",
-                detail={},
-                turn_id=None,
+                turn_id="turn-1",
+                item_id="notice:1",
+                kind="notice",
+                revision=0,
+                status="info",
+                title="Notice",
+                text=f"hello from {tenant}",
+                command_id=None,
                 room_id=None,
                 thread_id=None,
+                message_id=None,
                 occurred_at=datetime.now(UTC),
             )
             await service.open_approval(
                 tenant,
                 "session-demo",
                 request_id="req-1",
-                question="Proceed?",
+                turn_id="turn-1",
+                kind="approval",
+                title="Proceed?",
+                detail=None,
+                questions=[],
                 options=[ApprovalOption("yes", "Yes", "accept")],
                 room_id=None,
                 thread_id=None,
@@ -92,7 +102,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
     for tenant in services:
         with tenant_scope(tenant):
             async with rls_harness.restricted() as db:
-                for model in (SessionActivityEvent, ApprovalRequest):
+                for model in (SessionActivityItem, ApprovalRequest):
                     rows = (await db.scalars(select(model))).all()
                     assert {row.tenant_id for row in rows} == {tenant}
 
@@ -105,7 +115,11 @@ async def test_one_tenant_cannot_answer_anothers_request(rls_harness):
             "tenant-a",
             "session-demo",
             request_id="req-1",
-            question="Proceed?",
+            turn_id="turn-1",
+            kind="approval",
+            title="Proceed?",
+            detail=None,
+            questions=[],
             options=[ApprovalOption("yes", "Yes", "accept")],
             room_id=None,
             thread_id=None,
@@ -116,7 +130,7 @@ async def test_one_tenant_cannot_answer_anothers_request(rls_harness):
             "tenant-a",
             "session-demo",
             "req-1",
-            answer="yes",
+            answer=pick("yes"),
             answerer=PlatformPerson("x"),
         )
     assert error.value.code == "NOT_FOUND"

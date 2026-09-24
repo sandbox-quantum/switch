@@ -261,14 +261,72 @@ def room_control_frame(
     body = _CONTROL_BODIES.get(action)
     if body is None:
         raise ValueError(f"{action} is not a room control")
-    return {
-        "contractVersion": 1,
-        "commandId": str(
+    return _control_frame(
+        command_id=str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
                 f"sdk-control:{agent_id}:{room_id}:{message_id}:{action}",
             )
         ),
+        session_id=session_id,
+        room_id=room_id,
+        actor_id=actor_id,
+        message_id=message_id,
+        thread_id=thread_id,
+        surface=surface,
+        body=body,
+    )
+
+
+def stop_control_frame(
+    *,
+    agent_id: str,
+    session_id: str,
+    room_id: str,
+    actor_id: str,
+    message_ref: str,
+    turn_id: str,
+    thread_id: str | None,
+    surface: str,
+) -> dict[str, object]:
+    """The frame a press on a platform's Stop control is relayed as: `!interrupt`.
+
+    Keyed by the control pressed — the message it is on and the turn it named
+    when drawn — so pressing it twice is one command, while the same message
+    offering to stop a later turn is another. No Switch message did the
+    asking, so the origin names none.
+    """
+    return _control_frame(
+        command_id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"sdk-stop:{agent_id}:{room_id}:{message_ref}:{turn_id}",
+            )
+        ),
+        session_id=session_id,
+        room_id=room_id,
+        actor_id=actor_id,
+        message_id=None,
+        thread_id=thread_id,
+        surface=surface,
+        body=_CONTROL_BODIES["interrupt"],
+    )
+
+
+def _control_frame(
+    *,
+    command_id: str,
+    session_id: str,
+    room_id: str,
+    actor_id: str,
+    message_id: str | None,
+    thread_id: str | None,
+    surface: str,
+    body: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "contractVersion": 1,
+        "commandId": command_id,
         "sessionId": session_id,
         "epoch": CURRENT,
         "origin": {

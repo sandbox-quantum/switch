@@ -24,7 +24,7 @@ from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import ApprovalOption, PlatformPerson
 
-from .conftest import AGENT, make_agent
+from .conftest import AGENT, make_agent, pick
 
 SESSION = "session-demo"
 OPTIONS = [
@@ -84,7 +84,11 @@ async def _no_frame_within(stream, seconds: float) -> None:
 async def _open(service, request_id="req-1", **overrides):
     values = dict(
         request_id=request_id,
-        question="Deploy?",
+        turn_id="turn-1",
+        kind="approval",
+        title="Deploy?",
+        detail=None,
+        questions=[],
         options=OPTIONS,
         room_id=None,
         thread_id=None,
@@ -105,14 +109,16 @@ async def test_an_answer_is_pushed_down_the_open_stream(service, approvals, peop
             AGENT,
             SESSION,
             "req-1",
-            answer="allow",
+            answer=pick("allow"),
             answerer=PlatformPerson(people.owner),
         )
         outcome = _outcome(await asyncio.wait_for(waiting, 5))
         assert outcome["session_id"] == SESSION
         assert outcome["request_id"] == "req-1"
         assert outcome["state"] == "answered"
+        assert outcome["kind"] == "approval"
         assert outcome["answer"] == "allow"
+        assert outcome["answers"] is None
         assert outcome["answered_by"] == people.owner
         assert outcome["answered_at"]
     finally:
@@ -124,7 +130,11 @@ async def test_an_outcome_owed_from_before_the_stream_opened_is_sent_first(
 ):
     await _open(service)
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="deny", answerer=PlatformPerson(people.owner)
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("deny"),
+        answerer=PlatformPerson(people.owner),
     )
     stream = _open_stream(approvals)
     try:
@@ -138,7 +148,11 @@ async def test_an_outcome_owed_from_before_the_stream_opened_is_sent_first(
 async def test_an_acknowledged_outcome_is_not_sent_again(service, approvals, people):
     await _open(service)
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
     )
     await service.mark_delivered(AGENT, SESSION, "req-1")
     stream = _open_stream(approvals)
@@ -184,7 +198,7 @@ async def test_only_the_agents_own_watcher_stream_hears_its_outcomes(
             AGENT,
             SESSION,
             "req-1",
-            answer="allow",
+            answer=pick("allow"),
             answerer=PlatformPerson(people.owner),
         )
         await _no_frame_within(other, 0.5)
@@ -197,7 +211,11 @@ async def test_only_the_agents_own_watcher_stream_hears_its_outcomes(
 async def test_a_stream_without_approvals_carries_none(service, people):
     await _open(service)
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
     )
     stream = _open_stream(None)
     try:
@@ -213,7 +231,11 @@ async def test_a_client_older_than_the_outcome_revision_is_sent_none(
     # An older client hands unknown frames to its room-event path and breaks.
     await _open(service)
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
     )
     for speaks in (APPROVAL_OUTCOME_PROTOCOL_REVISION - 1, None):
         stream = _open_stream(approvals, speaks=speaks)

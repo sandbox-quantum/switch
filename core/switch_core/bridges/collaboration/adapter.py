@@ -280,8 +280,9 @@ ActivityMark = Literal["working", "queued"]
 
 
 class CollaborationAdapter(ABC):
-    # Platforms opt in only when their SDK request and activity rendering is ready.
-    publishes_sdk_sessions: ClassVar[bool] = False
+    #: Whether this platform draws agents' session activity: each turn step by
+    #: step, and the approval and question cards a session waits on.
+    draws_session_activity: ClassVar[bool] = False
 
     #: Whether a problem somebody has to act on gets a message of its own.
     #:

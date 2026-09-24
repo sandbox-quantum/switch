@@ -129,7 +129,7 @@ def test_the_publication_is_the_only_account_of_a_turn() -> None:
     this flag to decide whether to route sessions here at all — so a platform
     that stopped declaring it would go quiet rather than draw the turn some
     other way."""
-    assert _adapter().publishes_sdk_sessions is True
+    assert _adapter().draws_session_activity is True
 
 
 def test_telegram_notifies_a_chat_without_anybody_being_named() -> None:

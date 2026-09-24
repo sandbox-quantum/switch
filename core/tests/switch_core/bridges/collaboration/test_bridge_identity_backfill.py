@@ -146,6 +146,9 @@ async def test_stop_stops_the_activity_publisher() -> None:
         async def stop(self) -> None:
             events.append("stopped")
 
+        async def activity_shown_at(self, channel_id: str, ref: str) -> None:
+            return None
+
     async def provision():
         pass
 

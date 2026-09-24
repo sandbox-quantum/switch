@@ -12,10 +12,11 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory
 from switch_core.db.models import Agent, ApprovalRequest
 from switch_core.session_activity.service import ApprovalOption, PlatformPerson
+from switch_core.sessions.contract import Answer, QuestionsResult
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
 
-from .conftest import AGENT, make_agent
+from .conftest import AGENT, make_agent, pick
 
 SESSION = "session-demo"
 
@@ -35,13 +36,17 @@ async def client(service, session_factory):
 
 def _activity(**overrides):
     body = {
-        "seq": 1,
-        "type": "tool.called",
-        "summary": "Ran `pytest`",
-        "detail": {"tool": "bash"},
         "turn_id": "turn-1",
+        "item_id": "tool-1",
+        "kind": "tool-activity",
+        "revision": 1,
+        "status": "in-progress",
+        "title": "Ran `pytest`",
+        "text": "12 passed",
+        "command_id": None,
         "room_id": None,
         "thread_id": None,
+        "message_id": None,
         "occurred_at": "2026-09-23T12:00:00Z",
     }
     body.update(overrides)
@@ -51,11 +56,15 @@ def _activity(**overrides):
 def _approval(**overrides):
     body = {
         "request_id": "req-1",
-        "question": "Run `rm -rf build`?",
+        "turn_id": "turn-1",
+        "kind": "approval",
+        "title": "Run `rm -rf build`?",
+        "detail": None,
         "options": [
             {"id": "allow", "label": "Allow", "decision": "accept"},
             {"id": "deny", "label": "Deny", "decision": "decline"},
         ],
+        "questions": [],
         "room_id": None,
         "thread_id": None,
         "expires_at": None,
@@ -64,31 +73,88 @@ def _approval(**overrides):
     return body
 
 
-async def test_activity_is_recorded_and_a_retry_is_not(client):
-    first = await client.post(f"/agent-sessions/{SESSION}/activity", json=_activity())
-    again = await client.post(f"/agent-sessions/{SESSION}/activity", json=_activity())
+async def test_a_step_is_recorded_and_only_a_newer_revision_moves_it(client):
+    url = f"/agent-sessions/{SESSION}/activity"
+    first = await client.post(url, json=_activity())
+    again = await client.post(url, json=_activity())
+    newer = await client.post(url, json=_activity(revision=2, status="completed"))
+    older = await client.post(url, json=_activity(revision=1, status="failed"))
     assert (first.status_code, first.json()) == (200, {"recorded": True})
-    assert (again.status_code, again.json()) == (200, {"recorded": False})
+    assert again.json() == {"recorded": False}
+    assert newer.json() == {"recorded": True}
+    assert older.json() == {"recorded": False}
 
 
-async def test_conflicting_activity_is_a_409_with_its_code(client):
-    await client.post(f"/agent-sessions/{SESSION}/activity", json=_activity())
+async def test_a_status_that_is_not_the_kinds_is_a_422_with_its_code(client):
     response = await client.post(
-        f"/agent-sessions/{SESSION}/activity", json=_activity(summary="changed")
+        f"/agent-sessions/{SESSION}/activity", json=_activity(status="running")
     )
-    assert response.status_code == 409
-    assert response.json()["code"] == "ACTIVITY_CONFLICT"
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_EVENT"
 
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"type": "tool.exploded"}, {"summary": ""}, {"seq": -1}, {"unexpected": 1}],
+    [
+        {"kind": "tool.exploded"},
+        {"revision": -1},
+        {"title": "x" * 501},
+        {"text": "x" * 8001},
+        {"unexpected": 1},
+    ],
 )
 async def test_malformed_activity_is_a_422(client, overrides):
     response = await client.post(
         f"/agent-sessions/{SESSION}/activity", json=_activity(**overrides)
     )
     assert response.status_code == 422
+
+
+async def test_a_questions_request_over_http(client, service, people):
+    opened = await client.post(
+        f"/agent-sessions/{SESSION}/approvals",
+        json=_approval(
+            kind="questions",
+            options=[],
+            questions=[
+                {
+                    "id": "q-env",
+                    "title": "Environment",
+                    "prompt": "Where should it go?",
+                    "options": [
+                        {"id": "staging", "label": "Staging", "description": None},
+                        {"id": "prod", "label": "Production", "description": "Live"},
+                    ],
+                    "multi_select": False,
+                    "allow_custom_answer": True,
+                }
+            ],
+        ),
+    )
+    assert opened.status_code == 200
+    assert opened.json()["kind"] == "questions"
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=QuestionsResult(
+            kind="questions",
+            answers=[
+                Answer(
+                    question_id="q-env",
+                    selected_option_ids=["prod"],
+                    custom_text=None,
+                )
+            ],
+        ),
+        answerer=PlatformPerson(people.owner),
+    )
+    [owed] = (await client.get("/agent-sessions/approvals/outcomes")).json()
+    assert owed["kind"] == "questions"
+    assert owed["answer"] is None
+    assert owed["answers"] == [
+        {"question_id": "q-env", "selected_option_ids": ["prod"], "custom_text": None}
+    ]
 
 
 async def test_approval_round_trip_over_http(client, service, people):
@@ -101,14 +167,20 @@ async def test_approval_round_trip_over_http(client, service, people):
     assert outcomes.json() == []
 
     await service.answer_approval(
-        AGENT, SESSION, "req-1", answer="allow", answerer=PlatformPerson(people.owner)
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
     )
     [owed] = (await client.get("/agent-sessions/approvals/outcomes")).json()
-    assert (owed["state"], owed["answer"], owed["answeredBy"]) == (
+    assert (owed["kind"], owed["state"], owed["answer"], owed["answeredBy"]) == (
+        "approval",
         "answered",
         "allow",
         people.owner,
     )
+    assert owed["answers"] is None
 
     delivered = await client.post(
         f"/agent-sessions/{SESSION}/approvals/req-1/delivered"
@@ -154,7 +226,11 @@ async def test_a_host_only_sees_its_own_agents_requests(
         "other-agent",
         SESSION,
         request_id="theirs",
-        question="Theirs?",
+        turn_id="turn-1",
+        kind="approval",
+        title="Theirs?",
+        detail=None,
+        questions=[],
         options=[ApprovalOption("ok", "OK", "accept")],
         room_id=None,
         thread_id=None,

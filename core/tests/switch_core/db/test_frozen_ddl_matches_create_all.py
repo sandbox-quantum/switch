@@ -222,7 +222,7 @@ def _trigger_def(connection: Connection, table: str, trigger: str) -> str:
 
 
 _SESSION_ACTIVITY_TRIGGERS = (
-    ("session_activity_events", "session_activity_events_notify"),
+    ("session_activity_items", "session_activity_items_notify"),
     ("approval_requests", "approval_requests_notify_insert"),
     ("approval_requests", "approval_requests_notify_state"),
 )

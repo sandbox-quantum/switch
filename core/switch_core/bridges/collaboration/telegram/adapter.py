@@ -461,7 +461,7 @@ class TelegramAdapter(CollaborationAdapter):
     supports_directory_search: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
 
-    publishes_sdk_sessions: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on gets its own message.
     #:

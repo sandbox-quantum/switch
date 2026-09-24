@@ -310,7 +310,7 @@ class _ActivityStream:
 
 
 class SlackAdapter(CollaborationAdapter):
-    publishes_sdk_sessions: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one

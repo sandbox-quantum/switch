@@ -12,7 +12,11 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.db.models import Agent, ApprovalRequest, ApprovalRequestPost
 from switch_core.session_activity.bridge_answers import Answered, ApprovalAnswers
-from switch_core.session_activity.service import ApprovalOption
+from switch_core.session_activity.service import (
+    ApprovalOption,
+    Question,
+    QuestionOption,
+)
 
 from .bridge_fixtures import BridgedRoom, RecordingPlatform, make_bridged_room
 from .conftest import AGENT
@@ -34,7 +38,11 @@ async def card(service, session_factory, bridged) -> ApprovalRequestPost:
         AGENT,
         SESSION,
         request_id="req-1",
-        question="Deploy?",
+        turn_id="turn-1",
+        kind="approval",
+        title="Deploy?",
+        detail=None,
+        questions=[],
         options=[
             ApprovalOption("allow", "Allow", "accept"),
             ApprovalOption("deny", "Deny", "decline"),
@@ -205,3 +213,101 @@ async def test_other_messages_are_left_alone(
     ]:
         assert await answers.for_text(_typed(bridged, content, root)) is None
     assert (await _state(session_factory))[0] == "open"
+
+
+@pytest.fixture
+async def questions_card(service, session_factory, bridged) -> ApprovalRequestPost:
+    await service.open_approval(
+        AGENT,
+        SESSION,
+        request_id="req-q",
+        turn_id="turn-1",
+        kind="questions",
+        title="Two things",
+        detail=None,
+        options=[],
+        questions=[
+            Question(
+                id="q-env",
+                title="Environment",
+                prompt="Where?",
+                options=[
+                    QuestionOption("staging", "Staging", None),
+                    QuestionOption("prod", "Production", None),
+                ],
+                multi_select=False,
+                allow_custom_answer=True,
+            ),
+            Question(
+                id="q-checks",
+                title="Checks",
+                prompt="Which?",
+                options=[
+                    QuestionOption("lint", "Lint", None),
+                    QuestionOption("tests", "Tests", None),
+                ],
+                multi_select=True,
+                allow_custom_answer=False,
+            ),
+        ],
+        room_id=bridged.room_id,
+        thread_id=None,
+        expires_at=None,
+    )
+    post = ApprovalRequestPost(
+        bridge_id=bridged.bridge_id,
+        agent_id=AGENT,
+        session_id=SESSION,
+        request_id="req-q",
+        token="tok-q",
+        handle="A2",
+        external_channel_id=bridged.channel_id,
+        external_post_id="1700000000.0003",
+    )
+    async with session_factory() as db, db.begin():
+        db.add(post)
+    return post
+
+
+async def test_a_typed_answer_answers_every_question(
+    service, session_factory, bridged, questions_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    outcome = await answers.for_text(_typed(bridged, 'A2 q1="use canary"; q2=2,1'))
+    assert outcome == Answered(handle="A2")
+    async with session_factory() as db:
+        row = await db.scalar(
+            select(ApprovalRequest).where(ApprovalRequest.request_id == "req-q")
+        )
+    assert row.state == "answered"
+    assert row.answers == [
+        {
+            "question_id": "q-env",
+            "selected_option_ids": [],
+            "custom_text": "use canary",
+        },
+        {
+            "question_id": "q-checks",
+            "selected_option_ids": ["lint", "tests"],
+            "custom_text": None,
+        },
+    ]
+
+
+async def test_a_partial_typed_answer_is_refused(
+    service, session_factory, bridged, questions_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    outcome = await answers.for_text(_typed(bridged, "A2 q1=1"))
+    assert isinstance(outcome, Refused)
+    assert "q2 went unanswered" in outcome.told()
+
+
+async def test_a_bare_yes_does_not_answer_a_questions_card(
+    service, session_factory, bridged, questions_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    assert (
+        await answers.for_text(_typed(bridged, "yes", root_id="1700000000.0003"))
+        is None
+    )

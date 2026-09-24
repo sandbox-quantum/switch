@@ -24,9 +24,15 @@ from switch_core.db.models import (
 )
 from switch_core.session_activity.listener import Change, SessionActivityListener
 from switch_core.session_activity.service import SessionActivityService
+from switch_core.sessions.contract import ApprovalResult
 from switch_core.tenant_context import current_tenant_id
 
 AGENT = "agent-demo"
+
+
+def pick(option_id: str) -> ApprovalResult:
+    """An approval answer: the option chosen."""
+    return ApprovalResult(kind="approval", option_id=option_id)
 
 
 async def make_agent(

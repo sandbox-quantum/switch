@@ -8,7 +8,11 @@ from switch_core.db.models import User
 from switch_core.gateway.agent_sessions import router
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session_factory
-from switch_core.session_activity.service import ApprovalOption
+from switch_core.session_activity.service import (
+    ApprovalOption,
+    Question,
+    QuestionOption,
+)
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
 
@@ -26,7 +30,11 @@ async def owned(session_factory, service):
         "console-agent",
         SESSION,
         request_id="req-1",
-        question="Deploy to production?",
+        turn_id="turn-1",
+        kind="approval",
+        title="Deploy to production?",
+        detail=None,
+        questions=[],
         options=[
             ApprovalOption("yes", "Yes", "accept"),
             ApprovalOption("no", "No", "decline"),
@@ -54,7 +62,8 @@ def _client(session_factory, user_id: str) -> httpx.AsyncClient:
 async def test_the_owner_sees_and_answers_their_agents_request(session_factory, owned):
     async with _client(session_factory, owned) as client:
         [request] = (await client.get("/agent-sessions/approvals")).json()
-        assert request["question"] == "Deploy to production?"
+        assert request["title"] == "Deploy to production?"
+        assert request["kind"] == "approval"
         assert request["options"] == [
             {"id": "yes", "label": "Yes", "decision": "accept"},
             {"id": "no", "label": "No", "decision": "decline"},
@@ -78,3 +87,56 @@ async def test_someone_else_neither_sees_nor_answers_it(session_factory, owned):
         )
         assert refused.status_code == 403
         assert refused.json()["code"] == "NOT_AUTHORIZED"
+
+
+async def test_the_owner_answers_a_questions_request(session_factory, service, owned):
+    await service.open_approval(
+        "console-agent",
+        SESSION,
+        request_id="req-2",
+        turn_id="turn-1",
+        kind="questions",
+        title="A couple of things",
+        detail=None,
+        options=[],
+        questions=[
+            Question(
+                id="q-env",
+                title="Environment",
+                prompt="Where should it go?",
+                options=[QuestionOption("staging", "Staging", None)],
+                multi_select=False,
+                allow_custom_answer=True,
+            )
+        ],
+        room_id=None,
+        thread_id=None,
+        expires_at=None,
+    )
+    async with _client(session_factory, owned) as client:
+        listed = (await client.get("/agent-sessions/approvals")).json()
+        [asked] = [request for request in listed if request["requestId"] == "req-2"]
+        assert asked["questions"][0]["options"] == [
+            {"id": "staging", "label": "Staging", "description": None}
+        ]
+        both = await client.post(
+            "/agent-sessions/console-agent/session-demo/approvals/req-2/answer",
+            json={"answer": "staging", "answers": []},
+        )
+        assert both.status_code == 422
+        answered = await client.post(
+            "/agent-sessions/console-agent/session-demo/approvals/req-2/answer",
+            json={
+                "answers": [
+                    {
+                        "questionId": "q-env",
+                        "selectedOptionIds": [],
+                        "customText": "canary",
+                    }
+                ]
+            },
+        )
+        assert answered.status_code == 200, answered.json()
+        assert answered.json()["answers"] == [
+            {"questionId": "q-env", "selectedOptionIds": [], "customText": "canary"}
+        ]

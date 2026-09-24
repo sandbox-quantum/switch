@@ -27,23 +27,25 @@ OUTCOME_KINDS = frozenset({"approval.answered", "approval.expired"})
 Outcome = dict[str, Any]
 
 
+_OUTCOME_FIELDS = (
+    "session_id",
+    "request_id",
+    "kind",
+    "state",
+    "answer",
+    "answers",
+    "answered_by",
+)
+
+
 def outcome_of(row: ApprovalRequest | dict[str, Any]) -> Outcome:
     """The frame body for one outcome, from an ORM row or an announced one."""
     if isinstance(row, ApprovalRequest):
         answered_at: datetime | str | None = row.answered_at
-        fields = {
-            "session_id": row.session_id,
-            "request_id": row.request_id,
-            "state": row.state,
-            "answer": row.answer,
-            "answered_by": row.answered_by,
-        }
+        fields = {key: getattr(row, key) for key in _OUTCOME_FIELDS}
     else:
         answered_at = row.get("answered_at")
-        fields = {
-            key: row.get(key)
-            for key in ("session_id", "request_id", "state", "answer", "answered_by")
-        }
+        fields = {key: row.get(key) for key in _OUTCOME_FIELDS}
     if isinstance(answered_at, datetime):
         answered_at = answered_at.isoformat()
     return {**fields, "answered_at": answered_at}

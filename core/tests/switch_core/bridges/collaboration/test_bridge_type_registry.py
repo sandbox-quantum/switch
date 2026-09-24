@@ -57,6 +57,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         client_factory=None,  # type: ignore[arg-type]
         session_activity_listener=None,  # type: ignore[arg-type]
         session_activity_service=None,  # type: ignore[arg-type]
+        connections=None,  # type: ignore[arg-type]
     )
 
 

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import insert
 
-from switch_core.bridges.collaboration.adapter import RequestCard, RichContentFailed
+from switch_core.bridges.collaboration.adapter import RichContent, RichContentFailed
 from switch_core.db.models import Client, CollaborationBridge, Room, room_agents
 
 
@@ -61,8 +62,19 @@ class RecordingPlatform:
     """Duck-typed `CollaborationAdapter`: only what the publisher calls."""
 
     platform_name: str = "Test"
-    publishes_sdk_sessions: bool = True
+    draws_session_activity: bool = True
+    separate_attention_slot: bool = True
+    notifies_only_by_mention: bool = False
+    redraws_for_elapsed_time: bool = False
+    supports_activity_reactions: bool = True
+    supports_queue_reaction: bool = True
+    activity_reactions_per_agent: bool = False
+    renders_custom_url_schemes: bool = True
+    recovers_uncertain_posts: bool = True
+    discloses_unconfirmed_posts: bool = False
+    removes_answered_cards: bool = False
     drawn: list[Drawn] = field(default_factory=list)
+    marks: list[tuple[str, str, bool]] = field(default_factory=list)
     refuse_posts: bool = False
     found_card: str | None = None
     first_reply: bool = True
@@ -76,7 +88,7 @@ class RecordingPlatform:
         self,
         channel_id: str,
         agent_name: str,
-        content: RequestCard,
+        content: RichContent,
         thread_root_id: str | None = None,
     ) -> str:
         if self.refuse_posts:
@@ -90,7 +102,7 @@ class RecordingPlatform:
         channel_id: str,
         agent_name: str,
         message_ref: str,
-        content: RequestCard,
+        content: RichContent,
         thread_root_id: str | None,
     ) -> None:
         self.drawn.append(
@@ -110,12 +122,45 @@ class RecordingPlatform:
         )
         return ref
 
-    async def update_message(
-        self, channel_id: str, message_ref: str, new_content: str
-    ) -> None:
+    async def admin_message(
+        self,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None = None,
+        *,
+        message_type: str | None = None,
+        drawn: str | None = None,
+    ) -> str | None:
+        ref = self._ref()
         self.drawn.append(
-            Drawn("update_message", channel_id, message_ref, None, new_content)
+            Drawn("admin_message", channel_id, ref, thread_root_id, content)
         )
+        return ref
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        self.drawn.append(
+            Drawn("remove_publication", channel_id, message_ref, None, None)
+        )
+
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: str,
+        on: bool,
+        force: bool = False,
+    ) -> None:
+        self.marks.append((message_ref, mark, on))
+
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        return None
+
+    def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
+        return thread_root_id or message_ref
 
     async def find_request_card(
         self,
@@ -133,10 +178,19 @@ class RecordingPlatform:
     async def is_first_reply(self, channel_id: str, root: str, message: str) -> bool:
         return self.first_reply
 
-    async def wait_for(self, count: int) -> list[Drawn]:
+    def of(self, call: str) -> list[Drawn]:
+        return [drawn for drawn in self.drawn if drawn.call == call]
+
+    async def wait_until(self, check: Callable[[], bool]) -> None:
         deadline = asyncio.get_running_loop().time() + 5
-        while len(self.drawn) < count:
-            assert asyncio.get_running_loop().time() < deadline, self.drawn
+        while not check():
+            assert asyncio.get_running_loop().time() < deadline, (
+                self.drawn,
+                self.marks,
+            )
             await asyncio.sleep(0.02)
         await asyncio.sleep(0.2)
+
+    async def wait_for(self, count: int) -> list[Drawn]:
+        await self.wait_until(lambda: len(self.drawn) >= count)
         return self.drawn

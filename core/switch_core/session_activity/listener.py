@@ -42,17 +42,18 @@ logger = logging.getLogger(__name__)
 class Change:
     """One announced change.
 
-    `kind` is `activity`, or `approval.<state>` (`approval.open` for a new
-    request). `row` is the row as the database stored it, or None when it was
-    too large to announce, in which case `kind` is `activity` or
-    `approval.changed` and the subscriber reads the row by its key.
+    `kind` is `activity` for a step of a turn, or `approval.<state>`
+    (`approval.open` for a new request). `row` is the approval request as the
+    database stored it, or None — always for `activity`, whose subscriber
+    rereads the turn, and for a request too large to announce, whose `kind`
+    is then `approval.changed` and whose row the subscriber reads by its key.
     """
 
     kind: str
     tenant_id: str
     agent_id: str
     session_id: str
-    # The activity `seq` or the approval `request_id`, as text.
+    # The step's `turn_id` or the approval `request_id`.
     key: str
     row: dict[str, Any] | None
 
@@ -63,9 +64,10 @@ class Change:
             table = data["table"]
             row = data.get("row")
             fields = row if row is not None else data["key"]
-            if table == "session_activity_events":
+            if table == "session_activity_items":
                 kind = "activity"
-                key = str(fields["seq"] if row is not None else fields["key"])
+                row = None
+                key = str(fields["key"])
             elif table == "approval_requests":
                 kind = (
                     f"approval.{row['state']}"

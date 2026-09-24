@@ -322,6 +322,7 @@ def _lifecycle() -> CollaborationBridgeLifecycleService:
         client_factory=MagicMock(),
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
+        connections=MagicMock(),
     )
     service.register_adapter("recording", _RecordingAdapter, _RecordingConfig)
     return service
@@ -434,6 +435,7 @@ def _service_with_existing(
         client_factory=MagicMock(),
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
+        connections=MagicMock(),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     return service
@@ -616,6 +618,7 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
         client_factory=MagicMock(),
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
+        connections=MagicMock(),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     monkeypatch.setattr(
@@ -686,6 +689,7 @@ async def test_start_refuses_a_second_bridge_already_holding_the_port(
         client_factory=MagicMock(),
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
+        connections=MagicMock(),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     # A bridge already running and holding the port.

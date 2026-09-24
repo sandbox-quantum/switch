@@ -28,8 +28,8 @@ import { SharedState } from './shared-state';
  * agent's sidecar for a remote one) and takes everything over that IPC
  * channel: room messages the agent's controller routed to it, commands from
  * Console, room controls and approval wakes. What it reports goes to the
- * `/agent-sessions` routes: short activity lines, approval requests, and the
- * acknowledgement of answers it has applied.
+ * `/agent-sessions` routes: a row per turn step, the requests a person can
+ * answer, and the acknowledgement of answers it has applied.
  *
  * A host with a parent parks itself after `parkAfterMs` with nothing to do:
  * it records `parked` and exits, and its parent starts it again when the
@@ -88,8 +88,19 @@ const approvalOutcomesSchema = z.array(
   z.object({
     sessionId: z.string(),
     requestId: z.string(),
+    kind: z.enum(['approval', 'questions']),
     state: z.enum(['answered', 'expired']),
     answer: z.string().nullable(),
+    // Stored as Switch took it from the platform, so its keys stay snake_case.
+    answers: z
+      .array(
+        z.object({
+          question_id: z.string(),
+          selected_option_ids: z.array(z.string()),
+          custom_text: z.string().nullable(),
+        })
+      )
+      .nullable(),
     answeredBy: z.string().nullable(),
   })
 );
@@ -268,6 +279,7 @@ export async function runSharedHost(
     // A session first reporting here may have a long history behind it, and
     // reporting that would put cards up for requests settled long ago.
     if (reporter.fresh) await reporter.advance(host.replay(0).throughSequence);
+    reporter.catchUp(host.replay(0).events.filter((event) => event.sequence <= reporter.cursor));
     let reportingUnsupported = false;
     const unsupported = (error: unknown): boolean => {
       if (!(error instanceof RequestError) || error.status !== 404 || error.code) return false;
@@ -279,7 +291,7 @@ export async function runSharedHost(
     };
     const send = async (report: Report): Promise<void> => {
       if (report.kind === 'activity')
-        await agentSessions(`${sessionPath}/activity`, 'POST', report.line);
+        await agentSessions(`${sessionPath}/activity`, 'POST', report.row);
       else if (report.kind === 'approval.open')
         await agentSessions(`${sessionPath}/approvals`, 'POST', report.body);
       else
@@ -300,7 +312,8 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            // Closing a question, which Switch never tracked, is expected to miss.
+            // A request Switch refused, or one opened before this session
+            // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
             console.warn(
               `Switch refused ${item.kind} from session event ${event.sequence}; it is not shown on messaging platforms: ${error.message}`
@@ -314,9 +327,7 @@ export async function runSharedHost(
     const applyOutcomes = async (force: boolean) => {
       if (reportingUnsupported) return;
       const woken = waker.takeApprovalWake();
-      const waiting = host!
-        .snapshot()
-        .requests.some((r) => r.state === 'open' && r.content.kind === 'approval');
+      const waiting = host!.snapshot().requests.some((r) => r.state === 'open');
       // The watcher's wake is the prompt route; the interval only covers a
       // wake that was lost, and only while a person's answer is awaited.
       if (!force && !woken && !(waiting && performance.now() - outcomesCheckedAt >= 5000)) return;
@@ -333,8 +344,15 @@ export async function runSharedHost(
         try {
           await host!.applyApprovalOutcome({
             requestId: outcome.requestId,
+            kind: outcome.kind,
             state: outcome.state,
             answer: outcome.answer,
+            answers:
+              outcome.answers?.map((answer) => ({
+                questionId: answer.question_id,
+                selectedOptionIds: answer.selected_option_ids,
+                customText: answer.custom_text,
+              })) ?? null,
             answeredBy: outcome.answeredBy,
           });
         } catch (error) {

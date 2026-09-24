@@ -186,7 +186,7 @@ def test_the_publication_is_the_only_account_of_a_turn() -> None:
     other way."""
     adapter, _ = _teams()
 
-    assert adapter.publishes_sdk_sessions is True
+    assert adapter.draws_session_activity is True
 
 
 def test_teams_reaches_a_reader_by_naming_them_and_in_no_other_way() -> None:

@@ -89,7 +89,7 @@ type Harness = {
 
 /** A host run against a scripted provider and a Switch that answers `/agent-sessions` and media. */
 async function start(
-  opts: { rooms?: boolean; openApproval?: boolean; parkAfterMs?: number } = {}
+  opts: { rooms?: boolean; ask?: 'approval' | 'questions'; parkAfterMs?: number } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
   const base = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
@@ -124,7 +124,26 @@ async function start(
     sendTurn: vi.fn(async ({ turnId, text, attachments }) => {
       turns.push({ turnId, text, attachments: attachments ?? [] });
       emit({ type: 'turn.started', turnId });
-      if (opts.openApproval)
+      if (opts.ask === 'questions')
+        emit({
+          type: 'user-input.requested',
+          turnId,
+          requestId: 'question',
+          questions: [
+            {
+              id: 'colour',
+              header: 'Colour',
+              question: 'Which colour?',
+              options: [
+                { label: 'Red', value: 'red' },
+                { label: 'Blue', value: 'blue' },
+              ],
+              multiSelect: false,
+              allowCustomAnswer: true,
+            },
+          ],
+        });
+      if (opts.ask === 'approval')
         emit({
           type: 'request.opened',
           turnId,
@@ -365,24 +384,53 @@ it('fetches a room attachment from the room, and says which ones it could not ta
 });
 
 it('reports activity and approvals to Switch and applies the answer it records', async () => {
-  const host = await start({ rooms: true, openApproval: true });
+  const host = await start({ rooms: true, ask: 'approval' });
   try {
     await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Write it') });
     await vi.waitFor(
       () => expect(host.switchCore.calls.some((c) => c.path.endsWith('/approvals'))).toBe(true),
       { timeout: 5000 }
     );
-    expect(host.switchCore.calls.find((c) => c.path.endsWith('/activity'))).toMatchObject({
+    const rows = host.switchCore.calls.filter((c) => c.path.endsWith('/activity'));
+    expect(rows[0]).toMatchObject({
       method: 'POST',
       path: '/agent/agent-sessions/session/activity',
-      body: { type: 'turn.started', room_id: 'room', thread_id: 'message-1' },
+      body: {
+        item_id: 'turn',
+        kind: 'turn',
+        status: 'queued',
+        room_id: 'room',
+        thread_id: 'message-1',
+        message_id: 'message-1',
+      },
+    });
+    expect(rows.map((c) => c.body)).toContainEqual(
+      expect.objectContaining({
+        kind: 'user-message',
+        text: expect.stringContaining('Write it'),
+        status: 'completed',
+      })
+    );
+    expect(host.switchCore.calls.find((c) => c.path.endsWith('/approvals'))!.body).toMatchObject({
+      request_id: 'permission',
+      kind: 'approval',
+      title: 'Write file',
+      options: [
+        { id: '0', label: 'Allow', decision: 'accept' },
+        { id: '1', label: 'Deny', decision: 'decline' },
+      ],
+      questions: [],
+      room_id: 'room',
+      thread_id: 'message-1',
     });
     host.switchCore.state.outcomes = [
       {
         sessionId: 'session',
         requestId: 'permission',
+        kind: 'approval',
         state: 'answered',
         answer: '0',
+        answers: null,
         answeredBy: '@person:test',
         answeredAt: '2026-09-24T12:00:00Z',
         expiresAt: null,
@@ -402,6 +450,75 @@ it('reports activity and approvals to Switch and applies the answer it records',
       'session',
       'permission',
       'accept'
+    );
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('reports a question to Switch and gives the provider the answers it records', async () => {
+  const host = await start({ rooms: true, ask: 'questions' });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Paint it') });
+    await vi.waitFor(
+      () => expect(host.switchCore.calls.some((c) => c.path.endsWith('/approvals'))).toBe(true),
+      { timeout: 5000 }
+    );
+    expect(host.switchCore.calls.find((c) => c.path.endsWith('/approvals'))!.body).toEqual({
+      request_id: 'question',
+      turn_id: expect.any(String),
+      kind: 'questions',
+      title: 'Question from the agent',
+      detail: null,
+      options: [],
+      questions: [
+        {
+          id: 'colour',
+          title: 'Colour',
+          prompt: 'Which colour?',
+          options: [
+            { id: 'colour:0', label: 'Red', description: null },
+            { id: 'colour:1', label: 'Blue', description: null },
+          ],
+          multi_select: false,
+          allow_custom_answer: true,
+        },
+      ],
+      room_id: 'room',
+      thread_id: 'message-1',
+      expires_at: null,
+    });
+    host.switchCore.state.outcomes = [
+      {
+        sessionId: 'session',
+        requestId: 'question',
+        kind: 'questions',
+        state: 'answered',
+        answer: null,
+        answers: [{ question_id: 'colour', selected_option_ids: ['colour:1'], custom_text: null }],
+        answeredBy: '@person:test',
+        answeredAt: '2026-09-24T12:00:00Z',
+        expiresAt: null,
+        deliveredAt: null,
+      },
+    ];
+    expect(await host.parent.ask({ type: 'approvals' })).toMatchObject({ ok: true });
+    await vi.waitFor(
+      () =>
+        expect(
+          host.switchCore.calls.some((c) => c.path.endsWith('/approvals/question/delivered'))
+        ).toBe(true),
+      { timeout: 3000 }
+    );
+    expect(host.adapter.respondToUserInput).toHaveBeenCalledExactlyOnceWith('session', 'question', {
+      colour: 'blue',
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          host.switchCore.calls.some((c) => c.path.endsWith('/approvals/question/close'))
+        ).toBe(true),
+      { timeout: 3000 }
     );
   } finally {
     expect(await host.stop()).toBeNull();
@@ -499,7 +616,7 @@ it('parks itself once it has sat idle, and says so for whoever would start it', 
 });
 
 it('does not park while a turn waits on a person', async () => {
-  const host = await start({ rooms: true, openApproval: true, parkAfterMs: 1000 });
+  const host = await start({ rooms: true, ask: 'approval', parkAfterMs: 1000 });
   try {
     await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Write it') });
     await new Promise((resolve) => setTimeout(resolve, 2000));

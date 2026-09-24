@@ -2015,23 +2015,26 @@ event.listen(
 # the server must check when a person answers. Every write is one small row.
 
 APPROVAL_REQUEST_STATES = ("open", "answered", "expired", "closed")
-SESSION_ACTIVITY_TYPES = (
-    "turn.started",
-    "tool.called",
-    "tool.finished",
-    "turn.finished",
+APPROVAL_REQUEST_KINDS = ("approval", "questions")
+SESSION_ACTIVITY_KINDS = (
+    "turn",
+    "user-message",
+    "assistant-message",
+    "tool-activity",
     "notice",
 )
+TURN_STATUS_MARKS = ("queued", "working")
 
 
 class ApprovalRequest(TenantScoped, Base):
-    """A question a session is waiting on, and the answer it gets.
+    """A request a session is waiting on a person for, and the answer it gets.
 
-    The host opens it; a person answers it from any platform; the server checks
-    the answer against this row (still open, a real option, not expired) and
-    owes it to the agent until `delivered_at` is set. `request_id` is the
-    host's, unique within its session, so a host that retries an open reaches
-    the same row.
+    Either an approval (pick one of `options`) or a set of `questions`, each
+    answered with options, words, or both. The host opens it; a person answers
+    it from any platform; the server checks the answer against this row (still
+    open, fits what was asked, not expired) and owes it to the agent until
+    `delivered_at` is set. `request_id` is the host's, unique within its
+    session, so a host that retries an open reaches the same row.
     """
 
     __tablename__ = "approval_requests"
@@ -2053,6 +2056,10 @@ class ApprovalRequest(TenantScoped, Base):
             "state IN ('open', 'answered', 'expired', 'closed')",
             name="ck_approval_requests_state",
         ),
+        CheckConstraint(
+            "kind IN ('approval', 'questions')",
+            name="ck_approval_requests_kind",
+        ),
         Index(
             "ix_approval_requests_open_expiry",
             "expires_at",
@@ -2071,16 +2078,25 @@ class ApprovalRequest(TenantScoped, Base):
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    # [{"id": ..., "label": ...}, ...] in the order the host offered them.
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Approval: [{"id", "label", "decision"}, ...] in the order offered.
     options: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Questions: [{"id", "title", "prompt", "options": [{"id", "label",
+    # "description"}], "multi_select", "allow_custom_answer"}, ...].
+    questions: Mapped[list] = mapped_column(JSONB, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, default="open")
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Approval: the chosen option's id.
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Questions: [{"question_id", "selected_option_ids", "custom_text"}, ...].
+    answers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     answered_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     answered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -2099,53 +2115,62 @@ class ApprovalRequest(TenantScoped, Base):
     )
 
 
-class SessionActivityEvent(TenantScoped, Base):
-    """One thing a session did, as a short line a platform can show.
+class SessionActivityItem(TenantScoped, Base):
+    """One step of a turn as a platform draws it: the turn itself, a message,
+    a tool call, or a notice.
 
-    Append-only and deliberately small: a summary, not tool output. `seq` is the
-    host's own counter for the session, so a retried report lands on the same
-    key instead of repeating a line.
+    Upserted by `revision`, so a step is one row however often it changes and
+    a replayed report cannot move it backwards. The primary key leads with the
+    turn, so reading every step of one turn is an index range.
     """
 
-    __tablename__ = "session_activity_events"
+    __tablename__ = "session_activity_items"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "agent_id", "session_id", "seq"),
+        PrimaryKeyConstraint(
+            "tenant_id", "agent_id", "session_id", "turn_id", "item_id"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
-            name="fk_session_activity_events_agent",
+            name="fk_session_activity_items_agent",
             ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
-            name="fk_session_activity_events_room",
+            name="fk_session_activity_items_room",
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "type IN ('turn.started', 'tool.called', 'tool.finished', "
-            "'turn.finished', 'notice')",
-            name="ck_session_activity_events_type",
+            "kind IN ('turn', 'user-message', 'assistant-message', "
+            "'tool-activity', 'notice')",
+            name="ck_session_activity_items_kind",
         ),
-        Index("ix_session_activity_events_created_at", "created_at"),
+        Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
-    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    item_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    command_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The Switch message the turn answers, so a platform threads its status there.
+    # The Switch message the turn answers, so a platform threads it there.
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    turn_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    type: Mapped[str] = mapped_column(Text, nullable=False)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    detail: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
+    # The Switch message that asked, where a platform puts its work marker.
+    message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -2156,7 +2181,9 @@ class ApprovalRequestPost(TenantScoped, Base):
     `token` rides in the card's controls and `handle` (`A12`) is what a person
     types to answer in words; both resolve back to the request through this
     row, so neither names the session. `external_post_id` is null until the
-    platform confirms the post.
+    platform confirms the post. `removed_at` is set once an answered card has
+    been taken off a platform that removes them, and `unconfirmed_notice_at`
+    once the channel has been told a card's delivery could not be confirmed.
     """
 
     __tablename__ = "approval_request_posts"
@@ -2196,13 +2223,25 @@ class ApprovalRequestPost(TenantScoped, Base):
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The platform's thread root the card was posted under, if any.
     thread_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    unconfirmed_notice_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
 class TurnStatusPost(TenantScoped, Base):
-    """The one status message a turn has on a bridge, edited as the turn goes."""
+    """The message a turn is drawn in on a bridge, and what hangs off it.
+
+    `reaction_message_ref` is the asking message as posted on this platform,
+    and `mark` the work marker this turn has put on it (`queued` / `working`),
+    or null. `attention_post_id` is the separate message that says the turn is
+    stuck, on a platform that uses one.
+    """
 
     __tablename__ = "turn_status_posts"
     __table_args__ = (
@@ -2221,6 +2260,10 @@ class TurnStatusPost(TenantScoped, Base):
             name="fk_turn_status_posts_agent",
             ondelete="CASCADE",
         ),
+        CheckConstraint(
+            "mark IN ('queued', 'working')",
+            name="ck_turn_status_posts_mark",
+        ),
     )
 
     bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2230,12 +2273,9 @@ class TurnStatusPost(TenantScoped, Base):
     external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
     thread_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tool_calls: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
-    finished: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
+    reaction_message_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attention_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -2252,7 +2292,7 @@ for _table, _triggers in (
         ApprovalRequest.__table__,
         (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
     ),
-    (SessionActivityEvent.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+    (SessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))

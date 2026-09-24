@@ -357,7 +357,7 @@ async def test_the_publication_is_the_only_account_of_a_turn() -> None:
     other way."""
     adapter, _channel, _thread, _webhook = _guild_setup()
 
-    assert adapter.publishes_sdk_sessions is True
+    assert adapter.draws_session_activity is True
 
 
 def test_discord_names_the_asker_because_nothing_else_reaches_them() -> None:
