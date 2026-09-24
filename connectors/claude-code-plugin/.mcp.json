@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "switch": {
+      "command": "npx",
+      "args": ["-y", "@sandboxaq/switch-agent-runtime@0.4.3"]
+    }
+  }
+}
