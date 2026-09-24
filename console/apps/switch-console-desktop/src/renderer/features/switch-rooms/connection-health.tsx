@@ -1,25 +1,39 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CirclePause, Loader2 } from 'lucide-react';
 import { useEffect } from 'react';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import type { Agent } from '@shared/core/agents/agents';
 import {
   connectionLabels,
   connectionNeedsAttention,
 } from '@shared/core/switch-rooms/connection-health';
+import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { switchRoomsStore } from './switch-rooms-store';
 
 export const roomHealthKey = (serverId: string | null) => ['room-health', serverId];
+/**
+ * The server's agents' room connections and session placements, as their room
+ * watchers report them: fetched once, then kept current by what the main
+ * process pushes on every change.
+ */
 export function useRoomHealth(serverId: string | null) {
+  const cache = useQueryClient();
   const query = useQuery({
     queryKey: roomHealthKey(serverId),
     queryFn: () => rpc.sdkHost.connectionHealth(serverId!),
     enabled: !!serverId,
-    refetchInterval: 10_000,
-    staleTime: 5000,
+    staleTime: Infinity,
     retry: false,
   });
+  useEffect(() => {
+    if (!serverId) return;
+    return events.on(
+      roomHealthChangedChannel,
+      (snapshot) => cache.setQueryData(roomHealthKey(serverId), snapshot),
+      serverId
+    );
+  }, [serverId, cache]);
   useEffect(() => {
     if (query.data) switchRoomsStore.rememberRooms(query.data.placements);
   }, [query.data]);

@@ -1359,6 +1359,42 @@ it('says when the server has confirmed an open', async () => {
   }
 });
 
+it('says when an open stream ended and it is trying again', async () => {
+  const onConnected = vi.fn();
+  const onDisconnected = vi.fn();
+  let opens = 0;
+  const fetchMock = vi.fn(async (url: string) => {
+    if (!url.includes('/events')) return Response.json({});
+    opens += 1;
+    if (opens === 1)
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(connected());
+            controller.close();
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    return new Response(openForever(), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  const { abort } = makeStream(fetchMock, {
+    rooms: [],
+    scope: 'all',
+    onConnected,
+    onDisconnected,
+  });
+  try {
+    await vi.waitFor(() => expect(onDisconnected).toHaveBeenCalledTimes(1));
+    expect(onDisconnected).toHaveBeenCalledWith({ error: 'the server closed the stream' });
+    expect(onConnected).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+  } finally {
+    abort.abort();
+  }
+});
+
 it('states placements on the attached incarnation, and raises on a refusal', async () => {
   const bodies: unknown[] = [];
   let refuse = false;

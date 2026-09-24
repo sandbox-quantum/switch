@@ -1526,10 +1526,3 @@ export async function createRoom(
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
-
-/** The person's agents: their live connections, and the room each session connected to. */
-export async function fetchRoomHealth(server: SwitchServer): Promise<unknown> {
-  return (
-    await gatewayFetch(server, '/agent-sessions/room-health', { authenticated: true })
-  ).json();
-}

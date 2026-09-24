@@ -25,7 +25,12 @@ import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from
 import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
-import { type PlaceOutcome, sessionToolAnswerer, type WatcherControl } from './watcher-tools';
+import {
+  type PlaceOutcome,
+  sessionToolAnswerer,
+  type WatcherControl,
+  type WatcherState,
+} from './watcher-tools';
 
 const assignmentSchema = z.strictObject({
   sequence: z.number().int().positive(),
@@ -464,12 +469,21 @@ export async function runSharedWatcher(
     fault = error;
     stop.abort(error);
   };
+  /** What the watcher reports once it has stopped, unless it stopped on an error. */
+  let ending: { state: WatcherState; detail: string | null } = {
+    state: 'not-running',
+    detail: null,
+  };
+  let thrown: unknown = null;
   try {
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
     const connectionId = template.roomConnection.connectionId;
     let flags = await readWatchFlags(root);
-    if (!flags.enabled) return;
+    if (!flags.enabled) {
+      ending = { state: 'disabled', detail: null };
+      return;
+    }
     // Not captured once: somebody can turn automatic sessions off while this
     // controller is connected, and the answer it gave on opening has to change
     // with them rather than wait for a restart nobody knows to perform.
@@ -483,6 +497,7 @@ export async function runSharedWatcher(
       console.warn(
         `Shared SDK watcher stood down at ${displaced.at} because another client took its connection (${displaced.reason}). It will not restart on its own; use Restart on the agent's Room watcher settings.`
       );
+      ending = { state: 'taken-over', detail: displaced.reason };
       return;
     }
     const credentials = await readSharedCredentials(template);
@@ -499,6 +514,8 @@ export async function runSharedWatcher(
       token: credentials.SWITCH_API_TOKEN,
     };
     const placements = await SessionPlacements.open(root, () => assignments.placements());
+    control.report({ state: 'connecting', detail: null, placements: placements.snapshot() });
+    unbind.push(placements.onChange((map) => control.report({ placements: map })));
     let stream: SwitchEventStream | null = null;
     let publishing: Promise<void> = Promise.resolve();
     /**
@@ -764,7 +781,11 @@ export async function runSharedWatcher(
       startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
-      onConnected: publishQuietly,
+      onConnected: () => {
+        control.report({ state: 'connected', detail: null });
+        publishQuietly();
+      },
+      onDisconnected: ({ error }) => control.report({ state: 'disconnected', detail: error }),
       // Another connection of this agent took the room: whichever session
       // attended it here no longer does.
       onRoomReleased: async ({ roomId, sessionId }) => {
@@ -860,6 +881,7 @@ export async function runSharedWatcher(
           console.warn(
             `Shared SDK watcher was taken over (${reason}); standing down until restarted.`
           );
+          ending = { state: 'taken-over', detail: reason };
           pending = pending.then(() =>
             recordTakenOver(root, {
               at: new Date().toISOString(),
@@ -912,7 +934,11 @@ export async function runSharedWatcher(
     retry.unref();
     while (!stop.signal.aborted) {
       const changed = await awaitWatchChange(root, flags, stop.signal);
-      if (!changed || !changed.enabled) break;
+      if (!changed) break;
+      if (!changed.enabled) {
+        ending = { state: 'disabled', detail: null };
+        break;
+      }
       flags = changed;
       spawn = flags.spawn;
       started.setSpawnCapable(spawn);
@@ -926,13 +952,26 @@ export async function runSharedWatcher(
       }
     }
   } catch (error) {
-    if (!stop.signal.aborted) throw error;
+    if (!stop.signal.aborted) {
+      thrown = error;
+      throw error;
+    }
   } finally {
     for (const release of unbind) release();
     stop.abort();
     if (retry) clearInterval(retry);
     signal.removeEventListener('abort', abort);
     await pending.catch(() => {});
+    const failure = fault ?? thrown;
+    control.report({
+      state: failure ? 'not-running' : ending.state,
+      detail: failure
+        ? failure instanceof Error
+          ? failure.message
+          : String(failure)
+        : ending.detail,
+      placements: {},
+    });
     await releaseOwner(root, ownerPath, owner);
   }
   if (fault) throw fault;

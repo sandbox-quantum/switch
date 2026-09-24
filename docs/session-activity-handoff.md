@@ -213,10 +213,11 @@ Compatibility with deployed Consoles is waived (owner's call).
    answer path and `session_request_post_store`. The refusal type the new
    answer path uses moved to `collaboration/session/refusal.py`. Kept:
    `contract.py`, `errors.py`, `http.py`, `normalise_mime_type`.
-7. Room health for Console: `GET /gateway/agent-sessions/room-health`
-   (the owner's agents' live connections and in-memory placements). The
-   `POST /gateway/agent-sessions/{agent}/{session}/place` route that sat
-   behind "Reconnect to room" is gone (see "Runtime move: contract").
+7. Room health for Console comes from each agent's room watcher, not from
+   Switch (see "Room health from the watcher"); the gateway room-health
+   route is gone. The `POST /gateway/agent-sessions/{agent}/{session}/place`
+   route that sat behind "Reconnect to room" is gone too (see "Runtime move:
+   contract").
 8. Migration `b9e4d2a71c05` drops `session_activity_posts`,
    `session_request_posts`, `sdk_session_commands`, `sdk_session_events`,
    `sdk_room_admissions`, `sdk_sessions` and `media_blobs.sdk_session_id`
@@ -525,3 +526,34 @@ declares 5 until it takes `room_released`):
 - Terminal sessions: the leftover hook server, hook installers, the Codex
   hook-trust flag, "View Terminals" and `sessions.shell_id` (migration 0050)
   are removed. OS notifications are no longer shown (owner: not needed).
+
+### Room health from the watcher
+
+Only the watcher knows whether the agent's connection is up and which session
+attends which room, so Console asks it rather than Switch.
+
+- `SwitchEventStream` gains `onDisconnected({error})`: an open failed or an
+  open stream ended and it is retrying (not for a deliberate reopen or a
+  final stop).
+- `WatcherControl` holds `WatcherHealth` `{state, detail, since, placements}`
+  and pushes each change to `onHealth` listeners. States, all ones the
+  watcher really tracks: `not-running` (no watcher; `detail` is its failure
+  if it stopped on one), `disabled` (room connection turned off),
+  `taken-over` (stood down for another client), `connecting` (stream not
+  confirmed yet), `connected` (Switch confirmed the open), `disconnected`
+  (retrying; `detail` is the stream's error). `placements` follows
+  `SessionPlacements.onChange` and is empty while the watcher is not running.
+- Control port (`host/control.ts`): `{id, health: true}` answers the current
+  `WatcherHealth`; `{id, watchHealth: true|false}` starts or stops pushing
+  `{health}` lines on that connection. `ControlClient` has `health()`,
+  `onHealth(listener)` and `onClose(listener)`.
+- Console main (`sdk-host/connection-health-monitor.ts`, wired in
+  `connection-health.ts`): per linked agent, the in-process `WatcherControl`
+  (local) or the sidecar's control connection (remote). A sidecar that
+  cannot be reached is shown as `unreachable` (with the files on the host
+  read over SSH for a takeover or recorded failure) and tried again every
+  10 s. Changes go to the renderer on `roomHealthChangedChannel` (topic:
+  server id) as the whole `{agents, placements}` snapshot; the renderer
+  fetches once and applies pushes, with no polling. `disconnected` and a
+  `not-running` watcher with no failure show as `connecting` for 15 s, then
+  `failed`.

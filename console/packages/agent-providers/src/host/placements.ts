@@ -24,6 +24,7 @@ export type PlacementMap = Record<string, string>;
  */
 export class SessionPlacements {
   private writing: Promise<void> = Promise.resolve();
+  private readonly listeners = new Set<(placements: PlacementMap) => void>();
 
   private constructor(
     private readonly path: string,
@@ -90,6 +91,12 @@ export class SessionPlacements {
     return Object.fromEntries(this.rooms);
   }
 
+  /** Called with the whole map after every change; the returned function stops it. */
+  onChange(listener: (placements: PlacementMap) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
   /**
    * Put the session in the room. `previous` is the room it leaves, and
    * `displaced` the session that attended the room until now; either is null
@@ -100,6 +107,7 @@ export class SessionPlacements {
     roomId: string
   ): Promise<{ previous: string | null; displaced: string | null }> {
     const outcome = this.apply(sessionId, roomId);
+    this.changed();
     await this.persist();
     return outcome;
   }
@@ -109,6 +117,7 @@ export class SessionPlacements {
     const roomId = this.rooms.get(sessionId) ?? null;
     if (roomId === null) return null;
     this.rooms.delete(sessionId);
+    this.changed();
     await this.persist();
     return roomId;
   }
@@ -118,6 +127,7 @@ export class SessionPlacements {
     const sessionId = this.sessionIn(roomId);
     if (sessionId === null) return null;
     this.rooms.delete(sessionId);
+    this.changed();
     await this.persist();
     return sessionId;
   }
@@ -126,7 +136,13 @@ export class SessionPlacements {
   async restore(snapshot: PlacementMap): Promise<void> {
     this.rooms.clear();
     for (const [sessionId, roomId] of Object.entries(snapshot)) this.rooms.set(sessionId, roomId);
+    this.changed();
     await this.persist();
+  }
+
+  private changed(): void {
+    const snapshot = this.snapshot();
+    for (const listener of this.listeners) listener(snapshot);
   }
 
   private apply(

@@ -64,7 +64,13 @@ export {
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
 export { SessionLinks, SessionUnavailableError, type SessionRequest } from './host/session-channel';
-export { WatcherControl, type PlaceOutcome } from './host/watcher-tools';
+export {
+  WatcherControl,
+  type PlaceOutcome,
+  type WatcherHealth,
+  type WatcherState,
+  watcherHealthSchema,
+} from './host/watcher-tools';
 
 export { prepareCodexSessionHome } from './codex/home';
 export { sharedConfigSchema } from './host/shared-config';

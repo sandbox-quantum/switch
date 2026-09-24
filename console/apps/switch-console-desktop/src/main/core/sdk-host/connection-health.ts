@@ -1,65 +1,52 @@
-import { z } from 'zod';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
-import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
-import { fetchRoomHealth } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { events } from '@main/lib/events';
 import { redactSecrets } from '@main/lib/file-logger';
-import {
-  classifyConnection,
-  type AgentConnectionHealth,
-} from '@shared/core/switch-rooms/connection-health';
+import { log } from '@main/lib/logger';
+import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
+import { ConnectionHealthMonitor } from './connection-health-monitor';
 import { remoteWatcherStatus } from './diagnostics';
-import { localWatcherStatus } from './local-host';
+import { localWatcherControl } from './local-host';
+import { sidecarControl } from './sidecar-control';
 
-const disconnectedSince = new Map<string, number>();
-const healthSchema = z.object({
-  connections: z.record(z.string(), z.array(z.string())),
-  placements: z.record(z.string(), z.record(z.string(), z.string())),
+/** How often a sidecar that could not be reached is tried again. */
+const SIDECAR_RETRY_MS = 10_000;
+
+const monitor = new ConnectionHealthMonitor({
+  linkedAgents: async (serverId) => {
+    if (!(await getServer(serverId))) throw new Error('Switch server not found.');
+    return (await getAgents()).flatMap((agent) =>
+      agent.serverId === serverId && agent.switchAgentId
+        ? [
+            {
+              id: agent.id,
+              serverId,
+              switchAgentId: agent.switchAgentId,
+              locationId: agent.locationId,
+            },
+          ]
+        : []
+    );
+  },
+  isRemote: async (agent) => !!(await getAgentLocation(agent)).sshHost,
+  stoppedAgentIds: listStoppedControllerAgentIds,
+  local: localWatcherControl,
+  remote: sidecarControl,
+  remoteStatus: remoteWatcherStatus,
+  emit: (serverId, snapshot) => events.emit(roomHealthChangedChannel, snapshot, serverId),
+  redact: redactSecrets,
+  logError: (message, context) => log.error(message, context),
+  now: () => Date.now(),
+  retryMs: SIDECAR_RETRY_MS,
 });
-export async function connectionHealth(serverId: string) {
-  const server = await getServer(serverId);
-  if (!server) throw new Error('Switch server not found.');
-  const [agents, stopped, remote] = await Promise.all([
-    getAgents(),
-    listStoppedControllerAgentIds(),
-    fetchRoomHealth(server).then((value) => healthSchema.parse(value)),
-  ]);
-  const health = await Promise.all(
-    agents
-      .filter((agent) => agent.serverId === serverId && agent.switchAgentId)
-      .map(async (agent): Promise<AgentConnectionHealth> => {
-        try {
-          const location = await getAgentLocation(agent);
-          const host = location.sshHost
-            ? await remoteWatcherStatus(agent.id)
-            : await localWatcherStatus(agent.switchAgentId!);
-          const connected =
-            remote.connections[agent.switchAgentId!]?.includes(
-              controllerConnectionId(agent.switchAgentId!)
-            ) ?? false;
-          const key = `${serverId}:${agent.id}`;
-          if (connected && host?.running) disconnectedSince.delete(key);
-          else if (!disconnectedSince.has(key)) disconnectedSince.set(key, Date.now());
-          return {
-            agentId: agent.id,
-            state: classifyConnection({
-              stopped: stopped.includes(agent.id),
-              running: host?.running ?? false,
-              connected,
-              takenOver: !!host?.takenOver,
-              disconnectedFor: Date.now() - (disconnectedSince.get(key) ?? Date.now()),
-            }),
-            detail: host?.failure ? redactSecrets(host.failure) : null,
-          };
-        } catch (error) {
-          return { agentId: agent.id, state: 'unknown', detail: redactSecrets(String(error)) };
-        }
-      })
-  );
-  // Session id to the room Switch has it working in, across the person's agents.
-  const placements: Record<string, string> = {};
-  for (const byAgent of Object.values(remote.placements)) Object.assign(placements, byAgent);
-  return { agents: health, placements };
+
+/**
+ * The server's agents' room connections and session placements, from their
+ * room watchers. Later changes follow on `roomHealthChangedChannel` with the
+ * server id as the topic.
+ */
+export function connectionHealth(serverId: string) {
+  return monitor.snapshot(serverId);
 }

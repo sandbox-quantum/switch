@@ -169,12 +169,25 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
                 : 'Inspect the log below, then restart the room watcher.'}
             </p>
           )}
+          {connection.state === 'unreachable' && (
+            <p role="alert" className="text-sm break-words text-destructive">
+              Console cannot reach this agent’s sidecar, so it cannot tell whether the agent is
+              connected. {connection.health?.detail}
+            </p>
+          )}
           {connection.state === 'unknown' && (
             <p role="alert" className="text-sm text-destructive">
               Could not verify the room connection.{' '}
               {connection.health?.detail ?? String(connection.query.error ?? '')}
             </p>
           )}
+          {connection.state === 'failed' &&
+            connection.health?.detail &&
+            connection.health.detail !== watcher?.failure && (
+              <p role="alert" className="text-sm break-words text-destructive">
+                {connection.health.detail}
+              </p>
+            )}
           {watcher?.failure && connection.state === 'failed' && (
             <p role="alert" className="text-sm break-words text-destructive">
               {watcher.failure}

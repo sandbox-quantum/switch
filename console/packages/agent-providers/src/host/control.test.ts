@@ -150,3 +150,43 @@ it('stops serving while Console still holds its connection open', async () => {
   await expect(readFile(join(base, CONTROL_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(console.request('session', { type: 'snapshot' })).rejects.toThrow();
 });
+
+it('answers the watcher health and pushes every change to a client watching it', async () => {
+  const { stop, serving, client, watcher } = await started();
+  const console = client();
+  await console.ready;
+  expect(await console.health()).toMatchObject({
+    state: 'not-running',
+    detail: null,
+    placements: {},
+  });
+
+  const heard: unknown[] = [];
+  const stopWatching = await console.onHealth((health) => heard.push(health));
+  watcher.report({ state: 'connecting', placements: { session: 'room' } });
+  watcher.report({ state: 'connected' });
+  // Nothing changed: nothing pushed.
+  watcher.report({ state: 'connected', placements: { session: 'room' } });
+  watcher.report({ state: 'disconnected', detail: 'HTTP 502: bad gateway' });
+  await vi.waitFor(() => expect(heard).toHaveLength(3));
+  expect(heard).toMatchObject([
+    { state: 'connecting', detail: null, placements: { session: 'room' } },
+    { state: 'connected', detail: null, placements: { session: 'room' } },
+    { state: 'disconnected', detail: 'HTTP 502: bad gateway', placements: { session: 'room' } },
+  ]);
+  expect(await console.health()).toEqual(watcher.health());
+
+  stopWatching();
+  // The sidecar hears the unwatch before the next report.
+  await console.health();
+  watcher.report({ state: 'connected', detail: null });
+  await console.health();
+  expect(heard).toHaveLength(3);
+
+  const closed = vi.fn();
+  console.onClose(closed);
+  console.close();
+  await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
+  stop.abort();
+  await serving;
+});

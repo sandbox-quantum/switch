@@ -1379,3 +1379,74 @@ it('hands a message to its session over the IPC pipe and releases it once taken'
   expect(journal.pending()).toEqual([]);
   expect(journal.cursor).toBe(1);
 });
+
+it('reports its connection and placements as they change, and why it stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-health-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const placed = await existing(root, config);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+  const heard: { state: string; detail: string | null; placements: Record<string, string> }[] = [];
+  control.onHealth(({ state, detail, placements }) => heard.push({ state, detail, placements }));
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const run = runSharedWatcher(
+    root,
+    config,
+    new AbortController().signal,
+    hosts.supervision,
+    control
+  );
+  await eventually(() => streams.length === 1);
+  expect(control.health()).toMatchObject({ state: 'connecting', placements: {} });
+  streams[0]!.onConnected!();
+  await control.place(placed.sessionId, 'room');
+  streams[0]!.onDisconnected!({ error: 'HTTP 502: bad gateway' });
+  streams[0]!.onConnected!();
+  streams[0]!.onEvicted({ code: 'taken_over', reason: 'another client attached', roomId: null });
+  await run;
+
+  expect(heard).toEqual([
+    { state: 'connecting', detail: null, placements: {} },
+    { state: 'connected', detail: null, placements: {} },
+    { state: 'connected', detail: null, placements: { [placed.sessionId]: 'room' } },
+    {
+      state: 'disconnected',
+      detail: 'HTTP 502: bad gateway',
+      placements: { [placed.sessionId]: 'room' },
+    },
+    { state: 'connected', detail: null, placements: { [placed.sessionId]: 'room' } },
+    { state: 'taken-over', detail: 'another client attached', placements: {} },
+  ]);
+});
+
+it('reports a room connection that is turned off, and a watcher that failed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-health-off-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const run = runSharedWatcher(
+    root,
+    config,
+    new AbortController().signal,
+    hosts.supervision,
+    control
+  );
+  await eventually(() => streams.length === 1);
+  await writeFlags(root, { enabled: false, spawn: false });
+  await run;
+  expect(control.health()).toMatchObject({ state: 'disabled', detail: null, placements: {} });
+
+  await writeFlags(root, { enabled: true, spawn: true });
+  await rm(join(root, 'credentials.json'));
+  await expect(
+    runSharedWatcher(root, config, new AbortController().signal, hosts.supervision, control)
+  ).rejects.toThrow('credentials.json');
+  expect(control.health().state).toBe('not-running');
+  expect(control.health().detail).toContain('credentials.json');
+});

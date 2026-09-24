@@ -5,9 +5,8 @@ the way the platform judges a message it sends on someone's behalf — the
 agent's addressing policy in the request's room, or its owner when the request
 has no room.
 
-Room health: the agent's live connections and where its sessions are, for
-Console to show. Moving a room to another session is the agent's watcher's
-to do; it states the result on `POST /agents/{id}/connection/placements`.
+Where an agent's sessions are and whether it is connected is not answered
+here: the agent's room watcher owns both and Console asks it directly.
 """
 
 from datetime import datetime
@@ -16,14 +15,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.db.models import Agent, ApprovalRequest, User, require_tenant_id
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.models import ApprovalRequest, User
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_protocol, get_session_factory
+from switch_core.gateway.dependencies import get_session_factory
 from switch_core.session_activity.service import SessionActivityService, SwitchUser
 from switch_core.sessions.contract import (
     Answer,
@@ -35,7 +31,6 @@ from switch_core.sessions.contract import (
 router = APIRouter()
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
-Protocol = Annotated[ProtocolService, Depends(get_protocol)]
 
 
 class _Model(BaseModel):
@@ -191,29 +186,3 @@ async def answer_approval(
         answerer=SwitchUser(user.id),
     )
     return ApprovalRequestView.of(row)
-
-
-class RoomHealth(_Model):
-    """For each of the person's agents: its live connections, and the room each
-    of its sessions connected to."""
-
-    connections: dict[str, list[str]]
-    placements: dict[str, dict[str, str]]
-
-
-@router.get("/room-health", response_model_by_alias=True)
-async def room_health(
-    user: CurrentUser, factory: Factory, protocol: Protocol
-) -> RoomHealth:
-    async with tenant_session(factory, require_tenant_id()) as db:
-        agent_ids = list(
-            await db.scalars(select(Agent.id).where(Agent.owner_id == user.id))
-        )
-    registry = protocol.connections
-    return RoomHealth(
-        connections={
-            agent_id: sorted(conn.id for conn in registry.for_agent(agent_id))
-            for agent_id in agent_ids
-        },
-        placements={agent_id: registry.placements(agent_id) for agent_id in agent_ids},
-    )

@@ -260,6 +260,12 @@ export interface SwitchEventStreamDeps {
    * Where state the server holds only in memory is restated.
    */
   onConnected?: () => void;
+  /**
+   * An open failed, or an open stream ended, and the stream is about to wait
+   * and try again. Not fired for a deliberate reopen, nor once the stream has
+   * stopped for good (that is `onEvicted`, or the caller's own signal).
+   */
+  onDisconnected?: (info: { error: string }) => void;
   /** Fired when the server reports missed events it cannot replay. */
   onGap(info: {
     fromSequence: number;
@@ -705,15 +711,17 @@ export class SwitchEventStream {
       }
 
       failures += 1;
+      const error = failure === null ? 'the server closed the stream' : String(failure);
       if ((failures & (failures - 1)) === 0) {
         log.warn('SwitchEventStream: stream ended — reopening', {
           event: 'switch_stream_error',
           endpoint: creds.apiEndpoint,
           failures,
-          error: failure === null ? 'the server closed the stream' : String(failure),
+          error,
           backoffMs: backoff,
         });
       }
+      this.deps.onDisconnected?.({ error });
       await pace();
     }
   }

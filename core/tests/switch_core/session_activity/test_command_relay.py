@@ -100,22 +100,14 @@ async def test_a_command_nobody_can_take_is_not_relayed(speaks, scope) -> None:
     await stream.aclose()
 
 
-async def test_the_owner_sees_connections_and_where_sessions_are(
+async def test_switch_does_not_answer_where_an_agents_sessions_are(
     session_factory, owner
 ) -> None:
+    """The agent's room watcher owns its connection and placements; Console asks it."""
     registry = ConnectionRegistry()
     _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
     registry.place_session(
         AGENT, "session-1", "room-1", f"conn-all-{SESSION_COMMAND_PROTOCOL_REVISION}"
     )
     async with _client(session_factory, registry, owner) as client:
-        health = (await client.get("/agent-sessions/room-health")).json()
-    assert health == {
-        "connections": {AGENT: [f"conn-all-{SESSION_COMMAND_PROTOCOL_REVISION}"]},
-        "placements": {AGENT: {"session-1": "room-1"}},
-    }
-    async with _client(session_factory, registry, "someone-else") as client:
-        assert (await client.get("/agent-sessions/room-health")).json() == {
-            "connections": {},
-            "placements": {},
-        }
+        assert (await client.get("/agent-sessions/room-health")).status_code == 404

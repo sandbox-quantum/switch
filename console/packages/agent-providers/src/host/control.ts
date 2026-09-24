@@ -12,7 +12,12 @@ import {
   type SessionLinks,
   type SessionRequest,
 } from './session-channel';
-import type { PlaceOutcome, WatcherControl } from './watcher-tools';
+import {
+  type PlaceOutcome,
+  type WatcherControl,
+  type WatcherHealth,
+  watcherHealthSchema,
+} from './watcher-tools';
 
 /**
  * How Console reaches the sessions an agent's sidecar runs on a remote host.
@@ -40,6 +45,10 @@ const clientMessageSchema = z.union([
     id: z.number().int(),
     place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }),
   }),
+  /** The room watcher's connection state and placements, as it holds them now. */
+  z.object({ id: z.number().int(), health: z.literal(true) }),
+  /** Start or stop pushing `{health}` to this connection whenever the watcher's changes. */
+  z.object({ id: z.number().int(), watchHealth: z.boolean() }),
 ]);
 
 export type EnsureSession = (input: {
@@ -80,12 +89,15 @@ export async function serveControl(
     socket.once('close', () => sockets.delete(socket));
     let authenticated = false;
     const subscriptions = new Map<string, () => void>();
+    let unwatchHealth: (() => void) | null = null;
     const send = (message: unknown) => {
       if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
     };
     socket.on('close', () => {
       for (const unsubscribe of subscriptions.values()) unsubscribe();
       subscriptions.clear();
+      unwatchHealth?.();
+      unwatchHealth = null;
     });
     socket.on('error', () => socket.destroy());
     lines(socket, (line) => {
@@ -139,7 +151,15 @@ export async function serveControl(
         void reply(Promise.resolve(null));
       } else if ('place' in parsed)
         void reply(watcher.place(parsed.place.sessionId, parsed.place.roomId));
-      else void reply(ensure(parsed.ensure));
+      else if ('health' in parsed) void reply(Promise.resolve(watcher.health()));
+      else if ('watchHealth' in parsed) {
+        if (parsed.watchHealth) unwatchHealth ??= watcher.onHealth((health) => send({ health }));
+        else {
+          unwatchHealth?.();
+          unwatchHealth = null;
+        }
+        void reply(Promise.resolve(null));
+      } else void reply(ensure(parsed.ensure));
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -176,6 +196,7 @@ const serverMessageSchema = z.union([
     unavailable: z.boolean().optional(),
   }),
   z.object({ sessionId: z.string(), event: serverEventSchema }),
+  z.object({ health: watcherHealthSchema }),
 ]);
 
 const placeOutcomeSchema = z.object({
@@ -193,6 +214,8 @@ export class ControlClient {
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
   private readonly listeners = new Map<string, Set<(event: ServerEvent) => void>>();
+  private readonly healthListeners = new Set<(health: WatcherHealth) => void>();
+  private readonly closeListeners = new Set<(error: Error) => void>();
   private closed: Error | null = null;
   readonly ready: Promise<void>;
 
@@ -207,10 +230,14 @@ export class ControlClient {
       refuse = reject;
     });
     const fail = (error: Error) => {
+      const first = this.closed === null;
       this.closed ??= error;
       refuse(error);
       for (const pending of this.pending.values()) pending.reject(error);
       this.pending.clear();
+      if (!first) return;
+      for (const listener of this.closeListeners) listener(this.closed);
+      this.closeListeners.clear();
     };
     stream.on('error', (error: Error) => fail(error));
     stream.on('close', () => fail(new Error('The connection to the agent sidecar closed.')));
@@ -221,6 +248,7 @@ export class ControlClient {
       if ('authenticated' in data) authenticate();
       else if ('event' in data)
         for (const listener of this.listeners.get(data.sessionId) ?? []) listener(data.event);
+      else if ('health' in data) for (const listener of this.healthListeners) listener(data.health);
       else {
         const pending = this.pending.get(data.id);
         if (!pending) return;
@@ -258,6 +286,42 @@ export class ControlClient {
   /** Move a room's messages to this session, through the sidecar's room watcher. */
   async place(sessionId: string, roomId: string): Promise<PlaceOutcome> {
     return placeOutcomeSchema.parse(await this.call({ place: { sessionId, roomId } }));
+  }
+
+  /** The sidecar's room watcher: its connection state and placements. */
+  async health(): Promise<WatcherHealth> {
+    return watcherHealthSchema.parse(await this.call({ health: true }));
+  }
+
+  /**
+   * Called with the watcher's state whenever it changes, once the sidecar has
+   * agreed to push it. Pair with `health()` for the state before the first change.
+   */
+  async onHealth(listener: (health: WatcherHealth) => void): Promise<() => void> {
+    const first = this.healthListeners.size === 0;
+    this.healthListeners.add(listener);
+    if (first) {
+      try {
+        await this.call({ watchHealth: true });
+      } catch (error) {
+        this.healthListeners.delete(listener);
+        throw error;
+      }
+    }
+    return () => {
+      if (!this.healthListeners.delete(listener) || this.healthListeners.size) return;
+      if (!this.closed) void this.call({ watchHealth: false }).catch(() => {});
+    };
+  }
+
+  /** Called once when the connection to the sidecar closes or fails; at once if it already has. */
+  onClose(listener: (error: Error) => void): () => void {
+    if (this.closed) {
+      listener(this.closed);
+      return () => {};
+    }
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
 
   async subscribe(sessionId: string, listener: (event: ServerEvent) => void): Promise<() => void> {

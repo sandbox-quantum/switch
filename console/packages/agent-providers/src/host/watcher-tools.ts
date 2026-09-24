@@ -8,7 +8,8 @@ import {
   type SwitchIdentity,
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
-import type { SessionPlacements } from './placements';
+import { z } from 'zod';
+import type { PlacementMap, SessionPlacements } from './placements';
 import type { AskHandler, Caller } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 
@@ -139,11 +140,54 @@ export type PlaceOutcome = {
 };
 
 /**
+ * Where a room watcher is with the agent's connection to Switch.
+ *
+ * - `not-running`: no watcher runs on this control (not started yet, or it
+ *   stopped; `detail` says why when it failed).
+ * - `disabled`: the watcher found the agent's room connection turned off and
+ *   stopped.
+ * - `taken-over`: the watcher stood down because another client holds the
+ *   agent's connection.
+ * - `connecting`: running, and the stream has not confirmed an open yet.
+ * - `connected`: Switch confirmed the stream's open and it has not ended since.
+ * - `disconnected`: an open failed or the open stream ended; it is retrying.
+ */
+export const watcherStateSchema = z.enum([
+  'not-running',
+  'disabled',
+  'taken-over',
+  'connecting',
+  'connected',
+  'disconnected',
+]);
+export type WatcherState = z.infer<typeof watcherStateSchema>;
+
+export const watcherHealthSchema = z.object({
+  state: watcherStateSchema,
+  /** The stream's last error, why the watcher stopped, or why it stood down. */
+  detail: z.string().nullable(),
+  /** When `state` began, as an ISO timestamp. */
+  since: z.string(),
+  /** Session id → room id, as the watcher routes now. Empty while it is not running. */
+  placements: z.record(z.string(), z.string()),
+});
+export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
+
+/**
  * Reaches a running watcher from outside it: Console's "Reconnect to room",
- * locally by a direct call and remotely through the sidecar's control port.
+ * locally by a direct call and remotely through the sidecar's control port;
+ * and the watcher's own account of its connection and placements, which it
+ * keeps current here.
  */
 export class WatcherControl {
   private placer: ((sessionId: string, roomId: string) => Promise<PlaceOutcome>) | null = null;
+  private current: WatcherHealth = {
+    state: 'not-running',
+    detail: null,
+    since: new Date().toISOString(),
+    placements: {},
+  };
+  private readonly healthListeners = new Set<(health: WatcherHealth) => void>();
 
   /** Called by the watcher while it runs; the returned function unbinds it. */
   bind(placer: (sessionId: string, roomId: string) => Promise<PlaceOutcome>): () => void {
@@ -164,4 +208,52 @@ export class WatcherControl {
       );
     return this.placer(sessionId, roomId);
   }
+
+  health(): WatcherHealth {
+    return this.current;
+  }
+
+  /** Called with the new state after every change; the returned function stops it. */
+  onHealth(listener: (health: WatcherHealth) => void): () => void {
+    this.healthListeners.add(listener);
+    return () => this.healthListeners.delete(listener);
+  }
+
+  /**
+   * Called by the watcher as its state changes. A new state without a `detail`
+   * clears the old one; `since` moves only when the state does.
+   */
+  report(change: {
+    state?: WatcherState;
+    detail?: string | null;
+    placements?: PlacementMap;
+  }): void {
+    const state = change.state ?? this.current.state;
+    const same = state === this.current.state;
+    const next: WatcherHealth = {
+      state,
+      detail: change.detail !== undefined ? change.detail : same ? this.current.detail : null,
+      since: same ? this.current.since : new Date().toISOString(),
+      placements: change.placements ? { ...change.placements } : this.current.placements,
+    };
+    if (
+      same &&
+      next.detail === this.current.detail &&
+      samePlacements(next.placements, this.current.placements)
+    )
+      return;
+    this.current = next;
+    for (const listener of this.healthListeners) {
+      try {
+        listener(next);
+      } catch (error) {
+        console.error(`A room watcher health listener failed: ${String(error)}`);
+      }
+    }
+  }
+}
+
+function samePlacements(a: PlacementMap, b: PlacementMap): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
 }

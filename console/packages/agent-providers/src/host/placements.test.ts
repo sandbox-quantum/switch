@@ -91,3 +91,20 @@ it('refuses a saved file that places one room twice, or cannot be read', async (
   await writeFile(join(at, PLACEMENTS_FILE), 'not json');
   await expect(SessionPlacements.open(at, () => [])).rejects.toThrow('cannot be read');
 });
+
+it('tells its listeners the whole map after every change', async () => {
+  const at = await root();
+  const placements = await SessionPlacements.open(at, () => []);
+  const seen: Record<string, string>[] = [];
+  const stop = placements.onChange((map) => seen.push(map));
+  await placements.place('one', 'room-a');
+  await placements.place('two', 'room-a');
+  await placements.roomLost('room-a');
+  await placements.restore({ one: 'room-b' });
+  await placements.unplace('one');
+  // Nothing to take away: no change, no call.
+  await placements.unplace('one');
+  stop();
+  await placements.place('one', 'room-c');
+  expect(seen).toEqual([{ one: 'room-a' }, { two: 'room-a' }, {}, { one: 'room-b' }, {}]);
+});
