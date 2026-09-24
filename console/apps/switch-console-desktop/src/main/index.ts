@@ -10,7 +10,6 @@ import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
 import { registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
-import { reapOrphanedAgentRuntimes } from './core/agent-runtime/reap-orphaned-runtimes';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
@@ -34,8 +33,6 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
-import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
-import { catchUpConnectorsToCurrentVersion } from './core/switch-setup/catch-up-connectors';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
 import { trackEvent } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
@@ -170,22 +167,6 @@ void app.whenReady().then(async () => {
 
   void reconcileResourceSampler();
 
-  // Before any session is relaunched below, so a runtime abandoned by a
-  // previous run is gone before its replacement starts — but not awaited: it
-  // scans every process on the machine and may remove thousands of stale
-  // directories, and the window must not wait for either.
-  void reapOrphanedAgentRuntimes().catch((e: unknown) => {
-    log.warn('agent-runtime: failed to reap orphaned runtimes at boot', { error: e });
-  });
-
-  // A one-shot, not a standing auto-updater — it latches on a generation marker
-  // and does nothing on every later launch. Unawaited because it talks to a
-  // plugin marketplace over the network: a session relaunched below may still
-  // start on the old pin, and picks the new one up next launch.
-  void catchUpConnectorsToCurrentVersion().catch((e: unknown) => {
-    log.warn('switch-setup: connector catch-up failed at boot', { error: e });
-  });
-
   // Reflect a managed local Switch stack that survived the last quit, so the UI
   // shows it running without the user restarting it.
   void localServerService.initialize();
@@ -218,11 +199,6 @@ void app.whenReady().then(async () => {
       await initializeHostReachability();
     } catch (e) {
       log.error('Failed to initialise host reachability at startup:', e);
-    }
-    try {
-      await restoreSwitchRoomSessions();
-    } catch (e) {
-      log.error('Failed to restore Switch room sessions at startup:', e);
     }
     // Must precede the watchers: an earlier build left detached watchers behind
     // for local agents, and one still holding a root would block the in-process

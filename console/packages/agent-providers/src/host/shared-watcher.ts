@@ -22,7 +22,6 @@ import { SessionPlacements } from './placements';
 import { roomInputId } from './room-inbox';
 import { type SessionRequest, SessionUnavailableError } from './session-channel';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
-import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
 import {
@@ -212,24 +211,20 @@ export async function supersededSessions(
   return found;
 }
 
-/** Restarts each superseded session from its saved state, on this connection. */
-export async function replaceSupersededSessions(
+/**
+ * Stops each session still running a superseded build. It is not started
+ * again here: like every session, it starts under this build when it is next
+ * needed (a room message, a command, or someone opening it).
+ */
+export async function stopSupersededSessions(
   superseded: { root: string; config: SharedHostConfig }[],
-  connectionId: string,
   supervision: Supervision
 ): Promise<void> {
   for (const { root, config } of superseded) {
     console.warn(
-      `Session ${config.session.sessionId} is running a superseded build; restarting it from saved state.`
+      `Session ${config.session.sessionId} is running a superseded build; stopping it until it is next needed.`
     );
-    await ensureSharedProcess({
-      root,
-      config: reachableBy(config, connectionId),
-      resuming: false,
-      watcher: false,
-      restart: false,
-      supervision,
-    });
+    await supervision.stop(root);
   }
 }
 
@@ -594,12 +589,7 @@ export async function runSharedWatcher(
       });
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);
-    await replaceSupersededSessions(superseded, connectionId, supervision);
-    /** Every assigned session, except those that parked: they start when next needed. */
-    const launchAssigned = async () => {
-      for (const config of assignments.sessions())
-        if (!(await hostParked(sharedSessionRoot(config.session.sessionId)))) await launch(config);
-    };
+    await stopSupersededSessions(superseded, supervision);
     /**
      * Rooms with no session able to take their messages yet, and the events
      * waiting in the order they arrived. Only the room in question waits; the
@@ -766,7 +756,6 @@ export async function runSharedWatcher(
       }
     }
     if (held.size) await resolveHeld();
-    if (spawn) await launchAssigned();
     stream = new SwitchEventStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -948,12 +937,10 @@ export async function runSharedWatcher(
       spawn = flags.spawn;
       started.setSpawnCapable(spawn);
       // What waited for permission to start a session is answered now rather
-      // than on the next retry, and so is a session this controller was
-      // already assigned and could not start.
+      // than on the next retry.
       if (spawn) {
         pending = pending.then(resolveHeld);
         await pending;
-        await launchAssigned();
       }
     }
   } catch (error) {

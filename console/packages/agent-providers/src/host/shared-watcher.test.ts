@@ -11,7 +11,7 @@ import { ensureSharedProcess, type Supervision } from './launch';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import {
-  replaceSupersededSessions,
+  stopSupersededSessions,
   runSharedWatcher,
   SharedWatchAssignments,
   supersededSessions,
@@ -487,17 +487,13 @@ const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
   },
 });
 
-it('starts a session saved before the controller over the one connection the agent has', async () => {
-  // A config saved when every session opened a connection of its own names
-  // that connection. Restarted from this build the session stops opening it,
-  // so launching it as saved would bind it to one that never returns.
-  const root = await mkdtemp(join(tmpdir(), 'shared-watch-upgraded-'));
+it('starts no saved session at startup; each waits until it is needed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-lazy-'));
   roots.push(root);
   paths.root = root;
   const config = await spawning(root);
   const saved = structuredClone(config);
   saved.session = { ...saved.session, sessionId: randomUUID() };
-  saved.roomConnection = { connectionId: 'its-own-connection' };
   await writeFile(
     join(root, 'assignments.jsonl'),
     JSON.stringify({ sequence: 1, roomId: 'room', messageId: 'first', config: saved }) +
@@ -510,15 +506,12 @@ it('starts a session saved before the controller over the one connection the age
   const abort = new AbortController();
   const run = runSharedWatcher(root, config, abort.signal, supervision, new WatcherControl());
   try {
-    await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
   } finally {
     abort.abort();
     await run;
   }
-
-  const [launched] = vi.mocked(ensureSharedProcess).mock.calls[0]!;
-  expect(launched.config.session.sessionId).toBe(saved.session.sessionId);
-  expect(launched.config.roomConnection).toEqual(config.roomConnection);
 });
 
 it('leaves an event queued behind earlier work unstarted once spawning is turned off', async () => {
@@ -925,38 +918,6 @@ it('still owes an event its session never acknowledged', async () => {
   expect(journal.cursor).toBe(1);
 });
 
-it('leaves the rest of a restore unstarted once spawning is turned off midway', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restore-'));
-  roots.push(root);
-  paths.root = root;
-  const config = await spawning(root);
-  const assignments = await SharedWatchAssignments.open(root);
-  const first = await assignments.assign(config, { sequence: 1, roomId: 'room', messageId: 'a' });
-  await assignments.assign(config, { sequence: 2, roomId: 'other', messageId: 'b' });
-  const started: string[] = [];
-  const hosts = sessionHosts();
-  // The restore starts its sessions one at a time, so the setting can change
-  // while it is part way through and the loop itself never sees it.
-  vi.mocked(ensureSharedProcess).mockImplementation(
-    async ({ root: sessionRoot, config: launched }) => {
-      started.push(launched.session.sessionId);
-      if (started.length === 1) await stopSpawning(root);
-      return hosts.start(sessionRoot);
-    }
-  );
-
-  const abort = new AbortController();
-  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
-  try {
-    await eventually(() => started.length >= 1);
-  } finally {
-    abort.abort();
-    await run;
-  }
-
-  expect(started).toEqual([first.session.sessionId]);
-});
-
 it('restarts only the live sessions of this agent left on a superseded build', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-superseded-'));
   roots.push(root);
@@ -988,21 +949,11 @@ it('restarts only the live sessions of this agent left on a superseded build', a
     stop: vi.fn(),
     links: null,
   };
-  await replaceSupersededSessions(
-    await supersededSessions(agentId, newer),
-    'agent-controller',
-    newer
-  );
+  await stopSupersededSessions(await supersededSessions(agentId, newer), newer);
 
-  expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
-    superseded,
-  ]);
-  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].restart).toBe(false);
-  // Restarted from this build, so it no longer opens the connection its saved
-  // config names: binding to that would name something that never returns.
-  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].config.roomConnection).toEqual({
-    connectionId: 'agent-controller',
-  });
+  // Stopped, and left to start under this build when it is next needed.
+  expect(vi.mocked(newer.stop).mock.calls.map(([root]) => root)).toEqual([superseded]);
+  expect(ensureSharedProcess).not.toHaveBeenCalled();
 });
 
 // The sweep reads every session on the machine and only then asks whether each
@@ -1040,13 +991,11 @@ it('steps over a neighbour whose saved config no longer parses', async () => {
 
   const newer = { build: '/host/shared-host-new.mjs', start: vi.fn(), stop: vi.fn(), links: null };
   await expect(
-    replaceSupersededSessions(await supersededSessions(agentId, newer), 'agent-controller', newer)
+    stopSupersededSessions(await supersededSessions(agentId, newer), newer)
   ).resolves.toBeUndefined();
 
   // This agent's own session is still picked up, which is the whole point.
-  expect(vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].root)).toEqual([
-    join(root, 'mine'),
-  ]);
+  expect(newer.stop.mock.calls.map(([stopped]) => stopped)).toEqual([join(root, 'mine')]);
   // Skipped, but never in silence.
   expect(warn.mock.calls.map(String).join('\n')).toContain('stale');
   warn.mockRestore();

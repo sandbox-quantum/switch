@@ -6,7 +6,6 @@ import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomE
 import {
   forgetRoomConnections,
   getPersistedRoomConnection,
-  listPersistedRoomSessionIds,
   persistRoomConnection,
 } from './session-room-store';
 
@@ -204,16 +203,6 @@ class SwitchRoomService implements IDisposable {
       roomId,
     });
     await forgetRoomConnections([sessionId]);
-  }
-
-  /** Session ids that had a live room connection before the last shutdown. */
-  async listPersistedSessionIds(): Promise<string[]> {
-    return listPersistedRoomSessionIds();
-  }
-
-  /** Forget persisted connections for sessions that can no longer be restored. */
-  async prunePersisted(sessionIds: string[]): Promise<void> {
-    await forgetRoomConnections(sessionIds);
   }
 
   /** Drop a session's connection (on room switch-away or session exit). */
