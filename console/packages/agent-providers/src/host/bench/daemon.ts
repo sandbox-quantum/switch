@@ -2,16 +2,16 @@
  * The benchmark's own shared-host entrypoint.
  *
  * It is `shared-daemon.ts` with one substitution: the provider adapter. Every
- * other path — the watcher, the supervisor, the detached process group, the
- * delivery loop, the lease and the room inbox — is the shipped code, imported
- * rather than copied, so what the benchmark measures is the topology the
- * application runs.
+ * other path — the watcher and its supervisor, the session hosts it parents
+ * over IPC, their MCP servers, the room inbox and the activity reports — is
+ * the shipped code, imported rather than copied, so what the benchmark
+ * measures is the topology the application runs.
  *
  * The substitution cannot be made in the shipped daemon: `adapterFor` maps a
  * provider name onto one of five real adapters and has no seam for a sixth, so
  * a benchmark that went through it would be measuring a coding model's
- * response time. `runSharedHost` and `detachedSupervision` both take what they
- * need as parameters, which is why this file is small.
+ * response time. `hostSessionProcess` and the supervisions take what they need
+ * as parameters, which is why this file is small.
  *
  * It ships nowhere. It is not an entry in `tsdown.config.ts`, is not exported
  * from the package, and is bundled only by the benchmark that runs it.
@@ -97,10 +97,20 @@ async function main(): Promise<void> {
     };
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
-    await Promise.all([
-      runSharedWatcher(root, config, stop.signal, supervision, control),
-      serveControl(resolve(root), links, ensure, control, stop.signal),
-    ]);
+    // A watcher that stops (disabled, stood down after a takeover, or
+    // signalled) takes the process with it: the control port and every
+    // session host go too, so the supervisor sees a clean exit and does not
+    // start it again.
+    try {
+      await Promise.all([
+        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+          stop.abort()
+        ),
+        serveControl(resolve(root), links, ensure, control, stop.signal),
+      ]);
+    } finally {
+      await supervision.close();
+    }
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,

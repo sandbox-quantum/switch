@@ -85,17 +85,31 @@ export function detachedSupervision(entrypoint: string): Supervision {
 
 /**
  * Supervises session hosts from inside the calling process, so each host is
- * its child: it talks to it over IPC through `links`, and the hosts end when
- * this process does. What the agent's sidecar uses for the sessions it runs,
- * as Console does for local ones.
+ * its child: it talks to it over IPC through `links`. What the agent's sidecar
+ * uses for the sessions it runs, as Console does for local ones.
+ *
+ * A supervisor restarts a host that exits on a signal, and each one keeps the
+ * process alive while it runs, so `close` is what ends them: it stops every
+ * host, waits for their supervisors to finish, and refuses any later start.
  */
-export function inProcessSupervision(entrypoint: string, links: SessionLinks): Supervision {
+export function inProcessSupervision(
+  entrypoint: string,
+  links: SessionLinks
+): Supervision & { close: () => Promise<void> } {
   const running = new Map<string, { stop: AbortController; done: Promise<void> }>();
+  let closed = false;
   return {
     build: entrypoint,
     links,
+    close: async () => {
+      closed = true;
+      const entries = [...running.values()];
+      for (const entry of entries) entry.stop.abort();
+      await Promise.all(entries.map((entry) => entry.done));
+    },
     start: async ({ root, configPath, watcher }) => {
       if (watcher) throw new Error('A watcher is not supervised in-process by another watcher.');
+      if (closed) throw new Error('This process is shutting down; it starts no more sessions.');
       if (running.has(root)) return;
       const stop = new AbortController();
       const done = superviseSharedHost({

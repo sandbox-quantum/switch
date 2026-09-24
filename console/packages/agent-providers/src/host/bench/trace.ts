@@ -3,6 +3,21 @@ import { appendFileSync } from 'node:fs';
 /** The host handed a room message's command to its provider adapter. */
 export const PROVIDER_DISPATCH = 'provider_dispatch';
 
+/** The session's `post_message` through its own MCP server came back as posted. */
+export const REPLY_POSTED = 'reply_posted';
+
+/** The turn gave up on its reply; the detail says what it was told. */
+export const REPLY_FAILED = 'reply_failed';
+
+/** The provider opened an approval request and is waiting on it. */
+export const APPROVAL_REQUESTED = 'approval_requested';
+
+/** The host handed the provider a person's answer to its request. */
+export const APPROVAL_APPLIED = 'approval_applied';
+
+/** The session's `connect_to_room` came back; the detail carries its result. */
+export const ROOM_CONNECTED = 'room_connected';
+
 /** Names the file every process in one benchmark run appends its trace to. */
 const TRACE_VARIABLE = 'SWITCH_BENCH_TRACE';
 

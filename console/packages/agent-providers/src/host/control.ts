@@ -74,7 +74,10 @@ export async function serveControl(
   signal: AbortSignal
 ): Promise<void> {
   const token = randomBytes(32).toString('hex');
+  const sockets = new Set<Socket>();
   const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
     let authenticated = false;
     const subscriptions = new Map<string, () => void>();
     const send = (message: unknown) => {
@@ -156,7 +159,10 @@ export async function serveControl(
     });
   } finally {
     await rm(path, { force: true });
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Closing waits for every connection to end, and Console keeps its open.
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    for (const socket of sockets) socket.destroy();
+    await closed;
   }
 }
 

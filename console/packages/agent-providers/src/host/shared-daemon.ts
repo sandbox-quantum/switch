@@ -134,10 +134,20 @@ async function main(): Promise<void> {
     };
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
-    await Promise.all([
-      runSharedWatcher(root, config, stop.signal, supervision, control),
-      serveControl(resolve(root), links, ensure, control, stop.signal),
-    ]);
+    // A watcher that stops (disabled, stood down after a takeover, or
+    // signalled) takes the process with it: the control port and every
+    // session host go too, so the supervisor sees a clean exit and does not
+    // start it again.
+    try {
+      await Promise.all([
+        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+          stop.abort()
+        ),
+        serveControl(resolve(root), links, ensure, control, stop.signal),
+      ]);
+    } finally {
+      await supervision.close();
+    }
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,

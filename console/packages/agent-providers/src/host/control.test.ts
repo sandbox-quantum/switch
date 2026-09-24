@@ -140,3 +140,13 @@ it('moves a room to a session through the watcher, and says why when it cannot',
   stop.abort();
   await serving;
 });
+
+it('stops serving while Console still holds its connection open', async () => {
+  const { base, stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+  stop.abort();
+  await serving;
+  await expect(readFile(join(base, CONTROL_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(console.request('session', { type: 'snapshot' })).rejects.toThrow();
+});

@@ -8,7 +8,8 @@ registry had forgotten would look perfect from the inside.
 
 `ps` and `lsof` rather than psutil, so the benchmark adds no dependency to a
 service that does not need one at runtime. The cost is POSIX-only and a CPU
-figure that is cumulative rather than sampled — which is the better measure
+figure that is cumulative rather than sampled (read from `/proc` where there is
+one, since `ps` reports whole seconds) — which is the better measure
 here anyway: total CPU seconds consumed while serving a fixed workload is
 comparable between revisions, where an instantaneous percentage taken at an
 arbitrary moment is not.
@@ -25,11 +26,13 @@ being harder to observe, which is precisely the comparison this exists to make.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,13 +118,29 @@ def sample_processes(pids: Iterable[int]) -> dict[int, ProcessSample]:
         if len(fields) < 4:
             continue
         pid = int(fields[0])
+        precise = _proc_cpu_seconds(pid)
         samples[pid] = ProcessSample(
             pid=pid,
             rss_kib=int(fields[1]),
-            cpu_seconds=_cpu_seconds(fields[2]),
+            cpu_seconds=_cpu_seconds(fields[2]) if precise is None else precise,
             command=fields[3],
         )
     return samples
+
+
+def _proc_cpu_seconds(pid: int) -> float | None:
+    """User plus system CPU from `/proc/<pid>/stat`, in clock ticks' resolution.
+
+    None where there is no `/proc` or the process has gone, and the whole
+    seconds `ps` reports are used instead.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return None
+    # The command name is parenthesised and may itself contain spaces.
+    fields = stat.rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
 
 
 def descendants(root_pid: int) -> list[int]:

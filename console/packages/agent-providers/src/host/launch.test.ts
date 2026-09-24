@@ -3,8 +3,9 @@ import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
-import { detachedSupervision, ensureSharedProcess } from './launch';
+import { afterEach, expect, it, vi } from 'vitest';
+import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { SessionLinks } from './session-channel';
 import type { SharedHostConfig } from './shared-config';
 
 const roots: string[] = [];
@@ -202,3 +203,24 @@ it.skipIf(process.platform === 'win32')(
     }
   }
 );
+
+it('stops the hosts it supervises in-process when closed, and starts no more', async () => {
+  const { root, entrypoint } = await fixture();
+  await writeFile(
+    entrypoint,
+    `require('node:fs').writeFileSync(process.argv[2] + '/pid', String(process.pid));
+     setInterval(() => {}, 1000);`
+  );
+  const supervision = inProcessSupervision(entrypoint, new SessionLinks());
+  await supervision.start({ root, configPath: join(root, 'config.json'), watcher: false });
+  const pid = Number(
+    await vi.waitFor(async () => await readFile(join(root, 'pid'), 'utf8'), { timeout: 10000 })
+  );
+
+  await supervision.close();
+
+  expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+  await expect(
+    supervision.start({ root, configPath: join(root, 'config.json'), watcher: false })
+  ).rejects.toThrow('shutting down');
+});

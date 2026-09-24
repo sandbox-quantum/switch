@@ -236,8 +236,14 @@ Compatibility with deployed Consoles is waived (owner's call).
 
 ### What is left
 
-- End-to-end (`just bench`): the last run before the cleanup had 2 failures,
-  competing controllers and two sessions taking one room. Rerun and fix.
+- End-to-end (`just bench`) drives the current flow: the bench provider
+  answers every room message with `post_message` through its session host's
+  MCP server, and the harness scores dispatch, the reply (and the room it
+  landed in) and the turn's activity row. Scenarios: scaling, idle, concurrent,
+  an approval relayed, lost host, lost watcher, controller restart, Core
+  restart, competing controllers, an upgrade started over the running
+  controller, two sessions taking one room, and parking. The upgrade from the
+  per-session-connection topology was dropped with that compatibility.
 - Known gaps: a session's role is freed only when the controller connection
   drops or the role is released; after a Core restart a session must
   `connect_to_room` again before room-scoped tool calls work; Console

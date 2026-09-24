@@ -1,30 +1,38 @@
-"""Correlated trace records for the connection-model baseline benchmark.
+"""Correlated trace records for the end-to-end benchmark.
 
-The comparison this supports is workload-to-workload across two revisions, not
-stage-to-stage: the baseline has no controller and no controller-to-worker
-handoff, so only points that exist on *both* revisions may be instrumented.
-Those points are:
+Every point is keyed on one room message: the room it was posted in and the id
+Switch minted for it. The points follow that message from the agent's stream
+to the session answering it:
 
 ``sse_push``
     Switch wrote the room event onto the agent's stream. Server-side.
-``admission_received``
-    The host's ``room-message`` admission request reached Switch. Server-side.
-``core_commit``
-    The database transaction for that admission committed. Server-side.
-``admission_responded``
-    Switch finished writing the admission response. Server-side.
 ``provider_dispatch``
-    The host handed the resulting command to its provider adapter. Host-side,
-    reported by the benchmark's fake adapter.
+    The session host handed the resulting turn to its provider. Host-side,
+    reported by the benchmark's scripted provider.
+``reply_posted`` / ``reply_failed``
+    The provider's ``post_message`` through its session's own MCP server came
+    back posted, or the turn gave up on it. Host-side.
+``reply_received`` / ``reply_committed`` / ``reply_accepted``
+    That ``post_message`` reached Switch (relayed by the watcher), its
+    transaction committed, and Switch answered it 200. Server-side.
+``turn_reported``
+    The session host reported the turn finished as an activity row, which is
+    what messaging platforms draw. Server-side.
+``approval_requested`` / ``approval_applied``
+    The provider asked a person before answering, and was handed the answer.
+    Host-side. ``approval_opened`` is Switch recording the request.
+``room_connected``
+    The provider's ``connect_to_room`` came back; its detail is the result.
+    Host-side.
 
-None of those is a production code change: the four server points are observed
-by wrapping the ASGI app and listening on the engine the harness itself built,
-and the host point is emitted by benchmark code.
+None of those is a production code change: the server points are observed by
+wrapping the ASGI app and listening on the engine the harness itself built,
+and the host points are emitted by benchmark code.
 
 **Clocks.** Every record carries both a wall reading and a monotonic one.
 Within one process, use monotonic — it cannot step. Across the process
-boundary (``core_commit`` → ``provider_dispatch`` spans Python and Node) the
-two monotonic scales share no origin that is safe to assume, so those spans are
+boundary (``sse_push`` → ``provider_dispatch`` spans Python and Node) the two
+monotonic scales share no origin that is safe to assume, so those spans are
 computed from the wall clock, and a drift diagnostic is reported beside them
 rather than the caveat being left implicit; see `LatencyReport.cross_process`
 and `ClockResidual`, which says what that diagnostic does and does not cover.
@@ -40,25 +48,48 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 SSE_PUSH = "sse_push"
-ADMISSION_RECEIVED = "admission_received"
-CORE_COMMIT = "core_commit"
-ADMISSION_RESPONDED = "admission_responded"
 PROVIDER_DISPATCH = "provider_dispatch"
+REPLY_POSTED = "reply_posted"
+REPLY_FAILED = "reply_failed"
+APPROVAL_REQUESTED = "approval_requested"
+APPROVAL_APPLIED = "approval_applied"
+ROOM_CONNECTED = "room_connected"
+REPLY_RECEIVED = "reply_received"
+REPLY_COMMITTED = "reply_committed"
+REPLY_ACCEPTED = "reply_accepted"
+TURN_REPORTED = "turn_reported"
+APPROVAL_OPENED = "approval_opened"
 
 #: Points recorded inside the Switch server process.
 SERVER_POINTS = frozenset(
-    {SSE_PUSH, ADMISSION_RECEIVED, CORE_COMMIT, ADMISSION_RESPONDED}
+    {
+        SSE_PUSH,
+        REPLY_RECEIVED,
+        REPLY_COMMITTED,
+        REPLY_ACCEPTED,
+        TURN_REPORTED,
+        APPROVAL_OPENED,
+    }
 )
 #: Points recorded inside a host (Node) process.
-HOST_POINTS = frozenset({PROVIDER_DISPATCH})
+HOST_POINTS = frozenset(
+    {
+        PROVIDER_DISPATCH,
+        REPLY_POSTED,
+        REPLY_FAILED,
+        APPROVAL_REQUESTED,
+        APPROVAL_APPLIED,
+        ROOM_CONNECTED,
+    }
+)
 
 
 def correlation_for(room_id: str, message_id: str) -> str:
     """The identity a room event keeps from stream push to provider dispatch.
 
     Room id and message id are the only pair carried unchanged across every
-    point: the SSE payload has both, the admission request body has both, and
-    the command the provider is handed is derived from them. A sequence number
+    point: the SSE payload has both, the room prompt the provider is handed
+    names both, and the reply and turn row the session sends back carry both. A sequence number
     would not do — it is reset by a server restart, which is one of the
     recovery cases the harness exercises.
     """
@@ -183,9 +214,9 @@ class TraceCollector:
     def by_correlation(self) -> dict[str, dict[str, TraceRecord]]:
         """First record of each point, per correlation.
 
-        First, not last: a retried admission is a second `admission_received`
-        for the same message, and the latency being measured is the one the
-        room actually waited for.
+        First, not last: a retried reply is a second `reply_received` for the
+        same message, and the latency being measured is the one the room
+        actually waited for.
 
         Keeping only the first is right for latency and wrong as a record of
         what happened, so it is not the only view. Anything that needs to know a
@@ -426,13 +457,13 @@ def format_table(reports: Iterable[LatencyReport]) -> str:
     rows = list(reports)
     if not rows:
         return "(no latency measures)"
-    header = f"{'measure':<34} {'n':>6} {'p50':>9} {'p95':>9} {'p99':>9} {'max':>9}"
+    header = f"{'measure':<46} {'n':>6} {'p50':>9} {'p95':>9} {'p99':>9} {'max':>9}"
     lines = [header, "-" * len(header)]
     for report in rows:
         flag = "" if report.complete else f"  ({report.samples}/{report.expected})"
         cross = " *" if report.cross_process else ""
         lines.append(
-            f"{report.name + cross:<34} {report.samples:>6} "
+            f"{report.name + cross:<46} {report.samples:>6} "
             f"{report.p50:>9.2f} {report.p95:>9.2f} {report.p99:>9.2f} "
             f"{report.maximum:>9.2f}{flag}"
         )

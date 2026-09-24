@@ -20,11 +20,12 @@ import pytest
 from tests.benchmarks import metrics
 from tests.benchmarks.metrics import ProcessSample, ResourceReport, ResourceSampler
 from tests.benchmarks.trace import (
-    ADMISSION_RECEIVED,
-    ADMISSION_RESPONDED,
-    CORE_COMMIT,
     PROVIDER_DISPATCH,
+    REPLY_ACCEPTED,
+    REPLY_COMMITTED,
+    REPLY_RECEIVED,
     SSE_PUSH,
+    TURN_REPORTED,
     TraceCollector,
 )
 from tests.benchmarks.workload import Posted, render, score
@@ -72,10 +73,24 @@ def test_a_point_seen_once_everywhere_reports_no_repeats() -> None:
 
 
 def _served(collector: TraceCollector, correlation: str, *, host: str) -> None:
-    """Record every point of one message's journey, server side then host."""
-    for point in (SSE_PUSH, ADMISSION_RECEIVED, CORE_COMMIT, ADMISSION_RESPONDED):
-        collector.record(point, correlation)
+    """Record every point of one message's journey, from the stream to the reply."""
+    collector.record(SSE_PUSH, correlation)
     collector.record(PROVIDER_DISPATCH, correlation, process=host)
+    for point in (REPLY_RECEIVED, REPLY_COMMITTED, REPLY_ACCEPTED, TURN_REPORTED):
+        collector.record(point, correlation)
+
+
+def _resources(label: str) -> ResourceReport:
+    return ResourceReport(
+        label=label,
+        wall_seconds=1.0,
+        samples=2,
+        peak_process_count=3,
+        peak_rss_kib=1024,
+        peak_connections=2,
+        peak_streams=2,
+        cpu_seconds=0.5,
+    )
 
 
 def test_scoring_carries_a_duplicate_through_to_the_result_and_the_report() -> None:
@@ -97,19 +112,13 @@ def test_scoring_carries_a_duplicate_through_to_the_result_and_the_report() -> N
         rooms=2,
         collector=collector,
         posted=Posted(
-            markers={"m-a": "room/a", "m-b": "room/b"}, cold=frozenset({"room/a"})
+            markers={"m-a": "room/a", "m-b": "room/b"},
+            cold=frozenset({"room/a"}),
+            cut=frozenset(),
         ),
         undelivered=frozenset(),
-        resources=ResourceReport(
-            label="duplication",
-            wall_seconds=1.0,
-            samples=2,
-            peak_process_count=3,
-            peak_rss_kib=1024,
-            peak_connections=2,
-            peak_streams=2,
-            cpu_seconds=0.5,
-        ),
+        replies={"room/a": ["room"], "room/b": ["room"]},
+        resources=_resources("duplication"),
     )
 
     assert result.duplicated == (("room/a", 2),)
@@ -139,19 +148,13 @@ def test_scoring_still_sees_a_duplicate_of_a_message_that_was_never_served() -> 
         rooms=2,
         collector=collector,
         posted=Posted(
-            markers={"m-a": "room/a", "m-b": "room/b"}, cold=frozenset({"room/a"})
+            markers={"m-a": "room/a", "m-b": "room/b"},
+            cold=frozenset({"room/a"}),
+            cut=frozenset(),
         ),
         undelivered=frozenset({"room/b"}),
-        resources=ResourceReport(
-            label="lost twice",
-            wall_seconds=1.0,
-            samples=2,
-            peak_process_count=3,
-            peak_rss_kib=1024,
-            peak_connections=2,
-            peak_streams=2,
-            cpu_seconds=0.5,
-        ),
+        replies={"room/a": ["room"]},
+        resources=_resources("lost twice"),
     )
 
     assert result.duplicated == (("room/b", 2),)
@@ -172,23 +175,95 @@ def test_scoring_reports_no_duplicates_when_every_message_was_served_once() -> N
         rooms=2,
         collector=collector,
         posted=Posted(
-            markers={"m-a": "room/a", "m-b": "room/b"}, cold=frozenset({"room/a"})
+            markers={"m-a": "room/a", "m-b": "room/b"},
+            cold=frozenset({"room/a"}),
+            cut=frozenset(),
         ),
         undelivered=frozenset(),
-        resources=ResourceReport(
-            label="clean",
-            wall_seconds=1.0,
-            samples=2,
-            peak_process_count=3,
-            peak_rss_kib=1024,
-            peak_connections=2,
-            peak_streams=2,
-            cpu_seconds=0.5,
-        ),
+        replies={"room/a": ["room"], "room/b": ["room"]},
+        resources=_resources("clean"),
     )
 
     assert result.duplicated == ()
+    assert result.unanswered == ()
+    assert result.replied_twice == ()
+    assert result.misplaced == ()
     assert "SERVED TWICE" not in render([result])
+
+
+def test_scoring_reports_a_reply_that_was_missing_repeated_or_misplaced() -> None:
+    """A dispatch is not an answer: the reply is scored on its own.
+
+    A session that ran the turn and never got its reply to the room, or got it
+    there twice, or into another room, loses nothing a dispatch count can see.
+    """
+    collector = TraceCollector()
+    _served(collector, "room/a", host="host:1")
+    collector.record(REPLY_ACCEPTED, "room/a")
+    _served(collector, "room/b", host="host:1")
+    collector.record(SSE_PUSH, "room/c")
+    collector.record(PROVIDER_DISPATCH, "room/c", process="host:1")
+
+    result = score(
+        label="replies",
+        rooms=1,
+        collector=collector,
+        posted=Posted(
+            markers={"m-a": "room/a", "m-b": "room/b", "m-c": "room/c"},
+            cold=frozenset({"room/a"}),
+            cut=frozenset(),
+        ),
+        undelivered=frozenset(),
+        replies={"room/a": ["room", "room"], "room/b": ["elsewhere"]},
+        resources=_resources("replies"),
+    )
+
+    assert result.unanswered == ("room/c",)
+    assert result.replied_twice == (("room/a", 2),)
+    assert result.misplaced == (("room/b", ("elsewhere",)),)
+    rendered = render([result])
+    assert "UNANSWERED: room/c" in rendered
+    assert "REPLIED 2x: room/a" in rendered
+    assert "REPLY IN THE WRONG ROOM: room/b landed in elsewhere" in rendered
+
+
+def test_a_message_cut_by_a_fault_is_not_owed_an_answer() -> None:
+    """A turn killed with its host is dispatched once but need not be answered.
+
+    It still counts toward the dispatch span, so the fault cannot hide a
+    message that was never handed to a provider at all.
+    """
+    collector = TraceCollector()
+    _served(collector, "room/a", host="host:1")
+    collector.record(SSE_PUSH, "room/b")
+    collector.record(PROVIDER_DISPATCH, "room/b", process="host:1")
+
+    result = score(
+        label="cut",
+        rooms=1,
+        collector=collector,
+        posted=Posted(
+            markers={"m-a": "room/a", "m-b": "room/b"},
+            cold=frozenset({"room/a"}),
+            cut=frozenset({"room/b"}),
+        ),
+        undelivered=frozenset(),
+        replies={"room/a": ["room"]},
+        resources=_resources("cut"),
+    )
+
+    assert result.unanswered == ()
+    assert result.unmeasured == ()
+    dispatch = next(
+        report
+        for report in result.latencies
+        if report.name == "sse push → provider dispatch [warm]"
+    )
+    assert dispatch.samples == 1
+    reply_spans = [
+        report for report in result.latencies if "reply accepted" in report.name
+    ]
+    assert [report.samples for report in reply_spans] == [1]
 
 
 def _fake_slow_os(

@@ -3,8 +3,9 @@
 The point of this module is what it does *not* do. It calls
 `create_agent_bridge_app` with the same arguments `switch_core.main` passes, and
 serves the app it gets back over uvicorn on a loopback port. Nothing is
-reimplemented, stubbed or monkeypatched: routing, authentication, the session
-authority, the event buffer and the SSE stream are the shipped ones, so a
+reimplemented, stubbed or monkeypatched: routing, authentication, the
+connection registry and its placements, the event buffer, the SSE stream, the
+session activity routes and the approval outcomes are the shipped ones, so a
 measurement taken here is a measurement of the server.
 
 Two things are added from the outside, both wrapping objects this module owns
@@ -25,10 +26,10 @@ from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
-import httpx
 import uvicorn
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
@@ -47,8 +48,12 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    ApprovalRequest,
+    Message,
+    SessionActivityItem,
     User,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.main import (
     _connection_sweep_loop,
@@ -62,15 +67,16 @@ from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.service import SessionActivityService, SwitchUser
+from switch_core.sessions.contract import ApprovalResult
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from tests.benchmarks.instrumentation import (
     RequestCounter,
-    StallGate,
     TracingMiddleware,
     count_statements,
+    reply_correlation,
     trace_commits,
 )
 from tests.benchmarks.trace import TraceCollector
@@ -92,21 +98,6 @@ BENCH_PROFILE = IntegrationProfile(
     event_reporting=[],
     task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SessionSelector:
-    """What a caller sends to act as one session of an agent: the session, and
-    the agent connection it calls over."""
-
-    session_id: str
-    connection_id: str
-
-    def headers(self) -> dict[str, str]:
-        return {
-            "X-Switch-Session-Id": self.session_id,
-            "X-Switch-Connection-Id": self.connection_id,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,11 +131,11 @@ class BenchServer:
         event_buffer: EventBuffer,
         connections: ConnectionRegistry,
         collector: TraceCollector,
-        stalls: StallGate,
         requests: RequestCounter,
         statements: Counter[str],
         owner_id: str,
         session_factory: async_sessionmaker[AsyncSession],
+        activity: SessionActivityService,
         agents: tuple[BenchAgent, ...],
     ) -> None:
         self.base_url = base_url
@@ -155,11 +146,11 @@ class BenchServer:
         self.event_buffer = event_buffer
         self.connections = connections
         self.collector = collector
-        self.stalls = stalls
         self.requests = requests
         self.statements = statements
         self.owner_id = owner_id
         self._session_factory = session_factory
+        self._activity = activity
         self._agents: list[BenchAgent] = list(agents)
 
     @property
@@ -180,28 +171,73 @@ class BenchServer:
             for room_id in room_ids
         }
 
-    async def connect_session_to_room(
-        self, *, agent: BenchAgent, selector: SessionSelector, room_id: str
-    ) -> dict[str, Any]:
-        """Call `connect_to_room` over the agent door, as one named session.
+    async def replies(self) -> dict[str, list[str]]:
+        """Every benchmark reply stored, by the message it answers: the rooms it landed in.
 
-        The same request the agent runtime makes when a session's own agent
-        asks to work in a room: the shipped operation, over the socket, with
-        the session selector the runtime sends. The benchmark provider never
-        calls a tool, so this is the only way a scenario reaches the door a
-        room move actually comes through.
+        Read from the messages table rather than from what the session was
+        told, so a reply Switch put in the wrong room shows as that room.
         """
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=30.0) as client:
-            response = await client.post(
-                f"/agents/{agent.agent_id}/ops/connect_to_room",
-                json={"room_id": room_id, "include_general_instructions": False},
-                headers={
-                    "Authorization": f"Bearer {agent.api_key}",
-                    **selector.headers(),
-                },
+        async with tenant_session(self._session_factory, TENANT_ZERO_ID) as db:
+            rows = (
+                await db.execute(
+                    select(Message.room_id, Message.body).where(
+                        Message.body.like("switch-bench-reply:%")
+                    )
+                )
+            ).all()
+        found: dict[str, list[str]] = {}
+        for room_id, body in rows:
+            correlation = reply_correlation(body or "")
+            if correlation is not None:
+                found.setdefault(correlation, []).append(room_id)
+        return found
+
+    async def activity_rows(self, agent_id: str) -> list[SessionActivityItem]:
+        """The turn-step rows this agent's session hosts reported."""
+        async with tenant_session(self._session_factory, TENANT_ZERO_ID) as db:
+            return list(
+                (
+                    await db.execute(
+                        select(SessionActivityItem).where(
+                            SessionActivityItem.agent_id == agent_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
             )
-        response.raise_for_status()
-        return cast("dict[str, Any]", response.json()["result"])
+
+    async def approval_requests(self, agent_id: str) -> list[ApprovalRequest]:
+        """The requests this agent's sessions opened, as Switch holds them now."""
+        async with tenant_session(self._session_factory, TENANT_ZERO_ID) as db:
+            return list(
+                (
+                    await db.execute(
+                        select(ApprovalRequest).where(
+                            ApprovalRequest.agent_id == agent_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    async def answer_approval(self, request: ApprovalRequest, decision: str) -> None:
+        """Answer a request as the agent's owner, through the shipped service.
+
+        The option is chosen by the decision it carries, which is what a
+        person pressing a button on a card chooses.
+        """
+        option = next(
+            option for option in request.options if option["decision"] == decision
+        )
+        await self._activity.answer_approval(
+            request.agent_id,
+            request.session_id,
+            request.request_id,
+            answer=ApprovalResult(kind="approval", option_id=option["id"]),
+            answerer=SwitchUser(self.owner_id),
+        )
 
     async def register_agent(self, name: str) -> BenchAgent:
         result = await self.protocol.register_agent(
@@ -276,9 +312,9 @@ class BenchCore:
     """A bench server that can be stopped and started again on its own database.
 
     Restarting is the whole point of it. The agent bridge holds the replay
-    buffer and the connection registry in memory, so a Core that comes back is
-    one whose buffer is gone while every row it wrote is still there — the state
-    a delivery reserved before the restart has to survive on.
+    buffer, the connection registry and the session placements in memory, so a
+    Core that comes back has lost all three while every row it wrote is still
+    there; what the watcher holds is what it has to come back to.
 
     The port is kept across the restart. Hosts that outlived the Core were
     pointed at an address and go on retrying it, as they would against a
@@ -412,6 +448,9 @@ async def _serve(
 
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     await message_listener.start()
+    activity_listener = SessionActivityListener(lambda: create_unpooled_engine(config))
+    await activity_listener.start()
+    activity = SessionActivityService(session_factory)
     invites = InviteBus()
     ephemeral = EphemeralBus()
 
@@ -496,11 +535,7 @@ async def _serve(
         bridge_store=session_env.bridge_store,
         session_factory=session_factory,
         config=config,
-        # Never started: the benchmark measures room delivery, not approvals.
-        approval_outcomes=ApprovalOutcomes(
-            SessionActivityListener(lambda: session_env.engine),
-            SessionActivityService(session_factory),
-        ),
+        approval_outcomes=ApprovalOutcomes(activity_listener, activity),
         connections=connections,
     )
 
@@ -513,8 +548,7 @@ async def _serve(
     sock.listen(2048)
     served_port = sock.getsockname()[1]
 
-    stalls = StallGate(app)
-    requests = RequestCounter(TracingMiddleware(stalls, collector))
+    requests = RequestCounter(TracingMiddleware(app, collector))
 
     server = _Server(
         uvicorn.Config(
@@ -555,11 +589,11 @@ async def _serve(
         event_buffer=event_buffer,
         connections=connections,
         collector=collector,
-        stalls=stalls,
         requests=requests,
         statements=statements,
         owner_id=owner_id,
         session_factory=session_factory,
+        activity=activity,
         agents=agents,
     )
     try:
@@ -573,6 +607,7 @@ async def _serve(
         detach_commits()
         detach_statements()
         await client_lifecycle.stop_all()
+        await activity_listener.stop()
         await message_listener.stop()
         await provisioning.close()
 

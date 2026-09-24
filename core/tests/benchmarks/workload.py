@@ -5,18 +5,22 @@ else — the server, the host topology, the instrumentation — is identical
 between them, so the difference between two workloads' figures is the
 difference between the loads.
 
-The two latency measures are kept apart deliberately, and must stay apart.
+Three latency measures are reported, and kept apart deliberately.
 
-`sse push → admission received`
-    The round trip a host makes to claim a room message.
-`core commit → provider dispatch`
-    What happens after that claim is durable, up to the provider being handed
-    the turn. Most of the delivery loop's own scheduling lives here.
+`sse push → provider dispatch`
+    Switch wrote the message to the agent's stream; the watcher routed it to
+    the session placed in the room, over its IPC pipe, and the session host
+    turned it into a turn for its provider.
+`provider dispatch → reply accepted`
+    The provider called `post_message` on its session's MCP server; the host
+    sent it up its pipe, and the watcher called Switch as that session.
+`sse push → turn reported`
+    The whole turn as a messaging platform sees it: from the message leaving
+    Switch to the host's activity row saying the turn finished.
 
-Reported as one number they would average out: an improvement to the round
-trip and an unchanged wait in the delivery loop would combine into a figure
-that looked like progress everywhere. They are different costs with different
-causes, and a revision can move one without touching the other.
+Reported as one number they would average out: an improvement to routing and
+an unchanged tool relay would combine into a figure that looked like progress
+everywhere. They are different costs with different causes.
 """
 
 from __future__ import annotations
@@ -32,7 +36,9 @@ from tests.benchmarks.metrics import ResourceReport, ResourceSampler
 from tests.benchmarks.server import BenchAgent, BenchCore, BenchServer
 from tests.benchmarks.trace import (
     PROVIDER_DISPATCH,
+    REPLY_ACCEPTED,
     SSE_PUSH,
+    TURN_REPORTED,
     ClockResidual,
     LatencyReport,
     TraceCollector,
@@ -145,10 +151,17 @@ def _sampler(
     )
 
 
-#: The spans reported for every workload, in the order they occur.
-#: The session's host builds its prompt from the event its controller routed,
-#: so nothing happens on the server between the push and the dispatch.
-SPANS = (("sse push → provider dispatch", SSE_PUSH, PROVIDER_DISPATCH),)
+#: The spans reported for every workload, in the order they occur, and whether
+#: each needs the turn to have been answered.
+SPANS = (
+    ("sse push → provider dispatch", SSE_PUSH, PROVIDER_DISPATCH, False),
+    ("provider dispatch → reply accepted", PROVIDER_DISPATCH, REPLY_ACCEPTED, True),
+    ("sse push → turn reported", SSE_PUSH, TURN_REPORTED, True),
+)
+
+#: The points that say a message was answered: its reply taken by Switch, and
+#: its turn reported finished.
+ANSWERED = (REPLY_ACCEPTED, TURN_REPORTED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +169,8 @@ class Posted:
     """The messages one workload sent, and which of them started a session.
 
     `cold` is the first message addressed into each room. That message waits
-    for a host process to be spawned, started and connected before anything can
-    claim it, so its latency is dominated by process startup — a cost paid once
+    for a session host to be spawned and its provider started before anything
+    can take it, so its latency is dominated by process startup — a cost paid once
     per session, not once per message. Pooled with the rest it would swamp
     them; dropped it would hide the cost of the topology's cold path, which at
     fifty sessions is most of what the topology does.
@@ -166,10 +179,38 @@ class Posted:
     cold round has been served. Posting a room's messages back to back would
     put every one of them behind the same process startup and report a warm
     figure indistinguishable from the cold one.
+
+    `cut` is the messages a fault was aimed at while their turn may have been
+    running: killed with the process serving them, they must still be
+    dispatched at most once, but nothing promises they were answered.
     """
 
     markers: dict[str, str]
     cold: frozenset[str]
+    cut: frozenset[str]
+
+
+async def answer_wait(
+    collector: TraceCollector, correlations: frozenset[str], timeout: float
+) -> frozenset[str]:
+    """Wait until each message has been answered; return those that were not.
+
+    The points are server-side, recorded on this loop, so this polls the
+    collector rather than a file.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    outstanding = set(correlations)
+    while True:
+        grouped = collector.subset(outstanding).by_correlation()
+        outstanding = {
+            correlation
+            for correlation in outstanding
+            if not all(point in grouped.get(correlation, {}) for point in ANSWERED)
+        }
+        if not outstanding or loop.time() >= deadline:
+            return frozenset(outstanding)
+        await asyncio.sleep(0.05)
 
 
 async def post_round(
@@ -218,9 +259,13 @@ def score(
     collector: TraceCollector,
     posted: Posted,
     undelivered: frozenset[str],
+    replies: dict[str, list[str]],
     resources: ResourceReport,
 ) -> WorkloadResult:
     """Turn one workload's traces into the figures that get reported.
+
+    `replies` is every stored benchmark reply by the message it answers, with
+    the rooms it landed in, as `BenchServer.replies` reads them.
 
     Latency is scored over what was delivered, and what was not is counted and
     reported beside it. Scoring the undelivered as missing span ends instead
@@ -239,15 +284,32 @@ def score(
     """
     posted_correlations = set(posted.markers.values())
     duplicated = collector.subset(posted_correlations).repeats(PROVIDER_DISPATCH)
+    replied_twice = collector.subset(posted_correlations).repeats(REPLY_ACCEPTED)
     correlations = posted_correlations - undelivered
     scoped = collector.subset(correlations)
-    populations = (
-        ("cold", posted.cold & correlations),
-        ("warm", correlations - posted.cold),
-    )
+    answerable = correlations - posted.cut
+    grouped = scoped.by_correlation()
+    unanswered = {
+        correlation
+        for correlation in answerable
+        if not all(point in grouped.get(correlation, {}) for point in ANSWERED)
+    }
+    # A reply in any room but the one it answers was posted where Switch had
+    # the session placed, and the watcher had it placed somewhere else.
+    misplaced = {
+        correlation: rooms
+        for correlation, rooms in replies.items()
+        if correlation in posted_correlations
+        and any(room != correlation.split("/", 1)[0] for room in rooms)
+    }
     latencies: list[LatencyReport] = []
     unmeasured: set[str] = set()
-    for name, start, end in SPANS:
+    for name, start, end, answered in SPANS:
+        chosen = answerable if answered else correlations
+        populations = (
+            ("cold", posted.cold & chosen),
+            ("warm", chosen - posted.cold),
+        )
         for suffix, members in populations:
             if not members:
                 continue
@@ -264,7 +326,12 @@ def score(
         rooms=rooms,
         messages=len(posted.markers),
         undelivered=tuple(sorted(undelivered)),
+        unanswered=tuple(sorted(unanswered)),
         duplicated=tuple(sorted(duplicated.items())),
+        replied_twice=tuple(sorted(replied_twice.items())),
+        misplaced=tuple(
+            sorted((key, tuple(rooms)) for key, rooms in misplaced.items())
+        ),
         resources=resources,
         latencies=tuple(latencies),
         residual=clock_residual(scoped),
@@ -280,10 +347,17 @@ class WorkloadResult:
     #: Correlations that never reached a provider, named rather than counted so
     #: a loss can be traced to the room and message it happened in.
     undelivered: tuple[str, ...]
+    #: Delivered, not cut by a fault, and still without an accepted reply or a
+    #: finished turn row.
+    unanswered: tuple[str, ...]
     #: Correlations dispatched to a provider more than once, with how many
     #: times. A message executed twice is a correctness failure that costs no
     #: latency and loses nothing, so it is reported on its own or not at all.
     duplicated: tuple[tuple[str, int], ...]
+    #: Correlations whose reply Switch accepted more than once.
+    replied_twice: tuple[tuple[str, int], ...]
+    #: Replies stored in a room other than the one they answer, with the rooms.
+    misplaced: tuple[tuple[str, tuple[str, ...]], ...]
     resources: ResourceReport
     latencies: tuple[LatencyReport, ...]
     residual: ClockResidual
@@ -327,10 +401,14 @@ async def run_workload(
             if round_index == 0:
                 cold = sent
             markers.update(sent)
-            undelivered |= await dispatch_wait(
-                watcher, sent, dispatch_timeout(len(sent))
+            lost = await dispatch_wait(watcher, sent, dispatch_timeout(len(sent)))
+            undelivered |= lost
+            await answer_wait(
+                collector,
+                frozenset(sent.values()) - lost,
+                dispatch_timeout(len(sent)),
             )
-    posted = Posted(markers=markers, cold=frozenset(cold.values()))
+    posted = Posted(markers=markers, cold=frozenset(cold.values()), cut=frozenset())
     collector.ingest_jsonl(watcher.trace_path, posted.markers)
     return score(
         label=label,
@@ -338,6 +416,7 @@ async def run_workload(
         collector=collector,
         posted=posted,
         undelivered=frozenset(undelivered),
+        replies=await bench.replies(),
         resources=sampler.last_report,
     )
 
@@ -356,6 +435,9 @@ def render(results: list[WorkloadResult]) -> str:
             f"rooms/sessions {result.rooms} · messages {result.messages} · "
             f"never delivered {len(result.undelivered)} · "
             f"delivered twice {len(result.duplicated)} · "
+            f"unanswered {len(result.unanswered)} · "
+            f"replied twice {len(result.replied_twice)} · "
+            f"replies in the wrong room {len(result.misplaced)} · "
             f"wall {resources.wall_seconds:.1f}s · samples {resources.samples}"
         )
         out.append(
@@ -393,6 +475,15 @@ def render(results: list[WorkloadResult]) -> str:
                 f"  served {count}x: {correlation}"
                 for correlation, count in result.duplicated
             )
+        out.extend(f"  UNANSWERED: {lost}" for lost in result.unanswered)
+        out.extend(
+            f"  REPLIED {count}x: {correlation}"
+            for correlation, count in result.replied_twice
+        )
+        out.extend(
+            f"  REPLY IN THE WRONG ROOM: {correlation} landed in {', '.join(rooms)}"
+            for correlation, rooms in result.misplaced
+        )
         if result.unmeasured:
             out.append(
                 f"UNMEASURED: {len(result.unmeasured)} correlations lacked a point; "

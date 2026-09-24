@@ -1,4 +1,4 @@
-"""Server-side observation points for the baseline benchmark.
+"""Server-side observation points for the end-to-end benchmark.
 
 Everything here wraps objects the harness itself owns — the ASGI app returned
 by the real application factory, and the engine the harness built. No module
@@ -8,23 +8,23 @@ benchmark run exercises the same server code a deployment runs.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tests.benchmarks.trace import (
-    ADMISSION_RECEIVED,
-    ADMISSION_RESPONDED,
-    CORE_COMMIT,
+    APPROVAL_OPENED,
+    REPLY_ACCEPTED,
+    REPLY_COMMITTED,
+    REPLY_RECEIVED,
     SSE_PUSH,
+    TURN_REPORTED,
     TraceCollector,
     correlation_for,
 )
@@ -33,17 +33,36 @@ Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
-_ROOM_MESSAGE = re.compile(r"^/sessions/(?P<session>[^/]+)/room-message$")
 _EVENT_STREAM = re.compile(r"^/agents/(?P<agent>[^/]+)/events$")
-_ROOM_RESERVATIONS = re.compile(r"^/sessions/(?P<session>[^/]+)/room-reservations$")
+_POST_MESSAGE = re.compile(r"^/agents/(?P<agent>[^/]+)/ops/post_message$")
+_ACTIVITY = re.compile(r"^/agent-sessions/(?P<session>[^/]+)/activity$")
+_APPROVALS = re.compile(r"^/agent-sessions/(?P<session>[^/]+)/approvals$")
 
-# The admission request in flight on this task, so an engine-level commit can
-# be attributed to the message that caused it. Set by the ASGI wrapper and read
-# by the commit listener; unset for every other request, which is how commits
-# from unrelated work stay out of the measurement.
+#: The reply the benchmark provider posts, as `bench/adapter.ts` writes it. The
+#: room and message are the ones its prompt named, so the reply can be matched
+#: to the message it answers; the room it lands in is read back separately.
+REPLY = re.compile(
+    r"switch-bench-reply:(?P<marker>\S+) room=(?P<room>\S+) message=(?P<message>\S+)"
+)
+
+#: Statuses a turn row ends on.
+_TURN_ENDED = frozenset({"completed", "interrupted", "error"})
+
+# The reply request in flight on this task, so an engine-level commit can be
+# attributed to the message it answers. Set by the ASGI wrapper and read by the
+# commit listener; unset for every other request, which is how commits from
+# unrelated work stay out of the measurement.
 _in_flight: ContextVar[str | None] = ContextVar(
     "benchmark_in_flight_correlation", default=None
 )
+
+
+def reply_correlation(text: str) -> str | None:
+    """The message a benchmark reply answers, or None for any other text."""
+    matched = REPLY.search(text)
+    if matched is None:
+        return None
+    return correlation_for(matched["room"], matched["message"])
 
 
 def _sse_correlations(chunk: bytes) -> list[str]:
@@ -51,9 +70,9 @@ def _sse_correlations(chunk: bytes) -> list[str]:
 
     A single ASGI body chunk may carry several frames, and most frames are not
     room messages at all — `connection_state`, `gap`, `evicted`,
-    `subscription_changed`, keepalive comments. The measured workload is
-    addressed room messages, so only `message` frames count; the others have no
-    message id to correlate on and are not what the latency figures describe.
+    `room_released`, keepalive comments. The measured workload is addressed
+    room messages, so only `message` frames count; the others have no message
+    id to correlate on and are not what the latency figures describe.
 
     `room_id` sits on the event, `message_id` inside its payload — the shape
     `AgentEvent` and `MessagePayload` define.
@@ -62,11 +81,11 @@ def _sse_correlations(chunk: bytes) -> list[str]:
     for block in chunk.split(b"\n\n"):
         if not block.strip() or block.lstrip().startswith(b":"):
             continue
-        event = None
+        name = None
         data: dict[str, Any] | None = None
         for line in block.split(b"\n"):
             if line.startswith(b"event: "):
-                event = line[len(b"event: ") :].decode()
+                name = line[len(b"event: ") :].decode()
             elif line.startswith(b"data: "):
                 try:
                     parsed = json.loads(line[len(b"data: ") :])
@@ -74,7 +93,7 @@ def _sse_correlations(chunk: bytes) -> list[str]:
                     continue
                 if isinstance(parsed, dict):
                     data = parsed
-        if event != "message" or data is None:
+        if name != "message" or data is None:
             continue
         room_id = data.get("room_id")
         payload = data.get("payload")
@@ -85,7 +104,7 @@ def _sse_correlations(chunk: bytes) -> list[str]:
 
 
 class TracingMiddleware:
-    """Pure-ASGI wrapper recording the three server-side HTTP points.
+    """Pure-ASGI wrapper recording the server-side HTTP points.
 
     Deliberately ASGI rather than a Starlette `BaseHTTPMiddleware`: the latter
     buffers a streaming response through a queue, which would both change the
@@ -101,44 +120,83 @@ class TracingMiddleware:
             await self._app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if scope.get("method") == "POST" and _ROOM_MESSAGE.match(path):
-            await self._admission(scope, receive, send)
-            return
-        if scope.get("method") == "GET" and _EVENT_STREAM.match(path):
+        method = scope.get("method")
+        if method == "GET" and _EVENT_STREAM.match(path):
             await self._stream(scope, receive, send)
-            return
-        await self._app(scope, receive, send)
+        elif method == "POST" and _POST_MESSAGE.match(path):
+            await self._reply(scope, receive, send)
+        elif method == "POST" and _ACTIVITY.match(path):
+            await self._activity(scope, receive, send)
+        elif method == "POST" and _APPROVALS.match(path):
+            await self._approval(scope, receive, send)
+        else:
+            await self._app(scope, receive, send)
 
-    async def _admission(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def _reply(self, scope: Scope, receive: Receive, send: Send) -> None:
         body, replay = await _buffer_body(receive)
-        correlation = _admission_correlation(body)
+        payload = _json_object(body)
+        text = payload.get("body") if payload is not None else None
+        correlation = reply_correlation(text) if isinstance(text, str) else None
         if correlation is None:
-            # An admission whose body names no room and message is not part of
-            # the measured workload — a malformed or probing request. Pass it
-            # through untraced rather than inventing a correlation for it.
+            # A post that is not a benchmark reply is not part of the measured
+            # workload. Pass it through untraced rather than inventing one.
             await self._app(scope, replay, send)
             return
 
-        self._collector.record(ADMISSION_RECEIVED, correlation)
+        self._collector.record(REPLY_RECEIVED, correlation)
         token = _in_flight.set(correlation)
-
-        responded = False
+        status: int | None = None
 
         async def tracing_send(message: dict[str, Any]) -> None:
-            nonlocal responded
+            nonlocal status
+            if message.get("type") == "http.response.start":
+                status = int(message["status"])
             await send(message)
             if (
-                not responded
-                and message.get("type") == "http.response.body"
+                message.get("type") == "http.response.body"
                 and not message.get("more_body", False)
+                and status == 200
             ):
-                responded = True
-                self._collector.record(ADMISSION_RESPONDED, correlation)
+                self._collector.record(REPLY_ACCEPTED, correlation)
 
         try:
             await self._app(scope, replay, tracing_send)
         finally:
             _in_flight.reset(token)
+
+    async def _activity(self, scope: Scope, receive: Receive, send: Send) -> None:
+        body, replay = await _buffer_body(receive)
+        row = _json_object(body)
+        await self._app(scope, replay, send)
+        if (
+            row is None
+            or row.get("kind") != "turn"
+            or row.get("status") not in _TURN_ENDED
+        ):
+            return
+        room_id, message_id = row.get("room_id"), row.get("message_id")
+        if isinstance(room_id, str) and isinstance(message_id, str):
+            self._collector.record(
+                TURN_REPORTED,
+                correlation_for(room_id, message_id),
+                detail={"status": row["status"], "turn_id": row.get("turn_id")},
+            )
+
+    async def _approval(self, scope: Scope, receive: Receive, send: Send) -> None:
+        body, replay = await _buffer_body(receive)
+        request = _json_object(body)
+        await self._app(scope, replay, send)
+        if request is None:
+            return
+        # A request carries its turn's origin thread, which for a message that
+        # started no thread is the message itself.
+        room_id, thread_id = request.get("room_id"), request.get("thread_id")
+        if isinstance(room_id, str) and isinstance(thread_id, str):
+            self._collector.record(
+                APPROVAL_OPENED,
+                correlation_for(room_id, thread_id),
+                detail={"request_id": request.get("request_id")},
+            )
 
     async def _stream(self, scope: Scope, receive: Receive, send: Send) -> None:
         async def tracing_send(message: dict[str, Any]) -> None:
@@ -152,168 +210,13 @@ class TracingMiddleware:
         await self._app(scope, receive, tracing_send)
 
 
-@dataclass(slots=True)
-class Hold:
-    """One ask held open, and what became of the client that made it."""
-
-    arrived: float
-    abandoned: float | None = None
-
-    def live_at(self, moment: float) -> bool:
-        """Was this client still waiting on its own request at `moment`?"""
-        if moment < self.arrived:
-            return False
-        return self.abandoned is None or moment < self.abandoned
-
-
-class StallGate:
-    """Holds a session's ask for its own room work open, on demand.
-
-    A session asks Switch what its rooms owe it; that request can be answered
-    slowly or not at all — a server under load, a connection that has gone away
-    without saying so — and what a scenario needs is for the rest of the
-    session to carry on regardless: what the server pushes it, and the commands
-    it is given, both arrive by other requests.
-
-    The hold is taken here, in front of the application, rather than anywhere
-    inside it. The request never reaches a route, so no transaction, row lock
-    or connection is held open by it, and nothing about the server's own
-    behaviour is altered — from its side the client simply has a request
-    outstanding. That keeps the fault in the harness, where a benchmark's
-    fault injection belongs.
-
-    Held is not the same as waited on, and the difference is the whole
-    evidence: a client with its own timeout gives up long before a gate that
-    never let go would notice, and a count of holds would still read the same
-    afterwards. So each hold watches for the disconnect its client sends when
-    it abandons the request, and records when it came. A scenario can then say
-    of a given moment whether the session was still waiting on an answer, which
-    is what makes the rest of its progress mean anything.
-
-    A hold whose client has gone is not passed on when the gate is released.
-    The request is nobody's now, and the work it asks for is work the server
-    would hand out to a session that cannot receive it.
-    """
-
-    def __init__(self, app: Any) -> None:
-        self._app = app
-        self._open: asyncio.Event | None = None
-        self._holds: list[Hold] = []
-        self._arrived = asyncio.Event()
-        self._gave_up = asyncio.Event()
-
-    def arm(self) -> None:
-        """Hold every ask that arrives from now until `release`."""
-        if self._open is not None:
-            raise RuntimeError("the stall gate is already armed")
-        self._arrived.clear()
-        self._gave_up.clear()
-        self._holds.clear()
-        self._open = asyncio.Event()
-
-    def release(self) -> None:
-        """Let go of what is held, and stop holding what arrives next."""
-        if self._open is None:
-            raise RuntimeError("the stall gate is not armed")
-        self._open.set()
-        self._open = None
-
-    def holds(self) -> tuple[Hold, ...]:
-        """Every ask held since the gate was armed, oldest first."""
-        return tuple(self._holds)
-
-    def live_at(self, moment: float) -> bool:
-        """Was any held ask still being waited on at `moment`?"""
-        return any(hold.live_at(moment) for hold in self._holds)
-
-    def concurrent_peak(self) -> int:
-        """The most asks ever being waited on at once.
-
-        A session that started another ask while one was outstanding would be
-        piling requests on a server already failing to answer; one that starts
-        the next only after its own timeout has ended the last never exceeds
-        one, however long the stall runs.
-        """
-        edges = sorted(
-            [(hold.arrived, 1) for hold in self._holds]
-            + [
-                (hold.abandoned, -1)
-                for hold in self._holds
-                if hold.abandoned is not None
-            ]
-        )
-        live = 0
-        peak = 0
-        for _, step in edges:
-            live += step
-            peak = max(peak, live)
-        return peak
-
-    async def await_held(self, timeout: float) -> float:
-        """Wait until an ask is actually being held, and say when it arrived.
-
-        The scenario that arms the gate has to know the stall it is testing
-        against is real before it does anything else; a session's ask is on its
-        own cadence, so the alternative is a sleep long enough to be a guess.
-        """
-        await asyncio.wait_for(self._arrived.wait(), timeout)
-        return self._holds[0].arrived
-
-    async def await_abandoned(self, timeout: float) -> float:
-        """Wait until a client gives up on an ask, and say when it did.
-
-        The counterpart to `await_held`, and the reason either can be believed:
-        a gate that reported a wait it was not watching would report one here
-        too, where the client is known to have gone.
-        """
-        await asyncio.wait_for(self._gave_up.wait(), timeout)
-        return min(hold.abandoned for hold in self._holds if hold.abandoned is not None)
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        opened = self._open
-        if (
-            opened is None
-            or scope.get("type") != "http"
-            or scope.get("method") != "POST"
-            or not _ROOM_RESERVATIONS.match(scope.get("path", ""))
-        ):
-            await self._app(scope, receive, send)
-            return
-
-        # Read before holding, so watching for the client's disconnect cannot
-        # swallow the body the application still has to be given.
-        _, replay = await _buffer_body(receive)
-        hold = Hold(arrived=asyncio.get_running_loop().time())
-        self._holds.append(hold)
-        self._arrived.set()
-
-        watching: asyncio.Future[dict[str, Any]] = asyncio.ensure_future(receive())
-        waiting: asyncio.Future[bool] = asyncio.ensure_future(opened.wait())
-        try:
-            while True:
-                racing: set[asyncio.Future[Any]] = {watching, waiting}
-                await asyncio.wait(racing, return_when=asyncio.FIRST_COMPLETED)
-                if waiting.done():
-                    break
-                if watching.result().get("type") == "http.disconnect":
-                    hold.abandoned = asyncio.get_running_loop().time()
-                    self._gave_up.set()
-                    return
-                watching = asyncio.ensure_future(receive())
-        finally:
-            watching.cancel()
-            waiting.cancel()
-
-        await self._app(scope, replay, send)
-
-
 class RequestCounter:
     """Every HTTP request the server is sent, counted by route.
 
-    A route is named without the ids in its path, so fifty sessions renewing
-    count as fifty renewals rather than fifty different routes. Counted in
-    front of the application for the same reason the stall gate holds there:
-    what a client asked for is the measure, whatever the server made of it.
+    A route is named without the ids in its path, so fifty sessions reporting
+    count as fifty reports rather than fifty different routes. Counted in
+    front of the application: what a client asked for is the measure,
+    whatever the server made of it.
     """
 
     def __init__(self, app: Any) -> None:
@@ -322,13 +225,16 @@ class RequestCounter:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") == "http":
-            self.counts[_route(scope.get("path", ""))] += 1
+            self.counts[route_of(scope.get("path", ""))] += 1
         await self._app(scope, receive, send)
 
 
-def _route(path: str) -> str:
+def route_of(path: str) -> str:
+    """The path with the agent or session id it names left out."""
     parts = path.strip("/").split("/")
-    if len(parts) >= 3 and parts[0] in ("sessions", "agents"):
+    if len(parts) >= 3 and parts[0] == "agents":
+        return "/".join([parts[0], *parts[2:]])
+    if len(parts) >= 3 and parts[0] == "agent-sessions" and parts[1] != "approvals":
         return "/".join([parts[0], *parts[2:]])
     return "/".join(parts)
 
@@ -353,24 +259,18 @@ def count_statements(engine: AsyncEngine) -> tuple[Counter[str], Callable[[], No
     return counts, remove
 
 
-def _admission_correlation(body: bytes) -> str | None:
+def _json_object(body: bytes) -> dict[str, Any] | None:
     try:
         payload = json.loads(body)
     except ValueError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    room_id = payload.get("room_id")
-    message_id = payload.get("message_id")
-    if isinstance(room_id, str) and isinstance(message_id, str):
-        return correlation_for(room_id, message_id)
-    return None
+    return payload if isinstance(payload, dict) else None
 
 
 async def _buffer_body(receive: Receive) -> tuple[bytes, Receive]:
     """Read the whole request body, and return a `receive` that replays it.
 
-    The body has to be read here to learn which message the admission is for,
+    The body has to be read here to learn which message the request is about,
     and an ASGI `receive` is single-shot, so the application downstream would
     otherwise find an empty body.
     """
@@ -396,12 +296,11 @@ async def _buffer_body(receive: Receive) -> tuple[bytes, Receive]:
 
 
 def trace_commits(engine: AsyncEngine, collector: TraceCollector) -> Callable[[], None]:
-    """Record the commit of whichever admission is in flight on this task.
+    """Record the commit of whichever reply is in flight on this task.
 
     Engine level rather than session level: `commit` on the sync engine is the
-    DBAPI commit itself, which is the moment "Core transaction complete"
-    actually names. Commits from background work carry no in-flight
-    correlation and are ignored.
+    DBAPI commit itself, which is the moment the reply is stored. Commits from
+    background work carry no in-flight correlation and are ignored.
 
     Returns a callable that removes the listener.
     """
@@ -409,7 +308,7 @@ def trace_commits(engine: AsyncEngine, collector: TraceCollector) -> Callable[[]
     def on_commit(_conn: Any) -> None:
         correlation = _in_flight.get()
         if correlation is not None:
-            collector.record(CORE_COMMIT, correlation)
+            collector.record(REPLY_COMMITTED, correlation)
 
     event.listen(engine.sync_engine, "commit", on_commit)
 
@@ -417,8 +316,3 @@ def trace_commits(engine: AsyncEngine, collector: TraceCollector) -> Callable[[]
         event.remove(engine.sync_engine, "commit", on_commit)
 
     return remove
-
-
-def in_flight_correlation() -> str | None:
-    """Exposed for the harness's own self-check that contextvars propagate."""
-    return _in_flight.get()
