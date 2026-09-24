@@ -1018,7 +1018,7 @@ class SessionActivityBridgePublisher:
         else:
             await self._redraw_turn(key, post, view, target, content, state, drawn)
         if post is not None:
-            await self._marks(key, post, view, target)
+            await self._marks(key, post, view, target, waiting_behind=bool(unended))
             await self._attention(
                 post, view, target, error_summary, recipient, session_url, drawn
             )
@@ -1218,7 +1218,13 @@ class SessionActivityBridgePublisher:
     # ── The marker on the asking message ──────────────────────────────────────
 
     async def _marks(
-        self, key: _Key, post: TurnStatusPost, view: TurnView, target: _Target
+        self,
+        key: _Key,
+        post: TurnStatusPost,
+        view: TurnView,
+        target: _Target,
+        *,
+        waiting_behind: bool,
     ) -> None:
         """Put the one marker the turn's state earns on the asking message, and
         take it off when the turn ends.
@@ -1237,9 +1243,14 @@ class SessionActivityBridgePublisher:
             ):
                 self._retry_later(key)
             return
+        # A turn is reported queued for a moment before it starts even when
+        # nothing is ahead of it; the queued mark is only worth showing when
+        # another turn of the session really is in the way.
         wanted: Mark = (
             "queued"
-            if self._adapter.supports_queue_reaction and view.turn.status == "queued"
+            if self._adapter.supports_queue_reaction
+            and view.turn.status == "queued"
+            and waiting_behind
             else "working"
         )
         if post.mark == wanted and key not in self._unsure_marks:

@@ -455,23 +455,22 @@ async def test_a_turn_is_drawn_step_by_step_in_one_message(
     assert post.external_post_id == first.ref
 
 
-async def test_the_asking_message_is_marked_while_the_turn_waits_and_runs(
+async def test_the_asking_message_is_marked_working_while_the_turn_runs(
     service, publisher, platform, bridged, session_factory
 ):
+    # Queued with nothing ahead of it, the turn is about to start: no queued
+    # mark flashes on the message first.
     await _turn(service, bridged.room_id, "queued", 1)
-    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "queued", True)])
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
     post = await _turn_post(session_factory)
-    assert (post.reaction_message_ref, post.mark) == (ASKED_POST, "queued")
+    assert (post.reaction_message_ref, post.mark) == (ASKED_POST, "working")
 
     await _turn(service, bridged.room_id, "running", 2)
-    await platform.wait_until(lambda: len(platform.marks) == 3)
-    assert platform.marks[1:] == [
-        (ASKED_POST, "queued", False),
-        (ASKED_POST, "working", True),
-    ]
+    await asyncio.sleep(0.3)
+    assert platform.marks == [(ASKED_POST, "working", True)]
 
     await _turn(service, bridged.room_id, "completed", 3)
-    await platform.wait_until(lambda: len(platform.marks) == 4)
+    await platform.wait_until(lambda: len(platform.marks) == 2)
     assert platform.marks[-1] == (ASKED_POST, "working", False)
     assert (await _turn_post(session_factory)).mark is None
 
