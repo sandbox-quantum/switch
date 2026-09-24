@@ -199,17 +199,45 @@ Parts:
    relays an owner's command to the agent's watcher as a `session_command`
    frame (agent-protocol 5), stored nowhere; `HOST_OFFLINE` when no watcher
    speaking 5 is attached.
-3. Console (not started): runtime `onSessionCommand`; watcher writes relayed
-   commands into the session root and decides room ownership locally (its
-   assignments journal plus each session's current room, written by the
-   runtime on `connect_to_room`); host drops claim/renew/recover/quiesce and
-   the event upload, gates room work on its own status, builds room prompts
-   from the stream payload (markers, per-room order and the unread notice move
-   into the host), downloads room attachments via
-   `/agents/{id}/rooms/{room}/media`, takes Console attachments written into
-   its root; desktop: discovery and readiness from the host journal /
-   watcher, stop and first prompt via the relay, room health from
-   connections only.
+3. Done: the cutover. Hosts and the watcher no longer use `/sessions/*`.
+   - Watcher (`shared-watcher.ts`): owner of a room = the session Switch
+     says is placed in it (event field `session_id`, from `connect_to_room`)
+     if that session runs here, else the latest assignment in its own
+     journal; a dead owner is started again; with no owner it starts a
+     session if allowed, otherwise holds the event (the journal keeps the
+     event itself, content included, across restarts). Handoffs carry the
+     event (`HANDOFF_PROTOCOL` 2). No admission, reservation, sweep or carry.
+   - Host (`shared-host.ts`, rewritten): local epoch; no claim, renew,
+     recover, quiesce, room binding, event upload or command fetch. Builds
+     room prompts itself (`room-prompt.ts`: same nonce markers, unread
+     notice, attachment refusals), fetches room attachments first through
+     `/agents/{id}/rooms/{room}/media` (a missing one is named in the prompt
+     instead of failing the turn), publishes its session selector at start,
+     runs relayed commands, reports activity and applies approval outcomes.
+   - Switch: `ConnectionRegistry.place_session` / `session_room` /
+     `session_in_room` (memory only). `resolve_caller` takes the session id
+     plus the connection; host/epoch headers are accepted and ignored.
+     `connect_to_room` places the session. Delivered events carry the placed
+     session's id. Session role leases are live while their connection is.
+   - Console: discovery lists sessions from the agent's host
+     (`host-sessions.ts`, one `node -e` per call, local or SSH); startup
+     readiness reads the host journal; the chat view reads only the journal
+     and says so when the host cannot be reached; stop/first prompt/commands
+     go through the relay. Retire and attachment upload are gone from the
+     chat view.
+   - End-to-end harness (`core/tests/benchmarks`, `just bench`) adapted and
+     passing: delivery, concurrency, lost host and worker, controller and
+     Core restarts, competing controllers, upgrades, two sessions taking one
+     room. Latency is measured push → provider dispatch.
+   - Known regressions and gaps: a session's role is freed only when the
+     agent's controller connection drops (or it is released), not when the
+     session dies; after a Core restart a session must `connect_to_room`
+     again before room-scoped tool calls work; with two controllers on two
+     machines the winner answers a room with a new session of its own;
+     Console attachments have no path to the host; the room-health and
+     reconnect-room UI still call server routes that no longer know the
+     sessions (removed with part 5); discovery reads each journal whole on
+     every pass.
 4. Server: presence and occupancy from the registry only (the host must
    release its room when a session stops), drop
    `require_recorded_rooms_unmoved` and the `SdkSession` lease arm, selector

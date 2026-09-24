@@ -44,6 +44,9 @@ export const handoffSchema = z.strictObject({
   sequence: z.number().int().positive(),
   roomId: z.string().min(1),
   messageId: z.string().min(1),
+  // The event as the agent's stream delivered it. The session builds its
+  // prompt from this: Switch keeps no copy for it to ask for.
+  event: z.unknown().optional(),
 });
 export type Handoff = z.infer<typeof handoffSchema>;
 
@@ -59,7 +62,7 @@ export type Handoff = z.infer<typeof handoffSchema>;
  * Bumping this number is how a later protocol stops an older worker being
  * routed to.
  */
-export const HANDOFF_PROTOCOL = 1;
+export const HANDOFF_PROTOCOL = 2;
 const capabilitySchema = z.object({ handoff: z.number().int().nonnegative() });
 
 /**

@@ -31,9 +31,6 @@ from tests.benchmarks.host import BenchWatcher, await_dispatches, marked, new_ma
 from tests.benchmarks.metrics import ResourceReport, ResourceSampler
 from tests.benchmarks.server import BenchAgent, BenchCore, BenchServer
 from tests.benchmarks.trace import (
-    ADMISSION_RECEIVED,
-    ADMISSION_RESPONDED,
-    CORE_COMMIT,
     PROVIDER_DISPATCH,
     SSE_PUSH,
     ClockResidual,
@@ -149,11 +146,9 @@ def _sampler(
 
 
 #: The spans reported for every workload, in the order they occur.
-SPANS = (
-    ("sse push → admission received", SSE_PUSH, ADMISSION_RECEIVED),
-    ("admission received → responded", ADMISSION_RECEIVED, ADMISSION_RESPONDED),
-    ("core commit → provider dispatch", CORE_COMMIT, PROVIDER_DISPATCH),
-)
+#: The session's host builds its prompt from the event its controller routed,
+#: so nothing happens on the server between the push and the dispatch.
+SPANS = (("sse push → provider dispatch", SSE_PUSH, PROVIDER_DISPATCH),)
 
 
 @dataclass(frozen=True, slots=True)

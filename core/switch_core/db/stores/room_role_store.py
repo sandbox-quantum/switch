@@ -19,7 +19,7 @@ from sqlalchemy import delete, false, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from switch_core.db.models import RoleLease, RoomRole, SdkSession
+from switch_core.db.models import RoleLease, RoomRole
 
 
 class RoomRoleStore:
@@ -119,14 +119,15 @@ class RoomRoleStore:
     def _live(self, live_connection_ids: Collection[str]) -> ColumnElement[bool]:
         """SQL predicate for "this lease is still held".
 
-        Three arms, every one of them scoped to the holder rather than to the
-        agent — which is the whole point, because an agent outlives the
-        sessions and connections that take seats in its name.
+        Two arms, both scoped to the holder rather than to the agent — which
+        is the whole point, because an agent outlives the sessions and
+        connections that take seats in its name.
 
-        A holder that renews says so: `last_seen_at` is fresh. A holder that
-        named its SDK session is live while that session's host lease is
-        current, and needs no heartbeat of its own. A holder that named
-        neither is live while the connection it took the seat over still is.
+        A holder that renews says so: `last_seen_at` is fresh. Otherwise a
+        holder is live while the connection it took the seat over still is.
+        For a session that is its agent's controller connection: Switch keeps
+        no record of a session's own liveness, so a session's seat is freed
+        when it releases it or when that connection goes.
 
         What is deliberately absent is the arm these replace: "the agent has
         some live connection". It was satisfied by *any* connection the agent
@@ -134,28 +135,13 @@ class RoomRoleStore:
         never free a seat at all — a crashed session's role, which frees
         within seconds today, would have been held forever.
         """
-        # The host lease is written against the database clock, so it is
-        # compared against the database clock.
-        holder_session_live = (
-            select(SdkSession.id)
-            .where(
-                SdkSession.tenant_id == RoleLease.tenant_id,
-                SdkSession.id == RoleLease.session_id,
-                SdkSession.lease_expires_at > func.now(),
-                func.coalesce(
-                    SdkSession.recovery["quiesced"].as_boolean(), false()
-                ).is_(False),
-            )
-            .exists()
-        )
-        holder_connection_live = RoleLease.session_id.is_(None) & (
+        holder_connection_live = (
             RoleLease.transport_session_id.in_(live_connection_ids)
             if live_connection_ids
             else false()
         )
         return or_(
             RoleLease.last_seen_at > self._cutoff(),
-            holder_session_live,
             holder_connection_live,
         )
 

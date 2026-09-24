@@ -437,6 +437,12 @@ class ConnectionRegistry:
         # client holding one from a previous boot is refused rather than
         # matching whatever this boot has reached.
         self._next_incarnation = secrets.randbits(32)
+        # Which room each session of an agent is working in, as its own
+        # `connect_to_room` said. Sessions share their agent's connection, so
+        # the connection's rooms cannot say whose is whose. Memory only: the
+        # session's host keeps everything else about it, and a session whose
+        # placement a restart forgot is told to connect again.
+        self._session_rooms: dict[str, dict[str, str]] = {}
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
@@ -777,6 +783,43 @@ class ConnectionRegistry:
             for cid in self._by_agent.get(agent_id, set())
             if (conn := self._by_id.get(cid)) is not None and conn.is_alive(now)
         ]
+
+    def place_session(
+        self, agent_id: str, session_id: str, room_id: str
+    ) -> tuple[set[str], str | None]:
+        """Put a session in a room: the rooms it left, and the sibling it displaced.
+
+        One session of an agent per room. A sibling that was working in the
+        room is taken out of it, so events for the room go to the session that
+        asked for it last.
+        """
+        placed = self._session_rooms.setdefault(agent_id, {})
+        previous = placed.get(session_id)
+        displaced = next(
+            (
+                other
+                for other, room in placed.items()
+                if room == room_id and other != session_id
+            ),
+            None,
+        )
+        if displaced is not None:
+            del placed[displaced]
+        placed[session_id] = room_id
+        return ({previous} - {room_id} if previous else set()), displaced
+
+    def session_room(self, agent_id: str, session_id: str) -> str | None:
+        return self._session_rooms.get(agent_id, {}).get(session_id)
+
+    def session_in_room(self, agent_id: str, room_id: str) -> str | None:
+        return next(
+            (
+                session_id
+                for session_id, room in self._session_rooms.get(agent_id, {}).items()
+                if room == room_id
+            ),
+            None,
+        )
 
     def relay_session_command(self, agent_id: str, frame: dict[str, Any]) -> bool:
         """Hand a session command to the agent's watcher stream. False if none is attached.

@@ -1,15 +1,14 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { fetchSdkSessions } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { redactSecrets } from '@main/lib/file-logger';
+import { listHostSessions } from './host-sessions';
 import { inspectWatchers } from './watcher-inspection';
 
 const watcherSchema = z.object({
@@ -45,8 +44,8 @@ export async function sharedAgentDiagnostics(agentId: string) {
   const [host, bundle, remote] = await Promise.all([
     ctx.exec('node', ['-e', inspectWatchers, agent.switchAgentId!, 'status']),
     readFile(resolveSharedHostBundlePath()),
-    fetchSdkSessions(server).then(
-      (sessions) => ({ sessions: sessionSchema.array().parse(sessions), error: null }),
+    listHostSessions(agentId).then(
+      (sessions) => ({ sessions, error: null }),
       (error: unknown) => ({ sessions: null, error: redactSecrets(String(error)) })
     ),
   ]);

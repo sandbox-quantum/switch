@@ -2,14 +2,13 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { detachedSupervision, ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
-import { runSharedHost, SharedHostUnavailableError } from './shared-host';
+import { runSharedHost } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
 
@@ -157,13 +156,7 @@ async function main(): Promise<void> {
         stop.signal
       );
     } catch (error) {
-      if (!stop.signal.aborted) {
-        if (!(error instanceof SharedHostUnavailableError)) throw error;
-        console.warn(
-          `Shared host unavailable: ${error.message} Execution stopped; reconnecting with saved state.`
-        );
-        process.exitCode = LEASE_EXPIRED_EXIT_CODE;
-      }
+      if (!stop.signal.aborted) throw error;
     }
   }
 }

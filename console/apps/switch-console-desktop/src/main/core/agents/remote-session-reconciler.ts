@@ -1,14 +1,11 @@
-import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
+import { sessionSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
+import { listHostSessions } from '@main/core/sdk-host/host-sessions';
 import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionWasDeleted } from '@main/core/sessions/deleted-sessions';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import {
-  fetchRoomDetail,
-  fetchSdkSessions,
-  fetchSdkSnapshot,
-} from '@main/core/switch-servers/gateway-client';
+import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -17,42 +14,22 @@ import { log } from '@main/lib/logger';
 import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { getAgentById } from './getAgentById';
 
 /** How often a linked agent's sessions are listed while discovery is healthy. */
 export const DISCOVERY_MS = 5000;
 /** The longest a failing discovery waits before trying again. */
 export const DISCOVERY_MAX_BACKOFF_MS = 60000;
-// Every agent on a server reads the same list; one read serves all of them
-// for the round, however their timers are staggered.
-const SERVER_LIST_TTL_MS = DISCOVERY_MS - 500;
-
-/** Discover server-owned sessions on either execution transport without starting providers. */
+/** Discover an agent's sessions from its host, locally or over SSH, without starting providers. */
 class RemoteSessionReconciler {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly failedRounds = new Map<string, number>();
   private readonly inFlight = new Set<string>();
-  // Agents on one server discover the same list. Share overlapping reads and
-  // briefly reuse their result so staggered agent timers do not refetch it.
-  private readonly serverLists = new Map<
-    string,
-    {
-      url: string;
-      promise: Promise<unknown>;
-      expiresAt: number;
-    }
-  >();
   private readonly failures = new Map<string, string>();
   errors(): { agentId: string; message: string }[] {
     return [...this.failures].map(([agentId, message]) => ({ agentId, message }));
   }
   async refresh(agentId: string): Promise<void> {
-    const agent = await getAgentById(agentId);
-    if (agent?.serverId) {
-      const cached = this.serverLists.get(agent.serverId);
-      if (cached && cached.expiresAt !== Infinity) this.serverLists.delete(agent.serverId);
-    }
     this.start(agentId);
     await this.tick(agentId);
   }
@@ -85,28 +62,6 @@ class RemoteSessionReconciler {
   dispose(): void {
     for (const agentId of this.timers.keys()) this.stop(agentId);
     this.failures.clear();
-    this.serverLists.clear();
-  }
-
-  private listForServer(server: SwitchServer): Promise<unknown> {
-    const cached = this.serverLists.get(server.id);
-    if (cached && cached.url === server.gatewayUrl && cached.expiresAt > Date.now())
-      return cached.promise;
-    const entry = {
-      url: server.gatewayUrl,
-      promise: fetchSdkSessions(server),
-      expiresAt: Infinity,
-    };
-    this.serverLists.set(server.id, entry);
-    void entry.promise.then(
-      () => {
-        entry.expiresAt = Date.now() + SERVER_LIST_TTL_MS;
-      },
-      () => {
-        if (this.serverLists.get(server.id) === entry) this.serverLists.delete(server.id);
-      }
-    );
-    return entry.promise;
   }
 
   private async tick(agentId: string): Promise<void> {
@@ -121,11 +76,7 @@ class RemoteSessionReconciler {
       if (!agent.serverId) throw new Error('This linked agent has no Switch server configured.');
       const server = await getServer(agent.serverId);
       if (!server) throw new Error('The session discovery server is missing.');
-      const remote = await this.listForServer(server);
-      if (!Array.isArray(remote))
-        throw new Error(
-          'The server returned an incompatible session list. Update Console and server together.'
-        );
+      const remote: unknown[] = await listHostSessions(agentId);
       const failures: string[] = [];
       const local = new Map(
         (
@@ -176,16 +127,7 @@ class RemoteSessionReconciler {
           // A retired session is finished; adopting one puts a row back for
           // work that will never resume.
           if (session.status === 'stopped' || session.retired) continue;
-          let roomId = session.roomIds?.[0] ?? null;
-          if (session.roomIds === undefined && !local.has(session.sessionId)) {
-            const snapshot = snapshotSchema.parse(
-              await fetchSdkSnapshot(server, session.sessionId)
-            );
-            roomId =
-              snapshot.session.roomIds?.[0] ??
-              [...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ??
-              null;
-          }
+          const roomId = session.roomIds?.[0] ?? null;
           if (roomId)
             switchRoomService.mirrorRemoteSessionRoom(
               {

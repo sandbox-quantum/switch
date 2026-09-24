@@ -19,7 +19,7 @@ vi.mock('@main/core/execution-context/local-execution-context', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: async () => ({ id: 'server' }),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchSdkSessions: mocks.sessions }));
+vi.mock('./host-sessions', () => ({ listHostSessions: mocks.sessions }));
 const { sharedAgentDiagnostics, sharedAgentLogs } = await import('./diagnostics');
 beforeEach(() => {
   vi.resetAllMocks();

@@ -7,9 +7,9 @@ const mocks = vi.hoisted(() => ({
   snapshot: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  fetchSdkSessions: mocks.list,
   GatewayError: class extends Error {},
 }));
+vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 vi.mock('@main/core/sdk-host/host-journal', () => ({
   JournalUnavailableError: class extends Error {},

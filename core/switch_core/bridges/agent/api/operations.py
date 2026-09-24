@@ -35,7 +35,6 @@ from switch_core.bridges.agent.operations.callctx import (
 from switch_core.bridges.agent.protocol.connections import UnknownConnectionError
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent
-from switch_core.sessions.service import SessionAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -141,53 +140,31 @@ async def resolve_caller(
 ) -> tuple[str | None, CallerSession | None]:
     """Who is calling and what they are bound to, from the selector they sent.
 
-    Two ways to say it. A connection selector names the connection directly; a
-    session selector names the session, is answered with the connection that
-    session bound, and additionally says which room that session is working in
-    — the fact a connection shared by several sessions cannot supply. Both
-    arrive from one fenced read, so naming the session costs a room-scoped
-    operation no extra query.
-
-    Neither selector is taken on trust, and neither is allowed to be
-    approximately right: a selector naming another agent's session or
-    connection, an incomplete selector, and two selectors that disagree are all
-    refused rather than resolved to something plausible.
+    A connection selector names the connection. A session selector adds which
+    of the agent's sessions on it is calling, and so which room that session
+    connected to — the fact a connection shared by several sessions cannot
+    supply. The connection is never taken on trust: one belonging to another
+    agent, or one that has died, is refused.
     """
-    named = [
-        header
-        for header, value in zip(
-            SESSION_SELECTOR_HEADERS, (session_id, host_id, epoch), strict=True
-        )
-        if value is not None
-    ]
-    if named and len(named) != len(SESSION_SELECTOR_HEADERS):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "the session selector is all of "
-                f"{', '.join(SESSION_SELECTOR_HEADERS)}; this request carried "
-                f"only {', '.join(named)}"
-            ),
-        )
-
     bound = connection_id
     caller: CallerSession | None = None
-    if session_id is not None and host_id is not None and epoch is not None:
-        binding = await SessionAuthority(factory).session_binding(
-            agent_id, session_id, host_id, epoch
-        )
-        if connection_id is not None and connection_id != binding.connection_id:
+    if session_id is not None:
+        # Host and epoch are the host's own business now: Switch keeps no
+        # record of a session to check them against, only which room it
+        # connected to.
+        if connection_id is None:
             raise HTTPException(
-                status_code=409,
+                status_code=400,
                 detail=(
-                    f"session {session_id} is bound to connection "
-                    f"{binding.connection_id}, but this request also named "
-                    f"connection {connection_id}; send one selector or the other"
+                    "a session selector names the connection it calls over; "
+                    "send X-Switch-Connection-Id with X-Switch-Session-Id"
                 ),
             )
-        bound = binding.connection_id
         caller = CallerSession(
-            id=session_id, host_id=host_id, epoch=epoch, room_id=binding.room_id
+            id=session_id,
+            host_id=host_id or "",
+            epoch=epoch or "",
+            room_id=protocol.connections.session_room(agent_id, session_id),
         )
 
     if bound is None:

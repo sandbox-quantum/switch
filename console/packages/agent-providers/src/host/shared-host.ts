@@ -1,27 +1,36 @@
-import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  commandSchema,
-  heldDeliveriesSchema,
-  roomBindingSchema,
-  roomMessageReceiptSchema,
-  serverEventSchema,
-  snapshotSchema,
-} from '@switch-console/shared/session-v1';
-import type { Command, Session } from '@switch-console/shared/session-v1';
+import { commandSchema } from '@switch-console/shared/session-v1';
+import type { Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { declareHandoffCapability, HandoffInbox } from './handoff';
-import { Journal } from './journal';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import {
+  planAttachments,
+  roomCommand,
+  roomMessageSchema,
+  type RoomAttachmentSource,
+} from './room-prompt';
 import { HostedSession } from './session-host';
-import { clearSessionSelector, writeSessionSelector } from './shared-config';
-import { SharedDelivery } from './shared-delivery';
+import { writeSessionSelector } from './shared-config';
 import { SharedState } from './shared-state';
 
+/**
+ * A session run on behalf of its agent, reached through the agent's
+ * controller.
+ *
+ * The host owns the session: its transcript, its generation (epoch) and its
+ * recovery are its own and live in its state root. Switch holds none of it.
+ * What reaches the host comes from the controller, which writes into the root:
+ * room messages the agent was addressed with (`handoff.jsonl`, each carrying
+ * the event as the agent's stream delivered it) and commands Switch relayed
+ * from Console (`relayed-commands.jsonl`). What the host reports goes to the
+ * `/agent-sessions` routes: short activity lines, approval requests, and the
+ * acknowledgement of answers it has applied.
+ */
 export type SharedHostOptions = {
   root: string;
   resumeOperationId?: string;
@@ -45,19 +54,6 @@ class RequestError extends Error {
   }
 }
 
-/**
- * How often a session asks Switch for the room work its own rooms still owe
- * it, when the server will not say in its renewal whether there is any.
- *
- * A session whose controller has gone is still the session the server says is
- * in the room, and nothing is left to route to it; this is how it finds that
- * work anyway. A server that answers `roomWork` on renewal is asked only when
- * it says something is owed; this interval is for one that does not, and
- * trades how long such a session stays silent against a request per session
- * per interval whose answer is almost always empty.
- */
-const ROOM_PULL_MS = 5000;
-const roomWorkSchema = z.object({ roomWork: z.boolean() });
 const approvalOutcomesSchema = z.array(
   z.object({
     sessionId: z.string(),
@@ -67,20 +63,7 @@ const approvalOutcomesSchema = z.array(
     answeredBy: z.string().nullable(),
   })
 );
-export class SharedHostUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SharedHostUnavailableError';
-  }
-}
-export class SharedHostLeaseExpiredError extends SharedHostUnavailableError {
-  constructor() {
-    super('HOST_OFFLINE: lease renewal deadline passed.');
-    this.name = 'SharedHostLeaseExpiredError';
-  }
-}
 
-/** A shared execution process consumes only commands reserved by Switch. */
 export async function runSharedHost(
   options: SharedHostOptions,
   adapter: ProviderAdapter,
@@ -99,54 +82,35 @@ export async function runSharedHost(
   const state = await SharedState.open(options);
   const stopped = new AbortController();
   const executionSignal = AbortSignal.any([signal, stopped.signal]);
-  let host: HostedSession | null = null;
-  let delivery: SharedDelivery | null = null;
-  let failure: unknown = null;
-  let starting = false;
-  let deadline = performance.now() + 30000;
-  let lease = state.latest('lease');
-  let heartbeat: Promise<void> = Promise.resolve();
-  let shutdown: Promise<void> | null = null;
-  // Out here with the heartbeat because the shutdown has to wait for it: the
-  // request is in flight on its own, and leaving it running past the end of
-  // the host would land an answer in a process that has stopped reading.
-  let pulling: Promise<void> | null = null;
+  const agentId = options.session.agentId;
   const sessionPath = `/${encodeURIComponent(options.session.sessionId)}`;
+  const origin = base.href.replace(/\/$/, '');
+  let host: HostedSession | null = null;
+  let failure: unknown = null;
+  let shutdown: Promise<void> | null = null;
+
   const callOnce = async (
     route: string,
     method: 'GET' | 'POST',
-    body: unknown,
-    abort: AbortSignal
+    body: unknown
   ): Promise<unknown> => {
     let response: Response;
     try {
-      response = await fetch(`${base.href.replace(/\/$/, '')}${route}`, {
+      response = await fetch(`${origin}${route}`, {
         method,
         headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
         body: method === 'POST' ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.any([abort, AbortSignal.timeout(5000)]),
+        signal: AbortSignal.any([executionSignal, AbortSignal.timeout(5000)]),
         redirect: 'error',
       });
     } catch (error) {
-      if (abort.aborted) throw error;
-      throw new TransportError(`Switch session transport unavailable: ${String(error)}`);
+      if (executionSignal.aborted) throw error;
+      throw new TransportError(`Switch unavailable: ${String(error)}`);
     }
     if ([429, 500, 502, 503, 504].includes(response.status))
-      throw new TransportError(`Switch session transport unavailable (${response.status}).`);
+      throw new TransportError(`Switch unavailable (${response.status}).`);
     if (!response.ok) {
       const text = await response.text();
-      if (response.status === 409) {
-        let body: unknown;
-        try {
-          body = JSON.parse(text);
-        } catch {
-          body = null;
-        }
-        if (body && typeof body === 'object' && 'code' in body && body.code === 'HOST_OFFLINE')
-          throw new SharedHostUnavailableError(
-            `Switch rejected ${route} (${response.status}): ${text}`
-          );
-      }
       let code = '';
       try {
         code = JSON.parse(text).code ?? '';
@@ -156,45 +120,19 @@ export async function runSharedHost(
       throw new RequestError(
         code,
         response.status,
-        `Switch session request failed (${response.status}): ${text}`
+        `Switch refused ${route} (${response.status}): ${text}`
       );
     }
     return response.json();
   };
-  const requestOnce = (path: string, body: unknown, abort: AbortSignal): Promise<unknown> =>
-    callOnce(`/sessions${path}`, 'POST', body, abort);
-  /**
-   * One attempt, behind the same fences as a retried one.
-   *
-   * Abort and the lease deadline are checked here rather than in the retry
-   * loop, so a caller that would rather come back later than wait still
-   * cannot talk to Switch on a lease this host no longer holds.
-   */
-  const attempt = async (path: string, body: unknown): Promise<unknown> => {
-    executionSignal.throwIfAborted();
-    if (performance.now() >= deadline) {
-      if (lease) throw new SharedHostLeaseExpiredError();
-      throw new Error(
-        'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
-      );
-    }
-    return requestOnce(path, body, executionSignal);
-  };
-  const request = (path: string, body: unknown): Promise<unknown> =>
-    retried(() => attempt(path, body));
-  /** The `/agent-sessions` routes: activity, approvals and their outcomes. */
-  const agentSessions = (path: string, method: 'GET' | 'POST', body: unknown) =>
-    retried(() => {
-      executionSignal.throwIfAborted();
-      if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
-      return callOnce(`/agent-sessions${path}`, method, body, executionSignal);
-    });
-  const retried = async (call: () => Promise<unknown>): Promise<unknown> => {
+  /** Retried while Switch is unreachable; any answer, including a refusal, returns. */
+  const agentSessions = async (path: string, method: 'GET' | 'POST', body: unknown) => {
     let disconnected = false;
     while (true) {
+      executionSignal.throwIfAborted();
       try {
-        const result = await call();
-        if (disconnected) console.info('Shared host connection restored.');
+        const result = await callOnce(`/agent-sessions${path}`, method, body);
+        if (disconnected) console.info('Connection to Switch restored.');
         return result;
       } catch (error) {
         if (!(error instanceof TransportError)) throw error;
@@ -216,486 +154,84 @@ export async function runSharedHost(
     });
   };
   executionSignal.addEventListener('abort', onAbort, { once: true });
-  const acknowledged: { session: { epoch: string; status: string } | null } = { session: null };
-  const upload = async (reconcile: boolean) => {
-    for (const event of delivery!.pending()) {
-      const receipt = await request(
-        `/${reconcile ? 'reconcile' : 'events'}?host_id=${encodeURIComponent(options.session.hostId)}`,
-        event
-      );
-      if (
-        !receipt ||
-        typeof receipt !== 'object' ||
-        !('throughHostSequence' in receipt) ||
-        typeof receipt.throughHostSequence !== 'number' ||
-        receipt.throughHostSequence < event.hostSequence
-      )
-        throw new Error('Switch returned an invalid host event receipt.');
-      await delivery!.acknowledge(receipt.throughHostSequence);
-      if (event.body.type === 'session.upsert')
-        acknowledged.session = { epoch: event.epoch, status: event.body.session.status };
-    }
-  };
-  const validateSession = (snapshot: unknown) => {
-    const parsed = snapshotSchema.parse(snapshot);
-    const { session } = parsed;
-    if (
-      session.sessionId !== options.session.sessionId ||
-      session.agentId !== options.session.agentId ||
-      session.hostId !== options.session.hostId ||
-      session.provider !== options.session.provider
-    )
-      throw new Error('Switch returned a different session identity.');
-    return parsed;
-  };
-  const finish = async () => {
-    await stopExecution();
-    if (starting) {
-      starting = false;
-      if (!host && adapter.hasSession(options.session.sessionId))
-        await adapter.stopSession(options.session.sessionId);
-    }
-    if (host && delivery)
-      for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);
-    await state.journal.append({ type: 'quiesced' });
-    if (lease) {
-      try {
-        await requestOnce(
-          `${sessionPath}/quiesce`,
-          { host_id: lease.snapshot.session.hostId, epoch: lease.snapshot.session.epoch },
-          AbortSignal.timeout(5000)
-        );
-      } catch (error) {
-        console.warn(
-          'Shared host stopped; server quiescence will be retried on recovery:',
-          String(error)
-        );
-      }
-    }
-    // The supervisor reaps the isolated group after this worker exits.
-    // Retain its owner record so a replacement supervisor can fence it too.
-  };
+
   try {
-    await clearSessionSelector(options.root);
-    // Complete a recovery whose response may have been lost before doing anything else.
-    const recovery = state.latest('recover');
-    if (recovery && (!lease || recovery.epoch === lease.snapshot.session.epoch)) {
-      const snapshot = validateSession(
-        await request(`${sessionPath}/recover`, {
-          host_id: options.session.hostId,
-          epoch: recovery.epoch,
-          operation_id: recovery.operationId,
-          through_host_sequence: recovery.throughHostSequence,
-        })
-      );
-      await state.journal.append({ type: 'lease', snapshot, sourceBase: recovery.sourceBase });
-      lease = state.latest('lease');
-    }
-    if (lease) {
-      const prior = lease.snapshot.session;
-      await request(`${sessionPath}/quiesce`, { host_id: prior.hostId, epoch: prior.epoch });
-      delivery = await SharedDelivery.load(options.root, prior, lease.sourceBase);
-      const events = await Journal.load(join(options.root, 'events.jsonl'), (value) =>
-        serverEventSchema.parse(value)
-      );
-      for (const event of events.records.filter((event) => event.sequence > delivery!.cursor))
-        await delivery.capture(event);
-      await upload(true);
-      const operation = {
-        type: 'recover' as const,
-        operationId: randomUUID(),
-        epoch: prior.epoch,
-        sourceBase: delivery.cursor,
-        throughHostSequence: delivery.throughHostSequence,
-      };
-      await state.journal.append(operation);
-      const snapshot = validateSession(
-        await request(`${sessionPath}/recover`, {
-          host_id: prior.hostId,
-          epoch: prior.epoch,
-          operation_id: operation.operationId,
-          through_host_sequence: operation.throughHostSequence,
-        })
-      );
-      await state.journal.append({ type: 'lease', snapshot, sourceBase: operation.sourceBase });
-    } else {
-      const snapshot = validateSession(
-        await request('/claim', {
-          session: state.identity.session,
-          operation_id: state.identity.operationId,
-          // The room this session was started to answer, so the server creates
-          // it already holding that room. Spent once: a grant the server has
-          // since given to another session, or let lapse, refuses the claim
-          // rather than producing a second session for one room.
-          grant: options.grant && {
-            room_id: options.grant.roomId,
-            message_id: options.grant.messageId,
-          },
-        })
-      );
-      await state.journal.append({ type: 'lease', snapshot, sourceBase: 0 });
-    }
-    lease = state.latest('lease')!;
-    const session = structuredClone(lease.snapshot.session);
-    const hostLease = { host_id: session.hostId, epoch: session.epoch };
-    // The room set the session is bound to, as the server last answered it,
-    // and null until it has been told at all. The selector the runtime sends
-    // resolves through that binding, so nothing is published before it exists.
-    let roomBinding: string | null = null;
-    let boundAt = 0;
-    let unreachable = false;
-    let disclosed = false;
-    const publishSelector = () =>
-      writeSessionSelector(options.root, {
-        session_id: options.session.sessionId,
-        host_id: hostLease.host_id,
-        epoch: hostLease.epoch,
-      });
-    // What the latest renewal said about this session's own rooms, under the
-    // generation it was said for. Each reading is numbered so that one saying
-    // work is owed starts one ask, and a reading from before a recovery says
-    // nothing about the generation after it. Null is not knowing, which is
-    // what a server that does not answer the question leaves it at.
-    let roomWork: { epoch: string; owed: boolean; reading: number } | null = null;
-    let readings = 0;
-    const renew = async () => {
-      const renewingAt = performance.now();
-      const epoch = hostLease.epoch;
-      const answer = roomWorkSchema.safeParse(
-        await request(`${sessionPath}/renew?room_work=true`, hostLease)
-      );
-      deadline = renewingAt + 25000;
-      readings += 1;
-      roomWork = answer.success ? { epoch, owed: answer.data.roomWork, reading: readings } : null;
-    };
-    // Renew before opening a provider, including after a lost acquisition response.
-    await renew();
-    delivery = await SharedDelivery.load(options.root, session, lease.sourceBase);
-    let leaseSerial: Promise<unknown> = Promise.resolve();
-    const withLease = <T>(action: () => Promise<T>): Promise<T> => {
-      const result = leaseSerial.then(action);
-      leaseSerial = result.catch(() => {});
-      return result;
-    };
-    heartbeat = (async () => {
-      try {
-        while (!executionSignal.aborted) {
-          await delay(5000, undefined, { signal: executionSignal });
-          await withLease(renew);
-        }
-      } catch (error) {
-        if (!executionSignal.aborted) {
-          failure = error;
-          stopped.abort(error);
-        }
-      }
-    })();
-    if (options.roomConnection?.restoreRoomId) {
-      let answer: unknown = null;
-      try {
-        answer = await request(`${sessionPath}/restore-legacy-room`, {
-          ...hostLease,
-          room_id: options.roomConnection.restoreRoomId,
-        });
-      } catch (error) {
-        // An uncoded 404 is a server that predates the route rather than a
-        // refusal from it; one naming a code is the route answering.
-        if (!(error instanceof RequestError) || error.status !== 404 || error.code) throw error;
-        console.warn(
-          'This Switch server cannot restore a saved room; the session keeps the room ownership Switch already records.'
-        );
-      }
-      if (answer !== null && !z.object({ restored: z.boolean() }).parse(answer).restored)
-        console.warn('The saved room was not restored; Switch kept its current room ownership.');
-    }
+    // Names this session to Switch on the agent's tool calls, so the room it
+    // connects to is its own rather than its connection's, which it shares
+    // with the agent's other sessions.
+    await writeSessionSelector(options.root, {
+      session_id: options.session.sessionId,
+      host_id: options.session.hostId,
+      epoch: options.session.epoch,
+    });
     await state.journal.append({ type: 'running' });
-    let rooms: SharedRoomInbox | null = null;
     // Read whether or not this session serves rooms: it is also where the
     // agent's controller hands over commands Switch relayed from Console.
     const handoffs = new HandoffInbox(options.root);
     handoffs.listen(executionSignal);
-    // Names the connection this session's room events arrive over, and answers
-    // with the rooms the server has it serving. Re-asserted while the session
-    // runs, because the connection belongs to the agent's controller, which can
-    // go away and come back under the same identity while this session keeps
-    // running — the binding is how the session finds out either way.
-    const roomConnection = options.roomConnection;
-    const bindRoomConnection = async () => {
-      boundAt = performance.now();
-      const served = roomBindingSchema.parse(
-        await request(`${sessionPath}/room-connection`, {
-          ...hostLease,
-          connection_id: roomConnection!.connectionId,
-        })
-      ).rooms;
-      const current = JSON.stringify(served);
-      if (current === roomBinding) return;
-      await rooms!.serves(served);
-      roomBinding = current;
-      await publishSelector();
-    };
-    /**
-     * Binds, and survives a refusal rather than taking the session down with
-     * it.
-     *
-     * The events are held by the server until something reaches them, and the
-     * identity this binding names is derived from the agent rather than minted
-     * per run, so a controller that comes back is the same one and delivery
-     * resumes on its own. What is not allowed is going quietly deaf, so the
-     * refusal is said in the transcript — and said there even when it happened
-     * before there was a transcript to say it in, which is the ordinary case
-     * when a restore brings a session up before its controller.
-     */
-    const assertRoomBinding = async (): Promise<void> => {
+    const rooms = options.roomConnection ? await SharedRoomInbox.open(options.root) : null;
+    if (rooms) await declareHandoffCapability(options.root);
+    // Room attachments fetched ahead of the command that names them, so one
+    // that cannot be fetched is left out and said, rather than failing the turn.
+    const roomAttachments = new Map<string, { data: Uint8Array; sha256: string }>();
+    const fetchRoomAttachment = async (
+      source: RoomAttachmentSource,
+      bytes: number
+    ): Promise<{ data: Uint8Array; sha256: string }> => {
+      const url = `${origin}/agents/${encodeURIComponent(agentId)}/rooms/${encodeURIComponent(source.roomId)}/media?mxc=${encodeURIComponent(source.mxc)}`;
+      const response = await fetch(url, {
+        headers: { authorization: `Bearer ${options.token}` },
+        signal: AbortSignal.any([executionSignal, AbortSignal.timeout(15000)]),
+        redirect: 'error',
+      });
+      if (!response.ok || !response.body)
+        throw new Error(`the room would not hand it over (${response.status})`);
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const reader = response.body.getReader();
       try {
-        await bindRoomConnection();
-      } catch (error) {
-        if (!(error instanceof RequestError) || error.code !== 'NOT_AUTHORIZED') throw error;
-        if (!unreachable) {
-          unreachable = true;
-          console.warn(error.message);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > MAX_ATTACHMENT_BYTES || size > bytes)
+            throw new Error('it is larger than the room said');
+          chunks.push(value);
         }
-        await discloseRefusal();
-        return;
+      } finally {
+        await reader.cancel();
       }
-      if (!unreachable) return;
-      unreachable = false;
-      disclosed = false;
-      await host?.roomDeliveryResumed();
+      const data = Buffer.concat(chunks);
+      if (data.byteLength !== bytes) throw new Error('it is not the size the room said');
+      return { data, sha256: createHash('sha256').update(data).digest('hex') };
     };
-    let pulledAt: number | null = null;
-    let pulledReading = 0;
-    let pullUnanswered: string | null = null;
-    let pullFailing = false;
-    let pulled: { epoch: string; owed: z.infer<typeof heldDeliveriesSchema> } | null = null;
-    let pullFatal: { epoch: string | null; error: unknown } | null = null;
-    const givenUpOn = new Set<string>();
-    /**
-     * Ask Switch for the deliveries this session's own rooms still owe it.
-     *
-     * The push is the fast path and stays the fast path: this exists for the
-     * session whose controller is not there to push. It is the same work
-     * either way — the server hands out one delivery per room, the one it
-     * would accept next, and the inbox admits each message once however many
-     * times it is offered, so a delivery that arrives both ways is journaled,
-     * run and acknowledged once.
-     *
-     * A delivery the room has moved away from is not offered here at all: the
-     * answer is filtered by the rooms the server has this session holding, so
-     * one this session gave back does not come round again until the room
-     * does — at which point it has still never been made.
-     *
-     * Asking is an addition, not a dependency. A server that does not answer
-     * is said once and not asked again under that lease generation; one that
-     * refuses is said and asked again next time, and in both cases the
-     * controller's route is untouched.
-     *
-     * Which is why nothing waits here. The loop this serves is also what
-     * drains the handoffs the controller writes and what submits, runs and
-     * acknowledges what it has been given: a server that takes its time
-     * answering the second route to the same work would otherwise hold up the
-     * first one, and the controls with it. The request runs on its own and
-     * leaves its answer for the loop to pick up, so one is in flight at a time
-     * and one answer is held at a time — a slow one delays the next ask, and
-     * nothing else.
-     *
-     * When the server says in its renewals whether anything is owed, the ask
-     * is made once for each renewal that says so and not at all otherwise. A
-     * no is only the moment it was read at, which is why every renewal reads
-     * it again; a server that does not say leaves the ask on its interval.
-     */
-    const startPull = (): void => {
-      if (
-        pulling !== null ||
-        pulled !== null ||
-        pullUnanswered === hostLease.epoch ||
-        pullFatal !== null
-      )
-        return;
-      const known = roomWork?.epoch === hostLease.epoch ? roomWork : null;
-      if (known) {
-        if (!known.owed || known.reading === pulledReading) return;
-        pulledReading = known.reading;
-      } else if (pulledAt !== null && performance.now() - pulledAt < ROOM_PULL_MS) return;
-      pulledAt = performance.now();
-      const epoch = hostLease.epoch;
-      pulling = (async () => {
-        try {
-          pulled = {
-            epoch,
-            owed: heldDeliveriesSchema.parse(
-              await attempt(`${sessionPath}/room-reservations`, hostLease)
-            ),
-          };
-          pullFailing = false;
-        } catch (error) {
-          // Abort and lease expiry are the host's business rather than this
-          // route's, so they are kept for the loop to raise where every other
-          // one of them is raised. Nothing acts on them here: an answer that
-          // arrives after the host has stopped, or on a lease it no longer
-          // holds, must change nothing. Abort stops the host whatever lease it
-          // came under; anything else said about a generation a recovery has
-          // replaced was about a lease this host no longer runs on.
-          if (executionSignal.aborted) pullFatal = { epoch: null, error };
-          else if (epoch !== hostLease.epoch) {
-            /* Asked for under a generation a recovery has since replaced. */
-          } else if (error instanceof SharedHostUnavailableError) pullFatal = { epoch, error };
-          else if (error instanceof RequestError && error.status === 404) {
-            pullUnanswered = epoch;
-            console.warn(
-              `This Switch server does not answer a session's own room work, so room messages reach this session only while its controller is routing them: ${error.message}`
-            );
-          } else if (!pullFailing) {
-            // Reported and survived rather than raised. What is owed is also
-            // being pushed wherever a controller is up, and taking a working
-            // session down because the second route to the same work is
-            // unreadable would cost more than the route is worth.
-            pullFailing = true;
-            console.warn(
-              `Switch would not say what room work this session is owed: ${String(error)}`
-            );
-          }
-        }
-        pulling = null;
-      })();
-    };
-    /**
-     * Take up what the last ask came back with, in the loop that runs the rest.
-     *
-     * Every effect of a pull lands here rather than in the request: accepting a
-     * delivery into the inbox and saying an expired one is gone are the same
-     * writes the pushed route makes, and they stay on the one thread that
-     * makes them.
-     */
-    const drainPull = async (inbox: SharedRoomInbox): Promise<void> => {
-      if (pullFatal !== null) {
-        if (pullFatal.epoch === null || pullFatal.epoch === hostLease.epoch) throw pullFatal.error;
-        // Kept under a generation a recovery has since replaced.
-        pullFatal = null;
-      }
-      const answer = pulled;
-      if (answer === null) return;
-      pulled = null;
-      // Asked for under a generation a recovery has since replaced.
-      if (answer.epoch !== hostLease.epoch) return;
-      for (const held of answer.owed) {
-        if (held.expired) {
-          const key = `${held.room_id}:${held.message_id}`;
-          if (givenUpOn.has(key)) continue;
-          givenUpOn.add(key);
-          await host?.notice(
-            `Room message ${held.message_id} was held for this session longer than Switch promises to hold one, and has not been delivered. Nothing was sent to the room about it.`
-          );
-          continue;
-        }
-        await inbox.accept({
-          sequence: held.sequence,
-          roomId: held.room_id,
-          messageId: held.message_id,
-        });
-      }
-    };
-    const discloseRefusal = async (): Promise<void> => {
-      if (disclosed || !host) return;
-      disclosed = true;
-      await host.notice(
-        "This session is not bound to its agent's room connection, so messages addressed to it in Switch are not reaching it. Delivery resumes by itself once that connection is back; if it does not, restart the agent's room watcher."
-      );
-    };
-    if (roomConnection) {
-      rooms = await SharedRoomInbox.open(options.root);
-      // Before the binding, which is what answers a room this session already
-      // holds: an event its controller routes here as soon as that answer
-      // lands waits in the inbox, rather than being written to a worker that
-      // had not yet said it reads one.
-      await declareHandoffCapability(options.root);
-      await assertRoomBinding();
-    }
-    starting = true;
+
     host = await HostedSession.start(
       options.root,
       {
-        session,
+        session: options.session,
         input: options.input,
-        epochAuthority: 'server',
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>
               stageAttachment(options.root, attachment, async () => {
-                const url = `${base.href.replace(/\/$/, '')}/sessions${sessionPath}/attachments/${encodeURIComponent(attachment.attachmentId)}?host_id=${encodeURIComponent(hostLease.host_id)}&epoch=${encodeURIComponent(hostLease.epoch)}`;
-                const response = await fetch(url, {
-                  headers: { authorization: `Bearer ${options.token}` },
-                  signal: AbortSignal.any([executionSignal, AbortSignal.timeout(15000)]),
-                  redirect: 'error',
-                });
-                if (!response.ok || !response.body)
-                  throw new Error(`Attachment download failed (${response.status}).`);
-                const chunks: Uint8Array[] = [];
-                let size = 0;
-                const reader = response.body.getReader();
-                try {
-                  while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    size += value.byteLength;
-                    if (size > MAX_ATTACHMENT_BYTES || size > attachment.bytes)
-                      throw new Error('Attachment exceeds its declared size.');
-                    chunks.push(value);
-                  }
-                } finally {
-                  await reader.cancel();
-                }
-                return {
-                  data: Buffer.concat(chunks),
-                  sha256: response.headers.get('x-content-sha256') ?? '',
-                };
+                const fetched = roomAttachments.get(attachment.attachmentId);
+                if (!fetched)
+                  throw new Error(
+                    `Attachment ${attachment.name} is not one this session was given in a room, so there is nowhere to fetch it from.`
+                  );
+                roomAttachments.delete(attachment.attachmentId);
+                return fetched;
               })
             )
           ),
-        resetEpoch: () =>
-          withLease(async () => {
-            for (const event of host!.replay(delivery!.cursor).events)
-              await delivery!.capture(event);
-            await upload(false);
-            await request(`${sessionPath}/quiesce`, hostLease);
-            const operation = {
-              type: 'recover' as const,
-              operationId: randomUUID(),
-              epoch: hostLease.epoch,
-              sourceBase: delivery!.cursor,
-              throughHostSequence: delivery!.throughHostSequence,
-            };
-            await state.journal.append(operation);
-            const snapshot = validateSession(
-              await request(`${sessionPath}/recover`, {
-                host_id: hostLease.host_id,
-                epoch: operation.epoch,
-                operation_id: operation.operationId,
-                through_host_sequence: operation.throughHostSequence,
-              })
-            );
-            await state.journal.append({
-              type: 'lease',
-              snapshot,
-              sourceBase: operation.sourceBase,
-            });
-            lease = state.latest('lease')!;
-            hostLease.epoch = snapshot.session.epoch;
-            if (roomBinding !== null) await publishSelector();
-            delivery = await SharedDelivery.load(
-              options.root,
-              snapshot.session,
-              operation.sourceBase
-            );
-            await renew();
-            return hostLease.epoch;
-          }),
       },
       adapter
     );
-    starting = false;
+
+    // ── What the host reports ────────────────────────────────────────────────
     const reporter = await ActivityReporter.load(options.root);
     // A session first reporting here may have a long history behind it, and
     // reporting that would put cards up for requests settled long ago.
@@ -705,7 +241,7 @@ export async function runSharedHost(
       if (!(error instanceof RequestError) || error.status !== 404 || error.code) return false;
       reportingUnsupported = true;
       console.warn(
-        'This Switch server does not accept session activity or approval requests, so messaging platforms show this session only through its event upload.'
+        'This Switch server does not accept session activity or approval requests, so messaging platforms do not show what this session is doing.'
       );
       return true;
     };
@@ -782,25 +318,98 @@ export async function runSharedHost(
         );
       }
     };
-    const flush = async () => {
-      for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
-      await upload(false);
+
+    // ── What reaches the host ────────────────────────────────────────────────
+    const run = async (value: unknown): Promise<void> => {
+      executionSignal.throwIfAborted();
+      const parsed = commandSchema.safeParse(value);
+      if (!parsed.success) {
+        console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
+        return;
+      }
+      const command = parsed.data;
+      if (command.sessionId !== options.session.sessionId) {
+        console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
+        return;
+      }
+      // A command built against an earlier generation of the session was
+      // about a conversation a reset or a restart has since replaced.
+      if (command.epoch !== host!.snapshot().session.epoch) return;
+      try {
+        if (command.body.type === 'session.compact') {
+          let finished = false;
+          const pending = host!.command(command).finally(() => {
+            finished = true;
+          });
+          void pending.catch(() => {});
+          while (!finished) {
+            await report();
+            await delay(250, undefined, { signal: executionSignal });
+          }
+          await pending;
+        } else await host!.command(command);
+      } catch (error) {
+        await host!.reject(command, error);
+      }
       await report();
     };
+    /** Turn each room message handed over into the command it amounts to, in order. */
+    const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
+      for (const event of await handoffs.drain()) await inbox.accept(event);
+      for (const event of inbox.pending()) {
+        const message = roomMessageSchema.safeParse(event.event);
+        if (!message.success) {
+          await host!.notice(
+            `Room message ${event.messageId} reached this session without its content, so it could not be run. Ask the sender to address the agent again.`
+          );
+          await inbox.acknowledge(event);
+          continue;
+        }
+        const attachments = planAttachments({
+          roomId: event.roomId,
+          message: message.data,
+          supportedMimeTypes: host!.snapshot().session.capabilities.attachmentMimeTypes,
+        });
+        for (const planned of attachments) {
+          if (planned.refused !== null) continue;
+          try {
+            roomAttachments.set(
+              planned.attachmentId,
+              await fetchRoomAttachment(planned.source, planned.bytes)
+            );
+          } catch (error) {
+            if (executionSignal.aborted) throw error;
+            planned.refused = `It could not be fetched: ${error instanceof Error ? error.message : String(error)}.`;
+          }
+        }
+        const command = roomCommand({
+          agentId,
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          roomId: event.roomId,
+          message: message.data,
+          surface: 'switch-web',
+          attachments,
+        });
+        // Taken by the host before the delivery is acknowledged: the host's
+        // inbox is durable, so a crash between the two runs the message once
+        // rather than losing it.
+        await run(command);
+        await inbox.acknowledge(event);
+      }
+    };
+
+    await report();
     await applyOutcomes(true);
     let heldForDecision = false;
-    let commandsCheckedAt = -Infinity;
-    // A refusal from before the provider existed had no transcript to be said
-    // in; this is the first moment there is one.
-    if (unreachable) await discloseRefusal();
     while (!executionSignal.aborted) {
-      await flush();
+      await report();
       await applyOutcomes(false);
-      if (roomConnection && performance.now() - boundAt >= 5000) await assertRoomBinding();
-      if (host.snapshot().session.status === 'stopped') break;
-      if (host.snapshot().session.status === 'error' && !host.resetDecisionPending)
+      const status = host.snapshot().session.status;
+      if (status === 'stopped') break;
+      if (status === 'error' && !host.resetDecisionPending)
         throw new Error(
-          'HOST_FAULTED: Provider execution failed. The room connection is closing; inspect the transcript before recovery.'
+          'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
       if (host.resetDecisionPending) heldForDecision = true;
       else if (heldForDecision) {
@@ -808,146 +417,20 @@ export async function runSharedHost(
         const held = rooms?.pending().length ?? 0;
         if (held) {
           await host.roomBacklogDelivered(held);
-          await flush();
+          await report();
         }
       }
-      const admitted: Command[] = [];
-      if (
-        acknowledged.session?.epoch === hostLease.epoch &&
-        ['ready', 'running'].includes(acknowledged.session.status) &&
-        ['ready', 'running'].includes(host.snapshot().session.status)
-      ) {
-        if (rooms) {
-          startPull();
-          await drainPull(rooms);
-        }
-        if (rooms) for (const event of await handoffs.drain()) await rooms.accept(event);
-        for (const event of rooms?.pending() ?? []) {
-          try {
-            const receipt = roomMessageReceiptSchema.parse(
-              // Asked for in the query string: a server built before this
-              // existed ignores an unknown parameter there, while the request
-              // body is strict and an unknown field in it is a 422 the host
-              // cannot recover from. Such a server answers the plain receipt,
-              // which carries no command, and this falls back to the fetch.
-              await request(`${sessionPath}/room-message?include_command=true`, {
-                ...hostLease,
-                room_id: event.roomId,
-                message_id: event.messageId,
-                sequence: event.sequence,
-              })
-            );
-            if (receipt.command) admitted.push(receipt.command);
-            else commandsCheckedAt = -Infinity;
-            if (receipt.status === 'unknown' || receipt.status === 'rejected')
-              await host.notice(
-                `Room message ${event.messageId}: ${receipt.message ?? receipt.status}. It was not resent.`
-              );
-          } catch (error) {
-            if (!(error instanceof RequestError)) throw error;
-            // The room moved to another session of this agent while the event
-            // was on its way here. Switch keeps the delivery and hands it to
-            // whoever holds the room now, so this session lets it go rather
-            // than retrying something it is no longer entitled to submit.
-            // Given back rather than acknowledged: the delivery was never
-            // made, the room can come back here, and an acknowledgement would
-            // refuse it the second time as though it had been.
-            if (error.code === 'ROOM_MESSAGE_REASSIGNED') {
-              await host.notice(
-                `Room message ${event.messageId} is no longer this session's to answer; the room moved to another session of this agent, and Switch is delivering the message there.`
-              );
-              await rooms!.release(event);
-              continue;
-            }
-            // An earlier message for this room has not been answered yet, so
-            // this one is not this session's to run first. Kept outstanding
-            // and not given back: nothing has changed about whose delivery it
-            // is, only about when. The one in front of it is already held or
-            // arrives with the next pull, and this is tried again behind it.
-            if (error.code === 'ROOM_MESSAGE_OUT_OF_ORDER') continue;
-            if (
-              [
-                'UNSUPPORTED_CAPABILITY',
-                'ROOM_MESSAGE_RESERVED',
-                'ROOM_MESSAGE_ABANDONED',
-              ].includes(error.code)
-            )
-              await host.notice(
-                `Room message ${event.messageId} was not submitted: ${error.message}`
-              );
-            else throw error;
-          }
-          await rooms!.acknowledge(event);
-        }
-      }
-      // A command handed back by its own admission needs no fetching. The
-      // server hands one back only while nothing else is queued for the
-      // session, so running it here cannot put it ahead of a stop, a reset or
-      // an interrupt that was waiting: with any of those pending the receipt
-      // carries no command and this falls through to the ordered endpoint.
-      // Anything queued after the admission is served by the next pass, as a
-      // command arriving just after a fetch always has been.
-      // Room handoffs and Console controls share the durable command queue.
-      // The watcher wakes us for committed commands; a slow check recovers
-      // missed notifications, older watchers and disconnected controllers.
-      const commandWake = handoffs.takeCommandWake();
-      const checkCommands = commandWake || performance.now() - commandsCheckedAt >= 5000;
-      let commands: unknown = admitted;
-      if (admitted.length === 0 && checkCommands) {
-        commandsCheckedAt = performance.now();
-        commands = await request(`${sessionPath}/commands`, hostLease);
-      }
-      if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
-      const batch: unknown[] = [...(await handoffs.drainCommands()), ...commands];
-      // Drain queued work promptly; only an empty response starts the idle interval.
-      if (batch.length > 0) commandsCheckedAt = -Infinity;
-      for (const value of batch) {
-        executionSignal.throwIfAborted();
-        if (performance.now() >= deadline) {
-          if (lease) throw new SharedHostLeaseExpiredError();
-          throw new Error(
-            'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
-          );
-        }
-        const parsed = commandSchema.safeParse(value);
-        if (!parsed.success) {
-          console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
-          continue;
-        }
-        const command = parsed.data;
-        if (command.sessionId !== session.sessionId)
-          throw new Error('Switch returned a command for another session.');
-        if (command.epoch !== hostLease.epoch) continue;
-        try {
-          if (command.body.type === 'session.compact') {
-            let finished = false;
-            const pending = host.command(command).finally(() => {
-              finished = true;
-            });
-            void pending.catch(() => {});
-            while (!finished) {
-              await flush();
-              await delay(250, undefined, { signal: executionSignal });
-            }
-            await pending;
-          } else await host.command(command);
-        } catch (error) {
-          await host.reject(command, error);
-        }
-        await flush();
-      }
+      if (rooms && ['ready', 'running'].includes(status)) await admitRoomMessages(rooms);
+      for (const value of await handoffs.drainCommands()) await run(value);
       await handoffs.idle(250, executionSignal);
     }
   } catch (error) {
     if (!signal.aborted) failure ??= error;
   } finally {
     stopped.abort();
-    await heartbeat;
-    // Aborted by the line above, and waited for here so the host does not
-    // return with a request of its own still outstanding.
-    if (pulling) await pulling;
     try {
-      await finish();
+      await stopExecution();
+      await state.journal.append({ type: 'quiesced' });
     } catch (error) {
       if (failure)
         console.warn('Shared host cleanup failed after an earlier error:', String(error));

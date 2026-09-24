@@ -1,17 +1,10 @@
-import { serverEventSchema, snapshotSchema } from '@switch-console/shared/session-v1';
-import type { AttachmentUpload, ClientCommand } from '@switch-console/shared/session-v1';
+import { snapshotSchema } from '@switch-console/shared/session-v1';
+import type { ClientCommand } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import {
-  fetchSdkSessions,
-  uploadSdkAttachment,
-  fetchSdkSnapshot,
-  fetchSdkEvents,
-  retireSdkSession,
-} from '../switch-servers/gateway-client';
 import { reconnectSdkRoom } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
 import { connectionHealth } from './connection-health';
@@ -36,10 +29,6 @@ export const sdkHostController = createRPCController({
     sessionRuntimeManager.getAgent(sessionId)?.startupStatus?.() ?? null,
   discoveryErrors: () => remoteSessionReconciler.errors(),
   retryDiscovery: (agentId: string) => remoteSessionReconciler.refresh(agentId),
-  retire: async (serverId: string, sessionId: string, epoch: string) =>
-    retireSdkSession(await sharedServer(serverId), sessionId, epoch),
-  uploadAttachment: async (serverId: string, sessionId: string, file: AttachmentUpload) =>
-    uploadSdkAttachment(await sharedServer(serverId), sessionId, file),
   connectionHealth,
   reconnectRoom: async (
     serverId: string,
@@ -63,22 +52,6 @@ export const sdkHostController = createRPCController({
     const agent = await getAgentById(agentId);
     if (!agent?.serverId) throw new Error('This agent has no Switch server.');
     return agent.serverId;
-  },
-  sharedList: async (serverId: string) => fetchSdkSessions(await sharedServer(serverId)),
-  sharedSnapshot: async (serverId: string, sessionId: string) => {
-    const snapshot = snapshotSchema.parse(
-      await fetchSdkSnapshot(await sharedServer(serverId), sessionId)
-    );
-    await syncSdkSessionActivity(snapshot.session);
-    return snapshot;
-  },
-  sharedEvents: async (serverId: string, sessionId: string, after: number) => {
-    const batch = z
-      .array(serverEventSchema)
-      .parse(await fetchSdkEvents(await sharedServer(serverId), sessionId, after));
-    const latest = batch.filter((event) => event.body.type === 'session.upsert').at(-1);
-    if (latest?.body.type === 'session.upsert') await syncSdkSessionActivity(latest.body.session);
-    return batch;
   },
   transcriptSource,
   journalSnapshot: async (agentId: string, sessionId: string) => {

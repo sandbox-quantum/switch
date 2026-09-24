@@ -1,451 +1,116 @@
-"""A caller may name its session instead of its connection.
+"""A caller may name its session as well as its connection.
 
-The operations door has only ever accepted a connection id, which is why every
-operation that resolves a room implicitly resolves it from a connection — and
-why a connection covering more than one room has nowhere to go. Naming the
-session is the step that makes the session addressable in its own right.
-
-The two selectors still agree on the connection, and must: that equivalence is
-what lets a caller move from one to the other without anything else changing,
-and it is the first thing proven below. What only the session selector can
-answer is *which room this caller is in* — the connection knows the rooms it
-covers, not which of its sessions meant which.
-
-The rest of the file is the refusals, which keep the selector from being a
-cheaper way in than the connection it stands for.
+Several sessions of one agent share the agent's connection, so the connection
+cannot say which room a call means. The session selector can: Switch keeps, in
+memory, which room each session last connected to.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 
-from switch_core.bridges.agent.api.operations import (
-    SESSION_SELECTOR_HEADERS,
-    resolve_caller,
-    router,
-)
-from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_protocol, get_session_factory
+from switch_core.bridges.agent.api.operations import resolve_caller
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_LAPSED,
     ClientDeclaration,
     ConnectionRegistry,
 )
-from switch_core.db.models import TENANT_ZERO_ID
-from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionAuthority, SessionError
-from switch_core.tenant_context import tenant_scope
-from tests.switch_core.sessions.test_authority import setup
-from tests.switch_core.sessions.test_shared_connection import (
-    OTHER_ROOM,
-    SECOND,
-    _controller,
-    _second_room,
-    _second_session,
-)
 
 AGENT = "agent-demo"
-SESSION = "session-demo"
-HOST = "host-demo"
 CONNECTION = "connection-demo"
-ROOM = "room-demo"
 
 
 class _Protocol:
-    """Enough of ProtocolService for the door's connection check."""
-
     def __init__(self, connections: ConnectionRegistry) -> None:
         self.connections = connections
 
 
-def _open(connections: ConnectionRegistry, connection_id: str):
-    return connections.open(
+def _protocol() -> _Protocol:
+    connections = ConnectionRegistry()
+    connections.open(
         agent_id=AGENT,
-        connection_id=connection_id,
-        scope="single",
-        delivery_filter="all",
+        connection_id=CONNECTION,
+        scope="all",
+        delivery_filter="addressed",
         spawn_capable=False,
         cursor=0,
         declaration=ClientDeclaration(),
         expected_generation=None,
     )
+    return _Protocol(connections)
 
 
-async def _bound(session_factory):
-    """A session holding a live connection, the state every caller is in."""
-    service, epoch = await setup(session_factory)
-    connections = ConnectionRegistry()
-    connections.claim_room(_open(connections, CONNECTION), ROOM)
-    await service.bind_connection(AGENT, SESSION, HOST, epoch, CONNECTION, connections)
-    return epoch, _Protocol(connections)
-
-
-async def _resolve(
-    session_factory,
-    protocol: _Protocol,
-    *,
-    connection_id: str | None,
-    session_id: str | None,
-    host_id: str | None,
-    epoch: str | None,
-) -> str | None:
-    key, _ = await resolve_caller(
+async def _resolve(protocol: _Protocol, **selector: str | None):
+    values = {"connection_id": None, "session_id": None, "host_id": None, "epoch": None}
+    values.update(selector)
+    return await resolve_caller(
         agent_id=AGENT,
         protocol=protocol,  # type: ignore[arg-type]
-        factory=session_factory,
-        connection_id=connection_id,
-        session_id=session_id,
-        host_id=host_id,
-        epoch=epoch,
-    )
-    return key
-
-
-@pytest.mark.asyncio
-async def test_both_selectors_resolve_to_the_same_key(session_factory) -> None:
-    """The whole point of the expand step: one answer, two ways to ask for it.
-
-    If these ever diverged, moving a caller from one selector to the other
-    would silently move which room its operations act on.
-    """
-    epoch, protocol = await _bound(session_factory)
-
-    by_connection = await _resolve(
-        session_factory,
-        protocol,
-        connection_id=CONNECTION,
-        session_id=None,
-        host_id=None,
-        epoch=None,
-    )
-    by_session = await _resolve(
-        session_factory,
-        protocol,
-        connection_id=None,
-        session_id=SESSION,
-        host_id=HOST,
-        epoch=epoch,
-    )
-
-    assert by_connection == by_session == CONNECTION
-
-
-@pytest.mark.asyncio
-async def test_the_session_selector_also_answers_with_its_room(session_factory) -> None:
-    """The extra thing naming a session buys, and the reason it is one read.
-
-    A room-scoped operation needs the caller's room; the connection selector
-    cannot supply it once a connection carries several sessions. Resolving it
-    here, in the fenced read that resolved the connection, is what keeps that
-    from costing a query per operation.
-    """
-    epoch, protocol = await _bound(session_factory)
-    service = SessionAuthority(session_factory)
-    await service.bind_room(AGENT, SESSION, HOST, epoch, ROOM)
-
-    _, caller = await resolve_caller(
-        agent_id=AGENT,
-        protocol=protocol,  # type: ignore[arg-type]
-        factory=session_factory,
-        connection_id=None,
-        session_id=SESSION,
-        host_id=HOST,
-        epoch=epoch,
-    )
-
-    assert caller is not None
-    assert (caller.id, caller.host_id, caller.epoch) == (SESSION, HOST, epoch)
-    assert caller.room_id == ROOM
-
-    # A connection selector names no session, so it carries no room either —
-    # such a caller keeps resolving from the connection as it always has.
-    _, none_named = await resolve_caller(
-        agent_id=AGENT,
-        protocol=protocol,  # type: ignore[arg-type]
-        factory=session_factory,
-        connection_id=CONNECTION,
-        session_id=None,
-        host_id=None,
-        epoch=None,
-    )
-    assert none_named is None
-
-
-@pytest.mark.asyncio
-async def test_two_callers_on_one_connection_resolve_their_own_rooms(
-    session_factory,
-) -> None:
-    """The case the selector was added for, with both callers real.
-
-    One connection, two live sessions of the agent, a room each. The connection
-    holds the union, so it matches either caller for either room and can only
-    guess. Each selector comes back with the room that caller's own bind wrote,
-    and neither is told it is in the other's.
-    """
-    service, first = await setup(session_factory)
-    second = await _second_session(service)
-    await _second_room(session_factory)
-    connections = ConnectionRegistry()
-    connection = _controller(connections, [ROOM, OTHER_ROOM])
-    protocol = _Protocol(connections)
-    for names, epoch, room in (
-        ((SESSION, HOST), first, ROOM),
-        (SECOND, second, OTHER_ROOM),
-    ):
-        await service.bind_connection(AGENT, *names, epoch, connection.id, connections)
-        await service.bind_room(AGENT, *names, epoch, room)
-
-    resolved = []
-    for names, epoch in (((SESSION, HOST), first), (SECOND, second)):
-        key, caller = await resolve_caller(
-            agent_id=AGENT,
-            protocol=protocol,  # type: ignore[arg-type]
-            factory=session_factory,
-            connection_id=None,
-            session_id=names[0],
-            host_id=names[1],
-            epoch=epoch,
-        )
-        assert caller is not None
-        resolved.append((key, caller.id, caller.room_id))
-
-    assert resolved == [
-        (connection.id, SESSION, ROOM),
-        (connection.id, SECOND[0], OTHER_ROOM),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_naming_both_agrees_or_is_refused(session_factory) -> None:
-    epoch, protocol = await _bound(session_factory)
-    _open(protocol.connections, "connection-other")
-
-    agreeing = await _resolve(
-        session_factory,
-        protocol,
-        connection_id=CONNECTION,
-        session_id=SESSION,
-        host_id=HOST,
-        epoch=epoch,
-    )
-    assert agreeing == CONNECTION
-
-    with pytest.raises(HTTPException) as caught:
-        await _resolve(
-            session_factory,
-            protocol,
-            connection_id="connection-other",
-            session_id=SESSION,
-            host_id=HOST,
-            epoch=epoch,
-        )
-
-    assert caught.value.status_code == 409
-    assert "send one selector or the other" in caught.value.detail
-
-
-@pytest.mark.asyncio
-async def test_a_caller_naming_nothing_is_bound_to_nothing(session_factory) -> None:
-    """Unchanged: an operation needing a room reports that it has none."""
-    _, protocol = await _bound(session_factory)
-
-    assert (
-        await _resolve(
-            session_factory,
-            protocol,
-            connection_id=None,
-            session_id=None,
-            host_id=None,
-            epoch=None,
-        )
-        is None
+        factory=None,  # type: ignore[arg-type]
+        **values,  # type: ignore[arg-type]
     )
 
 
 @pytest.mark.asyncio
-async def test_an_incomplete_selector_is_refused(session_factory) -> None:
-    """Two thirds of a fence is not a fence.
+async def test_two_sessions_on_one_connection_resolve_their_own_rooms() -> None:
+    protocol = _protocol()
+    protocol.connections.place_session(AGENT, "first", "room-a")
+    protocol.connections.place_session(AGENT, "second", "room-b")
 
-    Dropping the host or the epoch would leave a bare session id, which is
-    guessable and belongs to whoever names it first.
-    """
-    epoch, protocol = await _bound(session_factory)
+    key, first = await _resolve(protocol, connection_id=CONNECTION, session_id="first")
+    _, second = await _resolve(protocol, connection_id=CONNECTION, session_id="second")
 
-    for partial in (
-        {"session_id": SESSION, "host_id": None, "epoch": None},
-        {"session_id": SESSION, "host_id": HOST, "epoch": None},
-        {"session_id": None, "host_id": HOST, "epoch": epoch},
-    ):
-        with pytest.raises(HTTPException) as caught:
-            await _resolve(session_factory, protocol, connection_id=None, **partial)
-        assert caught.value.status_code == 400
+    assert key == CONNECTION
+    assert first is not None and first.room_id == "room-a"
+    assert second is not None and second.room_id == "room-b"
 
 
 @pytest.mark.asyncio
-async def test_the_selector_passes_the_session_fence(session_factory) -> None:
-    """Named, not trusted: the same fence binding the connection had to pass."""
-    epoch, protocol = await _bound(session_factory)
-
-    with pytest.raises(SessionError) as stale:
-        await _resolve(
-            session_factory,
-            protocol,
-            connection_id=None,
-            session_id=SESSION,
-            host_id=HOST,
-            epoch="not-this-epoch",
-        )
-    assert stale.value.code == "STALE_EPOCH"
-
-    with pytest.raises(SessionError) as impostor:
-        await _resolve(
-            session_factory,
-            protocol,
-            connection_id=None,
-            session_id=SESSION,
-            host_id="another-host",
-            epoch=epoch,
-        )
-    assert impostor.value.code == "NOT_AUTHORIZED"
+async def test_a_session_that_connected_to_nothing_is_in_no_room() -> None:
+    _, caller = await _resolve(
+        _protocol(), connection_id=CONNECTION, session_id="fresh"
+    )
+    assert caller is not None and caller.room_id is None
 
 
 @pytest.mark.asyncio
-async def test_another_agents_session_is_refused(session_factory) -> None:
-    """The authenticated agent decides, so the selector cannot cross agents."""
-    epoch, protocol = await _bound(session_factory)
-
-    with pytest.raises(SessionError) as caught:
-        await resolve_caller(
-            agent_id="agent-intruder",
-            protocol=protocol,  # type: ignore[arg-type]
-            factory=session_factory,
-            connection_id=None,
-            session_id=SESSION,
-            host_id=HOST,
-            epoch=epoch,
-        )
-
-    assert caught.value.code == "NOT_AUTHORIZED"
+async def test_host_and_epoch_are_accepted_and_not_needed() -> None:
+    protocol = _protocol()
+    protocol.connections.place_session(AGENT, "first", "room-a")
+    _, caller = await _resolve(
+        protocol, connection_id=CONNECTION, session_id="first", host_id="h", epoch="e"
+    )
+    assert caller is not None and (caller.host_id, caller.epoch) == ("h", "e")
 
 
 @pytest.mark.asyncio
-async def test_a_session_that_bound_nothing_says_so(session_factory) -> None:
-    """Not "no room" — a session that never bound is a caller error, said out loud."""
-    service, epoch = await setup(session_factory)
-    protocol = _Protocol(ConnectionRegistry())
-
-    with pytest.raises(SessionError) as caught:
-        await _resolve(
-            session_factory,
-            protocol,
-            connection_id=None,
-            session_id=SESSION,
-            host_id=HOST,
-            epoch=epoch,
-        )
-
-    assert caught.value.code == "NO_ROOM_CONNECTION"
-    assert await service.snapshot(SESSION, "owner") is not None
+async def test_a_session_selector_needs_its_connection() -> None:
+    with pytest.raises(HTTPException) as refused:
+        await _resolve(_protocol(), session_id="first")
+    assert refused.value.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_a_dead_connection_is_refused_through_either_selector(
-    session_factory,
-) -> None:
-    """The binding outlives the connection, and must not resurrect it.
+async def test_a_dead_or_foreign_connection_is_refused() -> None:
+    protocol = _protocol()
+    with pytest.raises(HTTPException) as foreign:
+        await _resolve(protocol, connection_id="someone-elses", session_id="first")
+    assert foreign.value.status_code == 409
 
-    A session row keeps its connection id after the connection goes; the
-    connection selector has always refused that, and naming the session must
-    not be the way around it.
-    """
-    epoch, protocol = await _bound(session_factory)
     protocol.connections.close(CONNECTION, HEARTBEAT_LAPSED)
-
-    for selector in (
-        {
-            "connection_id": CONNECTION,
-            "session_id": None,
-            "host_id": None,
-            "epoch": None,
-        },
-        {
-            "connection_id": None,
-            "session_id": SESSION,
-            "host_id": HOST,
-            "epoch": epoch,
-        },
-    ):
-        with pytest.raises(HTTPException) as caught:
-            await _resolve(session_factory, protocol, **selector)
-        assert caught.value.status_code == 409
+    with pytest.raises(HTTPException) as dead:
+        await _resolve(protocol, connection_id=CONNECTION, session_id="first")
+    assert dead.value.status_code == 409
 
 
-# ── the headers the selector actually arrives on ─────────────────────────────
-
-
-class _Agent:
-    id = AGENT
-
-
-class _TenantMiddleware:
-    """Stands in for the auth middleware, which is what binds the tenant."""
-
-    def __init__(self, app: Any) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        with tenant_scope(TENANT_ZERO_ID):
-            await self.app(scope, receive, send)
-
-
-def _app(session_factory, protocol: _Protocol) -> FastAPI:
-    """The real route, so the header names and the wiring are under test too.
-
-    Everything above this point calls the resolver directly. That proves the
-    rule and not the spelling — a mistyped alias or an unwired dependency would
-    pass all of it and fail on the first real request.
-    """
-    app = FastAPI()
-    app.include_router(router)
-    app.add_middleware(_TenantMiddleware)
-    app.add_exception_handler(SessionError, session_error_response)
-    app.dependency_overrides[get_agent_from_scope] = lambda: _Agent()
-    app.dependency_overrides[get_protocol] = lambda: protocol
-    app.dependency_overrides[get_session_factory] = lambda: session_factory
-    return app
-
-
-async def _post(client: httpx.AsyncClient, headers: dict[str, str]):
-    return await client.post(
-        f"/agents/{AGENT}/ops/no_such_operation", json={}, headers=headers
-    )
-
-
-@pytest.mark.asyncio
-async def test_the_selector_is_read_from_its_headers(session_factory) -> None:
-    epoch, protocol = await _bound(session_factory)
-    session, host, generation = SESSION_SELECTOR_HEADERS
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_app(session_factory, protocol)),
-        base_url="http://test",
-    ) as client:
-        # Resolved, then dispatched: only an accepted selector gets as far as
-        # the operation lookup that rejects this name.
-        accepted = await _post(
-            client, {session: SESSION, host: HOST, generation: epoch}
-        )
-        assert accepted.status_code == 404
-
-        stale = await _post(
-            client, {session: SESSION, host: HOST, generation: "not-this-epoch"}
-        )
-        assert stale.status_code == 409
-        assert stale.json()["code"] == "STALE_EPOCH"
-
-        partial = await _post(client, {session: SESSION})
-        assert partial.status_code == 400
+def test_one_session_per_room_and_one_room_per_session() -> None:
+    connections = ConnectionRegistry()
+    assert connections.place_session(AGENT, "first", "room-a") == (set(), None)
+    # Moving leaves the room it was in.
+    assert connections.place_session(AGENT, "first", "room-b") == ({"room-a"}, None)
+    # Taking an occupied room displaces the session in it.
+    assert connections.place_session(AGENT, "second", "room-b") == (set(), "first")
+    assert connections.session_in_room(AGENT, "room-b") == "second"
+    assert connections.session_room(AGENT, "first") is None
+    assert connections.session_in_room("another-agent", "room-b") is None

@@ -36,7 +36,6 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.rooms_yaml import GroupSpec
-from switch_core.sessions.service import SessionAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -311,11 +310,9 @@ async def connect_to_room(
         # rooms to vacate are the caller's own, read under the bind's lock
         # rather than from what it believed on arrival.
         if caller is not None:
-            binding = await SessionAuthority(protocol.session_factory).bind_room(
-                agent_id, caller.id, caller.host_id, caller.epoch, room.id
+            previous, displaced_session_id = protocol.connections.place_session(
+                agent_id, caller.id, room.id
             )
-            previous = set(binding.vacated)
-            displaced_session_id = binding.displaced
         else:
             previous = rooms_on_caller_connection(protocol, agent_id, key)
 

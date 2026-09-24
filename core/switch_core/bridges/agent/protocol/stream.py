@@ -381,6 +381,11 @@ async def _event_stream(
                     continue
                 payload = item.event.model_dump(mode="json")
                 payload["sequence"] = item.seq
+                # The session working in this room, for a controller routing
+                # to several: it cannot tell from the room alone.
+                placed = registry.session_in_room(agent_id, item.room_id)
+                if placed is not None:
+                    payload["session_id"] = placed
                 if item.notifiable:
                     # Told on the way past, on the one event the agent is being
                     # woken for anyway. A count of its own would be a wake

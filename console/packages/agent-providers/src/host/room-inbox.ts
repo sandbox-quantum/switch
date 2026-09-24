@@ -57,6 +57,9 @@ const receivedSchema = z.strictObject({
   sequence: z.number().int().positive(),
   roomId: z.string().min(1),
   messageId: z.string().min(1),
+  // The event itself, as the agent's stream delivered it to the controller:
+  // what the session's prompt is built from.
+  event: z.unknown().optional(),
 });
 /**
  * Deliveries journaled before the server counted chatter per room carry a
@@ -167,7 +170,9 @@ export class SharedRoomInbox {
    * connection, and a session upgraded from one of its own can hold the same
    * event under two of them.
    */
-  async accept(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<boolean> {
+  async accept(
+    event: Pick<Received, 'sequence' | 'roomId' | 'messageId' | 'event'>
+  ): Promise<boolean> {
     const received = receivedSchema.parse({ type: 'received', ...event });
     if (this.received.has(identity(received))) return false;
     await this.journal.append({ ...received, type: 'handoff' });

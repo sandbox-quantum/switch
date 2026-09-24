@@ -21,17 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import uuid
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Any, cast
 
 import httpx
 import uvicorn
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
@@ -50,10 +47,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
 from switch_core.db.models import (
     TENANT_ZERO_ID,
-    SdkRoomAdmission,
-    SdkSession,
     User,
-    require_tenant_id,
 )
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.main import (
@@ -62,6 +56,7 @@ from switch_core.main import (
     _seed_agent_registration_bootstrap_key,
 )
 from switch_core.messages.notify import MessageListener
+from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
@@ -69,13 +64,7 @@ from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import SessionActivityService
 from switch_core.sessions.contract import CommandStatus
-from switch_core.sessions.service import (
-    SessionAuthority,
-    _host_lapsed,
-    _now,
-    _room_claimants,
-    _stored_snapshot,
-)
+from switch_core.sessions.service import SessionAuthority
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -123,38 +112,17 @@ class _BenchBridges(_NoBridges):
 
 
 @dataclass(frozen=True, slots=True)
-class RoomState:
-    """The sessions of one room that a delivery decision turns on.
-
-    `owner` is the session whose host still holds the room, and is who a
-    delivery is routed to. `lapsed` is every unfinished session claiming the
-    room whose host was killed rather than stood down — the population the
-    server picks a session to be started again from.
-    """
-
-    owner: str | None
-    lapsed: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class SessionSelector:
-    """What a caller sends to act as one session of an agent.
-
-    The three together are the selector the agent HTTP door reads; any two of
-    them name nothing. Read from the session rows rather than from a host's
-    state directory, because the server is the side that decides whether a
-    selector is current.
-    """
+    """What a caller sends to act as one session of an agent: the session, and
+    the agent connection it calls over."""
 
     session_id: str
-    host_id: str
-    epoch: str
+    connection_id: str
 
     def headers(self) -> dict[str, str]:
         return {
             "X-Switch-Session-Id": self.session_id,
-            "X-Switch-Session-Host-Id": self.host_id,
-            "X-Switch-Session-Epoch": self.epoch,
+            "X-Switch-Connection-Id": self.connection_id,
         }
 
 
@@ -220,106 +188,13 @@ class BenchServer:
         """
         return tuple(self._agents)
 
-    async def room_states(self, agent_id: str) -> dict[str, RoomState]:
-        """Per room of this agent, the sessions an admission answer is read off.
-
-        Taken from the session rows through the service's own predicates, so
-        the benchmark scores the topology against the authority the controller
-        routes on rather than against the connection registry, which no longer
-        sees a session worker.
-        """
-        async with self._session_factory() as db:
-            rows = list(
-                await db.scalars(
-                    select(SdkSession).where(
-                        SdkSession.tenant_id == require_tenant_id(),
-                        SdkSession.agent_id == agent_id,
-                    )
-                )
-            )
-            now = await _now(db)
-        rooms = {
-            room for row in rows for room in _stored_snapshot(row).session.room_ids
-        }
-        states: dict[str, RoomState] = {}
-        for room_id in rooms:
-            owner, claimants = _room_claimants(rows, room_id, now)
-            states[room_id] = RoomState(
-                owner=owner.id if owner else None,
-                lapsed=tuple(
-                    sorted(row.id for row in claimants if _host_lapsed(row, now))
-                ),
-            )
-        return states
-
-    async def reserved_deliveries(self, agent_id: str) -> tuple[str, ...]:
-        """Message ids this agent has been promised it may still deliver.
-
-        A reservation is held in the database rather than in the replay buffer,
-        so it is what a delivery survives a restart on. Reading it is how a
-        scenario stages the restart on a delivery that is genuinely outstanding
-        instead of on a guess at the window.
-        """
-        async with self._session_factory() as db:
-            rows = await db.scalars(
-                select(SdkRoomAdmission.message_id)
-                .where(
-                    SdkRoomAdmission.tenant_id == require_tenant_id(),
-                    SdkRoomAdmission.agent_id == agent_id,
-                    SdkRoomAdmission.consumed_at.is_(None),
-                    SdkRoomAdmission.discarded_at.is_(None),
-                )
-                .order_by(SdkRoomAdmission.message_id)
-            )
-        return tuple(rows)
-
-    async def owe_lapsed_delivery(self, agent_id: str, room_id: str) -> str:
-        """Leave a room owing this agent a delivery whose promise has run out.
-
-        Owed work a controller will never route: the promise lapsed before it
-        was handed over, and until the controller gives it up it is what a
-        session asking for its own rooms' work is told about. It is the one
-        kind a scenario can write without a verified event behind it, because
-        a lapsed delivery is named to the session and never built.
-        """
-        message_id = f"lapsed-{uuid.uuid4()}"
-        async with self._session_factory() as db, db.begin():
-            now = await _now(db)
-            db.add(
-                SdkRoomAdmission(
-                    agent_id=agent_id,
-                    room_id=room_id,
-                    message_id=message_id,
-                    sequence=0,
-                    delivery={},
-                    created_at=now - timedelta(minutes=5),
-                    expires_at=now - timedelta(minutes=1),
-                )
-            )
-        return message_id
-
-    async def session_selectors(self, agent_id: str) -> dict[str, SessionSelector]:
-        """How each of this agent's sessions would identify itself to the door.
-
-        A session's host and epoch are the server's record of who it is, so a
-        scenario acting as a session reads them from there rather than
-        assembling a selector of its own that the server would be entitled to
-        refuse.
-        """
-        async with self._session_factory() as db:
-            rows = list(
-                await db.scalars(
-                    select(SdkSession).where(
-                        SdkSession.tenant_id == require_tenant_id(),
-                        SdkSession.agent_id == agent_id,
-                    )
-                )
-            )
+    def placed_sessions(
+        self, agent_id: str, room_ids: list[str]
+    ) -> dict[str, str | None]:
+        """Per room, the session of this agent Switch has working in it."""
         return {
-            row.id: SessionSelector(
-                session_id=row.id, host_id=row.host_id, epoch=row.epoch
-            )
-            for row in rows
+            room_id: self.connections.session_in_room(agent_id, room_id)
+            for room_id in room_ids
         }
 
     async def connect_session_to_room(
@@ -713,7 +588,7 @@ async def _serve(
     # and both the connection count and the recovery case measure a
     # harness defect instead of the topology.
     sweeps = [
-        asyncio.create_task(_connection_sweep_loop(protocol)),
+        asyncio.create_task(_connection_sweep_loop(protocol, EventLoopLag())),
         asyncio.create_task(_runtime_state_sweep_loop(protocol)),
     ]
 

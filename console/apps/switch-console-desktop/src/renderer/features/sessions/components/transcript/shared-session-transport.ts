@@ -1,6 +1,5 @@
 import {
   commandStatusSchema,
-  attachmentSchema,
   serverEventSchema,
   type SessionTransport,
 } from '@switch-console/shared/session-v1';
@@ -37,36 +36,22 @@ function polling(read: Poll): SessionTransport['subscribe'] {
 }
 
 /**
- * The transcript read from the session host's own journal, with every command
- * still sent through Switch: the host takes commands only from Switch.
- * Sequence numbers here are the host's, so a client built on this transport
- * never mixes in events read from Switch.
+ * A shared session as its host records it: the transcript from the host's own
+ * journal, and every command through Switch's relay, the only place the host
+ * takes commands from. Sequence numbers are the host's own.
+ *
+ * No attachment upload: the host takes files only from the rooms it is
+ * addressed in, so the composer says attachments are unavailable here.
  */
-export function hostJournalTransport(agentId: string, serverId: string): SessionTransport {
+export function hostJournalTransport(agentId: string): SessionTransport {
   return {
-    ...sharedSessionTransport(agentId, serverId),
     snapshot: (id) => rpc.sdkHost.journalSnapshot(agentId, id),
     subscribe: polling((id, after) => rpc.sdkHost.journalEvents(agentId, id, after)),
-  };
-}
-
-/**
- * The transcript Switch holds, for a session whose host journal cannot be
- * read from here. Commands go to the host through Switch's relay either way.
- */
-export function sharedSessionTransport(agentId: string, serverId: string): SessionTransport {
-  return {
-    uploadAttachment: async (sessionId, file) => {
-      const value = await rpc.sdkHost.uploadAttachment(serverId, sessionId, file);
-      return attachmentSchema.parse(value);
-    },
-    snapshot: (id) => rpc.sdkHost.sharedSnapshot(serverId, id),
     submit: async (command) =>
       commandStatusSchema.parse(await rpc.sdkHost.sessionSubmit(agentId, command)),
     reconcile: async (command) =>
       commandStatusSchema.parse(await rpc.sdkHost.sessionReconcile(agentId, command)),
     commandStatus: async (id, commandId) =>
       commandStatusSchema.parse(await rpc.sdkHost.sessionCommandStatus(agentId, id, commandId)),
-    subscribe: polling((id, after) => rpc.sdkHost.sharedEvents(serverId, id, after)),
   };
 }

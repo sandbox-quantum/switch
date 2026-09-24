@@ -23,11 +23,7 @@ import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skil
 import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
 import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
-import {
-  commandStatusSchema,
-  snapshotSchema,
-  type Snapshot,
-} from '@switch-console/shared/session-v1';
+import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
@@ -43,12 +39,12 @@ import { controllerConnectionId } from '@main/core/switch-rooms/session-connecti
 import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { fetchSdkSnapshot, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { hostJournals, JournalUnavailableError } from './host-journal';
 
 /** A host that stopped on an interrupted reset is online and waits for the user's explicit reset. */
 function awaitingResetDecision(snapshot: Snapshot): boolean {
@@ -134,9 +130,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport);
-    const previousEpoch = restart
-      ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
-      : null;
+    const previousEpoch = restart ? await journalEpoch(session.agentId, session.id) : null;
     let root: string;
     let readFailure: () => Promise<unknown>;
     this.startupStage = restart
@@ -207,7 +201,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         nextFailureCheck = Date.now() + 2000;
       }
       try {
-        snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id));
+        snapshot = (await hostJournals.tail(session.agentId, session.id)).snapshot();
         if (
           snapshot.session.epoch !== previousEpoch &&
           snapshot.session.connectivity === 'online' &&
@@ -224,12 +218,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         )
           break;
       } catch (error) {
-        // Refused credentials will not start working by waiting.
-        if (error instanceof GatewayError && (error.status === 401 || error.status === 403))
-          throw error;
         if (Date.now() + 500 >= deadline) throw error;
-        // Not found is the session not claimed yet, which is the wait itself.
-        const notYet = error instanceof GatewayError && error.status === 404;
+        // No journal yet is the host not having started, which is the wait itself.
+        const notYet = error instanceof JournalUnavailableError;
         if (!notYet && String(error) !== reported) {
           reported = String(error);
           log.warn('Shared SDK host readiness check failed; still waiting', {
@@ -502,4 +493,14 @@ export async function buildSharedHostConfig(
     },
   };
   return config;
+}
+
+/** The generation a session's host last recorded, or null if it has recorded none. */
+async function journalEpoch(agentId: string, sessionId: string): Promise<string | null> {
+  try {
+    return (await hostJournals.tail(agentId, sessionId)).snapshot().session.epoch;
+  } catch (error) {
+    if (error instanceof JournalUnavailableError) return null;
+    throw error;
+  }
 }

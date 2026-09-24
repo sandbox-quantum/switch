@@ -4,11 +4,7 @@ import { join } from 'node:path';
 import {
   EVICTION_HEARTBEAT_LAPSED,
   EVICTION_TAKEN_OVER,
-  RoomAdmissionError,
   SwitchEventStream,
-  SwitchRoomAdmissions,
-  type RoomAdmission,
-  type RoomReservation,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { relayCommand, wakeApprovals, wakeCommands } from './handoff';
@@ -54,6 +50,9 @@ const parkedSchema = z.strictObject({
   roomId: z.string().min(1),
   messageId: z.string().min(1),
   spawning: z.boolean(),
+  // The event as the stream delivered it, kept because nothing else keeps it:
+  // the session's prompt is built from this copy when the room gets an owner.
+  event: z.unknown().optional(),
 });
 
 /**
@@ -77,6 +76,7 @@ const recordSchema = z.union([
 ]);
 
 type Assignment = z.infer<typeof assignmentSchema>;
+type Held = Handoff & { spawning: boolean };
 type WatchRecord = z.infer<typeof recordSchema>;
 
 function restarted(record: WatchRecord): record is z.infer<typeof restartSchema> {
@@ -102,25 +102,11 @@ function isAssignment(record: WatchRecord): record is Assignment {
 const delivery = (event: { roomId: string; messageId: string }): string =>
   JSON.stringify([event.roomId, event.messageId]);
 
-/**
- * How often a room whose owner is undecided is asked about again. The same
- * cadence a session re-asserts its binding on, which is what the answer is
- * waiting for.
- */
+/** How often a room with no session to take its messages is looked at again. */
 const OWNERSHIP_RETRY_MS = 5000;
 
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
-
-/**
- * How often the deliveries Switch is still holding are asked for.
- *
- * Slower than the retry above because it is not what makes a delivery
- * prompt — the event itself is — but what catches the ones no longer on any
- * local list: routed to a session that lost the room before it submitted, or
- * routed by a controller that has since restarted.
- */
-const RESERVATION_SWEEP_MS = 30000;
 
 function sessionIdFor(agentId: string, roomId: string, messageId: string): string {
   const bytes = createHash('sha256')
@@ -161,83 +147,6 @@ async function stopped(sessionId: string): Promise<boolean> {
 function reachableBy(config: SharedHostConfig, connectionId: string): SharedHostConfig {
   if (config.roomConnection?.connectionId === connectionId) return config;
   return { ...structuredClone(config), roomConnection: { connectionId } };
-}
-
-/** How long a carry waits between attempts, before giving the watcher up. */
-const CARRY_RETRY_MS = [1000, 3000, 9000];
-
-/**
- * Has Switch record which of this agent's sessions is serving which room,
- * while the sessions that serve themselves are still doing so.
- *
- * A session started by a build that gave every session a connection of its own
- * holds its room on that connection and nowhere else. Switch knows which — it
- * is the one routing to it — but nothing has written it against the session,
- * so a restart brings the session back holding nothing and the room is
- * answered next by a session that knows none of the conversation. This is
- * where that is written down, and it has to happen before anything replaces
- * those workers: closing the connection is what destroys the evidence.
- *
- * Only one answer lets the upgrade go on: Switch deciding, for every session,
- * what it is serving. Being unreachable is not that answer, and neither is a
- * refusal, a reply that cannot be read, or a session Switch could not place —
- * an upgrade blocked is recoverable and a conversation replaced is not, so all
- * of them stop the watcher instead. Nothing has been replaced at that point:
- * every session is still serving its room exactly as it was before the watcher
- * started, and the next start finds the same evidence intact.
- *
- * Rooms Switch decided against are the exception, and they are the one case
- * that is genuinely decided: another session holds the room, or the agent is no
- * longer in it. Switch has written each of them into the session's own log, so
- * the upgrade goes on and they are named here as well.
- */
-export async function carryLegacyRooms(
-  admissions: SwitchRoomAdmissions,
-  connectionId: string,
-  signal: AbortSignal
-): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    let undecided: string;
-    try {
-      const carried = await admissions.carryRooms(connectionId, signal);
-      if (carried.unverifiable.length === 0) {
-        for (const session of carried.sessions)
-          for (const room of session.refused)
-            console.warn(
-              `Session ${session.sessionId} was serving room ${room.roomId} over a connection of its own, and Switch would not record the room against it (${room.reason}). The room will be answered by a new session.`
-            );
-        return;
-      }
-      undecided = `Switch could not establish what ${carried.unverifiable.join(', ')} is serving`;
-    } catch (error) {
-      if (!(error instanceof RoomAdmissionError)) throw error;
-      if (!error.retryable)
-        throw new Error(
-          `Switch would not say what this agent's sessions are serving (${error.message}). They are still serving their rooms and have been left alone; the watcher stops here rather than replace them with nothing recorded.`
-        );
-      undecided = `Switch could not be asked what this agent's sessions are serving (${error.message})`;
-    }
-    const wait = CARRY_RETRY_MS[attempt];
-    if (wait === undefined)
-      throw new Error(
-        `${undecided}. They are still serving their rooms and have been left alone; the watcher stops here rather than replace them with nothing recorded.`
-      );
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, wait);
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true }
-      );
-    });
-    if (signal.aborted)
-      throw new Error(
-        `${undecided}, and the controller stopped before it could be asked again. The sessions are still serving their rooms and have been left alone.`
-      );
-  }
 }
 
 /**
@@ -391,12 +300,9 @@ export class SharedWatchAssignments {
    * outlives them: the point of writing it down is that the server's copy may
    * be gone by the time the room has an owner again.
    */
-  pending(): { sequence: number; roomId: string; messageId: string; spawning: boolean }[] {
+  pending(): Held[] {
     const released = this.settled;
-    const waiting = new Map<
-      string,
-      { sequence: number; roomId: string; messageId: string; spawning: boolean }
-    >();
+    const waiting = new Map<string, Held>();
     for (const record of this.journal.records) {
       if (!isParked(record)) continue;
       const identity = delivery(record);
@@ -406,9 +312,21 @@ export class SharedWatchAssignments {
         roomId: record.roomId,
         messageId: record.messageId,
         spawning: record.spawning,
+        event: record.event,
       });
     }
     return [...waiting.values()];
+  }
+
+  /**
+   * The session that serves a room: the one most recently assigned to it.
+   *
+   * This controller is the agent's only one — Switch lets a single connection
+   * carry the agent's rooms — so what it has written down is the whole record.
+   */
+  ownerOf(roomId: string): SharedHostConfig | null {
+    const assigned = this.every.filter((record) => record.roomId === roomId);
+    return assigned.at(-1)?.config ?? null;
   }
 
   /** Records that the event has been routed, or decided not to be. */
@@ -424,15 +342,13 @@ export class SharedWatchAssignments {
   }
 
   /** Records that the event is waiting for its room's owner to be decided. */
-  async park(
-    event: { sequence: number; roomId: string; messageId: string },
-    spawning: boolean
-  ): Promise<void> {
+  async park(event: Handoff, spawning: boolean): Promise<void> {
     await this.journal.append({
       parked: event.sequence,
       roomId: event.roomId,
       messageId: event.messageId,
       spawning,
+      ...(event.event === undefined ? {} : { event: event.event }),
     });
   }
 
@@ -448,15 +364,12 @@ export class SharedWatchAssignments {
   /**
    * The session that answers this delivery, minted if there is none.
    *
-   * Reached only once Switch has said the room is nobody's and granted the
-   * right to start one session for it. What that session is called is derived
-   * from the delivery, so a controller asking twice about the same message
-   * names the same session rather than a second one.
+   * Reached only once the room has no session and this controller may start
+   * one. What that session is called is derived from the delivery, so a
+   * controller asking twice about the same message names the same session
+   * rather than a second one.
    */
-  async assign(
-    template: SharedHostConfig,
-    event: { sequence: number; roomId: string; messageId: string }
-  ): Promise<SharedHostConfig> {
+  async assign(template: SharedHostConfig, event: Handoff): Promise<SharedHostConfig> {
     // A held delivery is recognised by the room and message it names. The
     // sequence it arrived on may belong to a numbering the server has since
     // restarted, where it now stands for somebody else's message.
@@ -479,10 +392,7 @@ export class SharedWatchAssignments {
     if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
       config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
     delete config.start.input.resume;
-    // The right Switch granted, spent on this session's first claim so it is
-    // created already holding the room. Kept with the assignment because the
-    // launch it belongs to can be interrupted and retried.
-    config.grant = { roomId: event.roomId, messageId: event.messageId };
+    delete config.grant;
     // Said here rather than left to the worker to say when it starts. The
     // event that caused this session is routed to it before it is started,
     // and the worker it will be started from is this bundle's, which reads
@@ -491,7 +401,12 @@ export class SharedWatchAssignments {
     const sessionRoot = sharedSessionRoot(sessionId);
     await mkdir(sessionRoot, { recursive: true });
     await declareHandoffCapability(sessionRoot);
-    await this.journal.append({ ...event, config });
+    await this.journal.append({
+      sequence: event.sequence,
+      roomId: event.roomId,
+      messageId: event.messageId,
+      config,
+    });
     return config;
   }
 
@@ -531,7 +446,6 @@ export async function runSharedWatcher(
   let fault: Error | null = null;
   let pending: Promise<void> = Promise.resolve();
   let retry: NodeJS.Timeout | null = null;
-  let sweeping: NodeJS.Timeout | null = null;
   const fail = (error: Error) => {
     fault = error;
     stop.abort(error);
@@ -582,15 +496,6 @@ export async function runSharedWatcher(
       return;
     }
     const credentials = await readSharedCredentials(template);
-    // Which session of this agent holds a room is Switch's answer, not one to
-    // be worked out from the session files on this disk: those outlive the
-    // sessions that wrote them, and two controllers reading their own have
-    // nothing to serialize against.
-    const admissions = new SwitchRoomAdmissions({
-      agentId: credentials.SWITCH_AGENT_ID,
-      apiEndpoint: credentials.SWITCH_API_ENDPOINT,
-      token: credentials.SWITCH_API_TOKEN,
-    });
     const assignments = await SharedWatchAssignments.open(root);
     const launch = async (config: SharedHostConfig) => {
       // Both flags are re-read here rather than taken from whoever asked for the
@@ -610,44 +515,9 @@ export async function runSharedWatcher(
       });
     };
     /**
-     * Starts the session Switch says still holds the room but has no host left
-     * running it.
-     *
-     * A killed worker takes nothing away: its session is unfinished and the
-     * room is still its own, so no other session can be started for it and the
-     * messages wait for a host that nothing else is going to bring up. Only a
-     * restart of that same session ends the wait.
-     *
-     * The session is the server's answer, never this journal's: the journal
-     * says which session was started for a delivery, which is not the same as
-     * the one holding the room now. What the journal supplies is the bundle to
-     * start it from, and only where that bundle is the host Switch has on
-     * record — a session whose host identity has moved on is being run
-     * somewhere else, and one this controller has no bundle for is not its
-     * session to start. Either way the delivery goes on waiting rather than
-     * being answered by a second session for a room that already has one.
-     */
-    const revive = async (stalled: { sessionId: string; hostId: string }, roomId: string) => {
-      const config = assignments
-        .sessions()
-        .find((saved) => saved.session.sessionId === stalled.sessionId);
-      if (!config || config.session.hostId !== stalled.hostId) return;
-      if (await liveSupervisor(sharedSessionRoot(stalled.sessionId))) return;
-      console.warn(
-        `Session ${stalled.sessionId} still holds room ${roomId} but nothing is running it; starting it again from its saved state.`
-      );
-      await launch(config);
-    };
-    /**
      * Puts the event in the inbox of the session that serves its room, for a
-     * worker that has said it reads one.
-     *
-     * A worker that has not said so was started by an app that gave every
-     * session a connection of its own, and is still serving itself from it.
-     * Routing to it would put the event somewhere nothing reads, and an event
-     * nobody admits is never committed, so it would be lost in silence rather
-     * than refused. Written before the worker is started or woken, so the
-     * decision is on disk before anything acts on it.
+     * worker that has said it reads one. Written before the worker is started
+     * or woken, so the decision is on disk before anything acts on it.
      */
     const route = async (sessionId: string, event: Handoff): Promise<boolean> => {
       const sessionRoot = sharedSessionRoot(sessionId);
@@ -656,236 +526,131 @@ export async function runSharedWatcher(
       return true;
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);
-    /**
-     * Switch is asked only where one of those sessions is serving itself over a
-     * connection of its own. The controller's connection is derived from the
-     * agent rather than the run, so a session saved by any build that shares
-     * one already names this connection and has nothing to carry — and a Switch
-     * too old to answer at all would otherwise stop the watcher here, on every
-     * upgrade, for a question with no answer to give.
-     */
-    if (superseded.some(({ config }) => config.roomConnection?.connectionId !== connectionId))
-      await carryLegacyRooms(admissions, connectionId, stop.signal);
     await replaceSupersededSessions(superseded, connectionId, supervision);
     const launchAssigned = async () => {
       for (const config of assignments.sessions()) await launch(config);
     };
     /**
-     * Rooms whose owner is undecided, and the events waiting on it in the order
-     * they arrived.
-     *
-     * Only the room in question waits. The events of every other room are dealt
-     * with as they arrive, and the ones behind a held event keep their place
-     * behind it, so a room is never answered out of order.
+     * Rooms with no session able to take their messages yet, and the events
+     * waiting in the order they arrived. Only the room in question waits; the
+     * ones behind a held event keep their place behind it, so a room is never
+     * answered out of order.
      */
-    const held = new Map<
-      string,
-      { events: { event: Handoff; spawning: boolean }[]; since: number }
-    >();
+    const held = new Map<string, { events: Held[]; since: number }>();
     /**
-     * Deals with the event, or reports that its room's owner is still
-     * undecided and it has to wait.
+     * Routes the event to the session serving its room, starting one where
+     * the room has none and this controller may. False when neither can be
+     * done yet and the event has to wait.
      *
-     * The setting is the one the event arrived under rather than the one in
-     * force when it is finally admitted: a session started after somebody
-     * turned spawning off cannot be taken back, and a room that was promised a
-     * session when it was addressed should still get one.
-     *
-     * A held event is closed by the room and message it names rather than by
-     * the position it arrived on, which the server may since have renumbered.
+     * The permission is the one the event arrived under rather than the one in
+     * force when it is finally admitted: a room that was promised a session
+     * when it was addressed should still get one.
      */
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
-      // Recorded before the session is started, because starting it is
-      // recoverable — every assigned session is launched again when the
-      // watcher restarts — where the routing decision is not.
       const settle = async () => {
         if (waiting) await assignments.released(event);
         else await assignments.handled(event.sequence);
       };
-      let answer: RoomAdmission;
-      try {
-        answer = await admissions.admit({ ...event, spawning }, stop.signal);
-      } catch (error) {
-        if (!(error instanceof RoomAdmissionError)) throw error;
-        if (error.retryable) {
-          console.warn(
-            `Switch could not be asked which session serves room ${event.roomId}: ${error.message} Message ${event.messageId} is held until it can.`
-          );
-          return false;
-        }
-        // Refused for what it is rather than for when it was asked, so asking
-        // again answers the same. Held forever it would be a room gone quiet
-        // with nothing saying why.
-        console.error(
-          `Switch will not admit message ${event.messageId} in room ${event.roomId}: ${error.message} It is not being delivered.`
-        );
-        await settle();
-        return true;
-      }
-      if (answer.status === 'unavailable') {
-        if (answer.stalled) await revive(answer.stalled, event.roomId);
-        return false;
-      }
-      if (answer.status === 'owner') {
-        if (!(await route(answer.sessionId, event)))
+      const owner = assignments.ownerOf(event.roomId);
+      if (owner && !(await stopped(owner.session.sessionId))) {
+        if (!(await route(owner.session.sessionId, event))) {
           console.error(
-            `Room ${event.roomId} is served by session ${answer.sessionId} on host ${answer.hostId}, which does not read what this controller routes to it; message ${event.messageId} was not handed over. Switch is still holding it.`
+            `Room ${event.roomId} is served by session ${owner.session.sessionId}, which does not read what this controller routes to it; message ${event.messageId} was not delivered.`
           );
+          await settle();
+          return true;
+        }
         await settle();
+        // A session whose host has gone is still the room's: start it again
+        // rather than answer the room from a second session that knows none
+        // of the conversation.
+        if (!(await liveSupervisor(sharedSessionRoot(owner.session.sessionId))))
+          await launch(owner);
         return true;
       }
+      if (!spawning) return false;
       const config = await assignments.assign(
         sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
         event
       );
       if (!(await route(config.session.sessionId, event)))
         console.error(
-          `Session ${config.session.sessionId} was started for room ${event.roomId} but does not read what this controller routes to it; message ${event.messageId} was not handed over. Switch is still holding it.`
+          `Session ${config.session.sessionId} was started for room ${event.roomId} but does not read what this controller routes to it; message ${event.messageId} was not delivered.`
         );
       await settle();
       await launch(config);
       return true;
     };
     /**
-     * Has Switch verify and keep a delivery that cannot be routed yet.
-     *
-     * A message arriving behind one already waiting is answered in its turn,
-     * not now — but the copy that answer is finally built from is only made
-     * when Switch is asked, and by the time its turn comes the replay buffer
-     * holding it can have been trimmed or renumbered. So the asking is done on
-     * arrival and the routing is left until later.
-     *
-     * Asked without the permission to start a session whatever this controller
-     * holds: a grant minted for a message that is not at the head of its
-     * room's queue would block the one that is.
-     *
-     * Answers whether the delivery is finished with, as `admit` does. Only a
-     * refusal finishes one here; anything else leaves it to wait.
+     * Routes to the session Switch says has connected to the room, when it is
+     * one of this agent's here. A session can move between rooms, or be one
+     * Console started, so this is the fresher answer than the journal's.
      */
-    const reserve = async (event: Handoff): Promise<boolean> => {
+    const routePlaced = async (sessionId: string, event: Handoff): Promise<boolean> => {
+      const sessionRoot = sharedSessionRoot(sessionId);
       try {
-        await admissions.admit({ ...event, spawning: false }, stop.signal);
-        return false;
-      } catch (error) {
-        if (!(error instanceof RoomAdmissionError)) throw error;
-        if (error.retryable) {
-          console.warn(
-            `Switch could not be asked to keep message ${event.messageId} in room ${event.roomId}: ${error.message} It is held on this controller alone until its turn comes.`
-          );
-          return false;
-        }
-        console.error(
-          `Switch will not keep message ${event.messageId} in room ${event.roomId}: ${error.message} It is not being delivered.`
+        const saved = sharedConfigSchema.parse(
+          JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
         );
-        await assignments.handled(event.sequence);
-        return true;
+        if (saved.session.agentId !== template.session.agentId) return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
       }
+      if ((await stopped(sessionId)) || !(await route(sessionId, event))) return false;
+      await assignments.handled(event.sequence);
+      return true;
     };
     const queued = (roomId: string, messageId: string): boolean =>
-      held.get(roomId)?.events.some((entry) => entry.event.messageId === messageId) === true;
+      held.get(roomId)?.events.some((entry) => entry.messageId === messageId) === true;
     const hold = async (event: Handoff, spawning: boolean) => {
-      // The server serves a held event again whenever the stream reopens behind
-      // it, and this journal holds its own copy; neither is a second message.
+      // The stream serves a held event again whenever it reopens behind it, and
+      // this journal holds its own copy; neither is a second message.
       if (queued(event.roomId, event.messageId)) return;
       const waiting = held.get(event.roomId);
-      if (waiting) waiting.events.push({ event, spawning });
+      if (waiting) waiting.events.push({ ...event, spawning });
       else {
-        held.set(event.roomId, { events: [{ event, spawning }], since: Date.now() });
+        held.set(event.roomId, { events: [{ ...event, spawning }], since: Date.now() });
         console.warn(
-          `Switch has no session of this agent able to take room ${event.roomId}'s messages yet; holding them until one can.`
+          `No session of this agent can take room ${event.roomId}'s messages yet, and starting one is off; holding them until one can.`
         );
       }
       await assignments.park(event, spawning);
     };
-    /** Re-asks who owns each held room, and answers the ones that now have one. */
+    /** Looks at each held room again, and answers the ones that can now be. */
     const resolveHeld = async () => {
       for (const [roomId, waiting] of [...held]) {
-        while (
-          waiting.events.length &&
-          (await admit(waiting.events[0]!.event, waiting.events[0]!.spawning, true))
-        )
+        while (waiting.events.length) {
+          const { spawning, ...event } = waiting.events[0]!;
+          if (!(await admit(event, spawning || spawn, true))) break;
           waiting.events.shift();
+        }
         if (!waiting.events.length) {
           held.delete(roomId);
           console.warn(
-            `Room ${roomId} is settled again; the messages held for it were dealt with.`
+            `Room ${roomId} has a session again; the messages held for it were delivered.`
           );
         } else if (Date.now() - waiting.since >= HELD_DISCLOSURE_MS) {
           waiting.since = Date.now();
           console.warn(
-            `Room ${roomId} still has no session claiming it; ${waiting.events.length} message(s) are held and will be delivered when one does.`
+            `Room ${roomId} still has no session to take its messages; ${waiting.events.length} message(s) are held and will be delivered when one can.`
           );
         }
       }
     };
-    /**
-     * Re-drives the deliveries Switch is still holding for this agent.
-     *
-     * Routed is not delivered. The session an event was handed to can lose the
-     * room before it submits, or stop before it reads its inbox, and a
-     * controller can restart between routing an event and anything admitting
-     * it. Switch keeps the verified copy until a session commits it, so this
-     * is what finally closes those gaps — and after a restart it is the only
-     * thing that does, because nothing local records a delivery that was
-     * routed and never committed.
-     */
-    const sweep = async () => {
-      let reservations: RoomReservation[];
-      try {
-        reservations = await admissions.reservations(stop.signal);
-      } catch (error) {
-        if (!(error instanceof RoomAdmissionError)) throw error;
-        console.warn(`Switch could not be asked what it is still holding: ${error.message}`);
-        return;
-      }
-      for (const reservation of reservations) {
-        const { roomId, messageId, sequence } = reservation;
-        if (reservation.expired) {
-          console.error(
-            `Switch stopped promising message ${messageId} in room ${roomId} before any session took it; it is being given up and will not be delivered.`
-          );
-          try {
-            await admissions.discard(reservation, stop.signal);
-          } catch (error) {
-            if (!(error instanceof RoomAdmissionError)) throw error;
-            console.warn(`Switch kept message ${messageId}: ${error.message}`);
-            continue;
-          }
-          await assignments.released(reservation);
-          const waiting = held.get(roomId);
-          if (!waiting) continue;
-          waiting.events = waiting.events.filter((entry) => entry.event.messageId !== messageId);
-          if (!waiting.events.length) held.delete(roomId);
-          continue;
-        }
-        // One already waiting locally keeps the permission it arrived under
-        // and its place behind the other messages for its room; re-driving it
-        // here would answer it out of order and under the wrong one.
-        if (queued(roomId, messageId)) continue;
-        const event = { roomId, messageId, sequence };
-        if (!(await admit(event, spawn, true))) await hold(event, spawn);
-      }
-    };
-    // What was held when the last watcher stopped is picked up from the journal
-    // rather than from the server. The stream reopens behind a held event, but
-    // that buffer can be trimmed or renumbered while the event waits, and this
-    // is the copy that cannot be. Each one keeps the permission it arrived
-    // under, not the one this controller started with.
-    for (const { spawning, ...event } of assignments.pending()) {
-      const waiting = held.get(event.roomId);
-      if (waiting) waiting.events.push({ event, spawning });
+    // What was held when the last watcher stopped is picked up from the journal,
+    // which kept the events themselves: nothing else did.
+    for (const pendingEvent of assignments.pending()) {
+      const waiting = held.get(pendingEvent.roomId);
+      if (waiting) waiting.events.push(pendingEvent);
       else {
-        held.set(event.roomId, { events: [{ event, spawning }], since: Date.now() });
+        held.set(pendingEvent.roomId, { events: [pendingEvent], since: Date.now() });
         console.warn(
-          `Room ${event.roomId} was still waiting for a session to claim it when this controller last stopped; its messages are held until one does.`
+          `Room ${pendingEvent.roomId} was still waiting for a session when this controller last stopped; its messages are held until one can take them.`
         );
       }
     }
     if (held.size) await resolveHeld();
-    // Before the stream opens, so a delivery left unadmitted by the controller
-    // this one replaces is picked up whether or not the server still has the
-    // event in its buffer to serve again.
-    await sweep();
     if (spawn) await launchAssigned();
     const stream = new SwitchEventStream({
       creds: {
@@ -926,11 +691,14 @@ export async function runSharedWatcher(
         pending = pending.then(async () => {
           const messageId = roomInputId(event);
           if (!messageId) return;
-          const assignment = {
+          const assignment: Handoff = {
             sequence: z.number().int().positive().parse(event.sequence),
             roomId: event.room_id,
             messageId,
+            // The session builds its prompt from this; nothing else keeps it.
+            event: { type: event.type, payload: event.payload, missed: event.missed ?? null },
           };
+          const placed = event.session_id ?? null;
           // The connection is this agent's reachability; starting a session is
           // a separate permission it may not have. Without it a session that
           // already serves the room is still served — it has no connection of
@@ -942,10 +710,8 @@ export async function runSharedWatcher(
           // waiting for is written by a session that is doing other work, and
           // an event arriving is the cheapest evidence that time has passed.
           if (held.size) await resolveHeld();
-          if (held.has(assignment.roomId)) {
-            if (await reserve(assignment)) return;
-            return hold(assignment, spawning);
-          }
+          if (held.has(assignment.roomId)) return hold(assignment, spawning);
+          if (placed && (await routePlaced(placed, assignment))) return;
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning);
         });
         return pending.catch((error: Error) => {
@@ -1008,28 +774,26 @@ export async function runSharedWatcher(
       void pending.catch((error: Error) => fail(error));
     }, OWNERSHIP_RETRY_MS);
     retry.unref();
-    sweeping = setInterval(() => {
-      pending = pending.then(sweep);
-      void pending.catch((error: Error) => fail(error));
-    }, RESERVATION_SWEEP_MS);
-    sweeping.unref();
     while (!stop.signal.aborted) {
       const changed = await awaitWatchChange(root, flags, stop.signal);
       if (!changed || !changed.enabled) break;
       flags = changed;
       spawn = flags.spawn;
       stream.setSpawnCapable(spawn);
-      // The rooms addressed while spawning was off are parked and asked about
-      // again on the retry above, so they need no catching up here. What does
-      // is a session this controller was already assigned and could not start.
-      if (spawn) await launchAssigned();
+      // What waited for permission to start a session is answered now rather
+      // than on the next retry, and so is a session this controller was
+      // already assigned and could not start.
+      if (spawn) {
+        pending = pending.then(resolveHeld);
+        await pending;
+        await launchAssigned();
+      }
     }
   } catch (error) {
     if (!stop.signal.aborted) throw error;
   } finally {
     stop.abort();
     if (retry) clearInterval(retry);
-    if (sweeping) clearInterval(sweeping);
     signal.removeEventListener('abort', abort);
     await pending.catch(() => {});
     await releaseOwner(root, ownerPath, owner);

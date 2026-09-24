@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import uuid
 from pathlib import Path
 
 import pytest
@@ -44,7 +43,7 @@ from tests.benchmarks.host import (
 )
 from tests.benchmarks.instrumentation import Hold
 from tests.benchmarks.metrics import sample_processes
-from tests.benchmarks.server import BenchCore, BenchServer, RoomState
+from tests.benchmarks.server import BenchCore, BenchServer, SessionSelector
 from tests.benchmarks.trace import PROVIDER_DISPATCH, TraceCollector, correlation_for
 from tests.benchmarks.workload import (
     STREAM_TIMEOUT_SECONDS,
@@ -359,16 +358,9 @@ async def test_baseline_recovers_from_a_lost_host(
     the room next has to get one, and a topology that ends up holding both
     would show here as a connection count that never comes back down.
 
-    The reap is waited for rather than assumed. Until the killed host's lease
-    runs out the server still considers the room served, so a message addressed
-    in that window is routed to the process that is gone — which makes the
-    window itself the figure worth reporting, and makes a test that posted
-    immediately measure the window instead of the recovery.
-
-    What comes back is the same session on the same host, not a second one: a
-    room held by an unfinished session is not free for anything else to take,
-    so recovery here means the server naming that session as startable and the
-    controller starting it again from its saved state.
+    What comes back is the same session on the same host, not a second one:
+    the controller still has the room assigned to it, finds nothing running it
+    when the next message arrives, and starts it again from its saved state.
     """
     target = await bench.register_agent("bench-target-recovery")
     poster = await bench.register_agent("bench-poster-recovery")
@@ -407,18 +399,8 @@ async def test_baseline_recovers_from_a_lost_host(
 
             assigned = watcher.sessions_by_room()
             assert room_id in assigned, assigned
-            # The server agrees with the controller about who is working in the
-            # room. It is the answer every later delivery is routed on, so a
-            # recovery measured without it would be measuring the controller's
-            # own bookkeeping.
-            states = await bench.room_states(target.agent_id)
-            assert states.get(room_id) == RoomState(assigned[room_id], ()), states
             killed = watcher.kill_session(assigned[room_id])
             assert killed > 0
-
-            reaped = await _await_recoverable(
-                bench, target.agent_id, room_id, assigned[room_id], 60.0
-            )
 
             after = new_marker()
             markers[after] = await send(after)
@@ -444,8 +426,7 @@ async def test_baseline_recovers_from_a_lost_host(
     print("\n" + publish([result], tmp_path / "baseline-recovery.md"))
     print(
         f"recovery: {killed} process(es) serving the session were killed outright; "
-        f"the server offered the session for starting again {reaped:.1f}s later "
-        "and it was serving its room by the next message"
+        "the controller started it again for the next message to its room"
     )
     assert result.unmeasured == ()
     # Starting the session again must not leave a second stream behind it.
@@ -525,11 +506,6 @@ async def test_baseline_recovers_from_a_lost_worker(
         assert watcher.sessions_by_room()[room_id] == assigned[room_id]
         conversations = set(watcher.provider_conversations(assigned[room_id]))
         assert len(conversations) == 1, conversations
-        # Nothing is left owed: a worker that came back and answered what it
-        # was pushed, while Switch still held a promise for the same message,
-        # would be a delivery waiting to be made a second time.
-        reserved = await bench.reserved_deliveries(target.agent_id)
-        assert not {_message_of(markers[m]) for m in markers} & set(reserved), reserved
         # One connection throughout: the worker is not what holds it, so a
         # relaunch that opened its own would be a connection per session again.
         held = bench.connections.for_agent(target.agent_id)
@@ -651,18 +627,16 @@ async def test_baseline_survives_a_controller_restart(
 async def test_baseline_survives_a_core_restart(
     core: BenchCore, collector: TraceCollector, bundle: Path, tmp_path: Path
 ) -> None:
-    """Switch itself is restarted while a delivery is reserved and unmade.
+    """Switch itself is restarted while a message is on its way to a session.
 
     The controller and its workers are left running and the database is kept;
-    what goes is the Core and everything it held in memory, the replay buffer
-    above all. That is the arrangement the reservation exists for: a delivery
-    the agent has been promised lives in a row rather than in the buffer, so a
-    Core that comes back with an empty buffer must still let that delivery be
-    made, exactly once.
+    what goes is the Core and everything it held in memory. Once the controller
+    has handed a message to a session, the session's own journal holds it, so a
+    Core that comes back with an empty buffer must not cost it or repeat it.
 
-    The restart is staged on a reservation the database actually shows, not on
-    a sleep timed to where one is thought to be. A cold room is used for it
-    because a session being started is the longest the promise is outstanding.
+    The restart is staged on the controller having routed the message, not on
+    a sleep. A cold room is used because a session being started is the
+    longest a message waits before its provider sees it.
     """
     bench = core.server
     target = await bench.register_agent("bench-target-core")
@@ -705,10 +679,9 @@ async def test_baseline_survives_a_core_restart(
             assigned = watcher.sessions_by_room()
             assert warm_room in assigned, assigned
 
-            settled = await bench.reserved_deliveries(target.agent_id)
             held = new_marker()
             markers[held] = await send(held_room, held)
-            reserved = await _await_reservation(bench, target.agent_id, settled, 30.0)
+            await _await_routed(watcher, held_room, 30.0)
             emptied = bench.event_buffer
 
             await core.restart()
@@ -750,10 +723,9 @@ async def test_baseline_survives_a_core_restart(
     )
     print("\n" + publish([result], tmp_path / "baseline-core-restart.md"))
     print(
-        f"core restart: {len(reserved)} delivery reservation(s) were outstanding "
-        f"when the Core was replaced ({', '.join(reserved)}); the agent was "
-        f"connected to the new one {reconnected:.1f}s later and the reserved "
-        "delivery was made once"
+        "core restart: the Core was replaced once the controller had routed a "
+        f"message to a session still being started; the agent was connected to "
+        f"the new one {reconnected:.1f}s later and the message was made once"
     )
     assert result.unmeasured == ()
     # One connection across the restart as well as through it: the sampler
@@ -860,30 +832,6 @@ async def test_baseline_settles_two_competing_controllers(
                 assert len(held) == 1, held
                 assert held[0].id == controller_connection_id(target.agent_id)
 
-                carried = new_marker()
-                markers[carried] = await send(room_id, carried)
-                sent = asyncio.get_running_loop().time()
-                # Answered by the session that is in the room, which asked for
-                # it rather than waiting to be handed it. The same session as
-                # before the takeover, running the conversation it already had.
-                assert not await dispatch_wait(
-                    first, {carried: markers[carried]}, STRANDED_SECONDS
-                )
-                discovered = asyncio.get_running_loop().time() - sent
-                # Not the winner's to answer: the room is held by a session it
-                # did not start and has no route to.
-                assert await dispatch_wait(
-                    second, {carried: markers[carried]}, STRANDED_SECONDS
-                ) == frozenset([markers[carried]])
-                assert first.sessions_by_room()[room_id] == assigned[room_id]
-                conversations = set(first.provider_conversations(assigned[room_id]))
-                assert len(conversations) == 1, conversations
-                (conversation,) = conversations
-                # Made rather than still owed: the promise is consumed, so
-                # nothing is left for a controller to serve a second time.
-                reserved = await bench.reserved_deliveries(target.agent_id)
-                assert _message_of(markers[carried]) not in reserved, reserved
-
                 # Settled, not merely handed over once: a loser that reopened
                 # the connection would take it back, and the two would trade it
                 # for as long as both were running.
@@ -893,27 +841,19 @@ async def test_baseline_settles_two_competing_controllers(
                 assert not first.controller_running()
                 assert first.failure() is None, first.failure()
 
-                # The losing machine's workers go away, as they would when its
-                # Console is closed, and the server stops calling the room
-                # served. With nothing left in the room to ask for the work,
-                # what is addressed to it is held: reviving that session needs
-                # the state the loser saved, and no state moves between
-                # machines.
-                orphaned = first.kill_sessions()
-                lapsed = await _await_recoverable(
-                    bench, target.agent_id, room_id, assigned[room_id], 120.0
+                # The winner has no record of the loser's session and cannot
+                # reach it on another machine, so it answers the room with a
+                # session of its own rather than leaving the room unanswered.
+                carried = new_marker()
+                markers[carried] = await send(room_id, carried)
+                assert not await dispatch_wait(
+                    second, {carried: markers[carried]}, dispatch_timeout(1)
                 )
-                stranded = new_marker()
-                markers[stranded] = await send(room_id, stranded)
                 assert await dispatch_wait(
-                    second, {stranded: markers[stranded]}, STRANDED_SECONDS
-                ) == frozenset([markers[stranded]])
-                assert room_id not in second.sessions_by_room()
-                still_reserved = await bench.reserved_deliveries(target.agent_id)
-                assert _message_of(markers[stranded]) in still_reserved
+                    first, {carried: markers[carried]}, STRANDED_SECONDS
+                ) == frozenset([markers[carried]])
+                assert room_id in second.sessions_by_room()
 
-                # A room the loser never served is the winner's to serve, so
-                # what the takeover stranded is that room rather than the agent.
                 fresh = new_marker()
                 markers[fresh] = await send(fresh_room, fresh)
                 assert not await dispatch_wait(
@@ -930,16 +870,9 @@ async def test_baseline_settles_two_competing_controllers(
     duplicated = collector.subset(set(markers.values())).repeats(PROVIDER_DISPATCH)
     print(
         f"competing controllers: the first stood down ({stood_down['reason']}) when "
-        "the second took its connection, and stayed down. A message addressed to "
-        "the room the first was serving was not the winner's to route, and was "
-        f"answered by the session already in it ({assigned[room_id]}) "
-        f"{discovered:.2f}s after it was sent, which asked "
-        "Switch for the work its own rooms owed it and kept the provider "
-        f"conversation it had ({conversation}). Killing that controller's "
-        f"{orphaned} worker process(es) freed the room's claim {lapsed:.1f}s later, "
-        "and the next message to that room is held, because the session that holds "
-        "it can only be started again by the controller that saved it. A room the "
-        "first never served was delivered to normally."
+        "the second took its connection, and stayed down. The room the first was "
+        "serving was answered by a session the second started, and a room the "
+        "first never served was delivered to normally; nothing was served twice."
     )
     assert duplicated == {}, duplicated
 
@@ -1188,13 +1121,11 @@ async def test_baseline_settles_two_sessions_taking_one_room(
     """Two sessions of one agent move into the same vacated room at once.
 
     They share the agent's one connection, so the room is recorded in two
-    places that have to agree: the session rows, which say who owns it and
-    therefore who a delivery is routed to, and the connection registry, which
-    says the room is claimed on the connection the events travel over. A move
-    is both — the session that arrives takes the room, and the session that
-    leaves gives up the rooms it held — and two of them moving at once is the
-    case where one caller's tidying up can be about the state the other has
-    already replaced.
+    places that have to agree: which session Switch has placed in it, which is
+    who a delivery is routed to, and the connection registry, which says the
+    room is claimed on the connection the events travel over. Two of them
+    moving at once is the case where one caller's tidying up can be about the
+    state the other has already replaced.
 
     What is asserted each round is that the two answers are the same answer:
     the room has an owner, that owner is one of the two callers, the room is
@@ -1254,18 +1185,21 @@ async def test_baseline_settles_two_sessions_taking_one_room(
         owner: str | None = None
         contested = rooms[2]
         for round_number in range(ROOM_MOVE_ROUNDS):
-            selectors = await bench.session_selectors(target.agent_id)
             answers = await asyncio.gather(
                 *(
                     bench.connect_session_to_room(
-                        agent=target, selector=selectors[session], room_id=contested
+                        agent=target,
+                        selector=SessionSelector(
+                            session_id=session,
+                            connection_id=controller_connection_id(target.agent_id),
+                        ),
+                        room_id=contested,
                     )
                     for session in sessions
                 )
             )
 
-            states = await bench.room_states(target.agent_id)
-            owner = states[contested].owner
+            owner = bench.placed_sessions(target.agent_id, [contested])[contested]
             assert owner in sessions, (round_number, owner, sessions)
             held = bench.connections.for_agent(target.agent_id)
             assert len(held) == 1, held
@@ -1290,9 +1224,11 @@ async def test_baseline_settles_two_sessions_taking_one_room(
         assert not await dispatch_wait(
             watcher, {after: markers[after]}, dispatch_timeout(1)
         )
-        assert watcher.sessions_by_room()[settled] == owner, watcher.sessions_by_room()
-        reserved = await bench.reserved_deliveries(target.agent_id)
-        assert _message_of(markers[after]) not in reserved, reserved
+        # Served by the session Switch has in the room: the controller routes
+        # on that, not on which session it first assigned the room to.
+        assert owner is not None
+        handed = (watcher.session_root(owner) / "handoff.jsonl").read_text()
+        assert _message_of(markers[after]) in handed, handed
         assert watcher.failure() is None, watcher.failure()
 
         collector.ingest_jsonl(watcher.trace_path, markers)
@@ -1305,162 +1241,6 @@ async def test_baseline_settles_two_sessions_taking_one_room(
         "claimed on the agent's single connection, and told exactly one caller "
         "it had taken the room off the other. The message posted afterwards was "
         f"served once by the session that owned the room ({owner})."
-    )
-    assert duplicated == {}, duplicated
-
-
-async def test_baseline_serves_a_room_while_its_own_ask_is_stalled(
-    bench: BenchServer, collector: TraceCollector, bundle: Path, tmp_path: Path
-) -> None:
-    """A session's ask for its own room work never answers; the rest carries on.
-
-    The ask is a session's fallback for work its controller did not route to
-    it, and it is made against a server that can be slow or gone. Held open at
-    the socket, before the request reaches a route, it is the same thing a
-    session sees when an answer is never coming: its own request outstanding,
-    and no say in when it ends.
-
-    What must not depend on it is everything the session is reached by
-    otherwise — a delivery its controller pushes, and a command submitted for
-    it. Both are timed, and asserted to have happened while the session was
-    still waiting on its own ask rather than after its client had given up on
-    one: the client sets its own timeout, so a request held past it is held on
-    nobody's behalf and proves nothing about what the session was doing
-    meanwhile. The gate watches for the disconnect that timeout sends, and the
-    hold is then deliberately kept past it, so the same watch that reported a
-    wait is seen to report the end of one. Never more than one ask is waited on
-    at a time — a session that started another on each interval would be
-    piling up requests against a server already failing to answer.
-
-    Then the hold is let go, and the work it was holding is not done twice.
-    """
-    target = await bench.register_agent("bench-target-stall")
-    poster = await bench.register_agent("bench-poster-stall")
-    await bench.start_clients(timeout=60.0)
-    room_id = await bench.create_room("bench-stall", [target.agent_id, poster.agent_id])
-    home = tmp_path / "home-stall"
-    home.mkdir(parents=True)
-
-    async def send(marker: str) -> str:
-        return correlation_for(
-            room_id,
-            await bench.address(
-                sender=poster,
-                room_id=room_id,
-                target=target.name,
-                body=f"@{target.name} {marked(marker)}",
-            ),
-        )
-
-    with bench_watcher(
-        bundle=bundle,
-        home=home,
-        base_url=bench.base_url,
-        agent_id=target.agent_id,
-        api_key=target.api_key,
-        connection_id=controller_connection_id(target.agent_id),
-    ) as watcher:
-        await await_stream(bench, target.agent_id, STREAM_TIMEOUT_SECONDS)
-        cold = new_marker()
-        markers = {cold: await send(cold)}
-        assert not await dispatch_wait(watcher, markers, dispatch_timeout(1))
-        session = watcher.sessions_by_room()[room_id]
-
-        clock = asyncio.get_running_loop()
-        bench.stalls.arm()
-        try:
-            # A session asks only once its renewal says its rooms are owed
-            # something, and a served room owes nothing; this is what it is
-            # owed, so the ask that is held is one the session had reason to
-            # make.
-            await bench.owe_lapsed_delivery(target.agent_id, room_id)
-            arrived = await bench.stalls.await_held(ASK_HELD_SECONDS)
-
-            pushed = new_marker()
-            markers[pushed] = await send(pushed)
-            assert not await dispatch_wait(
-                watcher, {pushed: markers[pushed]}, dispatch_timeout(1)
-            )
-            served_at = clock.time()
-
-            receipt = await _control_when_idle(
-                bench,
-                agent_id=target.agent_id,
-                room_id=room_id,
-                message_id=str(uuid.uuid4()),
-                timeout=CONTROL_SECONDS,
-            )
-            assert receipt.status == "accepted", receipt
-            outcome = await _await_command(
-                bench, session, receipt.command_id, CONTROL_SECONDS
-            )
-            assert outcome == "applied", outcome
-            applied_at = clock.time()
-            # What the control was for, rather than only its bookkeeping: a
-            # reset is the session's conversation being started again, so a
-            # second conversation on the same session is the work being done.
-            conversations = watcher.provider_conversations(session)
-            assert len(set(conversations)) == 2, conversations
-
-            # The two above happened while the session was still waiting on its
-            # own ask, rather than after its client had given up on it and
-            # moved on — which a gate that merely held the request would report
-            # identically. Each is timed against the disconnect the client
-            # sends when it abandons the request.
-            assert bench.stalls.live_at(served_at), (served_at, bench.stalls.holds())
-            assert bench.stalls.live_at(applied_at), (applied_at, bench.stalls.holds())
-
-            # Which is only worth asserting if the gate can tell the difference,
-            # so it is made to: held past the client's own timeout, the ask is
-            # given up on, and the moment that happened is observed rather than
-            # assumed. It is after both of the above, which is what "still
-            # waiting" at those moments meant.
-            abandoned = await bench.stalls.await_abandoned(ASK_HELD_SECONDS)
-            assert abandoned > applied_at, (abandoned, applied_at)
-            assert not bench.stalls.live_at(abandoned), bench.stalls.holds()
-
-            # And one ask at a time: the next was made only once the last had
-            # been given up on, rather than piled on a server already failing
-            # to answer.
-            holds = bench.stalls.holds()
-            assert bench.stalls.concurrent_peak() == 1, holds
-        finally:
-            bench.stalls.release()
-
-        released = new_marker()
-        markers[released] = await send(released)
-        assert not await dispatch_wait(
-            watcher, {released: markers[released]}, dispatch_timeout(1)
-        )
-        assert watcher.sessions_by_room()[room_id] == session
-        # The ask answers what is outstanding, and what was already served is
-        # not outstanding: a delivery still promised here is one the released
-        # ask is about to offer the session a second time.
-        reserved = await bench.reserved_deliveries(target.agent_id)
-        assert not {_message_of(markers[m]) for m in markers} & set(reserved), reserved
-        held = bench.connections.for_agent(target.agent_id)
-        assert len(held) == 1, held
-        assert watcher.failure() is None, watcher.failure()
-
-        followups = _server_originated_dispatches(watcher.trace_path)
-        assert len(followups) == 1, followups
-        collector.ingest_jsonl(watcher.trace_path, {**markers, **followups})
-
-    scored = set(markers.values()) | set(followups)
-    duplicated = collector.subset(scored).repeats(PROVIDER_DISPATCH)
-    print(
-        "stalled ask: with the session's own ask for its room work held open "
-        "and unanswered, a pushed delivery was served and a room control "
-        f"command was applied to the same session ({session}). Measured from "
-        "the first ask being held: delivery served at "
-        f"{served_at - arrived:.2f}s, reset applied at "
-        f"{applied_at - arrived:.2f}s, both while that ask was still being "
-        f"waited on — the client gave up on it at {abandoned - arrived:.2f}s, "
-        "observed rather than assumed. Never more than one ask at a time "
-        f"({_held_summary(holds, arrived)}). The applied reset "
-        "queued the session one follow-up of Switch's own, served once. "
-        "Letting the ask go re-executed nothing, and the room was served "
-        "normally afterwards."
     )
     assert duplicated == {}, duplicated
 
@@ -1608,28 +1388,16 @@ async def _await_connections(
     )
 
 
-async def _await_reservation(
-    bench: BenchServer, agent_id: str, settled: tuple[str, ...], timeout: float
-) -> tuple[str, ...]:
-    """The deliveries reserved since `settled`, once there is at least one.
-
-    Anything already outstanding is excluded, so what this waits for is the
-    delivery just posted rather than one left over from the message before it.
-    """
+async def _await_routed(watcher: BenchWatcher, room_id: str, timeout: float) -> None:
+    """Until the controller has assigned a session to the room and handed it the message."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
-        outstanding = tuple(
-            message_id
-            for message_id in await bench.reserved_deliveries(agent_id)
-            if message_id not in settled
-        )
-        if outstanding:
-            return outstanding
+        if room_id in watcher.sessions_by_room():
+            return
         await asyncio.sleep(0.02)
     raise TimeoutError(
-        f"no delivery was reserved for agent {agent_id} within {timeout}s, so a "
-        "Core restarted now would not be restarted with one outstanding"
+        f"the controller routed nothing for room {room_id} within {timeout}s"
     )
 
 
@@ -1638,31 +1406,3 @@ async def _await_reconnection(core: BenchCore, agent_id: str, timeout: float) ->
     started = asyncio.get_running_loop().time()
     await await_stream(core.server, agent_id, timeout)
     return asyncio.get_running_loop().time() - started
-
-
-async def _await_recoverable(
-    bench: BenchServer, agent_id: str, room_id: str, session_id: str, timeout: float
-) -> float:
-    """Seconds until the server offers the killed session for starting again.
-
-    Polls the session rows the admission answer is derived from rather than
-    sleeping for the heartbeat TTL: the figure wanted is how long the topology
-    actually holds a dead host's claim, and a fixed sleep would report the
-    constant it was given.
-
-    Waits for that one session and nothing else. A room whose session is gone
-    but still named is the state recovery starts from; a room whose claim had
-    simply disappeared would mean the delivery that comes next is answered by
-    something other than the session the messages before it went to.
-    """
-    started = asyncio.get_running_loop().time()
-    deadline = started + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        state = (await bench.room_states(agent_id)).get(room_id)
-        if state and state.owner is None and state.lapsed == (session_id,):
-            return asyncio.get_running_loop().time() - started
-        await asyncio.sleep(0.05)
-    raise TimeoutError(
-        f"the server still considered room {room_id} served {timeout}s after its "
-        f"host was killed, so session {session_id} could never be started again"
-    )

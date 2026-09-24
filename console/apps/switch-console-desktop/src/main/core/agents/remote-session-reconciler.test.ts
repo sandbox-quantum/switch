@@ -33,10 +33,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: mocks.server,
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  fetchSdkSessions: mocks.list,
-  fetchSdkSnapshot: mocks.snapshot,
   fetchRoomDetail: mocks.room,
 }));
+vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/core/sdk-host/session-activity', () => ({
   syncSdkSessionActivity: vi.fn(async () => {}),
 }));
@@ -147,9 +146,8 @@ it('refreshes existing room associations from the list without fetching transcri
   expect(mocks.clear).toHaveBeenCalledWith('shared');
 });
 
-it('adopts healthy sessions despite additive fields, an invalid entry and a failed snapshot', async () => {
+it('adopts healthy sessions despite additive fields and an invalid entry', async () => {
   mocks.list.mockResolvedValue([
-    { ...session, sessionId: 'broken' },
     { ...session, status: 'invalid' },
     {
       ...session,
@@ -158,17 +156,6 @@ it('adopts healthy sessions despite additive fields, an invalid entry and a fail
       capabilities: { ...session.capabilities, futureCapability: true },
     },
   ]);
-  mocks.snapshot.mockRejectedValueOnce(new Error('Snapshot 500')).mockResolvedValueOnce({
-    contractVersion: 1,
-    throughSequence: 0,
-    session: { ...session, sessionId: 'healthy', futureField: true },
-    turns: [],
-    items: [],
-    requests: [],
-    commandStatuses: [],
-    nextPageToken: null,
-    futureField: true,
-  });
   await tick();
   expect(mocks.create).toHaveBeenCalledTimes(1);
   expect(mocks.create).toHaveBeenCalledWith(
@@ -176,7 +163,7 @@ it('adopts healthy sessions despite additive fields, an invalid entry and a fail
   );
   expect(mocks.provision).not.toHaveBeenCalled();
   expect(remoteSessionReconciler.errors()).toEqual([
-    { agentId: 'local', message: expect.stringContaining('2 SDK session(s)') },
+    { agentId: 'local', message: expect.stringContaining('1 SDK session(s)') },
   ]);
   mocks.list.mockResolvedValue([{ ...session, roomIds: [] }]);
   await tick();
@@ -256,29 +243,7 @@ it('does not adopt a retired session, whose work will never resume', async () =>
   expect(mocks.create).not.toHaveBeenCalled();
 });
 
-it('shares one server list across overlapping and staggered agent discovery', async () => {
-  let resolve!: (value: unknown[]) => void;
-  mocks.list.mockReturnValueOnce(
-    new Promise<unknown[]>((done) => {
-      resolve = done;
-    })
-  );
-  const reconciler = remoteSessionReconciler as unknown as { tick(id: string): Promise<void> };
-  const first = reconciler.tick('one');
-  const second = reconciler.tick('two');
-  await vi.waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(1));
-  resolve([]);
-  await Promise.all([first, second]);
-  now += 500;
-  await reconciler.tick('three');
-  expect(mocks.list).toHaveBeenCalledTimes(1);
-  now += DISCOVERY_MS;
-  mocks.list.mockResolvedValue([]);
-  await reconciler.tick('one');
-  expect(mocks.list).toHaveBeenCalledTimes(2);
-});
-
-it('does not reuse a failed server read', async () => {
+it('does not reuse a failed host read', async () => {
   mocks.list.mockRejectedValueOnce(new Error('Temporarily unavailable'));
   const reconciler = remoteSessionReconciler as unknown as { tick(id: string): Promise<void> };
   await reconciler.tick('one');
@@ -287,17 +252,6 @@ it('does not reuse a failed server read', async () => {
   await reconciler.tick('one');
   expect(mocks.list).toHaveBeenCalledTimes(2);
   expect(remoteSessionReconciler.errors()).toEqual([]);
-});
-
-it('keeps server lists separate and invalidates a changed gateway URL', async () => {
-  mocks.list.mockResolvedValue([]);
-  const reconciler = remoteSessionReconciler as unknown as { tick(id: string): Promise<void> };
-  await reconciler.tick('one');
-  mocks.server.mockResolvedValueOnce({ id: 'other', gatewayUrl: 'https://other.example.test' });
-  await reconciler.tick('two');
-  mocks.server.mockResolvedValueOnce({ id: 'server', gatewayUrl: 'https://changed.example.test' });
-  await reconciler.tick('one');
-  expect(mocks.list).toHaveBeenCalledTimes(3);
 });
 
 it('waits longer after each failed round and returns to its pace once one succeeds', async () => {
@@ -313,13 +267,13 @@ it('waits longer after each failed round and returns to its pace once one succee
     expect(mocks.list).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(DISCOVERY_MS * 4);
     expect(mocks.list).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(DISCOVERY_MAX_BACKOFF_MS);
+    await vi.advanceTimersByTimeAsync(DISCOVERY_MS * 8);
     expect(mocks.list).toHaveBeenCalledTimes(4);
 
+    // Capped from here. The fifth round succeeds, and the ones after it come at the steady pace.
     mocks.list.mockResolvedValue([]);
     await vi.advanceTimersByTimeAsync(DISCOVERY_MAX_BACKOFF_MS);
     expect(mocks.list).toHaveBeenCalledTimes(5);
-    now += DISCOVERY_MS;
     await vi.advanceTimersByTimeAsync(DISCOVERY_MS);
     expect(mocks.list).toHaveBeenCalledTimes(6);
   } finally {

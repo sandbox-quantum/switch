@@ -307,14 +307,9 @@ async function agentContext(agentId: string): Promise<IExecutionContext> {
 
 export const hostJournals = new HostJournals(agentContext);
 
-export type TranscriptSource = { kind: 'journal' } | { kind: 'switch'; problem: string | null };
+export type TranscriptSource = { kind: 'journal' } | { kind: 'unreachable'; reason: string };
 
-/**
- * Where a session's transcript is read from. The host's journal when it can
- * be reached; otherwise Switch, which still has every event the host
- * uploaded. `problem` is set when the journal should have been readable and
- * was not, so the fallback is said rather than silent.
- */
+/** Whether this Console can read the session's journal from its host, and why not. */
 export async function transcriptSource(
   agentId: string,
   sessionId: string
@@ -323,11 +318,8 @@ export async function transcriptSource(
     await hostJournals.tail(agentId, sessionId);
     return { kind: 'journal' };
   } catch (error) {
-    if (error instanceof JournalUnavailableError) return { kind: 'switch', problem: null };
-    log.warn('Could not read the session host journal; reading the transcript from Switch', {
-      sessionId,
-      error: String(error),
-    });
-    return { kind: 'switch', problem: String(error) };
+    if (!(error instanceof JournalUnavailableError))
+      log.warn('Could not read the session host journal', { sessionId, error: String(error) });
+    return { kind: 'unreachable', reason: error instanceof Error ? error.message : String(error) };
   }
 }

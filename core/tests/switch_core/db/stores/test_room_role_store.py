@@ -404,8 +404,7 @@ async def _make_sdk_session(
 class TestLeaseLivenessFollowsTheHolder:
     """A lease outlives its heartbeat only while its own holder is up.
 
-    Three ways a holder says it is there: it renewed (`last_seen_at`), it named
-    an SDK session whose host lease is current, or — naming neither — the
+    Two ways a holder says it is there: it renewed (`last_seen_at`), or the
     connection it took the seat over is still live. What none of them is, and
     the whole point of this suite, is "the agent has *a* connection": an agent
     that keeps one permanent connection would then never free a seat at all.
@@ -469,18 +468,15 @@ class TestLeaseLivenessFollowsTheHolder:
                 == {}
             )
 
-    async def test_a_session_held_lease_needs_no_heartbeat(
+    async def test_a_session_held_lease_lives_and_dies_with_its_connection(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A supervised session renews nothing; its host lease speaks for it."""
+        """Switch keeps no record of a session's liveness, so its connection speaks for it."""
         store = RoomRoleStore()
         async with session_factory() as session:
             room = await _make_room(session, "r1")
             agent = await _make_agent(session, "a1")
             role = await store.define_role(session, room.id, "manager", "lead", True)
-            await _make_sdk_session(
-                session, agent.id, "sess-1", lease_for=timedelta(minutes=5)
-            )
             await session.commit()
 
             await store.acquire_lease(
@@ -492,69 +488,37 @@ class TestLeaseLivenessFollowsTheHolder:
             )
             await session.commit()
 
-            assert await store.live_holders_for_room(session, room.id, ()) == {
+            assert await store.live_holders_for_room(
+                session, room.id, {"conn-shared"}
+            ) == {role.id: [agent.id]}
+            assert await store.live_holders_for_room(session, room.id, ()) == {}
+
+    async def test_reassuming_a_role_rewrites_the_holder(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Re-assume moves the seat to the connection the caller is on now."""
+        store = RoomRoleStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "r1")
+            agent = await _make_agent(session, "a1")
+            role = await store.define_role(session, room.id, "manager", "lead", True)
+            await session.commit()
+
+            await store.acquire_lease(session, role, agent.id, "conn-1", None, ())
+            await session.commit()
+            await store.acquire_lease(
+                session, role, agent.id, "conn-2", "sess-1", {"conn-1"}
+            )
+            await session.commit()
+            await _age_lease(
+                session, agent.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
+            )
+            await session.commit()
+
+            assert await store.live_holders_for_room(session, room.id, {"conn-1"}) == {}
+            assert await store.live_holders_for_room(session, room.id, {"conn-2"}) == {
                 role.id: [agent.id]
             }
-
-    async def test_a_session_held_lease_dies_with_its_session(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        """An expired host lease frees the seat even on a live connection.
-
-        The connection arm must not rescue it: the session named the holder,
-        and the connection underneath it outlives the session — which under a
-        shared controller connection means forever.
-        """
-        store = RoomRoleStore()
-        async with session_factory() as session:
-            room = await _make_room(session, "r1")
-            agent = await _make_agent(session, "a1")
-            role = await store.define_role(session, room.id, "manager", "lead", True)
-            await _make_sdk_session(
-                session, agent.id, "sess-1", lease_for=timedelta(seconds=-5)
-            )
-            await session.commit()
-
-            await store.acquire_lease(
-                session, role, agent.id, "conn-shared", "sess-1", ()
-            )
-            await session.commit()
-            await _age_lease(
-                session, agent.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
-            )
-            await session.commit()
-
-            assert (
-                await store.live_holders_for_room(session, room.id, {"conn-shared"})
-                == {}
-            )
-
-    async def test_a_quiesced_session_holds_nothing(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        """Quiesced is offline, whatever the lease clock says."""
-        store = RoomRoleStore()
-        async with session_factory() as session:
-            room = await _make_room(session, "r1")
-            agent = await _make_agent(session, "a1")
-            role = await store.define_role(session, room.id, "manager", "lead", True)
-            await _make_sdk_session(
-                session,
-                agent.id,
-                "sess-1",
-                lease_for=timedelta(minutes=5),
-                quiesced=True,
-            )
-            await session.commit()
-
-            await store.acquire_lease(session, role, agent.id, None, "sess-1", ())
-            await session.commit()
-            await _age_lease(
-                session, agent.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
-            )
-            await session.commit()
-
-            assert await store.live_holders_for_room(session, room.id, ()) == {}
 
     async def test_a_live_holder_still_blocks_an_exclusive_role(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -583,43 +547,6 @@ class TestLeaseLivenessFollowsTheHolder:
                 await store.acquire_lease(
                     session, role, a2.id, "conn-2", None, {"conn-1"}
                 )
-
-    async def test_reassuming_a_role_rewrites_the_holder(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        """Re-assume is idempotent about the seat, not about who holds it.
-
-        The row is reused rather than replaced, so a re-assume that left the
-        old holder in place would leave the seat owned by a connection the
-        caller may no longer be on — kept alive by the wrong thing, and
-        renewable by the wrong caller.
-        """
-        store = RoomRoleStore()
-        async with session_factory() as session:
-            room = await _make_room(session, "r1")
-            agent = await _make_agent(session, "a1")
-            role = await store.define_role(session, room.id, "manager", "lead", True)
-            await _make_sdk_session(
-                session, agent.id, "sess-1", lease_for=timedelta(minutes=5)
-            )
-            await session.commit()
-
-            await store.acquire_lease(session, role, agent.id, "conn-1", None, ())
-            await session.commit()
-            await store.acquire_lease(
-                session, role, agent.id, "conn-1", "sess-1", {"conn-1"}
-            )
-            await session.commit()
-            await _age_lease(
-                session, agent.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
-            )
-            await session.commit()
-
-            # The session now holds it, so it survives with no live connection
-            # at all — which it could not do while the connection held it.
-            assert await store.live_holders_for_room(session, room.id, ()) == {
-                role.id: [agent.id]
-            }
 
 
 class TestOnlyTheHolderRenews:

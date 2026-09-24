@@ -15,7 +15,7 @@ vi.mock('./getAgentById', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: async () => ({ id: 'server' }),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchSdkSessions: mocks.list }));
+vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/core/sdk-host/shared-agent-runtime', () => ({ stopSharedSession: mocks.stop }));
 vi.mock('@main/core/sdk-host/shared-watcher', () => ({
   configureSharedWatcher: mocks.disable,
