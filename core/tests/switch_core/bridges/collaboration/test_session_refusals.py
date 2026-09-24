@@ -15,186 +15,54 @@ every "yes" said near a card comes back at whoever said it.
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.session.inbound import Refused
+from switch_core.bridges.collaboration.models import (
+    InboundInteraction,
+    InboundMessage,
+)
+from switch_core.bridges.collaboration.session.refusal import Refused
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
-from switch_core.sessions.errors import SessionError
+from switch_core.session_activity.bridge_answers import Answered
 
-from .test_session_answers import _interactions, _post, _press, _run
-from .test_session_text_answers import CARD, _bridge, _typed
+from .test_session_text_answers import _bridge, _run, _typed
 
-
-def _told(outcome: Any) -> str:
-    assert isinstance(outcome, Refused), outcome
-    return outcome.told()
-
-
-# ── Told ─────────────────────────────────────────────────────────────────────
-
-
-def test_a_press_that_lands_nowhere_says_which_card_and_why() -> None:
-    """A press is the least ambiguous thing anyone does with a card."""
-    interactions = _interactions(_post())
-
-    outcome = _run(
-        interactions.command_for(_press(action_id=f"{ANSWER_ACTION}:made-up"))
-    )
-
-    assert _told(outcome) == (
-        "Your answer to R42 did not land, because 'made-up' is not one of the "
-        "options that card offered."
-    )
-
-
-def test_a_press_on_a_card_with_no_record_left_cannot_name_it() -> None:
-    """The handle lives on the row, so a token resolving to none has no handle.
-
-    Still worth saying: the person pressed something and nothing happened, and
-    the notice is the only place that shows up.
-    """
-    interactions = _interactions(_post())
-
-    outcome = _run(interactions.command_for(_press(value="made-up")))
-
-    assert _told(outcome) == (
-        "Your answer did not land, because this card is no longer connected to "
-        "a live request."
-    )
-
-
-def test_a_bare_yes_that_was_taken_as_an_answer_is_told_when_it_fails() -> None:
-    """First reply under an approval, so it counted; the word fit no option."""
-    interactions = _interactions(
-        _post(
-            form={
-                "kind": "approval",
-                "options": [
-                    {"optionId": "always", "decision": "acceptForSession"},
-                    {"optionId": "deny", "decision": "decline"},
-                ],
-            }
-        )
-    )
-
-    outcome = _run(interactions.command_for_text(_typed("yes", root_id=CARD)))
-
-    assert "did not land" in _told(outcome)
-    assert "R42" in _told(outcome)
-
-
-def test_someone_switch_cannot_name_is_told_that_rather_than_nothing() -> None:
-    """The one refusal that is not about the card, and it reads the same either way."""
-    pressed = _run(_interactions(_post(), actor=None).command_for(_press()))
-    typed = _run(_interactions(_post(), actor=None).command_for_text(_typed("R42 1")))
-
-    assert _told(pressed) == _told(typed)
-    assert "does not know who this account belongs to" in _told(pressed)
-
-
-# ── Not told ─────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "said", ["sounds good to me", "R42 is the one I meant", "①", "ok"]
+CARD = "C1:111.0"
+MISSED = Refused(
+    reason="'9' is not one of the options that card offered",
+    handle="A1",
+    card_ref=CARD,
 )
-def test_ordinary_talk_is_not_answered_back(said: str) -> None:
-    """A bridge that told people their chat was not an answer is unusable."""
-    assert _run(_interactions(_post()).command_for_text(_typed(said))) is None
 
 
-@pytest.mark.parametrize("said", ["slice 8", "python 3", 'deploy "staging"'])
-def test_a_first_word_that_names_no_card_is_not_answered_back(said: str) -> None:
-    """The grammar cannot tell a handle from any other word a sentence starts with.
+class _Refusing:
+    """Approval answers that turn down every press and every typed answer."""
 
-    `slice 8` parses exactly as `R42 1` does — a token, then a position — so
-    the lookup is the only thing that separates them, and a token matching
-    nothing is chatter far more often than it is a misdirected answer. Telling
-    people put a notice under ordinary shop talk in any channel that had ever
-    had a card in it.
-    """
-    assert _run(_interactions(_post()).command_for_text(_typed(said))) is None
+    def __init__(self, refused: Refused) -> None:
+        self.refused = refused
 
+    async def for_press(self, interaction: InboundInteraction) -> Refused:
+        return self.refused
 
-def test_a_handle_that_names_a_card_in_another_channel_is_not_answered_back() -> None:
-    """Handles are scoped per channel, and the same word is chatter elsewhere.
-
-    A card is only answerable where it was posted, so a lookup that misses
-    because the card is in a different channel is the same outcome as one that
-    misses because the word was never a handle. This layer cannot tell those
-    apart, and the common one is the second.
-    """
-    interactions = _interactions(_post(external_channel_id="C2"))
-
-    assert _run(interactions.command_for_text(_typed("R42 1"))) is None
+    async def for_text(self, message: InboundMessage) -> Refused:
+        return self.refused
 
 
-def test_a_yes_further_down_a_card_thread_is_not_answered_back() -> None:
-    """Agreeing with someone in a card's thread is the common case, not a failure.
-
-    This is the branch where being told would be worst: the card is right
-    there, so a notice would go to whoever was talking about it rather than to
-    whoever was answering it.
-    """
-    interactions = _interactions(_post(), first_reply=False)
-
-    assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
-
-
-def test_a_bare_word_on_a_card_that_asks_questions_is_not_answered_back() -> None:
-    """Refused before this knows whether it was the first reply, so it cannot tell
-    an answer from agreement, and silence is the only honest outcome."""
-    interactions = _interactions(
-        _post(
-            form={
-                "kind": "questions",
-                "questions": [
-                    {
-                        "questionId": "q1",
-                        "optionIds": ["a", "b"],
-                        "multiSelect": False,
-                        "allowCustomAnswer": False,
-                    }
-                ],
-            }
-        )
-    )
-
-    assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
-
-
-def test_a_control_this_layer_did_not_write_is_not_answered_back() -> None:
-    """Another app's button on another app's message. Not ours to comment on."""
-    interactions = _interactions(_post())
-
-    assert _run(interactions.command_for(_press(action_id="other-app:go"))) is None
-
-
-def test_an_app_is_not_told_its_answer_did_not_land() -> None:
-    """A Slack workflow posting "R42 1" has nobody to tell.
-
-    Checked before the card is looked up, so an app naming a handle that does
-    not exist does not produce a notice aimed at a bot either.
-    """
-
-    class _Explodes:
-        async def get_by_handle(self, *args: object) -> None:
-            raise AssertionError("An app's answer was looked up.")
-
-        async def get_by_post(self, *args: object) -> None:
-            raise AssertionError("An app's answer was looked up.")
-
-    interactions = _interactions(_post())
-    interactions._posts = _Explodes()  # type: ignore[assignment]
-
-    outcome = _run(interactions.command_for_text(_typed("R42 1", sender_is_app=True)))
-
-    assert outcome is None
+def _press(**overrides: Any) -> InboundInteraction:
+    fields: dict[str, Any] = {
+        "channel_id": "C1",
+        "sender_id": "U1",
+        "sender_name": "someone",
+        "action_id": f"{ANSWER_ACTION}:allow-once",
+        "value": "opaque-token",
+        "message_ref": CARD,
+    }
+    fields.update(overrides)
+    return InboundInteraction(**fields)
 
 
 # ── What a reason is allowed to carry ────────────────────────────────────────
@@ -207,13 +75,10 @@ def test_a_reason_quoting_the_host_cannot_run_away_with_the_notice() -> None:
     puts it in the sentence. Nothing between the host and this notice bounds
     it, so this does.
     """
-    interactions = _interactions(_post())
-
-    outcome = _run(
-        interactions.command_for(_press(action_id=f"{ANSWER_ACTION}:{'x' * 5000}"))
-    )
-
-    told = _told(outcome)
+    told = Refused(
+        reason=f"'{'x' * 5000}' is not one of the options that card offered",
+        handle="A1",
+    ).told()
     assert len(told) < 400
     assert told.endswith("….")
 
@@ -228,22 +93,6 @@ def test_a_refusal_that_names_no_card_leaves_the_card_out_of_the_sentence() -> N
 # ── Where it comes out ───────────────────────────────────────────────────────
 
 
-def test_a_typed_answer_is_answered_back_in_the_cards_thread() -> None:
-    """The card offers two options, so a ninth is aimed at it and misses.
-
-    Answered back under the card, not under wherever the message that missed
-    was typed — a handle answers a card from anywhere in the channel, and the
-    ordinary case is the channel root, which has no thread of its own.
-    """
-    bridge, _ = _bridge(_interactions(_post()))
-
-    _run(bridge._handle_inbound_message(_typed("R42 9", root_id=CARD)))
-
-    assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
-        ("U1", CARD)
-    ]
-
-
 def test_a_typed_answer_from_the_channel_root_still_lands_in_the_cards_thread() -> None:
     """The ordinary way to answer by handle: no thread at all, just the channel.
 
@@ -251,13 +100,30 @@ def test_a_typed_answer_from_the_channel_root_still_lands_in_the_cards_thread() 
     the card would have nowhere to go and would silently log instead — which
     is exactly what the answer path is supposed to prevent.
     """
-    bridge, _ = _bridge(_interactions(_post()))
+    bridge, _ = _bridge(_Refusing(MISSED))
 
-    _run(bridge._handle_inbound_message(_typed("R42 9")))
+    _run(bridge._handle_inbound_message(_typed("A1 9")))
 
     assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
         ("U1", CARD)
     ]
+
+
+class _Landing:
+    async def for_press(self, interaction: InboundInteraction) -> Answered:
+        return Answered(handle="A1")
+
+    async def for_text(self, message: InboundMessage) -> Answered:
+        return Answered(handle="A1")
+
+
+def test_an_answer_that_did_land_is_not_answered_back() -> None:
+    bridge, _ = _bridge(_Landing())
+
+    _run(bridge._handle_inbound_message(_typed("A1 1")))
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told == []
 
 
 def test_the_notice_carries_the_name_of_whoever_answered() -> None:
@@ -267,9 +133,9 @@ def test_the_notice_carries_the_name_of_whoever_answered() -> None:
     going missing — and on the other four the notice would then be addressed
     to nobody in a thread several people can be answering in.
     """
-    bridge, _ = _bridge(_interactions(_post()))
+    bridge, _ = _bridge(_Refusing(MISSED))
 
-    _run(bridge._handle_inbound_message(_typed("R42 9", root_id=CARD)))
+    _run(bridge._handle_inbound_message(_typed("A1 9", root_id=CARD)))
 
     assert [name for _, _, name, _, _ in bridge._adapter.told] == ["someone"]
 
@@ -280,72 +146,20 @@ def test_a_press_is_answered_back_in_the_channel() -> None:
     The notice names the card, which is the part that has to be right; where
     a platform with no thread to put it in leaves it is that adapter's call.
     """
-    bridge, _ = _bridge(_interactions(_post()))
-
-    _run(bridge._handle_inbound_interaction(_press(value="made-up")))
-
-    assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
-        ("U1", None)
-    ]
-
-
-def _authority_refuses(bridge: Any, code: str) -> None:
-    """Authority takes the answer and turns it down — the second refusal.
-
-    Not the same thing as the card refusing it: the press was well formed and
-    named a real option, and it is the session that says no. Stale revision,
-    an epoch that has moved on, an account without the authority to decide.
-    """
-
-    async def _submit(*_args: Any, **_kwargs: Any) -> None:
-        raise SessionError(code, "this account cannot decide this request")
-
-    bridge._session_authority = SimpleNamespace(submit=_submit)
-
-
-def test_a_press_the_session_turns_down_is_told_to_the_presser_alone() -> None:
-    """The refusal that comes back from authority goes the same way as the one
-    the card gives. It was public once, which put "not authorised" under a
-    request in front of everyone in the group, and told the person nothing
-    where their client was showing a spinner."""
-    bridge, _ = _bridge(_interactions(_post()))
-    _authority_refuses(bridge, "NOT_AUTHORIZED")
+    bridge, _ = _bridge(_Refusing(MISSED))
 
     _run(bridge._handle_inbound_interaction(_press()))
 
     assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
         ("U1", None)
     ]
-    assert "NOT_AUTHORIZED" in bridge._adapter.told[0][4]
-
-
-def test_a_typed_answer_the_session_turns_down_is_still_said_in_the_thread() -> None:
-    """Deliberately unchanged for typing: there is no press to reply to, so the
-    card's own thread is the only place it can be said, and the notice names
-    whose answer it was because several people can be answering there."""
-    bridge, _ = _bridge(_interactions(_post()))
-    _authority_refuses(bridge, "STALE_REVISION")
-
-    _run(bridge._handle_inbound_message(_typed("R42 1", root_id=CARD)))
-
-    assert [
-        (actor, name, thread) for _, actor, name, thread, _ in bridge._adapter.told
-    ] == [("U1", "someone", CARD)]
-
-
-def test_an_answer_that_did_land_is_not_answered_back() -> None:
-    bridge, _ = _bridge(_interactions(_post()))
-
-    _run(bridge._handle_inbound_message(_typed("R42 1")))
-
-    assert bridge._adapter.told == []
 
 
 def test_the_message_still_reaches_the_room_after_a_notice() -> None:
     """Being told the answer failed is not instead of having said it."""
-    bridge, relayed = _bridge(_interactions(_post()))
+    bridge, relayed = _bridge(_Refusing(MISSED))
 
-    _run(bridge._handle_inbound_message(_typed("R42 9")))
+    _run(bridge._handle_inbound_message(_typed("A1 9")))
 
     assert len(bridge._adapter.told) == 1
     assert len(relayed) == 1

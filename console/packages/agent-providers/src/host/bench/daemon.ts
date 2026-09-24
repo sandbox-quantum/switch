@@ -34,7 +34,7 @@ import { replaceOwner } from '../ownership-lock';
 import { ownProcessGroup } from '../process-fence';
 import { SessionLinks } from '../session-channel';
 import { prepareSharedConfig, sharedConfigSchema } from '../shared-config';
-import { runSharedHost } from '../shared-host';
+import { parkAfterMs, runSharedHost } from '../shared-host';
 import { runSharedWatcher } from '../shared-watcher';
 import { superviseSharedHost } from '../supervisor';
 import { createBenchAdapter } from './adapter';
@@ -129,12 +129,16 @@ async function main(): Promise<void> {
           roomConnection: config.roomConnection,
           grant: config.grant,
           parent: process.send ? process : null,
+          parkAfterMs: parkAfterMs(),
         },
         createBenchAdapter(),
         stop.signal
       );
     } catch (error) {
       if (!stop.signal.aborted) throw error;
+    } finally {
+      // The channel would otherwise keep this process alive after the host is done.
+      if (process.send) process.disconnect();
     }
   }
 }

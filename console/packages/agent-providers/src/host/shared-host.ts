@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
-import { declareHandoffCapability, HandoffInbox } from './handoff';
+import { HostWaker } from './handoff';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
@@ -20,17 +20,20 @@ import { writeSessionSelector } from './shared-config';
 import { SharedState } from './shared-state';
 
 /**
- * A session run on behalf of its agent, reached through the agent's
- * controller.
+ * A session run on behalf of its agent.
  *
  * The host owns the session: its transcript, its generation (epoch) and its
  * recovery are its own and live in its state root. Switch holds none of it.
- * What reaches the host comes from the controller, which writes into the root:
- * room messages the agent was addressed with (`handoff.jsonl`, each carrying
- * the event as the agent's stream delivered it) and commands Switch relayed
- * from Console (`relayed-commands.jsonl`). What the host reports goes to the
+ * It is the child of whatever started it (Console for a local session, the
+ * agent's sidecar for a remote one) and takes everything over that IPC
+ * channel: room messages the agent's controller routed to it, commands from
+ * Console, room controls and approval wakes. What it reports goes to the
  * `/agent-sessions` routes: short activity lines, approval requests, and the
  * acknowledgement of answers it has applied.
+ *
+ * A host with a parent parks itself after `parkAfterMs` with nothing to do:
+ * it records `parked` and exits, and its parent starts it again when the
+ * session is next needed. A hundred quiet sessions then cost nothing.
  */
 export type SharedHostOptions = {
   root: string;
@@ -44,7 +47,28 @@ export type SharedHostOptions = {
   grant?: { roomId: string; messageId: string };
   /** The IPC channel to the process that started this host, or null if none did. */
   parent: ParentPort | null;
+  /** How long the host waits with nothing to do before parking; null never parks. */
+  parkAfterMs: number | null;
 };
+
+/** How long a session sits idle before its host parks, unless the environment says otherwise. */
+const PARK_AFTER_MS = 30 * 60 * 1000;
+
+/**
+ * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
+ * milliseconds, `off` to never park, or 30 minutes when unset.
+ */
+export function parkAfterMs(): number | null {
+  const value = process.env.SWITCH_SESSION_PARK_AFTER_MS;
+  if (value === undefined || value === '') return PARK_AFTER_MS;
+  if (value === 'off') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0)
+    throw new Error(
+      `SWITCH_SESSION_PARK_AFTER_MS must be a positive number of milliseconds or "off", not "${value}".`
+    );
+  return parsed;
+}
 
 class TransportError extends Error {}
 class RequestError extends Error {
@@ -173,10 +197,12 @@ export async function runSharedHost(
     await state.journal.append({ type: 'running' });
     // Read whether or not this session serves rooms: it is also where the
     // agent's controller hands over commands Switch relayed from Console.
-    const handoffs = new HandoffInbox(options.root);
-    handoffs.listen(executionSignal);
+    const waker = new HostWaker();
+    let lastActive = performance.now();
+    const active = () => {
+      lastActive = performance.now();
+    };
     const rooms = options.roomConnection ? await SharedRoomInbox.open(options.root) : null;
-    if (rooms) await declareHandoffCapability(options.root);
     // Room attachments fetched ahead of the command that names them, so one
     // that cannot be fetched is left out and said, rather than failing the turn.
     const roomAttachments = new Map<string, { data: Uint8Array; sha256: string }>();
@@ -287,7 +313,7 @@ export async function runSharedHost(
     let outcomesCheckedAt = -Infinity;
     const applyOutcomes = async (force: boolean) => {
       if (reportingUnsupported) return;
-      const woken = handoffs.takeApprovalWake();
+      const woken = waker.takeApprovalWake();
       const waiting = host!
         .snapshot()
         .requests.some((r) => r.state === 'open' && r.content.kind === 'approval');
@@ -344,6 +370,7 @@ export async function runSharedHost(
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (value: unknown): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
+      active();
       const parsed = commandSchema.safeParse(value);
       if (!parsed.success) {
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
@@ -383,7 +410,6 @@ export async function runSharedHost(
     };
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
-      for (const event of await handoffs.drain()) await inbox.accept(event);
       for (const event of inbox.pending()) {
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
@@ -439,21 +465,37 @@ export async function runSharedHost(
         room: async ({ handoff }) => {
           if (!rooms) throw new Error('This session serves no rooms.');
           await rooms.accept(handoff);
-          handoffs.nudge();
+          active();
+          waker.nudge();
           return { accepted: true };
         },
         snapshot: async () => host!.snapshot(),
         approvals: async () => {
-          handoffs.approvalsWaiting();
+          active();
+          waker.approvalsWaiting();
           return null;
         },
       },
       options.parent ?? { connected: false, on: () => null, off: () => null }
     );
+    host.onPublished(active);
     if (parent) {
       host.onPublished((event) => parent.push(event));
       parent.ready();
     }
+    /** Nothing running, nothing waiting on a person, nothing handed over, for long enough. */
+    const idleEnough = (): boolean => {
+      if (!parent || options.parkAfterMs === null) return false;
+      if (performance.now() - lastActive < options.parkAfterMs) return false;
+      const snapshot = host!.snapshot();
+      return (
+        snapshot.session.status === 'ready' &&
+        !host!.resetDecisionPending &&
+        !snapshot.turns.some((turn) => turn.status === 'running') &&
+        !snapshot.requests.some((request) => request.state === 'open') &&
+        !(rooms?.pending().length ?? 0)
+      );
+    };
     await report();
     await applyOutcomes(true);
     let heldForDecision = false;
@@ -476,8 +518,17 @@ export async function runSharedHost(
         }
       }
       if (rooms && ['ready', 'running'].includes(status)) await admitRoomMessages(rooms);
-      for (const value of await handoffs.drainCommands()) await run(value);
-      await handoffs.idle(250, executionSignal);
+      if (idleEnough()) {
+        console.info(
+          `Parking session ${options.session.sessionId} after ${Math.round(options.parkAfterMs! / 1000)} s idle.`
+        );
+        // Stops answering first: a request that arrives now waits for the
+        // exit, which the parent reads as the host being gone and starts it again.
+        parent?.close();
+        await state.journal.append({ type: 'parked' });
+        break;
+      }
+      await waker.idle(250, executionSignal);
     }
   } catch (error) {
     if (!signal.aborted) failure ??= error;

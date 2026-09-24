@@ -6,7 +6,12 @@ import type { Duplex } from 'node:stream';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { liveSupervisor, sharedSessionRoot } from './launch';
-import { sessionRequestSchema, type SessionLinks, type SessionRequest } from './session-channel';
+import {
+  sessionRequestSchema,
+  SessionUnavailableError,
+  type SessionLinks,
+  type SessionRequest,
+} from './session-channel';
 
 /**
  * How Console reaches the sessions an agent's sidecar runs on a remote host.
@@ -99,6 +104,7 @@ export async function serveControl(
               id: parsed.id,
               ok: false,
               error: error instanceof Error ? error.message : String(error),
+              unavailable: error instanceof SessionUnavailableError,
             })
         );
       if ('request' in parsed) {
@@ -152,6 +158,7 @@ const serverMessageSchema = z.union([
     ok: z.boolean(),
     value: z.unknown().optional(),
     error: z.string().optional(),
+    unavailable: z.boolean().optional(),
   }),
   z.object({ sessionId: z.string(), event: serverEventSchema }),
 ]);
@@ -196,8 +203,10 @@ export class ControlClient {
         const pending = this.pending.get(data.id);
         if (!pending) return;
         this.pending.delete(data.id);
+        const message = data.error ?? 'The sidecar refused the request.';
         if (data.ok) pending.resolve(data.value);
-        else pending.reject(new Error(data.error ?? 'The sidecar refused the request.'));
+        else if (data.unavailable) pending.reject(new SessionUnavailableError(message));
+        else pending.reject(new Error(message));
       }
     });
     stream.write(`${JSON.stringify({ token })}\n`);

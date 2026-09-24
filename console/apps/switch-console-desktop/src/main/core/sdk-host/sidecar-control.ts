@@ -30,7 +30,9 @@ try { process.stdout.write(fs.readFileSync(path.join(root, file), 'utf8')); }
 catch (e) { if (e.code === 'ENOENT') process.stdout.write('null'); else throw e; }
 `;
 
-const controlSchema = z.object({ port: z.number().int().positive(), token: z.string().min(1) }).nullable();
+const controlSchema = z
+  .object({ port: z.number().int().positive(), token: z.string().min(1) })
+  .nullable();
 
 export class SidecarUnavailableError extends Error {
   constructor(message: string) {

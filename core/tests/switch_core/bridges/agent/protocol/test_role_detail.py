@@ -61,23 +61,15 @@ class _FakeAgentStore:
 
 
 class _FakeAgentSessionStore:
-    """Where each kind of session is: transport by binding, SDK by its room."""
+    """Where a transport session is, by its binding."""
 
-    def __init__(
-        self, bindings: dict[str, tuple[str, str]], sdk_rooms: dict[str, str]
-    ) -> None:
+    def __init__(self, bindings: dict[str, tuple[str, str]]) -> None:
         self._bindings = bindings
-        self._sdk_rooms = sdk_rooms
 
     async def get_connected_room(
         self, _session: Any, transport_session_id: str
     ) -> tuple[str, str] | None:
         return self._bindings.get(transport_session_id)
-
-    async def get_sdk_session_room(
-        self, _session: Any, sdk_session_id: str
-    ) -> str | None:
-        return self._sdk_rooms.get(sdk_session_id)
 
 
 class _FakeRoomStore:
@@ -137,7 +129,6 @@ def _build_service(
     leases: dict[str, list[Any]],
     agents: dict[str, Any],
     bindings: dict[str, tuple[str, str]],
-    sdk_rooms: dict[str, str],
     rooms: dict[str, Any],
     members: dict[str, list[str]],
     my_lease: Any | None = None,
@@ -149,7 +140,7 @@ def _build_service(
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]
-    svc.agent_session_store = _FakeAgentSessionStore(bindings, sdk_rooms)  # type: ignore[assignment]
+    svc.agent_session_store = _FakeAgentSessionStore(bindings)  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore(rooms, members)  # type: ignore[assignment]
     return svc
 
@@ -163,7 +154,6 @@ class TestGetRoomRole:
             leases={},
             agents={},
             bindings={},
-            sdk_rooms={},
             rooms={"room-1": _room("room-1", "This Room")},
             members={"room-1": ["viewer"]},
         )
@@ -197,7 +187,6 @@ class TestGetRoomRole:
                 "tx-here": ("a-here", "room-1"),
                 "tx-elsewhere": ("a-elsewhere", "room-2"),
             },
-            sdk_rooms={},
             rooms={
                 "room-1": _room("room-1", "This Room"),
                 "room-2": _room("room-2", "Other Room"),
@@ -225,7 +214,6 @@ class TestGetRoomRole:
             leases={},
             agents={},
             bindings={},
-            sdk_rooms={},
             rooms={"room-1": _room("room-1", "This Room")},
             members={"room-1": ["viewer"]},
         )
@@ -239,7 +227,6 @@ class TestGetRoomRole:
             leases={},
             agents={},
             bindings={},
-            sdk_rooms={},
             rooms={"room-1": _room("room-1", "This Room")},
             members={"room-1": ["someone-else"]},
         )

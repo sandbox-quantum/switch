@@ -5,7 +5,7 @@ from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.bridges.collaboration.models import InboundInteraction, InboundMessage
-from switch_core.bridges.collaboration.session.inbound import Refused
+from switch_core.bridges.collaboration.session.refusal import Refused
 from switch_core.bridges.collaboration.session.renderers import (
     ANSWER_ACTION,
     position_action,

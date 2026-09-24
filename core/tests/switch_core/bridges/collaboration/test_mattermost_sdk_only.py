@@ -15,7 +15,6 @@ import asyncio
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -32,17 +31,9 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
-from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.bridges.collaboration.session.renderers import RequestReference
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 
-from .test_session_activity import _item, _items, _turn
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
+from .session_fixtures import _item, _turn, open_request
 
 _MARKER = "switch_publication"
 
@@ -278,9 +269,7 @@ def _activity(**kwargs: Any) -> TurnActivity:
 
 
 async def _card(**kwargs: Any) -> RequestCard:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    projection = await project(source, "session-demo")
-    request = projection.open_requests()[0]
+    request = open_request()
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
@@ -716,71 +705,6 @@ async def test_an_unreadable_thread_is_not_a_dropped_message(
     assert caplog.records
 
 
-# ── How much of the channel a turn takes up ──────────────────────────────────
-
-
-def _turn_kwargs() -> dict[str, Any]:
-    return {
-        "session_id": "session-1",
-        "channel_id": "chan-1",
-        "thread_root_id": "root-1",
-        "asked_on": "root-1",
-        "agent_name": "worker",
-        "session_url": None,
-    }
-
-
-async def test_a_whole_turn_is_one_post_edited_rather_than_a_thread_of_them() -> None:
-    """Slack splits the ticking status from the expandable tool log, because it
-    can collapse the second one. Mattermost cannot, so a second post would be
-    the tool list sitting open in the thread for good — and the compact status
-    already carries the counts. One post, edited until the turn ends.
-    """
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-    items = await _items()
-
-    for elapsed, status in ((1, "running"), (30, "running"), (44, "completed")):
-        await activity.publish(
-            items, _turn(status), elapsed_seconds=elapsed, **_turn_kwargs()
-        )
-
-    assert len(_posts(adapter).created) == 1
-    assert {ref for ref, _ in _posts(adapter).patched} == {"post-1"}
-
-
-async def test_a_failure_gets_its_own_reply_and_is_retired_without_deleting_it() -> (
-    None
-):
-    """An edit to a status the reader has already scrolled past notifies
-    nobody, so a problem somebody has to act on arrives as a reply of its own.
-    Once it clears, that reply is edited rather than removed: Mattermost leaves
-    "(message deleted)" behind, which is worse than a settled status line.
-    """
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-    items = await _items()
-
-    await activity.publish(
-        items,
-        _turn("running"),
-        elapsed_seconds=2,
-        error_summary="The session host is offline.",
-        **_turn_kwargs(),
-    )
-    assert len(_posts(adapter).created) == 2
-    assert "The session host is offline." in _posts(adapter).created[1]["message"]
-
-    await activity.publish(
-        items, _turn("completed"), elapsed_seconds=9, **_turn_kwargs()
-    )
-
-    assert len(_posts(adapter).created) == 2
-    retired = [body for ref, body in _posts(adapter).patched if ref == "post-2"]
-    assert retired
-    assert "The session host is offline." not in retired[-1]["message"]
-
-
 # ── What a reader actually sees ──────────────────────────────────────────────
 
 
@@ -815,15 +739,6 @@ async def test_a_turn_that_failed_says_so_instead_of_listing_its_tools() -> None
 
 
 # ── Who gets told ────────────────────────────────────────────────────────────
-
-
-async def test_naming_somebody_is_the_only_way_this_platform_reaches_them() -> None:
-    """A Mattermost thread notifies the people named in it and nobody else,
-    which is what makes the owner worth naming ahead of whoever asked."""
-    activity = SessionTurnActivity(_adapter())
-
-    assert activity.notifies_only_by_mention
-    assert not activity.redraws_for_elapsed_time
 
 
 async def test_a_problem_with_nobody_to_name_admits_that_it_told_no_one() -> None:
@@ -909,109 +824,3 @@ async def test_a_reachable_recipient_is_named_and_told_nothing_about_linking() -
     message = _posts(adapter).created[0]["message"]
     assert "@owner" in message
     assert "notified no one" not in message
-
-
-# ── Saying the agent has started ─────────────────────────────────────────────
-
-
-def _typing(adapter: MattermostAdapter, agent_name: str) -> list[dict[str, str]]:
-    driver: Any = adapter._bot_drivers[agent_name]
-    return [
-        body
-        for _, endpoint, body in driver.client.requests
-        if endpoint.endswith("/typing")
-    ]
-
-
-async def test_a_turn_says_the_agent_has_started_once_and_not_on_every_redraw() -> None:
-    """The channel shows nothing at all between the command and the first
-    status. Mattermost expires the indicator itself, so this is a nudge and
-    not something to switch off — and one nudge per turn, because a platform
-    told again on every redraw shows the agent typing for as long as it ran.
-    """
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-
-    for elapsed in (1, 30):
-        await activity.publish(
-            [], _turn("running"), elapsed_seconds=elapsed, **_turn_kwargs()
-        )
-
-    assert _typing(adapter, "worker") == [{"channel_id": "chan-1"}]
-
-
-async def test_the_nudge_goes_where_the_work_was_asked_for() -> None:
-    """A command typed inside a thread is watched there; the channel root is
-    a place the person waiting is not looking."""
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-
-    await activity.publish(
-        [],
-        _turn("running"),
-        elapsed_seconds=1,
-        **{**_turn_kwargs(), "asked_on": "reply-9"},
-    )
-
-    assert _typing(adapter, "worker") == [
-        {"channel_id": "chan-1", "parent_id": "root-1"}
-    ]
-
-
-async def test_a_turn_that_is_already_over_does_not_say_it_has_started() -> None:
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-
-    await activity.publish([], _turn("completed"), elapsed_seconds=4, **_turn_kwargs())
-
-    assert _typing(adapter, "worker") == []
-
-
-# ── What the publisher is told about a turn ──────────────────────────────────
-
-
-async def test_a_turn_whose_mark_could_not_be_cleared_is_not_reported_complete() -> (
-    None
-):
-    """Reported complete, the turn is never published again and the 👀 stays
-    on a finished request for good."""
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-    await activity.publish([], _turn("running"), elapsed_seconds=1, **_turn_kwargs())
-    driver: Any = adapter._bot_drivers["worker"]
-    driver.reactions.delete_error = ConnectionError("temporary network failure")
-
-    assert not await activity.publish(
-        [], _turn("completed"), elapsed_seconds=2, **_turn_kwargs()
-    )
-
-
-async def test_the_clock_alone_does_not_rewrite_a_running_turns_post() -> None:
-    """One post carries the whole turn here, so a redraw is the reader's only
-    post changing under them. It is worth a change they asked about."""
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-    items = await _items()
-
-    for elapsed in (1, 30, 44):
-        await activity.publish(
-            items, _turn("running"), elapsed_seconds=elapsed, **_turn_kwargs()
-        )
-
-    assert _posts(adapter).patched == []
-
-
-async def test_a_new_tool_does_rewrite_it() -> None:
-    adapter = _adapter()
-    activity = SessionTurnActivity(adapter)
-    items = await _items()
-
-    await activity.publish(items, _turn("running"), elapsed_seconds=1, **_turn_kwargs())
-    await activity.publish(
-        [*items, _item(**{"itemId": "item-read", "title": "Read notes.md"})],
-        _turn("running"),
-        elapsed_seconds=2,
-        **_turn_kwargs(),
-    )
-
-    assert len(_posts(adapter).patched) == 1

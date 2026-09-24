@@ -167,95 +167,82 @@ The session status line reuses the existing `agent_runtime_states` table
    - Known gap: host liveness reaches the open view only through the next
      snapshot, since there is no `session.connectivity` event in the journal.
 
-## What is left
+## Step 7 — the server-side session layer is gone
 
-### Step 7 — remove the server-side session layer
+Compatibility with deployed Consoles is waived (owner's call).
 
-Compatibility with deployed Consoles is waived (owner's call), so this no
-longer waits on a release. Commands from Console go through Switch as a relay
-on the agent's stream (option A), not straight to the host.
+1. `0c099b57`: `SessionError` in `sessions/errors.py`.
+2. `34789de7`: agent-protocol 5 `session_command` frame. It now carries only
+   room controls (`!reset` and the like) from Switch to the watcher; Console
+   no longer sends commands through Switch.
+3. `3bf5184d`: the cutover. Hosts and the watcher no longer use
+   `/sessions/*`. The watcher owns room routing (placed session if it runs
+   here, else the latest assignment in its journal). The host builds room
+   prompts itself (`room-prompt.ts`), fetches room attachments, reports
+   activity and applies approval outcomes. Switch keeps session placement in
+   memory only (`ConnectionRegistry.place_session` / `session_room` /
+   `session_in_room` / `placements`), set by `connect_to_room`, and tags
+   delivered events with the placed session's id.
+4. `990fe3c9`: presence and occupancy from the registry only; room controls
+   over `session_command`.
+5. Direct IPC, no Switch and no file in between (`bd6e528a`, `b425df3f`):
+   - Every session host is a child process of Console (a local session) or
+     of the agent's sidecar (a remote one), spawned with a Node IPC channel.
+     One process per session, so one crashing takes down nothing else.
+     `host/session-channel.ts`: `SessionLinks` is the parent's end (request /
+     reply, `ready`, and every recorded event pushed up); `serveParent` is the
+     host's end.
+   - The watcher hands room messages, approval wakes and room controls to
+     hosts over `SessionLinks` (`askSession`). A room message waits on the
+     host's acknowledgement and relaunches the host if it went away. The old
+     handoff/drain files are gone; `handoff.ts` keeps only `HostWaker`.
+   - Remote: the sidecar listens on a loopback port and writes
+     `control.json` (`{port, token}`, mode 0600) to its state root
+     (`host/control.ts`, `serveControl`). Console reads it over SSH and
+     opens the port through the same SSH connection (`sidecar-control.ts`,
+     `ControlClient`): session requests, `ensure`, and live event
+     subscriptions.
+   - Console: commands go straight to the host (`session-commands.ts`); the
+     live transcript is pushed host → main → renderer (`transcripts.ts`). The
+     journal file (`events.jsonl`) is read only to rebuild state after a
+     restart and to show stopped sessions.
+6. Removed from switch-core: `/sessions/*`, `/gateway/sessions/*`, the
+   gateway command relay, `sessions/{service,publication,projection,
+   validation,command_notifications}`, the old collaboration session modules
+   (`outbound`, `inbound`, `transport`, `activity_journal`, `demo`), the old
+   answer path and `session_request_post_store`. The refusal type the new
+   answer path uses moved to `collaboration/session/refusal.py`. Kept:
+   `contract.py`, `errors.py`, `http.py`, `normalise_mime_type`.
+7. Room health for Console: `GET /gateway/agent-sessions/room-health`
+   (the owner's agents' live connections and in-memory placements), and
+   `POST /gateway/agent-sessions/{agent}/{session}/place` (`{roomId}`)
+   behind "Reconnect to room".
+8. Migration `b9e4d2a71c05` drops `session_activity_posts`,
+   `session_request_posts`, `sdk_session_commands`, `sdk_session_events`,
+   `sdk_room_admissions`, `sdk_sessions` and `media_blobs.sdk_session_id`
+   (deleting the blobs uploaded into mirrored sessions). Its downgrade
+   raises: the data cannot be rebuilt.
 
-What depends on the session tables today (mapped 2026-09-24):
+9. Idle sessions park. A host with a parent that has had nothing to do for
+   `SWITCH_SESSION_PARK_AFTER_MS` (30 minutes by default, `off` to disable)
+   records `parked` in `shared-state.jsonl` and exits. The idle check needs
+   no turn running, no open request, no reset decision and no room message
+   queued. It stops answering its parent first, so a request that arrives
+   during the exit fails as unavailable and the sender starts it again. The
+   watcher's next room message relaunches it (`deliver`); a Console command
+   that finds it gone starts it with `hydrateSession` and sends again; the
+   watcher's start-up `launchAssigned` skips parked sessions
+   (`hostParked`).
 
-- Server delivery of room messages does **not**: message → EventBuffer →
-  the watcher's `all`-scope stream works with no session rows.
-- What does: the room-owner decision (`/sessions/room-admission`, grants,
-  reservations), turning a room message into a session command
-  (`/sessions/{id}/room-message`: the server rebuilds the prompt from its own
-  copy, wraps it in nonce markers, enforces per-room order, copies
-  attachments), the command queue, lease/claim/recover/quiesce, the selector
-  headers (`X-Switch-Session-*` → `session_binding` → the room a session's
-  tool calls act in), role-lease liveness (`room_role_store._live` joins
-  `SdkSession`), `agents_present_in` / `rooms_occupied` (discount stale claims
-  of stopped sessions), room controls (`!reset` etc. → `submit_room_control`),
-  the Slack stop button, and `media_blobs.sdk_session_id`.
-- Console: discovery (`GET /gateway/sessions`), readiness polling, stop,
-  retire, initial prompt, room health, reconnect-room, diagnostics.
+### What is left
 
-Parts:
-
-1. Done (`0c099b57`): `SessionError` in `sessions/errors.py`.
-2. Done (`34789de7`): `POST /gateway/agent-sessions/{agent}/{session}/commands`
-   relays an owner's command to the agent's watcher as a `session_command`
-   frame (agent-protocol 5), stored nowhere; `HOST_OFFLINE` when no watcher
-   speaking 5 is attached.
-3. Done: the cutover. Hosts and the watcher no longer use `/sessions/*`.
-   - Watcher (`shared-watcher.ts`): owner of a room = the session Switch
-     says is placed in it (event field `session_id`, from `connect_to_room`)
-     if that session runs here, else the latest assignment in its own
-     journal; a dead owner is started again; with no owner it starts a
-     session if allowed, otherwise holds the event (the journal keeps the
-     event itself, content included, across restarts). Handoffs carry the
-     event (`HANDOFF_PROTOCOL` 2). No admission, reservation, sweep or carry.
-   - Host (`shared-host.ts`, rewritten): local epoch; no claim, renew,
-     recover, quiesce, room binding, event upload or command fetch. Builds
-     room prompts itself (`room-prompt.ts`: same nonce markers, unread
-     notice, attachment refusals), fetches room attachments first through
-     `/agents/{id}/rooms/{room}/media` (a missing one is named in the prompt
-     instead of failing the turn), publishes its session selector at start,
-     runs relayed commands, reports activity and applies approval outcomes.
-   - Switch: `ConnectionRegistry.place_session` / `session_room` /
-     `session_in_room` (memory only). `resolve_caller` takes the session id
-     plus the connection; host/epoch headers are accepted and ignored.
-     `connect_to_room` places the session. Delivered events carry the placed
-     session's id. Session role leases are live while their connection is.
-   - Console: discovery lists sessions from the agent's host
-     (`host-sessions.ts`, one `node -e` per call, local or SSH); startup
-     readiness reads the host journal; the chat view reads only the journal
-     and says so when the host cannot be reached; stop/first prompt/commands
-     go through the relay. Retire and attachment upload are gone from the
-     chat view.
-   - End-to-end harness (`core/tests/benchmarks`, `just bench`) adapted and
-     passing: delivery, concurrency, lost host and worker, controller and
-     Core restarts, competing controllers, upgrades, two sessions taking one
-     room. Latency is measured push → provider dispatch.
-   - Known regressions and gaps: a session's role is freed only when the
-     agent's controller connection drops (or it is released), not when the
-     session dies; after a Core restart a session must `connect_to_room`
-     again before room-scoped tool calls work; with two controllers on two
-     machines the winner answers a room with a new session of its own;
-     Console attachments have no path to the host; the room-health and
-     reconnect-room UI still call server routes that no longer know the
-     sessions (removed with part 5); discovery reads each journal whole on
-     every pass.
-4. Server: presence and occupancy from the registry only (the host must
-   release its room when a session stops), drop
-   `require_recorded_rooms_unmoved` and the `SdkSession` lease arm, selector
-   → an in-memory `session_rooms` map on the connection set by
-   `connect_to_room`, room controls over `session_command`.
-5. Delete `/sessions/*`, `/gateway/sessions/*`, `SessionAuthority`,
-   `sessions/{service,publication,projection,validation,command_notifications}`,
-   the old collaboration session modules and the old answer path, with their
-   tests. Keep `contract.py` (renderers and cards use it), `errors.py`,
-   `http.py`, `normalise_mime_type`.
-6. Migration after `545f80e11f13`: drop `media_blobs.sdk_session_id` (and the
-   `sdk-attachment:` blobs), `session_activity_posts`, `session_request_posts`,
-   `sdk_session_commands`, `sdk_session_events`, `sdk_room_admissions`,
-   `sdk_sessions`.
-
-Part 3 is the risky one: it moves prompt construction (injection markers,
-ordering, attachments) from the server into the host, and it can only be
-verified end to end against a running Switch with a bridge and Console.
+- End-to-end (`just bench`): the last run before the cleanup had 2 failures,
+  competing controllers and two sessions taking one room. Rerun and fix.
+- Known gaps: a session's role is freed only when the controller connection
+  drops or the role is released; after a Core restart a session must
+  `connect_to_room` again before room-scoped tool calls work; Console
+  attachments have no path to the host; `publishes_sdk_sessions` on the
+  adapters is now a misnomer (it means "draws activity and approval cards").
 
 ### Also required
 

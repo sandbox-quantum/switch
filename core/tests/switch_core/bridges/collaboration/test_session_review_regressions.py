@@ -25,7 +25,7 @@ from switch_core.sessions.contract import (
     QuestionsResult,
 )
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn
 from .test_session_questions_cards import FORM, _requests
 
 

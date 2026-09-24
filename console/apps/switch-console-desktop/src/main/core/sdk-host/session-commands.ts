@@ -12,6 +12,7 @@ import {
 } from '@switch-console/shared/session-v1';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
 import { localSessionLinks } from './local-host';
 import { sidecarControl } from './sidecar-control';
 
@@ -21,7 +22,8 @@ import { sidecarControl } from './sidecar-control';
  * A local session's host is Console's child; a remote one's is a child of
  * the agent's sidecar, which Console reaches over SSH. Either way the command
  * goes down the host's IPC pipe and the host answers with what it recorded.
- * Switch is not involved.
+ * Switch is not involved. A host that parked itself after sitting idle is
+ * started again and the command sent once it is back.
  */
 
 export class CommandNotRecordedError extends Error {
@@ -59,27 +61,32 @@ export async function submitSessionCommand(
   agentId: string,
   command: ClientCommand
 ): Promise<CommandStatus> {
+  const request: SessionRequest = {
+    type: 'command',
+    command: {
+      ...command,
+      origin: {
+        surface: 'console',
+        actorId: 'console',
+        roomId: null,
+        threadId: null,
+        messageId: null,
+      },
+    },
+  };
   try {
-    return commandStatusSchema.parse(
-      await askHost(agentId, command.sessionId, {
-        type: 'command',
-        command: {
-          ...command,
-          origin: {
-            surface: 'console',
-            actorId: 'console',
-            roomId: null,
-            threadId: null,
-            messageId: null,
-          },
-        },
-      })
-    );
+    return commandStatusSchema.parse(await askHost(agentId, command.sessionId, request));
   } catch (error) {
-    if (error instanceof SessionUnavailableError)
-      throw new Error(`The session is not running: ${error.message}`);
-    throw error;
+    if (!(error instanceof SessionUnavailableError)) throw error;
   }
+  try {
+    await hydrateSession(command.sessionId);
+  } catch (error) {
+    throw new Error(
+      `The session is not running and could not be started again: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  return commandStatusSchema.parse(await askHost(agentId, command.sessionId, request));
 }
 
 /** What the session's host last recorded for a command. */

@@ -811,6 +811,10 @@ class ConnectionRegistry:
     def session_room(self, agent_id: str, session_id: str) -> str | None:
         return self._session_rooms.get(agent_id, {}).get(session_id)
 
+    def placements(self, agent_id: str) -> dict[str, str]:
+        """Each of the agent's sessions that connected to a room, and the room."""
+        return dict(self._session_rooms.get(agent_id, {}))
+
     def placed_rooms(self, agent_id: str) -> set[str]:
         return set(self._session_rooms.get(agent_id, {}).values())
 

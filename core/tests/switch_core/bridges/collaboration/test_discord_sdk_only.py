@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import discord
@@ -34,15 +33,8 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordConnectionConfig,
 )
 from switch_core.bridges.collaboration.session.renderers import RequestReference
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 
-from .test_session_activity import _item, _turn
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
+from .session_fixtures import _item, _turn, open_request
 
 GUILD_ID = 900
 CHANNEL_ID = 100
@@ -351,9 +343,7 @@ def _ended(**kwargs: Any) -> TurnActivity:
 
 
 async def _card(**kwargs: Any) -> RequestCard:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    projection = await project(source, "session-demo")
-    request = projection.open_requests()[0]
+    request = open_request()
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 

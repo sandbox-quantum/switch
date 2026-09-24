@@ -17,7 +17,6 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.connections import (
@@ -33,7 +32,6 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
-from switch_core.sessions.command_notifications import subscribe
 from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
 
@@ -138,19 +136,7 @@ async def _event_stream(
     # reported when it resumes.
     last_rooms = set(conn.rooms)
 
-    commands: set[str] = set()
-
-    def wake_commands(session_id: str) -> None:
-        commands.add(session_id)
-        conn.wake.set()
-
     tenant_id = current_tenant_id()
-    subscription = (
-        subscribe(tenant_id, agent_id, wake_commands)
-        if tenant_id is not None and conn.scope == "all"
-        else nullcontext()
-    )
-    subscription.__enter__()
 
     # Approval answers and expiries, for the agent's own stream only: the
     # watcher that routes work to its sessions. Owed ones are read on opening
@@ -270,11 +256,6 @@ async def _event_stream(
                 registry.close(conn.id, HEARTBEAT_LAPSED)
                 yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
-
-            if commands:
-                session_ids = sorted(commands)
-                commands.clear()
-                yield _frame("session_commands", {"session_ids": session_ids})
 
             if conn.session_commands:
                 relayed = list(conn.session_commands)
@@ -411,7 +392,7 @@ async def _event_stream(
             # Re-check after clearing: an event appended between the read above
             # and the clear would otherwise wait for the keepalive timeout.
             if (
-                commands
+                conn.session_commands
                 or outcomes
                 or resync[0]
                 or buffer.head(agent_id) > conn.cursor
@@ -422,7 +403,6 @@ async def _event_stream(
             if not await _wait_for_work(bell, conn):
                 yield b": keepalive\n\n"
     finally:
-        subscription.__exit__(None, None, None)
         if unsubscribe_outcomes is not None:
             unsubscribe_outcomes()
         registry.detach_stream(conn, generation)

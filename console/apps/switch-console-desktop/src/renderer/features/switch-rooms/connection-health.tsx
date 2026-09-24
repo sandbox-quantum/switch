@@ -21,7 +21,7 @@ export function useRoomHealth(serverId: string | null) {
     retry: false,
   });
   useEffect(() => {
-    if (query.data) switchRoomsStore.rememberRooms(query.data.associations);
+    if (query.data) switchRoomsStore.rememberRooms(query.data.placements);
   }, [query.data]);
   return query;
 }

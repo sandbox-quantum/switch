@@ -63,8 +63,6 @@ from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import SessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import SessionActivityService
-from switch_core.sessions.contract import CommandStatus
-from switch_core.sessions.service import SessionAuthority
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -94,21 +92,6 @@ BENCH_PROFILE = IntegrationProfile(
     event_reporting=[],
     task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
-
-
-class _BenchBridges(_NoBridges):
-    """`_NoBridges`, plus the one call the admission path makes.
-
-    With no collaboration bridge registered the real
-    `CollaborationBridgeLifecycleService.refresh_sdk_session` iterates an empty
-    set of bridges, so doing nothing here is what the real service does — not a
-    shortcut past behaviour the benchmark should be paying for. A benchmark run
-    measures the agent connection model; bridge fan-out is a separate cost and
-    is deliberately not in these numbers.
-    """
-
-    async def refresh_sdk_session(self, session_id: str) -> None:
-        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,35 +202,6 @@ class BenchServer:
             )
         response.raise_for_status()
         return cast("dict[str, Any]", response.json()["result"])
-
-    async def room_control(
-        self, *, agent_id: str, room_id: str, action: str, message_id: str
-    ) -> CommandStatus:
-        """Submit a room control command the way a room command arrives.
-
-        The authority's own entry point, so the command is admitted, fenced
-        against the session that holds the room and ordered with everything
-        else that session has been given — not a queue entry written past it.
-        """
-        receipt = await SessionAuthority(self._session_factory).submit_room_control(
-            agent_id,
-            room_id,
-            action,
-            self.owner_id,
-            message_id,
-            None,
-            self.connections,
-        )
-        if receipt is None:
-            raise RuntimeError(f"agent {agent_id} has no session to control")
-        return receipt
-
-    async def control_outcome(self, *, session_id: str, command_id: str) -> str:
-        """What became of a submitted command, as the server records it."""
-        status = await SessionAuthority(self._session_factory).command_status(
-            session_id, command_id, self.owner_id
-        )
-        return status.status
 
     async def register_agent(self, name: str) -> BenchAgent:
         result = await self.protocol.register_agent(
@@ -454,7 +408,7 @@ async def _serve(
     bind_tenant_id(TENANT_ZERO_ID)
     event_buffer = EventBuffer()
     connections = ConnectionRegistry()
-    collab_lifecycle = _BenchBridges()
+    collab_lifecycle = _NoBridges()
 
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
     await message_listener.start()

@@ -14,8 +14,6 @@ publication draws is the whole of what a chat sees of a turn.
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -41,14 +39,9 @@ from switch_core.bridges.collaboration.session.form import (
     posted_form,
     resolve_pressed_position,
 )
-from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import (
     RequestReference,
     parse_answer_position,
-)
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
 )
 from switch_core.bridges.collaboration.telegram.adapter import (
     _REDRAW_INTERVAL,
@@ -56,7 +49,13 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 )
 from switch_core.sessions.contract import ApprovalResult, Item
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import (
+    QUESTIONS_PATH,
+    _item,
+    _turn,
+    open_request,
+    recorded_requests,
+)
 from .test_telegram_adapter import (
     CHAT_ID,
     _adapter,
@@ -66,12 +65,6 @@ from .test_telegram_adapter import (
     _FakeSentMessage,
     _FakeUpdate,
     _FakeUser,
-)
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
-QUESTIONS_PATH = (
-    REPO_ROOT / "console/packages/shared/src/session-v1/examples.questions.json"
 )
 
 CHANNEL = str(CHAT_ID)
@@ -112,9 +105,7 @@ def _finished(*extra: Item) -> TurnActivity:
 
 
 async def _card(**kwargs: Any) -> RequestCard:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    projection = await project(source, "session-demo")
-    request = projection.open_requests()[0]
+    request = open_request()
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
@@ -525,48 +516,6 @@ async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> Non
         lines[-1]
         == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
     )
-
-
-async def test_the_notice_about_a_failed_card_delivers_that_drawing_intact() -> None:
-    """What `error.text` holds is only half the claim: it is HTML, and the
-    notice it goes under is Switch Markdown.
-
-    A notice is converted on its way out, because every other caller writes
-    Markdown. Putting the drawing inside it sends Telegram's own tags through
-    that conversion, and `<code>` arrives escaped — so the reader is shown the
-    tags themselves, on the one message whose job is to say what the card can
-    no longer say.
-    """
-    adapter = _adapter()
-    content = await _card()
-    _bot(adapter).edit_error = BadRequest("message to edit not found")
-    post = SimpleNamespace(
-        token="tok-1",
-        handle="R7",
-        external_channel_id=CHANNEL,
-        external_post_id=f"{CHANNEL}:42",
-        thread_id=None,
-        request_id=content.request.request_id,
-    )
-    cards = SessionRequestCards(
-        adapter,
-        bridge_id="bridge",
-        surface="telegram",
-        posts=None,
-        session_factory=None,
-    )
-
-    with pytest.raises(RichContentFailed):
-        await cards.refresh(post, content.request, agent_name="my-agent")
-
-    notice = _bot(adapter).messages[-1]["text"]
-    assert "could not be updated" in notice
-    assert "1. Allow once" in notice
-    assert (
-        notice.splitlines()[-1]
-        == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
-    )
-    assert "&lt;code&gt;" not in notice
 
 
 async def test_a_refused_post_carries_the_same_buttonless_drawing() -> None:
@@ -1048,8 +997,7 @@ async def test_a_refused_removal_is_reported_whatever_this_process_remembers() -
 
     It used to, by looking in a set that a restart empties — so after one, a
     refused removal looked like nothing to remove. Both of these refuse
-    identically now; the difference is the durable record's to know, and
-    `test_activity_durability` is where that is pinned.
+    identically now; the difference is the durable record's to know.
     """
     adapter = _adapter()
     await adapter.mark_activity(
@@ -1480,11 +1428,7 @@ async def test_telegram_refusing_the_acknowledgement_is_logged_and_left(
 
 async def _asked(request_id: str) -> RequestCard:
     """A card for one of the recorded question forms."""
-    source = FixtureEventSource.from_examples(QUESTIONS_PATH, events=[])
-    projection = await project(source, "session-questions")
-    request = next(
-        one for one in projection.snapshot.requests if one.request_id == request_id
-    )
+    request = recorded_requests(QUESTIONS_PATH)[request_id]
     return RequestCard(request, RequestReference(token="tok-1", handle="R43"))
 
 

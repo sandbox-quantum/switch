@@ -1,17 +1,29 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ relay: vi.fn(), status: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  local: { request: vi.fn() },
+  sidecar: { request: vi.fn() },
+  sshHost: null as string | null,
+  running: true,
+  hydrate: vi.fn(async () => {}),
+}));
+const { Unavailable } = vi.hoisted(() => ({ Unavailable: class extends Error {} }));
+vi.mock('@switch-console/agent-providers', () => ({
+  SessionUnavailableError: Unavailable,
+  sharedSessionRoot: (id: string) => `/roots/${id}`,
+  liveSupervisor: async () => (mocks.running ? { build: 'b' } : null),
+}));
 vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: async () => ({ switchAgentId: 'switch-agent', serverId: 'server' }),
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('@main/core/agents/agent-location', () => ({
+  getAgentLocation: async () => ({ sshHost: mocks.sshHost }),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ relaySessionCommand: mocks.relay }));
-vi.mock('./host-journal', () => ({
-  hostJournals: { tail: async () => ({ commandStatus: mocks.status }) },
+vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
+vi.mock('./sidecar-control', () => ({ sidecarControl: async () => mocks.sidecar }));
+vi.mock('@main/core/sessions/operations/hydrateSession', () => ({
+  hydrateSession: mocks.hydrate,
 }));
-vi.mock('node:timers/promises', () => ({ setTimeout: async () => {} }));
 
 const { reconcileSessionCommand, submitSessionCommand } = await import('./session-commands');
 
@@ -29,34 +41,87 @@ const applied = {
   code: null,
   message: null,
 };
+const snapshot = (statuses: unknown[]) => ({
+  contractVersion: 1,
+  throughSequence: 1,
+  session: {
+    sessionId: 'session',
+    agentId: 'switch-agent',
+    hostId: 'host',
+    epoch: 'epoch',
+    provider: 'claude',
+    status: 'ready',
+    connectivity: 'online',
+    pendingRequestIds: [],
+    capabilities: {
+      input: 'queue',
+      approvals: true,
+      questions: true,
+      interrupt: true,
+      reset: false,
+      compact: false,
+      modelChange: false,
+      attachmentMimeTypes: [],
+    },
+  },
+  turns: [],
+  items: [],
+  requests: [],
+  commandStatuses: statuses,
+  nextPageToken: null,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.relay.mockResolvedValue(undefined);
+  mocks.sshHost = null;
+  mocks.running = true;
 });
 
-it('relays the command and returns what its host recorded', async () => {
-  mocks.status.mockReturnValueOnce(null).mockReturnValue(applied);
+it('sends a local command straight to its host and returns what it recorded', async () => {
+  mocks.local.request.mockResolvedValue(applied);
   expect(await submitSessionCommand('agent', command)).toEqual(applied);
-  expect(mocks.relay).toHaveBeenCalledWith({ id: 'server' }, 'switch-agent', command);
+  const [root, request, wait] = mocks.local.request.mock.calls[0]!;
+  expect(root).toBe('/roots/session');
+  expect(request).toMatchObject({
+    type: 'command',
+    command: { commandId: 'command-1', origin: { surface: 'console' } },
+  });
+  expect(wait).toBeGreaterThan(0);
 });
 
-it('says the command was dispatched when the host has not recorded it yet', async () => {
-  mocks.status.mockReturnValue(null);
-  expect((await submitSessionCommand('agent', command)).status).toBe('dispatched');
+it('does not wait for a local host nothing is running', async () => {
+  mocks.running = false;
+  mocks.local.request.mockResolvedValue(applied);
+  await submitSessionCommand('agent', command);
+  expect(mocks.local.request.mock.calls[0]![2]).toBe(0);
 });
 
-it('reconciles from the host record, relaying again only if it never arrived', async () => {
-  mocks.status.mockReturnValue(applied);
+it('sends a remote command through the agent sidecar', async () => {
+  mocks.sshHost = 'box';
+  mocks.sidecar.request.mockResolvedValue(applied);
+  expect(await submitSessionCommand('agent', command)).toEqual(applied);
+  expect(mocks.sidecar.request).toHaveBeenCalledWith(
+    'session',
+    expect.objectContaining({ type: 'command' })
+  );
+  expect(mocks.local.request).not.toHaveBeenCalled();
+});
+
+it('reconciles from the host record, sending again only if it never arrived', async () => {
+  mocks.local.request.mockResolvedValueOnce(snapshot([applied]));
   expect(await reconcileSessionCommand('agent', command)).toEqual(applied);
-  expect(mocks.relay).not.toHaveBeenCalled();
+  expect(mocks.local.request).toHaveBeenCalledTimes(1);
 
-  mocks.status.mockReturnValueOnce(null).mockReturnValue(applied);
+  mocks.local.request.mockResolvedValueOnce(snapshot([])).mockResolvedValueOnce(applied);
   expect(await reconcileSessionCommand('agent', command)).toEqual(applied);
-  expect(mocks.relay).toHaveBeenCalledTimes(1);
+  expect(mocks.local.request.mock.calls.at(-1)![1]).toMatchObject({ type: 'command' });
 });
 
-it('refuses when Switch cannot relay', async () => {
-  mocks.relay.mockRejectedValue(new Error('HOST_OFFLINE'));
-  await expect(submitSessionCommand('agent', command)).rejects.toThrow('HOST_OFFLINE');
+it('starts a parked session again and then sends the command', async () => {
+  mocks.local.request
+    .mockRejectedValueOnce(new Unavailable('The session host is not running.'))
+    .mockResolvedValueOnce(applied);
+  expect(await submitSessionCommand('agent', command)).toEqual(applied);
+  expect(mocks.hydrate).toHaveBeenCalledWith('session');
+  expect(mocks.local.request).toHaveBeenCalledTimes(2);
 });

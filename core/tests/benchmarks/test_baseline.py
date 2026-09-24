@@ -28,8 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from switch_core.sessions.contract import CommandStatus
-from switch_core.sessions.errors import SessionError
 from tests.benchmarks.host import (
     BenchWatcher,
     bench_watcher,
@@ -1277,54 +1275,6 @@ def _server_originated_dispatches(trace_path: Path) -> dict[str, str]:
         if line.strip()
     }
     return {label: label for label in labels if label.startswith("unmarked:")}
-
-
-async def _control_when_idle(
-    bench: BenchServer, *, agent_id: str, room_id: str, message_id: str, timeout: float
-) -> CommandStatus:
-    """Submit a room reset, waiting out a turn the session is still finishing.
-
-    A control is refused while the session is working, which is the server's
-    answer rather than something to be worked around; what is waited for is the
-    turn the scenario itself caused a moment earlier. The message id is the
-    same on every attempt, so a submission that was accepted and then looked
-    refused cannot become two controls.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        try:
-            return await bench.room_control(
-                agent_id=agent_id,
-                room_id=room_id,
-                action="reset",
-                message_id=message_id,
-            )
-        except SessionError as error:
-            if error.code != "SESSION_BUSY" or loop.time() > deadline:
-                raise
-        await asyncio.sleep(0.2)
-
-
-async def _await_command(
-    bench: BenchServer, session_id: str, command_id: str, timeout: float
-) -> str:
-    """Poll a submitted command until the server confirms it, or time runs out.
-
-    `unknown` is not taken as settled here. A control that takes the session to
-    a new epoch passes through it — an epoch change marks every command not yet
-    confirmed unknown, this one included — and the host's own result for it
-    follows.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        outcome = await bench.control_outcome(
-            session_id=session_id, command_id=command_id
-        )
-        if outcome in ("applied", "rejected") or loop.time() > deadline:
-            return outcome
-        await asyncio.sleep(0.2)
 
 
 def _message_of(correlation: str) -> str:

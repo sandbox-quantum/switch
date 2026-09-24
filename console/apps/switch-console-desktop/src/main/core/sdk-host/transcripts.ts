@@ -9,9 +9,9 @@ import { log } from '@main/lib/logger';
 import { sessionTranscriptEventChannel } from '@shared/core/sessions/sessionEvents';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
+import { syncSdkSessionActivity } from './session-activity';
 import { askHost } from './session-commands';
 import { sidecarControl } from './sidecar-control';
-import { syncSdkSessionActivity } from './session-activity';
 
 /**
  * A shared session's transcript, pushed to the windows showing it.
@@ -107,9 +107,9 @@ export async function openTranscript(agentId: string, sessionId: string): Promis
       ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
           forward(sessionId, event)
         )
-      : await (await sidecarControl(agentId)).subscribe(sessionId, (event) =>
-          forward(sessionId, event)
-        );
+      : await (
+          await sidecarControl(agentId)
+        ).subscribe(sessionId, (event) => forward(sessionId, event));
     entry = { viewers: 0, close };
     open.set(sessionId, entry);
   }

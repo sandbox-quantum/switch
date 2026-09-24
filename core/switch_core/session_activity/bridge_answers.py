@@ -28,7 +28,7 @@ from switch_core.bridges.collaboration.session.form import (
     resolve_text_answer,
     takes_a_bare_decision,
 )
-from switch_core.bridges.collaboration.session.inbound import InboundActor, Refused
+from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
 from switch_core.bridges.collaboration.session.renderers import (
     parse_answer_action,
     parse_answer_position,

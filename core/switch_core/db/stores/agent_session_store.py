@@ -4,8 +4,7 @@ from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import AgentSession, SdkSession
-from switch_core.sessions.contract import Snapshot
+from switch_core.db.models import AgentSession
 
 _CONFLICT_TARGET = [
     AgentSession.agent_id,
@@ -144,23 +143,6 @@ class AgentSessionStore:
         if row is None:
             return None
         return (row[0], row[1])
-
-    async def get_sdk_session_room(
-        self, session: AsyncSession, sdk_session_id: str
-    ) -> str | None:
-        """The one room an SDK session is working in, if it is in exactly one.
-
-        The counterpart of `get_connected_room` for the other kind of session.
-        A session in no room has not said where it is; one in several has not
-        said which, and there is nothing here to choose between them.
-        """
-        row = await session.scalar(
-            select(SdkSession.snapshot).where(SdkSession.id == sdk_session_id)
-        )
-        if row is None:
-            return None
-        rooms = Snapshot.model_validate(row).session.room_ids
-        return rooms[0] if len(rooms) == 1 else None
 
     async def has_room_binding(
         self, session: AsyncSession, agent_id: str, room_id: str

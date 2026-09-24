@@ -5,10 +5,8 @@ the way the platform judges a message it sends on someone's behalf — the
 agent's addressing policy in the request's room, or its owner when the request
 has no room.
 
-Commands: the agent's owner drives its sessions from Console. Switch sets the
-command's origin from the signed-in person and relays it to the agent's
-watcher stream; the session's host records what became of it in its own
-journal, which Console reads.
+Room health: the agent's live connections and where its sessions are, for
+Console to show and to move a room to another session.
 """
 
 from datetime import datetime
@@ -17,22 +15,22 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent, ApprovalRequest, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_protocol, get_session_factory
 from switch_core.session_activity.service import SessionActivityService, SwitchUser
-from switch_core.sessions.contract import Command, CommandBody, Origin
 from switch_core.sessions.errors import SessionError
 
 router = APIRouter()
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 Protocol = Annotated[ProtocolService, Depends(get_protocol)]
-MAX_COMMAND_BYTES = 60 * 1024
 
 
 class _Model(BaseModel):
@@ -114,59 +112,69 @@ async def answer_approval(
     return ApprovalRequestView.of(row)
 
 
-class RelayCommand(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    command_id: str = Field(alias="commandId", min_length=1, max_length=200)
-    epoch: str = Field(min_length=1, max_length=200)
-    body: CommandBody
+class RoomHealth(_Model):
+    """For each of the person's agents: its live connections, and the room each
+    of its sessions connected to."""
+
+    connections: dict[str, list[str]]
+    placements: dict[str, dict[str, str]]
 
 
-class RelayReceipt(_Model):
-    command_id: str
-    relayed: bool
+@router.get("/room-health", response_model_by_alias=True)
+async def room_health(
+    user: CurrentUser, factory: Factory, protocol: Protocol
+) -> RoomHealth:
+    async with tenant_session(factory, require_tenant_id()) as db:
+        agent_ids = list(
+            await db.scalars(select(Agent.id).where(Agent.owner_id == user.id))
+        )
+    registry = protocol.connections
+    return RoomHealth(
+        connections={
+            agent_id: sorted(conn.id for conn in registry.for_agent(agent_id))
+            for agent_id in agent_ids
+        },
+        placements={agent_id: registry.placements(agent_id) for agent_id in agent_ids},
+    )
 
 
-@router.post("/{agent_id}/{session_id}/commands", response_model_by_alias=True)
-async def relay_command(
+class PlaceBody(_Model):
+    room_id: str = Field(min_length=1)
+
+
+class Placement(_Model):
+    room_id: str
+    displaced: str | None
+
+
+@router.post("/{agent_id}/{session_id}/place", response_model_by_alias=True)
+async def place_session(
     agent_id: str,
     session_id: str,
-    body: RelayCommand,
+    body: PlaceBody,
     user: CurrentUser,
     factory: Factory,
     protocol: Protocol,
-) -> RelayReceipt:
-    """Relay a command to the agent's watcher, for the session it names.
+) -> Placement:
+    """Move a room's messages to this session, as its owner asks from Console.
 
-    Refused when no watcher of the agent's is connected: nothing holds the
-    command for later, so saying it was sent would be untrue.
+    The same move a session's own `connect_to_room` makes: the room's events
+    are tagged with this session from now on, and the agent's controller
+    routes them to it.
     """
     async with tenant_session(factory, require_tenant_id()) as db:
         agent = await db.get(Agent, agent_id)
-    if agent is None or agent.owner_id != user.id:
-        raise SessionError(
-            "NOT_AUTHORIZED", "Only the agent's owner can drive its sessions."
+        if agent is None or agent.owner_id != user.id:
+            raise SessionError(
+                "NOT_AUTHORIZED", "Only the agent's owner can move its sessions."
+            )
+        found = await RoomStore().get_with_membership(db, body.room_id, agent_id)
+    if found is None:
+        raise SessionError("NOT_FOUND", f"Room not found: {body.room_id}")
+    if not found[1]:
+        raise SessionError("NOT_AUTHORIZED", "The agent is not a member of this room.")
+    async with protocol.connections.slots(agent_id):
+        _, displaced = protocol.connections.place_session(
+            agent_id, session_id, body.room_id
         )
-    command = Command(
-        contract_version=1,
-        command_id=body.command_id,
-        session_id=session_id,
-        epoch=body.epoch,
-        origin=Origin(
-            surface="console",
-            actor_id=user.id,
-            room_id=None,
-            thread_id=None,
-            message_id=None,
-        ),
-        body=body.body,
-    )
-    frame = command.model_dump(mode="json", by_alias=True)
-    if len(command.model_dump_json(by_alias=True).encode("utf-8")) > MAX_COMMAND_BYTES:
-        raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
-    if not protocol.connections.relay_session_command(agent_id, frame):
-        raise SessionError(
-            "HOST_OFFLINE",
-            f"No watcher of agent {agent.name} is connected to Switch, so the "
-            "command was not sent. Start the agent's watcher and try again.",
-        )
-    return RelayReceipt(command_id=command.command_id, relayed=True)
+    return Placement(room_id=body.room_id, displaced=displaced)

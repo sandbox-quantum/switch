@@ -1,4 +1,3 @@
-import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
@@ -16,14 +15,8 @@ import { localWatcherStatus } from './local-host';
 
 const disconnectedSince = new Map<string, number>();
 const healthSchema = z.object({
-  associations: z.record(z.string(), z.string()),
   connections: z.record(z.string(), z.array(z.string())),
-  sessions: z.array(
-    z.union([
-      sessionSchema,
-      z.object({ sessionId: z.string(), agentId: z.string(), discoveryError: z.string() }),
-    ])
-  ),
+  placements: z.record(z.string(), z.record(z.string(), z.string())),
 });
 export async function connectionHealth(serverId: string) {
   const server = await getServer(serverId);
@@ -65,5 +58,8 @@ export async function connectionHealth(serverId: string) {
         }
       })
   );
-  return { agents: health, sessions: remote.sessions, associations: remote.associations };
+  // Session id to the room Switch has it working in, across the person's agents.
+  const placements: Record<string, string> = {};
+  for (const byAgent of Object.values(remote.placements)) Object.assign(placements, byAgent);
+  return { agents: health, placements };
 }

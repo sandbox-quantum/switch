@@ -12,7 +12,6 @@ from switch_core.db.models import (
     Client,
     RoleLease,
     Room,
-    SdkSession,
     User,
 )
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -377,30 +376,6 @@ class TestSharedRoles:
             assert [lease.agent_id for lease in leases[role.id]] == [a2.id]
 
 
-async def _make_sdk_session(
-    session: AsyncSession,
-    agent_id: str,
-    session_id: str,
-    *,
-    lease_for: timedelta,
-    quiesced: bool = False,
-) -> None:
-    session.add(
-        SdkSession(
-            id=session_id,
-            agent_id=agent_id,
-            connection_id=None,
-            host_id=f"host-{session_id}",
-            epoch="e1",
-            lease_expires_at=datetime.now(UTC) + lease_for,
-            snapshot={},
-            host_sequence=0,
-            recovery={"quiesced": True} if quiesced else {},
-        )
-    )
-    await session.flush()
-
-
 class TestLeaseLivenessFollowsTheHolder:
     """A lease outlives its heartbeat only while its own holder is up.
 
@@ -598,9 +573,6 @@ class TestOnlyTheHolderRenews:
             room = await _make_room(session, "r1")
             agent = await _make_agent(session, "a1")
             role = await store.define_role(session, room.id, "manager", "lead", True)
-            await _make_sdk_session(
-                session, agent.id, "sess-1", lease_for=timedelta(minutes=5)
-            )
             await session.commit()
 
             await store.acquire_lease(
@@ -627,9 +599,6 @@ class TestOnlyTheHolderRenews:
             a1 = await _make_agent(session, "a1")
             a2 = await _make_agent(session, "a2")
             role = await store.define_role(session, room.id, "worker", "do", False)
-            await _make_sdk_session(
-                session, a2.id, "sess-2", lease_for=timedelta(minutes=5)
-            )
             await session.commit()
 
             await store.acquire_lease(session, role, a1.id, "conn-1", None, ())

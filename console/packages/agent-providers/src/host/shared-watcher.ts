@@ -7,8 +7,7 @@ import {
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
-import { relayCommand, wakeApprovals, wakeCommands } from './handoff';
-import { declareHandoffCapability, handOff, readsHandoffs, type Handoff } from './handoff';
+import type { Handoff } from './handoff';
 import { Journal } from './journal';
 import {
   ensureSharedProcess,
@@ -19,8 +18,9 @@ import {
 } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { roomInputId } from './room-inbox';
-import { SessionUnavailableError } from './session-channel';
+import { type SessionRequest, SessionUnavailableError } from './session-channel';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { hostParked } from './shared-state';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
 
@@ -397,14 +397,7 @@ export class SharedWatchAssignments {
       config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
     delete config.start.input.resume;
     delete config.grant;
-    // Said here rather than left to the worker to say when it starts. The
-    // event that caused this session is routed to it before it is started,
-    // and the worker it will be started from is this bundle's, which reads
-    // what it is handed; waiting for it to say so itself would drop that
-    // event, and with it the message the session exists to answer.
-    const sessionRoot = sharedSessionRoot(sessionId);
-    await mkdir(sessionRoot, { recursive: true });
-    await declareHandoffCapability(sessionRoot);
+    await mkdir(sharedSessionRoot(sessionId), { recursive: true });
     await this.journal.append({
       sequence: event.sequence,
       roomId: event.roomId,
@@ -454,30 +447,6 @@ export async function runSharedWatcher(
     fault = error;
     stop.abort(error);
   };
-  /** Wake the worker serving `sessionId`, if this agent has one here. */
-  const wakeWorker = async (
-    sessionId: string,
-    wake: (root: string) => Promise<void>,
-    what: string
-  ): Promise<boolean> => {
-    const workerRoot = sharedSessionRoot(sessionId);
-    try {
-      const saved = sharedConfigSchema.parse(
-        JSON.parse(await readFile(join(workerRoot, 'config.json'), 'utf8'))
-      );
-      if (
-        saved.session.agentId !== template.session.agentId ||
-        saved.session.sessionId !== sessionId
-      )
-        return false;
-      await wake(workerRoot);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-        console.warn(`Could not wake session ${what}: ${String(error)}`);
-      return false;
-    }
-  };
   try {
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
@@ -518,21 +487,12 @@ export async function runSharedWatcher(
         supervision,
       });
     };
-    /**
-     * Puts the event in the inbox of the session that serves its room, for a
-     * worker that has said it reads one. Written before the worker is started
-     * or woken, so the decision is on disk before anything acts on it.
-     */
-    const route = async (sessionId: string, event: Handoff): Promise<boolean> => {
-      const sessionRoot = sharedSessionRoot(sessionId);
-      if (!(await readsHandoffs(sessionRoot))) return false;
-      await handOff(sessionRoot, event);
-      return true;
-    };
     const superseded = await supersededSessions(template.session.agentId, supervision);
     await replaceSupersededSessions(superseded, connectionId, supervision);
+    /** Every assigned session, except those that parked: they start when next needed. */
     const launchAssigned = async () => {
-      for (const config of assignments.sessions()) await launch(config);
+      for (const config of assignments.sessions())
+        if (!(await hostParked(sharedSessionRoot(config.session.sessionId)))) await launch(config);
     };
     /**
      * Rooms with no session able to take their messages yet, and the events
@@ -551,6 +511,33 @@ export async function runSharedWatcher(
      * when it was addressed should still get one.
      */
     const links = supervision.links;
+    if (!links)
+      throw new Error(
+        'The room watcher needs to be the parent of its sessions to talk to them; it was given a supervision that starts them detached.'
+      );
+    /**
+     * Ask the host of one of this agent's sessions, if it runs here. False
+     * when it is not this agent's, or nothing is running it.
+     */
+    const askSession = async (sessionId: string, request: SessionRequest, what: string) => {
+      const sessionRoot = sharedSessionRoot(sessionId);
+      try {
+        const saved = sharedConfigSchema.parse(
+          JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+        );
+        if (saved.session.agentId !== template.session.agentId) return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+      try {
+        await links.request(sessionRoot, request, 0);
+        return true;
+      } catch (error) {
+        console.warn(`Could not pass ${what} to session ${sessionId}: ${String(error)}`);
+        return false;
+      }
+    };
     /**
      * Per session, the messages handed to it and not yet acknowledged, sent
      * down the IPC pipe one at a time and in order. Each is parked in the
@@ -568,7 +555,7 @@ export async function runSharedWatcher(
         while (entry.queue.length && !stop.signal.aborted) {
           const event = entry.queue[0]!;
           try {
-            await links!.request(
+            await links.request(
               sessionRoot,
               { type: 'room', handoff: { ...event, event: event.event ?? null } },
               HOST_START_MS
@@ -602,29 +589,13 @@ export async function runSharedWatcher(
     ): Promise<boolean> => {
       const sessionId = config.session.sessionId;
       const sessionRoot = sharedSessionRoot(sessionId);
-      if (links) {
-        if (!waiting) await assignments.park(event, false);
-        const entry = pumps.get(sessionId) ?? { queue: [], running: false };
-        pumps.set(sessionId, entry);
-        if (!entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId))
-          entry.queue.push(event);
-        if (!links.ready(sessionRoot)) await launch(config);
-        pump(config);
-        return true;
-      }
-      const settle = async () => {
-        if (waiting) await assignments.released(event);
-        else await assignments.handled(event.sequence);
-      };
-      if (!(await route(sessionId, event))) {
-        console.error(
-          `Session ${sessionId} serves room ${event.roomId} but does not read what this controller routes to it; message ${event.messageId} was not delivered.`
-        );
-        await settle();
-        return false;
-      }
-      await settle();
-      if (!(await liveSupervisor(sessionRoot))) await launch(config);
+      if (!waiting) await assignments.park(event, false);
+      const entry = pumps.get(sessionId) ?? { queue: [], running: false };
+      pumps.set(sessionId, entry);
+      if (!entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId))
+        entry.queue.push(event);
+      if (!links.ready(sessionRoot)) await launch(config);
+      pump(config);
       return true;
     };
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
@@ -725,21 +696,20 @@ export async function runSharedWatcher(
       startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
-      onCommands: async (sessionIds) => {
-        for (const sessionId of sessionIds) await wakeWorker(sessionId, wakeCommands, 'commands');
-      },
       onApprovalOutcome: async (outcome) => {
-        await wakeWorker(outcome.session_id, wakeApprovals, 'approval answers');
+        await askSession(outcome.session_id, { type: 'approvals' }, 'an approval answer');
       },
+      // A room control (!reset, !interrupt) typed in one of the agent's rooms,
+      // which only Switch sees. Handed to the session's host like any other.
       onSessionCommand: async (command) => {
-        const delivered = await wakeWorker(
+        const taken = await askSession(
           command.sessionId,
-          (root) => relayCommand(root, command),
-          'commands'
+          { type: 'command', command },
+          `command ${command.commandId}`
         );
-        if (!delivered)
+        if (!taken)
           console.warn(
-            `Dropped command ${command.commandId}: session ${command.sessionId} is not run by this agent here.`
+            `Dropped command ${command.commandId}: session ${command.sessionId} is not running here.`
           );
       },
       onEvent: (event) => {

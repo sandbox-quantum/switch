@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,12 +25,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import RequestReference
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 from switch_core.bridges.collaboration.teams import adapter as teams_adapter
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
@@ -41,16 +34,12 @@ from switch_core.bridges.collaboration.teams.adapter import (
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorConflict,
     BotConnectorGone,
-    BotConnectorRefused,
     BotConnectorThrottled,
     BotConnectorUnavailable,
 )
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn, open_request
 from .test_teams_adapter import _adapter, _card_text, _run
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
 
 CHANNEL = "19:abc@thread.tacv2"
 CHAT = "a:1chat"
@@ -183,9 +172,7 @@ def _ended(**kwargs: Any) -> TurnActivity:
 
 
 async def _card(**kwargs: Any) -> RequestCard:
-    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    projection = await project(source, "session-demo")
-    request = projection.open_requests()[0]
+    request = open_request()
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
@@ -572,46 +559,6 @@ def test_a_publication_into_a_carried_reference_keeps_its_region() -> None:
     assert ref.startswith(
         _publication_ref(SERVICE_URL, "19:confirmed@thread.tacv2", "")
     )
-
-
-def test_a_notice_about_a_card_goes_to_the_address_teams_confirmed() -> None:
-    """A row can hold both a raw thread root and the reference Teams gave back.
-    The edit already used the reference; the notice about that edit failing was
-    still rebuilding `channel;messageid=root` in the current default region, so
-    the correction could land somewhere the card is not."""
-    adapter, _connector = _teams()
-    carried = _publication_ref(SERVICE_URL, "19:confirmed@thread.tacv2", "card-1")
-
-    assert adapter.notice_address(carried, ROOT) == carried
-    assert adapter.notice_address("MSG1", ROOT) == ROOT
-    assert adapter.notice_address("MSG1", None) == "MSG1"
-
-    connector = _Connector()
-    adapter._connector = connector  # type: ignore[assignment]
-    adapter._default_service_url = "https://smba.example/other-region/"
-    connector.fail_update = BotConnectorRefused("no edit", status=403, retry_after=None)
-    request = _run(_card()).request
-    post = SimpleNamespace(
-        token="tok",
-        handle="R7",
-        external_channel_id=CHANNEL,
-        external_post_id=carried,
-        thread_id=ROOT,
-        request_id=request.request_id,
-    )
-    cards = SessionRequestCards(
-        adapter,
-        bridge_id="bridge-1",
-        surface="teams",
-        posts=None,  # type: ignore[arg-type]
-        session_factory=None,  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(RichContentFailed):
-        _run(cards.refresh(post, request, agent_name=AGENT))  # type: ignore[arg-type]
-
-    assert connector.sends[0]["service_url"] == SERVICE_URL
-    assert connector.sends[0]["conversation_id"] == "19:confirmed@thread.tacv2"
 
 
 def test_a_chat_redraw_after_a_restart_does_not_become_a_channel_thread() -> None:

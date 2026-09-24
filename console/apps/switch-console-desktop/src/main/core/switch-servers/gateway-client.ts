@@ -1,4 +1,3 @@
-import type { ClientCommand } from '@switch-console/shared/session-v1';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -1528,158 +1527,25 @@ export async function createRoom(
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
 
-export async function fetchSdkSessions(server: SwitchServer): Promise<unknown> {
-  return (await gatewayFetch(server, '/sessions', { authenticated: true })).json();
-}
-export async function fetchSdkSnapshot(server: SwitchServer, sessionId: string): Promise<unknown> {
+/** The person's agents: their live connections, and the room each session connected to. */
+export async function fetchRoomHealth(server: SwitchServer): Promise<unknown> {
   return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}`, {
-      authenticated: true,
-    })
-  ).json();
-}
-export async function fetchSdkEvents(
-  server: SwitchServer,
-  sessionId: string,
-  after: number
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, {
-      authenticated: true,
-    })
-  ).json();
-}
-export async function fetchSdkCommandStatus(
-  server: SwitchServer,
-  sessionId: string,
-  commandId: string
-): Promise<unknown> {
-  return (
-    await gatewayFetch(
-      server,
-      `/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,
-      { authenticated: true }
-    )
-  ).json();
-}
-export async function submitSdkCommand(
-  server: SwitchServer,
-  command: ClientCommand
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(command.sessionId)}/commands`, {
-      authenticated: true,
-      method: 'POST',
-      body: {
-        commandId: command.commandId,
-        epoch: command.epoch,
-        surface: 'console',
-        roomId: null,
-        body: command.body,
-      },
-    })
+    await gatewayFetch(server, '/agent-sessions/room-health', { authenticated: true })
   ).json();
 }
 
-/**
- * Hand a command to the agent's watcher through Switch, which sets its origin
- * from the signed-in owner and stores nothing. A 409 `HOST_OFFLINE` means no
- * watcher of the agent's is connected, so nothing was sent.
- */
-export async function relaySessionCommand(
+/** Move a room's messages to this session, as a session's own connect_to_room would. */
+export async function placeSession(
   server: SwitchServer,
   switchAgentId: string,
-  command: ClientCommand
-): Promise<void> {
-  await gatewayFetch(
-    server,
-    `/agent-sessions/${encodeURIComponent(switchAgentId)}/${encodeURIComponent(command.sessionId)}/commands`,
-    {
-      authenticated: true,
-      method: 'POST',
-      body: { commandId: command.commandId, epoch: command.epoch, body: command.body },
-    }
-  );
-}
-
-export async function reconcileSdkCommand(
-  server: SwitchServer,
-  command: ClientCommand
+  sessionId: string,
+  roomId: string
 ): Promise<unknown> {
   return (
     await gatewayFetch(
       server,
-      `/sessions/${encodeURIComponent(command.sessionId)}/commands/reconcile`,
-      {
-        authenticated: true,
-        method: 'POST',
-        body: {
-          commandId: command.commandId,
-          epoch: command.epoch,
-          surface: 'console',
-          roomId: null,
-          body: command.body,
-        },
-      }
+      `/agent-sessions/${encodeURIComponent(switchAgentId)}/${encodeURIComponent(sessionId)}/place`,
+      { authenticated: true, method: 'POST', body: { roomId } }
     )
-  ).json();
-}
-
-export async function uploadSdkAttachment(
-  server: SwitchServer,
-  sessionId: string,
-  file: {
-    attachmentId: string;
-    name: string;
-    mimeType: string;
-    data: string;
-  }
-): Promise<unknown> {
-  if (file.data.length > 14 * 1024 * 1024) throw new Error('Attachment exceeds 10 MiB.');
-  return (
-    await gatewayFetch(
-      server,
-      `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(file.attachmentId)}`,
-      {
-        authenticated: true,
-        method: 'PUT',
-        body: { name: file.name, mimeType: file.mimeType, data: file.data },
-      }
-    )
-  ).json();
-}
-
-export async function retireSdkSession(
-  server: SwitchServer,
-  sessionId: string,
-  epoch: string
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/retire`, {
-      authenticated: true,
-      method: 'POST',
-      body: { epoch },
-    })
-  ).json();
-}
-
-export async function fetchRoomHealth(server: SwitchServer): Promise<unknown> {
-  return (await gatewayFetch(server, '/sessions/room-health', { authenticated: true })).json();
-}
-export async function reconnectSdkRoom(
-  server: SwitchServer,
-  sessionId: string,
-  body: {
-    epoch: string;
-    room_id: string;
-    expected_owner: string | null;
-  }
-): Promise<unknown> {
-  return (
-    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/reconnect-room`, {
-      authenticated: true,
-      method: 'POST',
-      body,
-    })
   ).json();
 }

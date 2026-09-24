@@ -23,6 +23,8 @@ const schema = z.discriminatedUnion('type', [
   }),
   z.strictObject({ type: z.literal('running') }),
   z.strictObject({ type: z.literal('quiesced') }),
+  /** The host stopped itself after sitting idle; it is started again when needed. */
+  z.strictObject({ type: z.literal('parked') }),
   z.strictObject({
     type: z.literal('recover'),
     operationId: z.string(),
@@ -32,6 +34,28 @@ const schema = z.discriminatedUnion('type', [
   }),
 ]);
 type Record = z.infer<typeof schema>;
+
+/**
+ * Whether the host at `root` last stopped by parking itself, rather than
+ * stopping, failing or never having run. Read by whatever would otherwise
+ * start every known session at once.
+ */
+export async function hostParked(root: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(join(root, 'shared-state.jsonl'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  const last = text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => schema.parse(JSON.parse(line)).type)
+    .filter((type) => type === 'running' || type === 'parked')
+    .at(-1);
+  return last === 'parked';
+}
 
 export class SharedState {
   private constructor(

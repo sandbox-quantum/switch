@@ -26,31 +26,21 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
   const { navigate } = useNavigate();
   const cache = useQueryClient();
   const [confirmOwner, setConfirmOwner] = useState<string | null | undefined>(undefined);
-  const roomId =
-    query.data?.associations[sessionId] ?? switchRoomsStore.associatedRoomForSession(sessionId);
-  const record = query.data?.sessions.find((session) => session.sessionId === sessionId);
-  const session = record && 'status' in record ? record : null;
-  const detached = !!roomId && !!session?.roomIds && !session.roomIds.includes(roomId);
-  const owner = query.data?.sessions.find(
-    (other) =>
-      'status' in other &&
-      other.status !== 'stopped' &&
-      !other.retired &&
-      other.sessionId !== sessionId &&
-      other.agentId === session?.agentId &&
-      other.roomIds?.includes(roomId!)
-  );
+  const placements = query.data?.placements ?? {};
+  const roomId = switchRoomsStore.associatedRoomForSession(sessionId) ?? placements[sessionId];
+  // Another of the agent's sessions has taken this room, so its messages go
+  // there. A session nobody has displaced is not detached, whether or not it
+  // ever connected itself: its room's messages still come to it.
+  const owner = roomId
+    ? Object.entries(placements).find(
+        ([other, room]) => other !== sessionId && room === roomId
+      )?.[0]
+    : undefined;
+  const detached = !!owner && placements[sessionId] !== roomId;
   const mutation = useMutation({
-    mutationFn: async (expectedOwner: string | null) => {
-      if (!agent?.serverId || !session || !roomId)
-        throw new Error('Refresh the room connection before reconnecting.');
-      return rpc.sdkHost.reconnectRoom(
-        agent.serverId,
-        sessionId,
-        session.epoch,
-        roomId,
-        expectedOwner
-      );
+    mutationFn: async (_expectedOwner: string | null) => {
+      if (!roomId) throw new Error('Refresh the room connection before reconnecting.');
+      return rpc.sdkHost.placeSession(agentId, sessionId, roomId);
     },
     retry: false,
     onSettled: async () => {
@@ -65,10 +55,7 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
   }, [startupStatus, agent?.serverId, cache]);
   if (!agent || !roomId) return null;
   const settling =
-    state === 'connecting' ||
-    ((!state || state === 'connected') &&
-      (startupStatus === 'starting' ||
-        (startupStatus !== 'error' && session?.status === 'starting')));
+    state === 'connecting' || ((!state || state === 'connected') && startupStatus === 'starting');
   if (settling && !mutation.isError) {
     if (compact) return null;
     return (
@@ -100,8 +87,6 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
     ) : null;
   const manage = () =>
     navigate('location', { locationId: agent.locationId, agentName: agent.name });
-  const online =
-    session?.connectivity === 'online' && session.status !== 'stopped' && !session.retired;
   return (
     <div
       role="status"
@@ -124,7 +109,6 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
       ) : detached ? (
         <>
           <p>This conversation is saved here, but it is not receiving this room's messages.</p>
-          {!online && <p>Start this session before reconnecting it to the room.</p>}
           {confirmOwner !== undefined ? (
             <>
               <p>
@@ -154,9 +138,9 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
               variant="outline"
               size="sm"
               className="self-start"
-              disabled={!online || mutation.isPending || query.isError || !state}
+              disabled={mutation.isPending || query.isError || !state}
               onClick={() => {
-                if (owner) setConfirmOwner(owner.sessionId);
+                if (owner) setConfirmOwner(owner);
                 else mutation.mutate(null);
               }}
             >

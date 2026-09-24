@@ -585,22 +585,6 @@ class TestARequestHoldsOneConnection:
         assert response.status_code == 200, response.text
         assert response.json()["db_tenant_id"] == TENANT_ZERO_ID
 
-    async def test_session_discovery_can_borrow_after_authentication(
-        self, one_connection_session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        from switch_core.gateway.sessions import router as sessions_router
-
-        user_id = await _make_user(
-            one_connection_session_factory, name="discovery", tenant_id=TENANT_ZERO_ID
-        )
-        token = create_jwt(user_id, "discovery@example.invalid", "user", _SECRET, None)
-        app = _app(one_connection_session_factory)
-        app.include_router(sessions_router, prefix="/sessions")
-        async with _client(app, token) as client:
-            response = await client.get("/sessions")
-        assert response.status_code == 200, response.text
-        assert response.json() == []
-
     async def test_authenticated_user_stays_attached_for_endpoint_writes(
         self, one_connection_session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

@@ -1,11 +1,10 @@
-import { snapshotSchema } from '@switch-console/shared/session-v1';
 import type { ClientCommand } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { reconnectSdkRoom } from '../switch-servers/gateway-client';
+import { placeSession } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
@@ -30,20 +29,12 @@ export const sdkHostController = createRPCController({
   discoveryErrors: () => remoteSessionReconciler.errors(),
   retryDiscovery: (agentId: string) => remoteSessionReconciler.refresh(agentId),
   connectionHealth,
-  reconnectRoom: async (
-    serverId: string,
-    sessionId: string,
-    epoch: string,
-    roomId: string,
-    expectedOwner: string | null
-  ) =>
-    snapshotSchema.parse(
-      await reconnectSdkRoom(await sharedServer(serverId), sessionId, {
-        epoch,
-        room_id: roomId,
-        expected_owner: expectedOwner,
-      })
-    ),
+  placeSession: async (agentId: string, sessionId: string, roomId: string) => {
+    const agent = await getAgentById(agentId);
+    if (!agent?.serverId || !agent.switchAgentId)
+      throw new Error('This agent is not linked to Switch.');
+    return placeSession(await sharedServer(agent.serverId), agent.switchAgentId, sessionId, roomId);
+  },
   agentDiagnostics: sharedAgentDiagnostics,
   agentLogs: sharedAgentLogs,
   manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>
