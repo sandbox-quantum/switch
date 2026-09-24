@@ -8,7 +8,8 @@ export { stopSharedSession } from './stop-shared-session';
 import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
-import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
+import { deploySharedHost } from './shared-host-deployment';
+import { sidecarControl } from './sidecar-control';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
@@ -158,13 +159,11 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         ]);
         return JSON.parse(result.stdout);
       };
-      await runSharedHostCommand(
-        this.transport,
-        deployed,
-        config,
-        restart ? '--restart' : '--ensure',
-        isResuming
-      );
+      // Started by the agent's sidecar, which is then its parent: it talks to
+      // the session over IPC, and Console reaches it through the sidecar.
+      await (
+        await sidecarControl(session.agentId)
+      ).ensure({ config, resuming: isResuming, restart });
     } else {
       // A local session is supervised by Console, so it ends when Console does.
       root = sharedSessionRoot(session.id);

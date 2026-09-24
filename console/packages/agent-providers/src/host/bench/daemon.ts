@@ -23,9 +23,16 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { detachedSupervision, ensureSharedProcess } from '../launch';
+import { type EnsureSession, serveControl } from '../control';
+import {
+  detachedSupervision,
+  ensureSharedProcess,
+  inProcessSupervision,
+  sharedSessionRoot,
+} from '../launch';
 import { replaceOwner } from '../ownership-lock';
 import { ownProcessGroup } from '../process-fence';
+import { SessionLinks } from '../session-channel';
 import { prepareSharedConfig, sharedConfigSchema } from '../shared-config';
 import { runSharedHost } from '../shared-host';
 import { runSharedWatcher } from '../shared-watcher';
@@ -73,7 +80,24 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    await runSharedWatcher(root, config, stop.signal, detachedSupervision(process.argv[1]!));
+    // As the shipped sidecar does: its sessions are its children, over IPC.
+    const links = new SessionLinks();
+    const supervision = inProcessSupervision(process.argv[1]!, links);
+    const ensure: EnsureSession = async (input) => {
+      const session = sharedConfigSchema.parse(input.config);
+      return ensureSharedProcess({
+        root: sharedSessionRoot(session.session.sessionId),
+        config: session,
+        resuming: input.resuming,
+        watcher: false,
+        restart: input.restart,
+        supervision,
+      });
+    };
+    await Promise.all([
+      runSharedWatcher(root, config, stop.signal, supervision),
+      serveControl(resolve(root), links, ensure, stop.signal),
+    ]);
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,

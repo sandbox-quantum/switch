@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { sharedSessionRoot } from '@switch-console/agent-providers';
+import { SessionUnavailableError, sharedSessionRoot } from '@switch-console/agent-providers';
 import { snapshotSchema, type ServerEvent, type Snapshot } from '@switch-console/shared/session-v1';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -9,17 +9,19 @@ import { log } from '@main/lib/logger';
 import { sessionTranscriptEventChannel } from '@shared/core/sessions/sessionEvents';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
+import { askHost } from './session-commands';
+import { sidecarControl } from './sidecar-control';
 import { syncSdkSessionActivity } from './session-activity';
 
 /**
  * A shared session's transcript, pushed to the windows showing it.
  *
- * A local session's host is Console's child: its snapshot is asked for over
- * the IPC pipe, and every event it records arrives on the same pipe and is
- * forwarded as it happens. A local session that is not running is read from
- * its journal, and picks up live again when its host starts, since the host
- * goes on numbering the same journal. A remote session is read from its
- * host's journal over SSH until the sidecar relays it the same way.
+ * The session's host is a child of Console (local) or of the agent's sidecar
+ * (remote). Its snapshot is asked for over the host's IPC pipe, and every
+ * event it records arrives on that pipe and is forwarded as it happens. A
+ * session that is not running is read from its journal, and picks up live
+ * again when its host starts, since the host goes on numbering the same
+ * journal.
  */
 
 type Open = { viewers: number; close: () => void };
@@ -31,6 +33,14 @@ async function isLocal(agentId: string): Promise<boolean> {
   return !(await getAgentLocation(agent)).sshHost;
 }
 
+/** Whether a refusal means nothing is running the session, as either end words it. */
+function notRunning(error: unknown): boolean {
+  return (
+    error instanceof SessionUnavailableError ||
+    (error instanceof Error && error.message.includes('session host is not running'))
+  );
+}
+
 function forward(sessionId: string, event: ServerEvent): void {
   events.emit(sessionTranscriptEventChannel, { sessionId, event }, sessionId);
   if (event.body.type === 'session.upsert')
@@ -40,7 +50,7 @@ function forward(sessionId: string, event: ServerEvent): void {
 }
 
 /** Read a local session's journal from disk, for a host that is not running. */
-async function journalSnapshot(root: string): Promise<Snapshot> {
+async function localJournalSnapshot(root: string): Promise<Snapshot> {
   const text = await readFile(join(root, 'events.jsonl'), 'utf8').catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
       throw new JournalUnavailableError('This session has not recorded anything yet.');
@@ -60,6 +70,31 @@ async function journalSnapshot(root: string): Promise<Snapshot> {
 }
 
 /**
+ * The session as its host holds it right now. Raises `JournalUnavailableError`
+ * while nothing is running it.
+ */
+export async function currentSnapshot(agentId: string, sessionId: string): Promise<Snapshot> {
+  try {
+    return snapshotSchema.parse(await askHost(agentId, sessionId, { type: 'snapshot' }));
+  } catch (error) {
+    if (notRunning(error)) throw new JournalUnavailableError('The session host is not running.');
+    throw error;
+  }
+}
+
+/** The session as last recorded: from its host if it runs, else its journal. */
+async function recordedSnapshot(agentId: string, sessionId: string, local: boolean) {
+  try {
+    return await currentSnapshot(agentId, sessionId);
+  } catch (error) {
+    if (!(error instanceof JournalUnavailableError)) throw error;
+  }
+  return local
+    ? localJournalSnapshot(sharedSessionRoot(sessionId))
+    : (await hostJournals.tail(agentId, sessionId)).snapshot();
+}
+
+/**
  * Start pushing a session's events to the renderer (counted per viewer) and
  * return its snapshot. Events after the snapshot's `throughSequence` follow on
  * `sessionTranscriptEventChannel`.
@@ -68,42 +103,18 @@ export async function openTranscript(agentId: string, sessionId: string): Promis
   const local = await isLocal(agentId);
   let entry = open.get(sessionId);
   if (!entry) {
-    if (local) {
-      const unsubscribe = localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
-        forward(sessionId, event)
-      );
-      entry = { viewers: 0, close: unsubscribe };
-    } else {
-      let cursor = (await hostJournals.tail(agentId, sessionId)).snapshot().throughSequence;
-      const timer = setInterval(() => {
-        void hostJournals
-          .tail(agentId, sessionId)
-          .then((tail) => {
-            for (const event of tail.after(cursor)) {
-              forward(sessionId, event);
-              cursor = event.sequence;
-            }
-          })
-          .catch((error: unknown) =>
-            log.warn('Could not read a remote session journal', {
-              sessionId,
-              error: String(error),
-            })
-          );
-      }, 500);
-      entry = { viewers: 0, close: () => clearInterval(timer) };
-    }
+    const close = local
+      ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
+          forward(sessionId, event)
+        )
+      : await (await sidecarControl(agentId)).subscribe(sessionId, (event) =>
+          forward(sessionId, event)
+        );
+    entry = { viewers: 0, close };
     open.set(sessionId, entry);
   }
   entry.viewers += 1;
-  let snapshot: Snapshot;
-  if (!local) snapshot = (await hostJournals.tail(agentId, sessionId)).snapshot();
-  else {
-    const root = sharedSessionRoot(sessionId);
-    snapshot = localSessionLinks.ready(root)
-      ? snapshotSchema.parse(await localSessionLinks.request(root, { type: 'snapshot' }, 10000))
-      : await journalSnapshot(root);
-  }
+  const snapshot = await recordedSnapshot(agentId, sessionId, local);
   await syncSdkSessionActivity(snapshot.session);
   return snapshot;
 }
@@ -116,18 +127,4 @@ export function closeTranscript(sessionId: string): void {
   if (entry.viewers > 0) return;
   entry.close();
   open.delete(sessionId);
-}
-
-/**
- * The session as its host holds it right now: asked over the IPC pipe for a
- * local host, read from the journal for a remote one. Raises
- * `JournalUnavailableError` while there is no host to ask and nothing
- * recorded.
- */
-export async function currentSnapshot(agentId: string, sessionId: string): Promise<Snapshot> {
-  if (!(await isLocal(agentId))) return (await hostJournals.tail(agentId, sessionId)).snapshot();
-  const root = sharedSessionRoot(sessionId);
-  if (!localSessionLinks.ready(root))
-    throw new JournalUnavailableError('The session host is not running.');
-  return snapshotSchema.parse(await localSessionLinks.request(root, { type: 'snapshot' }, 10000));
 }

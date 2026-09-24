@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import type { SessionLinks } from './session-channel';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { superviseSharedHost } from './supervisor';
 
 export function sharedSessionsBase(): string {
   return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
@@ -78,6 +79,49 @@ export function detachedSupervision(entrypoint: string): Supervision {
     stop: async (root) => {
       await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
       await stopOwnedProcess(root, join(root, 'shared-owner.lock'));
+    },
+  };
+}
+
+/**
+ * Supervises session hosts from inside the calling process, so each host is
+ * its child: it talks to it over IPC through `links`, and the hosts end when
+ * this process does. What the agent's sidecar uses for the sessions it runs,
+ * as Console does for local ones.
+ */
+export function inProcessSupervision(entrypoint: string, links: SessionLinks): Supervision {
+  const running = new Map<string, { stop: AbortController; done: Promise<void> }>();
+  return {
+    build: entrypoint,
+    links,
+    start: async ({ root, configPath, watcher }) => {
+      if (watcher) throw new Error('A watcher is not supervised in-process by another watcher.');
+      if (running.has(root)) return;
+      const stop = new AbortController();
+      const done = superviseSharedHost({
+        root,
+        executable: process.execPath,
+        args: [entrypoint, root, configPath],
+        env: process.env,
+        signal: stop.signal,
+        build: entrypoint,
+        links,
+      })
+        .catch((error: unknown) => {
+          console.error(`Session host at ${root} stopped: ${String(error)}`);
+        })
+        .finally(() => running.delete(root));
+      running.set(root, { stop, done });
+    },
+    stop: async (root) => {
+      const entry = running.get(root);
+      if (!entry) {
+        await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
+        await stopOwnedProcess(root, join(root, 'shared-owner.lock'));
+        return;
+      }
+      entry.stop.abort();
+      await entry.done;
     },
   };
 }

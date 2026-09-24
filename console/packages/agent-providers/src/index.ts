@@ -47,7 +47,12 @@ export type { HostEndpoint, HostStartRequest } from './host/server';
 export { connectHost } from './host/launcher';
 export { runSharedHost } from './host/shared-host';
 export type { SharedHostOptions } from './host/shared-host';
-export { detachedSupervision, ensureSharedProcess, sharedSessionRoot } from './host/launch';
+export {
+  detachedSupervision,
+  ensureSharedProcess,
+  liveSupervisor,
+  sharedSessionRoot,
+} from './host/launch';
 export type { Supervision } from './host/launch';
 export { runSharedWatcher } from './host/shared-watcher';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
@@ -66,3 +71,4 @@ export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
+export { CONTROL_FILE, ControlClient } from './host/control';
