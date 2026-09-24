@@ -512,6 +512,10 @@ banner for each thing that has happened since your last pass:
 Nothing else is relayed. Situation reports are posted to the hub by a person,
 as the SOP asks.
 
+So in the alert hub, an incident counts as open, for your timer, until its
+banner has its close line, whether it is a Sev1 running here or a Sev0 running
+in a war room. Keep the timer while any banner is open.
+
 ## War room: opening it
 
 You are here because the template's kickoff addressed you.
