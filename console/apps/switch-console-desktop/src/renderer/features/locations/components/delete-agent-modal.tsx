@@ -91,7 +91,10 @@ function OwnedAgentRemoval({
   const [chosen, setChosen] = useState(false);
   const onThisMachine = sshHost === null;
   const filesPlace = dir ? (sshHost ? `${sshHost}:${dir}` : dir) : null;
-  const removeProvisionedFiles = removesProvisionedFiles({ sshHost, dir, chosen });
+  const removeProvisionedFiles = removesProvisionedFiles({ sshHost, dir, chosen, deleteInSwitch });
+  // Deleting it in Switch takes it off the host as well, so the host box
+  // follows and cannot be unticked (CHOO-2893).
+  const removeFromHost = !onThisMachine && removeProvisionedFiles;
 
   return (
     <>
@@ -104,7 +107,7 @@ function OwnedAgentRemoval({
           Switch Console.{' '}
           {onThisMachine
             ? 'Its sessions stop, and the credentials and definition files Console provisioned for it are deleted. The working directory itself, and everything else in it, are left alone.'
-            : 'Its working directory, the credentials stored there, and any running sidecar are untouched unless you choose below.'}
+            : `It keeps running on ${sshHost}, with its automatic sessions and for anyone else who uses it there, unless you choose below.`}
         </p>
 
         {onThisMachine && filesPlace && (
@@ -114,20 +117,23 @@ function OwnedAgentRemoval({
         )}
 
         {!onThisMachine && filesPlace && (
-          <label className="group/field flex cursor-pointer items-start gap-2.5">
+          <label
+            className={`group/field flex items-start gap-2.5 ${deleteInSwitch ? 'cursor-default' : 'cursor-pointer'}`}
+          >
             <Checkbox
-              checked={chosen}
+              checked={removeFromHost}
+              disabled={deleteInSwitch}
               onCheckedChange={(checked) => setChosen(checked === true)}
               className="mt-0.5"
             />
             <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium">
-                Also delete its files on <code className="break-all">{filesPlace}</code>
-              </span>
+              <span className="text-sm font-medium">Also remove it from {sshHost}</span>
               <span className="text-xs text-foreground-muted">
-                Removes the credentials and definition files provisioned in the working directory
-                and stops the agent{"'"}s sidecar. On a shared host these may belong to another
-                install — an agent you loaded rather than created should usually keep them.
+                {deleteInSwitch ? <>Deleting it in Switch removes it from {sshHost} too. </> : null}
+                Stops it running there and deletes the credentials and definition files Console
+                provisioned in <code className="break-all">{dir}</code>; the rest of the directory
+                is left alone. Anyone else using this agent on {sshHost} loses it too — an agent you
+                loaded rather than created is usually best left running.
               </span>
             </span>
           </label>
@@ -142,8 +148,9 @@ function OwnedAgentRemoval({
           <span className="flex flex-col gap-0.5">
             <span className="text-sm font-medium">Also delete this agent in Switch</span>
             <span className="text-xs text-foreground-muted">
-              Permanently deletes its identity on the Switch server. This can’t be undone. Only this
-              agent is affected — others in the same directory are left alone.
+              Permanently deletes its identity on the Switch server
+              {onThisMachine ? '' : ` and removes it from ${sshHost}`}. This can’t be undone. Only
+              this agent is affected — others in the same directory are left alone.
             </span>
           </span>
         </label>
@@ -156,7 +163,11 @@ function OwnedAgentRemoval({
           variant="destructive"
           onClick={() => onSuccess({ deleteInSwitch, removeProvisionedFiles })}
         >
-          {deleteInSwitch ? 'Remove & delete in Switch' : 'Remove'}
+          {deleteInSwitch
+            ? 'Remove & delete in Switch'
+            : removeFromHost
+              ? `Remove from Console & ${sshHost}`
+              : 'Remove'}
         </ConfirmButton>
       </DialogFooter>
     </>

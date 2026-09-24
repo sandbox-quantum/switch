@@ -280,6 +280,41 @@ describe('deleteAgent', () => {
       expect(stopRemoteWatcher).toHaveBeenCalledExactlyOnceWith('agent-1');
     });
 
+    it('removes a remote agent from its host when it is deleted in Switch', async () => {
+      // A deleted identity has nothing left to run, so it goes from the host
+      // too, whether or not the host's files were also asked for.
+      vi.mocked(getAgentLocation).mockResolvedValue({ sshHost: 'vm-1', dir: '/repo' } as never);
+      h.state.agent = {
+        id: 'agent-1',
+        name: 'cc-hoot',
+        providerId: 'claude',
+        locationId: 'loc',
+        serverId: 'srv-1',
+        switchAgentId: 'sw-1',
+      };
+      const { getServer } = await import('@main/core/switch-servers/servers-store');
+      vi.mocked(getServer).mockResolvedValue({ id: 'srv-1' } as never);
+      const fs = fakeFs({
+        [agentSettingsRelativePath('cc-hoot')]: CREDS,
+        '.claude/agents/cc-hoot.md': '# cc-hoot',
+      });
+      h.state.fs = fs;
+
+      await deleteAgent('agent-1', {
+        deleteInSwitch: true,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      });
+
+      expect(gatewayDeleteAgent).toHaveBeenCalledOnce();
+      expect(stopRemoteWatcher).toHaveBeenCalledExactlyOnceWith('agent-1');
+      expect(stopSharedAgentSessions).toHaveBeenCalledOnce();
+      expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(false);
+      expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(false);
+      vi.mocked(getAgentLocation).mockReset();
+      vi.mocked(getAgentLocation).mockResolvedValue({ sshHost: null, dir: '/repo' } as never);
+    });
+
     it('stops a local agent’s watcher, which is this Console’s own child, on any remove', async () => {
       await deleteAgent('agent-1', {
         deleteInSwitch: false,

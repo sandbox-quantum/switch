@@ -44,7 +44,8 @@ export type DeleteAgentOptions = {
   /**
    * Also tear down what was provisioned on disk for this agent (its
    * `.switch/agents/<name>.json` credentials, provider definition files, launch
-   * profile) and kill its sidecar on the host.
+   * profile) and kill its sidecar on the host. Implied for a remote agent by
+   * `deleteInSwitch`: an agent deleted in Switch is removed from its host too.
    *
    * Required with no default, because the right answer depends on who owns the
    * on-disk state: an agent this Console created can carry its files out, but an
@@ -172,11 +173,12 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    caches the agent's Switch credentials in memory, so without an explicit
  *    stop it keeps heartbeating and polling notifications for an agent that
  *    no longer exists.
- * 4. Only when `removeProvisionedFiles` is set: the Switch credentials +
- *    definition file provisioned on disk for THIS agent (local or remote), and
- *    its sidecar. A plain remove leaves the working directory and the host's
- *    processes untouched — on a shared host they may belong to another install
- *    (CHOO-2560). Sibling agents' files are never touched either way.
+ * 4. Only when `removeProvisionedFiles` is set, or a remote agent is deleted
+ *    in Switch: the Switch credentials + definition file provisioned on disk
+ *    for THIS agent (local or remote), and its sidecar. A plain remove leaves
+ *    the working directory and the host's processes untouched — on a shared
+ *    host they may belong to another install (CHOO-2560). Sibling agents'
+ *    files are never touched either way.
  *
  * The agent's location row is intentionally kept — locations are reusable
  * and other agents may still live there.
@@ -212,7 +214,12 @@ async function removeAgent(
   location: Location | null,
   options: DeleteAgentOptions
 ): Promise<void> {
-  const terminate = options.removeProvisionedFiles || options.deleteInSwitch;
+  // Deleting a remote agent in Switch removes it from its host too: a deleted
+  // identity has nothing left to run, and the credentials left for it there
+  // open nothing. A plain remove leaves it running on the host (CHOO-2893).
+  const removeFiles =
+    options.removeProvisionedFiles || (options.deleteInSwitch && !!location?.sshHost);
+  const terminate = removeFiles || options.deleteInSwitch;
   // An observed agent can only be let go of from this Console (CHOO-2893).
   // Terminating it stops its owner's sessions, deleting it in Switch deletes
   // their agent, and its files are in their directory: all theirs to do.
@@ -254,7 +261,7 @@ async function removeAgent(
 
   await setAutoSessionAgent(agentId, false);
 
-  if (agent && location && options.removeProvisionedFiles) {
+  if (agent && location && removeFiles) {
     await removeProvisionedFiles(agent, location).catch((error) => {
       log.warn('deleteAgent: failed to remove provisioned files', {
         agentId,
