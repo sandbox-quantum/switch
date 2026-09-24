@@ -1211,7 +1211,8 @@ None of this is a Switch field, and the design depends on all of it.
 Switch wakes an agent only for a message that addresses it. A Datadog alert
 addresses the agent when its Slack message contains the agent's **Slack user
 group**. Switch creates one group per agent, named after it, so the agent shows
-up in the `@` menu.
+up in the `@` menu. That needs the workspace to let the Switch app manage user
+groups. If the agent is not in the `@` menu, that is why.
 
 In each monitor's message, inside the alert-only block:
 
