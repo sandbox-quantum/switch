@@ -171,28 +171,63 @@ The session status line reuses the existing `agent_runtime_states` table
 
 ### Step 7 — remove the server-side session layer
 
-**Deliberately not started on this branch.** Deployed Consoles (0.35 and
-earlier) read transcripts, submit commands and answer requests only through
-the `/sessions/*` and `/gateway/sessions/*` routes and the snapshot tables,
-and the host still gates its work on the `/sessions/events` receipt. Removing
-them in the same release as steps 4–6 would break every Console that has not
-updated. Order:
+Compatibility with deployed Consoles is waived (owner's call), so this no
+longer waits on a release. Commands from Console go through Switch as a relay
+on the agent's stream (option A), not straight to the host.
 
-1. Release steps 4–6: switch-core, agent-runtime 0.7.0, a Console that
-   reports activity and reads its journal.
-2. Wait until the Consoles in use speak agent-protocol 4 (the stream records
-   each client's `speaks`).
-3. Move the remaining host dependencies off the snapshot: gate room work on
-   the lease rather than the `session.upsert` receipt, and send commands
-   another way than the snapshot command queue.
-4. Then carry out the removal below.
+What depends on the session tables today (mapped 2026-09-24):
 
+- Server delivery of room messages does **not**: message → EventBuffer →
+  the watcher's `all`-scope stream works with no session rows.
+- What does: the room-owner decision (`/sessions/room-admission`, grants,
+  reservations), turning a room message into a session command
+  (`/sessions/{id}/room-message`: the server rebuilds the prompt from its own
+  copy, wraps it in nonce markers, enforces per-room order, copies
+  attachments), the command queue, lease/claim/recover/quiesce, the selector
+  headers (`X-Switch-Session-*` → `session_binding` → the room a session's
+  tool calls act in), role-lease liveness (`room_role_store._live` joins
+  `SdkSession`), `agents_present_in` / `rooms_occupied` (discount stale claims
+  of stopped sessions), room controls (`!reset` etc. → `submit_room_control`),
+  the Slack stop button, and `media_blobs.sdk_session_id`.
+- Console: discovery (`GET /gateway/sessions`), readiness polling, stop,
+  retire, initial prompt, room health, reconnect-room, diagnostics.
 
-Once 4–6 ship: drop `sdk_sessions` / `sdk_session_events` /
-`sdk_session_commands` / `sdk_room_admissions` usage, `SessionAuthority`,
-`sessions/publication.py`, the `/sessions/*` host routes and
-`/gateway/sessions/*`, the host's event upload; migration to drop the tables;
-keep older Console versions working during the transition.
+Parts:
+
+1. Done (`0c099b57`): `SessionError` in `sessions/errors.py`.
+2. Done (`34789de7`): `POST /gateway/agent-sessions/{agent}/{session}/commands`
+   relays an owner's command to the agent's watcher as a `session_command`
+   frame (agent-protocol 5), stored nowhere; `HOST_OFFLINE` when no watcher
+   speaking 5 is attached.
+3. Console (not started): runtime `onSessionCommand`; watcher writes relayed
+   commands into the session root and decides room ownership locally (its
+   assignments journal plus each session's current room, written by the
+   runtime on `connect_to_room`); host drops claim/renew/recover/quiesce and
+   the event upload, gates room work on its own status, builds room prompts
+   from the stream payload (markers, per-room order and the unread notice move
+   into the host), downloads room attachments via
+   `/agents/{id}/rooms/{room}/media`, takes Console attachments written into
+   its root; desktop: discovery and readiness from the host journal /
+   watcher, stop and first prompt via the relay, room health from
+   connections only.
+4. Server: presence and occupancy from the registry only (the host must
+   release its room when a session stops), drop
+   `require_recorded_rooms_unmoved` and the `SdkSession` lease arm, selector
+   → an in-memory `session_rooms` map on the connection set by
+   `connect_to_room`, room controls over `session_command`.
+5. Delete `/sessions/*`, `/gateway/sessions/*`, `SessionAuthority`,
+   `sessions/{service,publication,projection,validation,command_notifications}`,
+   the old collaboration session modules and the old answer path, with their
+   tests. Keep `contract.py` (renderers and cards use it), `errors.py`,
+   `http.py`, `normalise_mime_type`.
+6. Migration after `545f80e11f13`: drop `media_blobs.sdk_session_id` (and the
+   `sdk-attachment:` blobs), `session_activity_posts`, `session_request_posts`,
+   `sdk_session_commands`, `sdk_session_events`, `sdk_room_admissions`,
+   `sdk_sessions`.
+
+Part 3 is the risky one: it moves prompt construction (injection markers,
+ordering, attachments) from the server into the host, and it can only be
+verified end to end against a running Switch with a bridge and Console.
 
 ### Also required
 
