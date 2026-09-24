@@ -9,6 +9,13 @@ const METRIC_LABELS: Record<UsageMetric, string> = {
   cache_write_tokens: "Cache write tokens",
 };
 
+/** A whole number from 1 to `max` typed as digits only, or null. */
+export function parseBound(raw: string, max: number): number | null {
+  if (!/^\d+$/.test(raw.trim())) return null;
+  const value = Number(raw.trim());
+  return value >= 1 && value <= max ? value : null;
+}
+
 export function metricLabel(metric: UsageMetric): string {
   return METRIC_LABELS[metric];
 }

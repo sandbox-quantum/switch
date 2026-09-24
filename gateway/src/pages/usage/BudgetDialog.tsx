@@ -14,13 +14,15 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type Budget,
   type UsageMetric,
+  MAX_BUDGET_AMOUNT,
+  MAX_BUDGET_PERIOD_HOURS,
   PER_MODEL_METRICS,
   USAGE_METRICS,
   createBudget,
   updateBudget,
 } from "../../data/api";
 import { useAgents } from "../../data/hooks";
-import { metricLabel } from "./usageFormat";
+import { formatAmount, metricLabel, parseBound } from "./usageFormat";
 
 const WHOLE_WORKSPACE = "";
 
@@ -54,15 +56,13 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
   }, [open, budget]);
 
   const perModel = PER_MODEL_METRICS.includes(metric);
-  const limitValue = Number(limit);
-  const periodValue = Number(periodHours);
-  const valid =
-    Number.isInteger(limitValue) &&
-    limitValue > 0 &&
-    Number.isInteger(periodValue) &&
-    periodValue > 0;
+  const limitValue = parseBound(limit, MAX_BUDGET_AMOUNT);
+  const periodValue = parseBound(periodHours, MAX_BUDGET_PERIOD_HOURS);
+  const limitInvalid = limit.trim() !== "" && limitValue === null;
+  const periodInvalid = periodHours.trim() !== "" && periodValue === null;
 
   const handleSubmit = useCallback(async () => {
+    if (limitValue === null || periodValue === null) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -154,7 +154,9 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
               onChange={(e) => setLimit(e.target.value)}
               required
               fullWidth
-              slotProps={{ htmlInput: { min: 1, step: 1 } }}
+              error={limitInvalid}
+              helperText={limitInvalid ? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.` : undefined}
+              slotProps={{ htmlInput: { min: 1, max: MAX_BUDGET_AMOUNT, step: 1 } }}
             />
             <TextField
               label="Period (hours)"
@@ -163,8 +165,13 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
               onChange={(e) => setPeriodHours(e.target.value)}
               required
               fullWidth
-              helperText="24 is a day, 168 a week."
-              slotProps={{ htmlInput: { min: 1, step: 1 } }}
+              error={periodInvalid}
+              helperText={
+                periodInvalid
+                  ? `A whole number of hours from 1 to ${formatAmount(MAX_BUDGET_PERIOD_HOURS)}.`
+                  : "24 is a day, 168 a week."
+              }
+              slotProps={{ htmlInput: { min: 1, max: MAX_BUDGET_PERIOD_HOURS, step: 1 } }}
             />
           </Stack>
         </Stack>
@@ -174,7 +181,7 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={submitting || !valid}
+          disabled={submitting || limitValue === null || periodValue === null}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
           {budget ? "Save" : "Add"}

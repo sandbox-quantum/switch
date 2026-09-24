@@ -1744,6 +1744,11 @@ export interface UsageTotal {
   amount: number;
 }
 
+// The server's bounds on a budget: at most a leap year, and at most the largest
+// integer a JavaScript number holds exactly.
+export const MAX_BUDGET_PERIOD_HOURS = 8784;
+export const MAX_BUDGET_AMOUNT = Number.MAX_SAFE_INTEGER;
+
 export interface Budget {
   id: string;
   // Null covers every agent in the workspace.
