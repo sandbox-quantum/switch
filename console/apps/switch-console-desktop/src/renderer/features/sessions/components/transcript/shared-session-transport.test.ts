@@ -7,14 +7,15 @@ const ipc = vi.hoisted(() => ({
   sessionSubmit: vi.fn(),
 }));
 const bus = vi.hoisted(() => ({
-  listeners: new Map<string, (payload: { event: unknown }) => void>(),
+  listeners: new Map<string, (payload: never) => void>(),
 }));
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: { sdkHost: ipc },
   events: {
-    on: (_channel: unknown, listener: (payload: { event: unknown }) => void, topic: string) => {
-      bus.listeners.set(topic, listener);
-      return () => bus.listeners.delete(topic);
+    on: (channel: { name: string }, listener: (payload: never) => void, topic: string) => {
+      const key = `${channel.name}:${topic}`;
+      bus.listeners.set(key, listener);
+      return () => bus.listeners.delete(key);
     },
   },
 }));
@@ -43,7 +44,9 @@ it('opens the transcript, hears pushed events after its cursor, and closes it', 
     vi.fn(),
     cursor
   );
-  const push = bus.listeners.get('session')!;
+  const push = bus.listeners.get('session:transcript-event:session')! as (payload: {
+    event: unknown;
+  }) => void;
   push({ event: event(7) });
   push({ event: event(8) });
   push({ event: event(9) });
@@ -51,7 +54,7 @@ it('opens the transcript, hears pushed events after its cursor, and closes it', 
   expect(cursor).toHaveBeenLastCalledWith(9);
 
   stop();
-  expect(bus.listeners.has('session')).toBe(false);
+  expect(bus.listeners.size).toBe(0);
   expect(ipc.transcriptClose).toHaveBeenCalledWith('session');
 });
 
@@ -78,4 +81,21 @@ it('sends commands to the session through main', async () => {
 
 it('offers no attachment upload: the host takes files only from its rooms', () => {
   expect(hostJournalTransport('agent').uploadAttachment).toBeUndefined();
+});
+
+it('reports a broken live feed so the view reloads the session', () => {
+  const transport = hostJournalTransport('agent');
+  const onError = vi.fn();
+  const stop = transport.subscribe('session', 0, vi.fn(), onError, vi.fn());
+  const reset = bus.listeners.get('session:transcript-reset:session')! as (payload: {
+    sessionId: string;
+    reason: string;
+  }) => void;
+  reset({ sessionId: 'session', reason: 'The connection to the agent sidecar closed.' });
+  expect(onError).toHaveBeenCalledWith(
+    new Error(
+      'The live feed from the session stopped (The connection to the agent sidecar closed.).'
+    )
+  );
+  stop();
 });
