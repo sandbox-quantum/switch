@@ -138,6 +138,35 @@ Three things worth knowing before your first login:
   applies to a new account, not to one linked as above. Promote it by hand
   afterwards if it needs elevated access.
 
+### Which workspace a new account lands in
+
+`GATEWAY_SIGNUP_MODE` decides this. The Helm chart sets it from
+`switchCore.signup.mode`.
+
+| Mode | A new account | Creating a workspace |
+| --- | --- | --- |
+| `default_tenant` (default) | joins the default workspace as a member | allowed, up to the cap |
+| `open` | joins nothing, and is asked to create a workspace or accept an invitation | allowed, up to the cap |
+| `invite_only` | joins nothing, and can get in only by accepting an invitation | operators only |
+
+The cap is `GATEWAY_MAX_WORKSPACES_PER_USER`
+(`switchCore.signup.maxWorkspacesPerUser`, default 3; `0` turns self-service
+creation off). It counts the workspaces a person has created, not ones they
+were invited to, and handing one over does not give the allowance back.
+Deployment operators are exempt.
+
+Your identity provider still decides who can sign in at all. With `open`,
+anyone the provider lets through can create a workspace. If the server should
+not be open to the world, use a provider that restricts sign-in. Changing the
+mode does not affect existing accounts; they keep their memberships.
+
+A person who belongs to several workspaces goes back to the one they used last
+when they sign in, as long as they are still a member of it. If there is no
+such workspace, the dashboard asks them to choose. Other API clients get a 403
+on workspace routes until they pick one with `POST /tenants/{id}/switch`. If
+`GATEWAY_TENANT_CHOICE_ENABLED` (`switchCore.tenantChoiceEnabled`) is set, they
+get a 409 listing the workspaces instead.
+
 ## Setting up WorkOS as the provider
 
 This is the part that will otherwise burn an afternoon. WorkOS exposes two

@@ -1,7 +1,10 @@
 # Multi-tenancy: design and plan
 
 Status: the design, plus the order of work it proposed. Phases 0 and 1 of §8
-have since been built; the phases after them have not. Read this for the
+have since been built, and most of Phase 2: several workspaces per person,
+per-workspace roles, invitations by link, and self-service sign-up behind
+`GATEWAY_SIGNUP_MODE` (see `multi-tenancy-phase2-tenants.md`, §9a). Joining by
+email domain and per-tenant agent registration credentials have not. Read this for the
 reasoning and the shape, and the code for what actually exists — where the two
 disagree, the code is right and this page is the record of what was intended.
 

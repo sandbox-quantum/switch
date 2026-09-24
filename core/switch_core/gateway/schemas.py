@@ -677,6 +677,38 @@ class TenantCreateRequest(BaseModel):
     name: str
 
 
+class SessionStateUser(BaseModel):
+    id: str
+    name: str
+    email: str
+    # The deployment operator (`users.role == "admin"`), who administers every
+    # workspace and the deployment-wide user list.
+    is_operator: bool
+
+
+class SessionStateResponse(BaseModel):
+    """Where this session stands with respect to workspaces — the body of
+    `GET /auth/session`, readable before any workspace is selected.
+
+    `state` mirrors what tenant resolution would do with this session's claim
+    on any other request:
+
+    - "ready": a workspace resolves, and it is `tenant`.
+    - "needs_selection": the caller belongs to at least one workspace but the
+      session resolves none — no claim with several memberships, or a claim
+      naming a workspace they no longer belong to. Selecting one of `tenants`
+      (`POST /tenants/{id}/switch`) fixes it.
+    - "needs_workspace": no memberships at all. Creating a workspace (when
+      `can_create_workspace`) or accepting an invitation fixes it.
+    """
+
+    user: SessionStateUser
+    tenant: TenantMembershipResponse | None
+    tenants: list[TenantMembershipResponse]
+    state: Literal["ready", "needs_selection", "needs_workspace"]
+    can_create_workspace: bool
+
+
 class InvitationCreateRequest(BaseModel):
     role: str = "member"
     # None mints a shareable link; set, the invitation is addressed to one
@@ -735,6 +767,9 @@ class AuthConfigResponse(BaseModel):
     password_login_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
+    # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
+    # page can say whether signing in also creates an account of your own.
+    signup_mode: Literal["default_tenant", "invite_only", "open"]
 
 
 class ContractRangeResponse(BaseModel):
