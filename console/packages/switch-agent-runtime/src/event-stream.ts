@@ -35,6 +35,11 @@ export const BEAT_INTERVAL_MS = 2000;
 const BEAT_REQUEST_TIMEOUT_MS = 4000;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
+/** How long a stream has to stay open before its backoff is forgiven. A
+ * stream that opens and is taken away within this window keeps its backoff,
+ * so two supervisors on one connection id back off to the maximum instead of
+ * handing it back and forth every couple of seconds. */
+const STABLE_STREAM_MS = 30_000;
 
 export type StreamScope = 'single' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
@@ -121,6 +126,9 @@ export class SwitchEventStream {
    * refusals can never be retried into a success, and both loops have to end. */
   private readonly halt = new AbortController();
   private rooms: string[];
+  /** Set when the current stream was ended by an eviction frame, so the
+   * reconnect loop backs off instead of hammering immediately. */
+  private wasEvicted = false;
 
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
@@ -256,6 +264,21 @@ export class SwitchEventStream {
     const { creds, connectionId, scope, filter, log, signal } = this.deps;
     let backoff = INITIAL_BACKOFF_MS;
     let failures = 0;
+    // When the current stream opened, or null while none is open.
+    let openedAt: number | null = null;
+    const forgiveIfStable = () => {
+      if (openedAt !== null && Date.now() - openedAt >= STABLE_STREAM_MS) {
+        backoff = INITIAL_BACKOFF_MS;
+        if (failures > 0) {
+          log.warn('SwitchEventStream: stream recovered', {
+            event: 'switch_stream_recovered',
+            afterFailures: failures,
+          });
+          failures = 0;
+        }
+      }
+      openedAt = null;
+    };
 
     while (!signal.aborted && !this.halt.signal.aborted) {
       const socketAbort = new AbortController();
@@ -302,14 +325,7 @@ export class SwitchEventStream {
           throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
-        backoff = INITIAL_BACKOFF_MS;
-        if (failures > 0) {
-          log.warn('SwitchEventStream: stream recovered', {
-            event: 'switch_stream_recovered',
-            afterFailures: failures,
-          });
-          failures = 0;
-        }
+        openedAt = Date.now();
         log.debug('SwitchEventStream: stream open', {
           event: 'switch_stream_open',
           connectionId,
@@ -321,8 +337,28 @@ export class SwitchEventStream {
           await this.handleFrame(frame);
           if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
+        forgiveIfStable();
+
+        // An eviction ends the stream cleanly, with no error, so without this
+        // check the loop restarts at once, and two supervisors on one
+        // connection id evict each other about nine times a second. Back off
+        // on eviction the same way the error path does on failures.
+        if (this.wasEvicted) {
+          this.wasEvicted = false;
+          failures += 1;
+          if ((failures & (failures - 1)) === 0) {
+            log.warn('SwitchEventStream: backing off after eviction', {
+              event: 'switch_stream_eviction_backoff',
+              failures,
+              backoffMs: backoff,
+            });
+          }
+          await new Promise((r) => setTimeout(r, backoff));
+          backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+        }
       } catch (error) {
         if (signal.aborted || this.halt.signal.aborted) return;
+        forgiveIfStable();
         // A deliberate reopen (repoint) aborts the socket; that is not an error.
         if (!socketAbort.signal.aborted) {
           failures += 1;
@@ -383,6 +419,7 @@ export class SwitchEventStream {
         return;
       }
       case 'evicted':
+        this.wasEvicted = true;
         log.warn('SwitchEventStream: evicted', {
           event: 'switch_stream_evicted',
           reason: frame.data.reason,

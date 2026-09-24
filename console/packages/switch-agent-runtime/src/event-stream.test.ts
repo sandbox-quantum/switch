@@ -461,3 +461,35 @@ it('does not advance or deliver when persisting the reset checkpoint fails', asy
     abort.abort();
   }
 });
+
+describe('a connection another supervisor keeps taking over', () => {
+  /** A stream that delivers one eviction frame and ends. */
+  function evictedAtOnce() {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('event: evicted\ndata: {"reason":"replaced"}\n\n')
+        );
+        controller.close();
+      },
+    });
+    return { ok: true, status: 200, body, text: async (): Promise<string> => '' };
+  }
+
+  it('keeps backing off while every stream it opens is taken away at once', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? evictedAtOnce()
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const { abort } = makeStream(fetchMock, { rooms: ['room-live'] });
+    await vi.advanceTimersByTimeAsync(60_000);
+    abort.abort();
+
+    // Forgiving the backoff on every open reopened about once a second, sixty
+    // times a minute. Held until a stream stays up, it doubles to the cap:
+    // 1, 2, 4, 8, 16 and 30 seconds, so a handful of opens in a minute.
+    expect(urlsFor(fetchMock, '/events').length).toBeLessThanOrEqual(7);
+  });
+});
