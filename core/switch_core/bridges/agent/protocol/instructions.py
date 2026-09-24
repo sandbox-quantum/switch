@@ -68,6 +68,11 @@ def _interaction_modes(profile: IntegrationProfile) -> str:
         "(via `target_roles`), who then receive it as an *addressed* event "
         "(they will respond). A role target fans out to every live holder of "
         "that role. Others see it as context.",
+        '- **`send_targeted_message(target_names=["everyone"])`** — a '
+        "room-wide mention: notifies every *person* in the room on its chat "
+        "platform (`@channel` on Slack) and wakes no agent. Use it only when "
+        "all of them need to see the message; writing `@channel` or "
+        "`@everyone` into a body pages nobody.",
     ]
     if caps.can_delegate or caps.can_accept:
         lines.append(

@@ -189,6 +189,20 @@ this room" from a truncated read.
 **Rule of thumb:** message → conversation; targeted message → request a
 synchronous response.
 
+**Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
+mention: it notifies every *person* in the room on its chat platform —
+`@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no
+agent**. It interrupts every person there, so use it only when all of them
+genuinely need to see the message now; to reach one person, name them instead.
+`target_statuses` reports what happened under `everyone`: `sent`,
+`unsupported` (Teams has no channel-wide mention a bot can send, so the message
+posts but pages nobody), `no_bridge` (the room has no chat platform) or
+`bridge_unavailable` (its bridge is down). That is what Switch sent, not what
+the platform confirmed. Writing `@everyone`, `@channel`, `@here` or `@all` into
+a body pages nobody — Switch defuses those words — so this target is the only
+way to do it. It is refused in a room where an agent, alias or role is itself
+named `everyone`.
+
 **Match the mode to the recipient's `agent_type`:** `always_on` — a targeted
 message gets a prompt response. `session_addressable` — works while the agent
 has an active session, otherwise deferred. `session_passive` — do **not**
@@ -774,7 +788,7 @@ failure-mode tools are covered in the sections just above.
 - `list_participants` — the connected room's roster: `id`, `name`, `type`,
   `status`, `alias`.
 - `post_message` — broadcast to the room.
-- `send_targeted_message` — broadcast addressed to names and/or roles.
+- `send_targeted_message` — broadcast addressed to names, roles, or `everyone` (the room's people).
 - `send_attachment` — post one or more files to the room.
 - `download_attachment` — fetch a file seen in history, by `mxc`.
 - `list_roles` — the room's assumable roles and who holds them.
