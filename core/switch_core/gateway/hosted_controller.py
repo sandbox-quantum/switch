@@ -64,7 +64,9 @@ async def launch_by_id(session: AsyncSession, request_id: UUID) -> HostedLaunch:
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"hosted-launch:{require_tenant_id()}:{request_id}"},
     )
-    launch = await session.get(HostedLaunch, (require_tenant_id(), str(request_id)))
+    launch = await session.get(
+        HostedLaunch, (require_tenant_id(), str(request_id)), populate_existing=True
+    )
     if launch is None:
         raise HTTPException(404, "Cloud launch not found.")
     return launch
@@ -93,18 +95,21 @@ async def prepare(
     github: Annotated[GitHubConnections, Depends(get_github)],
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
-    launch = await launch_by_id(session, request_id)
+    launch = await session.get(HostedLaunch, (require_tenant_id(), str(request_id)))
+    if launch is None:
+        raise HTTPException(404, "Cloud launch not found.")
+    revision = launch.revision
     if await session.get(TenantMember, (require_tenant_id(), launch.owner_id)) is None:
         raise HTTPException(
             422, "The cloud agent owner is no longer a workspace member."
         )
-    if launch.state == "error" or launch.agent_id not in {
-        str(value) for value in settings.agent_ids
-    }:
+    if (
+        launch.state == "error"
+        or launch.desired_state != "running"
+        or launch.agent_id not in {str(value) for value in settings.agent_ids}
+    ):
         raise HTTPException(409, "Cloud launch cannot be provisioned.")
-    # OAuth refresh commits before registration, so reacquire the launch lock afterwards.
     await connection_status(launch.owner_id, session, config, github)
-    launch = await launch_by_id(session, request_id)
     github_connection = await session.scalar(
         select(ProviderConnection).where(*conditions(launch.owner_id))
     )
@@ -131,6 +136,23 @@ async def prepare(
         )
     except GitHubError as error:
         raise HTTPException(422, str(error)) from None
+    await session.commit()
+    launch = await launch_by_id(session, request_id)
+    if (
+        launch.revision != revision
+        or launch.desired_state != "running"
+        or launch.state == "error"
+    ):
+        raise HTTPException(409, "Cloud launch changed during preparation.")
+    if (
+        await session.get(
+            TenantMember, (require_tenant_id(), launch.owner_id), populate_existing=True
+        )
+        is None
+    ):
+        raise HTTPException(
+            422, "The cloud agent owner is no longer a workspace member."
+        )
     agent = await session.get(Agent, launch.agent_id)
     if agent is None:
         known_type = "claude-code" if provider == "claude" else provider
@@ -182,9 +204,6 @@ async def prepare(
     return {
         "agent_id": agent.id,
         "provider_kind": connection.kind,
-        "provider_credential": decrypt_token(
-            connection.encrypted_credential, config.jwt_secret_key
-        ),
         "switch_credentials": {
             "env": {
                 "SWITCH_API_ENDPOINT": settings.agent_api_endpoint,
@@ -223,6 +242,8 @@ async def observe(
         return summary(launch)
     if launch.state == "error" and launch.desired_state == "running":
         return summary(launch)
+    if launch.desired_state == "running" and body.state in {"stopping", "stopped"}:
+        body = body.model_copy(update={"state": "provisioning"})
     previous_state = launch.state
     if launch.desired_state in {"stopped", "restart", "deleted"} and body.state not in {
         "stopped",
@@ -267,6 +288,7 @@ async def observe(
             launch.state = "error"
             launch.error = "The worker did not connect within 10 minutes. Check provider access and worker startup logs, then retry."
         if launch.state == "ready":
+            launch.sleeping = False
             now = datetime.now(UTC)
             if previous_state != "ready" or await HostedLaunchStore().idle_busy(
                 session, launch

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     PrimaryKeyConstraint,
+    Sequence,
     Table,
     Text,
     UniqueConstraint,
@@ -33,6 +34,10 @@ from switch_core.db.notify_ddl import (
 from switch_core.db.rls_ddl import attach_row_level_security
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
+
+agent_event_boot_sequence = Sequence(
+    "agent_event_boot", metadata=Base.metadata, maxvalue=2097150, cycle=False
+)
 
 
 def _uuid() -> str:

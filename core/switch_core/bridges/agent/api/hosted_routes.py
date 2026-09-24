@@ -22,6 +22,7 @@ from switch_core.db.models import (
     TenantMember,
     require_tenant_id,
 )
+from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.github_connections import conditions, connection_status
 from switch_core.gateway.hosted_launches import operation_summary
 from switch_core.providers.github import GitHubConnections, GitHubError
@@ -106,6 +107,20 @@ async def provider_status(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
     launch = await worker_launch(session, agent)
+    await ProviderConnectionStore().wait_user(session, launch.owner_id)
+    launch = await session.scalar(
+        select(HostedLaunch)
+        .where(
+            HostedLaunch.tenant_id == require_tenant_id(),
+            HostedLaunch.id == launch.id,
+            HostedLaunch.desired_state == "running",
+            HostedLaunch.state != "error",
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if launch is None:
+        raise HTTPException(409, "The worker changed during verification.")
     connection = await session.get(
         ProviderConnection,
         (require_tenant_id(), launch.owner_id, launch.spec.get("provider", "claude")),
@@ -117,7 +132,8 @@ async def provider_status(
     connection.verification_status = "verified" if body.authenticated else "configured"
     if not body.authenticated:
         launch.error = (
-            "The provider could not authenticate on the worker. Reconnect it and retry."
+            "The provider could not authenticate on the worker. "
+            "Sign in again locally, then reconnect it and retry."
         )
         launch.state = "error"
     await session.commit()

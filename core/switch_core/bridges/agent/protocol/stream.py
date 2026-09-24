@@ -111,29 +111,23 @@ async def _event_stream(
     try:
         yield _frame("connection_state", _connection_state(conn))
 
-        # A cursor ahead of everything we hold is a cursor from a previous
-        # life of this process: the buffer is in memory, so a restart resets
-        # the sequence. Say so. Staying quiet would leave the client believing
-        # it is caught up when its numbering no longer means anything.
         head = buffer.head(agent_id)
-        if conn.cursor > head:
+        floor = buffer.sequence_floor
+        if 0 < conn.cursor < floor - 1 or conn.cursor > head:
+            previous = conn.cursor
+            conn.cursor = floor - 1
             logger.warning(
-                "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
-                "buffer only reaches %s — treating as a restart",
+                "[STREAM] agent=%s connection=%s resumed from another server boot",
                 agent_id,
                 conn.id,
-                conn.cursor,
-                head,
             )
-            conn.cursor = head
             yield _frame(
                 "gap",
                 {
-                    "from_sequence": head,
-                    "resumed_at": head,
+                    "from_sequence": previous,
+                    "resumed_at": conn.cursor,
                     "reason": "the server restarted since your last connection; "
-                    "sequence numbers have been reset and events from before "
-                    "the restart are gone — re-read room context",
+                    "earlier events may be unavailable — re-read room context",
                 },
             )
 

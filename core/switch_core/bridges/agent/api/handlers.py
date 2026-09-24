@@ -860,15 +860,9 @@ async def connection_beat(
     still make calls but is receiving nothing must be told, not left believing
     it is connected.
     """
-    # A cursor above the buffer's head belongs to a previous life of this
-    # process: the buffer is in memory, so a restart resets the sequence while
-    # the client keeps beating the number it had reached. Both consumers below
-    # only ever move a cursor forward, so adopting it undoes the rewind the
-    # stream performs on resume — the connection then skips every event up to
-    # the stale value and confirms events it was never delivered. Clamp it here,
-    # where the untrusted value enters, rather than in either consumer.
     head = protocol.event_buffer.head(agent.id)
-    cursor = min(req.cursor, head)
+    floor = protocol.event_buffer.sequence_floor - 1
+    cursor = max(floor, min(req.cursor, head))
 
     try:
         conn = protocol.connections.beat(agent.id, req.connection_id, cursor)

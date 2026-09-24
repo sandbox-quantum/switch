@@ -9,6 +9,7 @@ async def session_error_response(request: Request, error: Exception) -> JSONResp
         raise error
     status = {
         "NOT_AUTHORIZED": 403,
+        "HOST_NOT_OWNER": 403,
         "NOT_FOUND": 404,
         "INVALID_ANSWER": 422,
         "INVALID_ATTACHMENT": 422,

@@ -181,6 +181,7 @@ export class CursorAdapter implements ProviderAdapter {
     }
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
+      input.signal?.throwIfAborted();
       const initialized = await client.request<{
         agentInfo?: { version: string };
         agentCapabilities?: { loadSession?: boolean };

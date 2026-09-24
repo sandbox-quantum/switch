@@ -269,6 +269,7 @@ export class CodexAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
 
     try {
+      input.signal?.throwIfAborted();
       const initializeParams: CodexInitializeParams = {
         clientInfo: { name: CLIENT_NAME, title: 'Switch Console', version: CLIENT_VERSION },
         capabilities: { experimentalApi: true, requestAttestation: false },

@@ -21,7 +21,6 @@ from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
     CommandPayload,
-    MessagePayload,
     RoomJoinPayload,
     TaskAcceptPayload,
     TaskCancelPayload,
@@ -30,7 +29,6 @@ from switch_core.bridges.agent.protocol.types import (
     TaskUpdatePayload,
 )
 from switch_core.clients.admin_messages import (
-    PLATFORM_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
@@ -57,6 +55,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.stores.hosted_launch_store import is_waking as _waking
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -67,6 +66,7 @@ from switch_core.delivery.addressing import (
     AddressingResolver,
     IncomingMessage,
 )
+from switch_core.delivery.message_payload import message_payload
 from switch_core.events import (
     CommandEvent,
     TaskAccept,
@@ -207,15 +207,6 @@ _ADDRESSING_DENIED_MESSAGE = ADDRESSING_DENIED_MESSAGE
 _ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 
 
-def _waking(launch: HostedLaunch) -> bool:
-    return launch.desired_state == "running" and launch.state in {
-        "queued",
-        "provisioning",
-        "stopping",
-        "stopped",
-    }
-
-
 class _GateOutcome(NamedTuple):
     """Whether a message that tags this agent really addresses it, plus the
     refusal to post when it does not. The refusal is returned rather than sent
@@ -272,7 +263,7 @@ class AgentClient(ClientBase[ClientConfig]):
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
         self._hosted_launch_store = hosted_launch_store
-        self._waking_notice_revision: int | None = None
+        self._waking_notice_revisions: dict[str, int] = {}
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -448,24 +439,21 @@ class AgentClient(ClientBase[ClientConfig]):
                     gate = await self._gate_addressed(session, agent, event, meta)
                     is_addressed = gate.addressed
                     refusal = gate.refusal
-                    launch = (
-                        await self._note_hosted_addressed(session, agent)
-                        if is_addressed
-                        else None
-                    )
                     if (
                         is_addressed
                         and not self._triggered_by_auto_reply(event)
                         and not await self._is_available(session, agent, meta.room_id)
                     ):
-                        if launch is not None and _waking(launch):
-                            if self._waking_notice_revision != launch.revision:
-                                self._waking_notice_revision = launch.revision
-                                unavailable = _WAKING_MESSAGE
-                        else:
-                            unavailable = await self._reply_when_unavailable_here(
-                                session, agent, meta, self._sender_handle(event)
-                            )
+                        unavailable = await self._reply_when_unavailable_here(
+                            session, agent, meta, self._sender_handle(event)
+                        )
+        if is_addressed:
+            launch = await self._note_hosted_addressed(agent)
+            if unavailable is not None and launch is not None and _waking(launch):
+                unavailable = None
+                if self._waking_notice_revisions.get(meta.room_id) != launch.revision:
+                    self._waking_notice_revisions[meta.room_id] = launch.revision
+                    unavailable = _WAKING_MESSAGE
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -501,32 +489,18 @@ class AgentClient(ClientBase[ClientConfig]):
                 sender_name,
             )
 
-        sender_kind: str | None = None
-        on_behalf_of: str | None = None
-        if PLATFORM_MARKER in event.content:
-            sender_kind = "platform"
-            person = platform_on_behalf_of(event.content)
-            if person is not None:
-                # The agent answers the person the platform spoke for, not
-                # the admin client that carried the message.
-                on_behalf_of = person.name
-                sender_name = person.name
-
         agent_event = AgentEvent(
             type="message",
             room_id=meta.room_id,
             bridge_id=meta.bridge_id,
             channel_type=meta.channel_type,
-            payload=MessagePayload(
+            payload=message_payload(
+                event,
                 addressed=is_addressed,
-                sender=event.sender,
-                sender_name=sender_name,
-                sender_kind=sender_kind,
-                on_behalf_of=on_behalf_of,
-                message_id=event.event_id,
                 body=text,
-                timestamp=event.timestamp,
+                sender_name=sender_name,
                 thread_id=thread_id,
+                attachments=[],
             ),
         )
 
@@ -706,39 +680,24 @@ class AgentClient(ClientBase[ClientConfig]):
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
-                if gate.addressed:
-                    await self._note_hosted_addressed(session, agent)
+            if gate.addressed:
+                await self._note_hosted_addressed(agent)
             is_addressed = gate.addressed
             if gate.refusal is not None:
                 await self._post_auto_reply(
                     room.room_id, event, gate.refusal, reply_thread_root
                 )
 
-        sender_kind: str | None = None
-        on_behalf_of: str | None = None
-        if PLATFORM_MARKER in event.content:
-            sender_kind = "platform"
-            person = platform_on_behalf_of(event.content)
-            if person is not None:
-                # The agent answers the person the platform spoke for, not
-                # the admin client that carried the message.
-                on_behalf_of = person.name
-                sender_name = person.name
-
         agent_event = AgentEvent(
             type="message",
             room_id=meta.room_id,
             bridge_id=meta.bridge_id,
             channel_type=meta.channel_type,
-            payload=MessagePayload(
+            payload=message_payload(
+                event,
                 addressed=is_addressed,
-                sender=event.sender,
-                sender_name=sender_name,
-                sender_kind=sender_kind,
-                on_behalf_of=on_behalf_of,
-                message_id=event.event_id,
                 body=body,
-                timestamp=event.timestamp,
+                sender_name=sender_name,
                 thread_id=thread_id,
                 attachments=attachments,
             ),
@@ -775,6 +734,10 @@ class AgentClient(ClientBase[ClientConfig]):
         handled = await self._handle_command(room, event)
         if handled:
             return
+
+        async with self.session_factory() as session:
+            agent = await self._fresh_agent(session)
+        await self._note_hosted_addressed(agent)
 
         self._event_buffer.enqueue(
             self.agent.id,
@@ -896,22 +859,31 @@ class AgentClient(ClientBase[ClientConfig]):
         self._room_meta[matrix_room_id] = meta
         return meta
 
-    async def _note_hosted_addressed(
-        self, session: AsyncSession, agent: Agent
-    ) -> HostedLaunch | None:
+    async def _note_hosted_addressed(self, agent: Agent) -> HostedLaunch | None:
         """Keep a hosted agent's cloud worker awake, waking it if it idled out."""
         launch_id = (agent.metadata_ or {}).get("hosted_launch_id")
         if launch_id is None:
             return None
-        launch = await self._hosted_launch_store.note_addressed(session, launch_id)
-        await session.commit()
-        if launch is None:
-            logger.error(
-                "Agent %s names cloud launch %s, which does not exist",
+        try:
+            async with asyncio.timeout(5), self.session_factory() as session:
+                launch = await self._hosted_launch_store.note_addressed(
+                    session, launch_id
+                )
+                await session.commit()
+            if launch is None:
+                logger.error(
+                    "Agent %s names cloud launch %s, which does not exist",
+                    agent.id,
+                    launch_id,
+                )
+            return launch
+        except Exception:
+            logger.warning(
+                "Could not wake cloud worker for agent %s; the event remains queued",
                 agent.id,
-                launch_id,
+                exc_info=True,
             )
-        return launch
+            return None
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
@@ -1144,7 +1116,16 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        await self.send_message(room.room_id, "Working on it.", format="markdown")
+        async with self.session_factory() as session:
+            agent = await self._fresh_agent(session)
+        launch = await self._note_hosted_addressed(agent)
+        await self.send_message(
+            room.room_id,
+            _WAKING_MESSAGE
+            if launch is not None and _waking(launch)
+            else "Working on it.",
+            format="markdown",
+        )
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return

@@ -343,12 +343,6 @@ export async function prepareHostedDeployment(
   }
   if (isWithin(root, workspaceRoot) || isWithin(workspaceRoot, root))
     throw new Error('Hosted state and workspace directories must not overlap.');
-  const providerCredentialPath = await resolveCredentialFile(
-    spec.provider.credential.path,
-    root,
-    workspaceRoot,
-    'Provider'
-  );
   const switchCredentialsPath = await resolveCredentialFile(
     spec.switchCredentialsPath,
     root,
@@ -358,7 +352,11 @@ export async function prepareHostedDeployment(
   const githubCredentialPath = spec.github
     ? await resolveCredentialFile(spec.github.credentialPath, root, workspaceRoot, 'GitHub')
     : undefined;
-  const providerCredential = await readProviderCredential(providerCredentialPath);
+  const providerCredential = spec.provider.credential.refresh
+    ? null
+    : await readProviderCredential(
+        await resolveCredentialFile(spec.provider.credential.path, root, workspaceRoot, 'Provider')
+      );
   const switchCredentials = await validateSwitchCredentials(
     switchCredentialsPath,
     spec.session.agentId
@@ -506,7 +504,7 @@ export async function prepareHostedDeployment(
     if (value !== undefined && providerEnvironment[key] === undefined)
       providerEnvironment[key] = value;
   }
-  providerEnvironment[variable] = providerCredential;
+  if (providerCredential !== null) providerEnvironment[variable] = providerCredential;
   if (githubCredential && !spec.github?.refresh) providerEnvironment.GH_TOKEN = githubCredential;
   providerEnvironment.SWITCH_HOSTED_BOOTSTRAP = '1';
   if (
@@ -528,7 +526,7 @@ export async function prepareHostedDeployment(
     config: plan.config,
     providerEnvironment,
     logRedactions: [
-      providerCredential,
+      ...(providerCredential === null ? [] : [providerCredential]),
       switchCredentials.token,
       ...(githubCredential ? githubRedactions(githubCredential) : []),
     ],
@@ -579,7 +577,10 @@ export async function runHostedBootstrap(
         authenticated: readiness.status === 'authenticated',
         revision: credential.revision,
       });
-      if (readiness.status !== 'authenticated') throw new Error(readiness.message);
+      if (readiness.status !== 'authenticated')
+        throw new Error(
+          'The provider rejected the saved sign-in. Sign in again and reconnect the provider in Switch Console.'
+        );
       Object.assign(prepared.providerEnvironment, env);
     }
     if (spec.github?.refresh && spec.github.repository)

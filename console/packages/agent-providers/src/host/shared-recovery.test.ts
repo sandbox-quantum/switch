@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile, unlink } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseHostEvent } from '@switch-console/shared/session-v1';
@@ -8,7 +8,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { SharedRoomInbox } from './room-inbox';
-import { runSharedHost } from './shared-host';
+import { runSharedHost, SharedHostFencedError } from './shared-host';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -329,20 +329,67 @@ it('bounds unavailable-server startup before any provider execution', async () =
   expect(f.fetchMock).toHaveBeenCalledTimes(1);
 });
 
-it('retains an unverified room event when server replay evidence is unavailable', async () => {
+it.each(['ROOM_EVENT_UNAVAILABLE', 'NOT_AUTHORIZED', 'ROOM_REPLAY_REFUSED'])(
+  'acknowledges an unverifiable event with a visible notice: %s',
+  async (code) => {
+    const f = await fixture();
+    await writeFile(
+      join(f.root, 'room-inbox.jsonl'),
+      JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+    );
+    vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url, options) => {
+      if (url.endsWith('/room-failure')) return Response.json({});
+      if (url.endsWith('/room-message'))
+        return Response.json({ code, message: 'Room event cannot be verified' }, { status: 409 });
+      return original(url, options);
+    });
+    const controller = new AbortController();
+    const running = runSharedHost(
+      { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+      f.adapter,
+      controller.signal
+    );
+    try {
+      await vi.waitFor(
+        async () =>
+          expect(await SharedRoomInbox.readMessageState(f.root, 'room', 'message')).toBe(
+            'acknowledged'
+          ),
+        { timeout: 5000 }
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            f.events.some(
+              (event) =>
+                event.body.type === 'notice' && event.body.message.includes('Read the room context')
+            )
+          ).toBe(true),
+        { timeout: 5000 }
+      );
+      expect(f.fetchMock.mock.calls.filter(([url]) => url.endsWith('/room-failure'))).toHaveLength(
+        code === 'ROOM_EVENT_UNAVAILABLE' ? 1 : 0
+      );
+    } finally {
+      controller.abort();
+      await running;
+    }
+  }
+);
+
+it('reports a permanent startup failure to the bound room before exiting', async () => {
   const f = await fixture();
   await writeFile(
     join(f.root, 'room-inbox.jsonl'),
     JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
   );
   vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  vi.mocked(f.adapter.startSession).mockRejectedValue(new Error('Provider cannot start'));
   const original = f.fetchMock.getMockImplementation()!;
   f.fetchMock.mockImplementation(async (url, options) => {
-    if (url.endsWith('/room-message'))
-      return Response.json(
-        { code: 'ROOM_EVENT_UNAVAILABLE', message: 'Room event is no longer retained' },
-        { status: 409 }
-      );
+    if (url.endsWith('/room-failure')) return Response.json({ rooms: ['room'] });
     return original(url, options);
   });
   await expect(
@@ -351,12 +398,18 @@ it('retains an unverified room event when server replay evidence is unavailable'
       f.adapter,
       new AbortController().signal
     )
-  ).rejects.toThrow('ROOM_EVENT_UNAVAILABLE');
+  ).rejects.toThrow('Provider cannot start');
+  const notices = f.fetchMock.mock.calls.filter(([url]) => url.endsWith('/room-failure'));
+  expect(notices).toHaveLength(1);
+  expect(JSON.parse(String(notices[0][1]?.body))).toEqual({
+    host_id: 'host',
+    epoch: 'epoch-1',
+    connection_id: 'connection',
+    room_id: 'room',
+    message_id: 'message',
+    reason: 'startup',
+  });
   expect(f.adapter.sendTurn).not.toHaveBeenCalled();
-  expect(f.adapter.stopSession).toHaveBeenCalled();
-  expect((await SharedRoomInbox.open(f.root)).pending()).toMatchObject([
-    { sequence: 1, messageId: 'message' },
-  ]);
 });
 
 it('holds room messages while a reset outcome is undecided and delivers them after the decision', async () => {
@@ -423,6 +476,7 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
       const body = (await response.json()) as Snapshot;
       return Response.json({ ...body, session: { ...body.session, epoch: 'epoch-3' } });
     }
+    if (path.endsWith('/room-failure')) return Response.json({});
     if (path.endsWith('/commands')) return Response.json(decision ? [decision] : []);
     if (path.endsWith('/room-message')) {
       submitted.push({
@@ -461,6 +515,9 @@ it('holds room messages while a reset outcome is undecided and delivers them aft
     expect(f.adapter.stopSession).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(submitted).toEqual([]);
+    const notices = f.fetchMock.mock.calls.filter(([url]) => url.endsWith('/room-failure'));
+    expect(notices).toHaveLength(1);
+    expect(JSON.parse(String(notices[0][1]?.body)).reason).toBe('conversation');
     decision = {
       ...f.command,
       commandId: 'decided-reset',
@@ -571,4 +628,144 @@ it('reconciles a journal whose saved state belongs to an earlier generation', as
     stop.abort();
     await running;
   }
+});
+
+it.each(['HOST_OFFLINE', 'STALE_EPOCH', 'HOST_NOT_OWNER'])(
+  'retains input and exits when room submission is fenced: %s',
+  async (code) => {
+    const f = await fixture();
+    await writeFile(
+      join(f.root, 'room-inbox.jsonl'),
+      JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+    );
+    vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+    const original = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (url, options) =>
+      url.endsWith('/room-message')
+        ? Response.json({ code, message: 'Session is fenced' }, { status: 409 })
+        : original(url, options)
+    );
+    await expect(
+      runSharedHost(
+        { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+        f.adapter,
+        new AbortController().signal
+      )
+    ).rejects.toThrow(code);
+    expect(await SharedRoomInbox.readMessageState(f.root, 'room', 'message')).toBe('pending');
+    expect(f.fetchMock.mock.calls.some(([url]) => url.endsWith('/room-failure'))).toBe(false);
+    if (code === 'HOST_NOT_OWNER')
+      expect(await readFile(join(f.root, 'inbox.jsonl'), 'utf8')).toContain('"type":"stopped"');
+  }
+);
+
+it('keeps input pending until a transient delivery-notice failure recovers', async () => {
+  const f = await fixture();
+  await writeFile(
+    join(f.root, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+  );
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const original = f.fetchMock.getMockImplementation()!;
+  let notices = 0;
+  let allowNotice = false;
+  f.fetchMock.mockImplementation(async (url, options) => {
+    if (url.endsWith('/room-message'))
+      return Response.json({ code: 'ROOM_EVENT_UNAVAILABLE', message: 'Expired' }, { status: 409 });
+    if (url.endsWith('/room-failure')) {
+      notices++;
+      return allowNotice ? Response.json({}) : new Response('', { status: 503 });
+    }
+    return original(url, options);
+  });
+  const stop = new AbortController();
+  const running = runSharedHost(
+    { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+    f.adapter,
+    stop.signal
+  );
+  try {
+    await vi.waitFor(() => expect(notices).toBeGreaterThan(0));
+    expect(await SharedRoomInbox.readMessageState(f.root, 'room', 'message')).toBe('pending');
+    allowNotice = true;
+    await vi.waitFor(
+      async () =>
+        expect(await SharedRoomInbox.readMessageState(f.root, 'room', 'message')).toBe(
+          'acknowledged'
+        ),
+      { timeout: 5000 }
+    );
+    expect(notices).toBe(2);
+    const localNotices = (await readFile(join(f.root, 'events.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter(
+        (event) => event.body.type === 'notice' && event.body.message.includes('was not submitted')
+      );
+    expect(localNotices).toHaveLength(1);
+  } finally {
+    stop.abort();
+    await running;
+  }
+});
+
+it.each(['renew', 'stream'])(
+  'fences ownership loss from %s while waiting between polls',
+  async (source) => {
+    const f = await fixture();
+    let streamFailure: (error: Error) => void = () => {};
+    vi.spyOn(SharedRoomInbox.prototype, 'connect').mockImplementation(async (_a, _b, _c, fail) => {
+      streamFailure = fail;
+    });
+    const original = f.fetchMock.getMockImplementation()!;
+    let takeover = false;
+    f.fetchMock.mockImplementation(async (url, options) => {
+      if (url.endsWith('/commands')) return Response.json([]);
+      if (takeover && url.endsWith('/renew'))
+        return Response.json({ code: 'HOST_NOT_OWNER', message: 'Host changed' }, { status: 409 });
+      return original(url, options);
+    });
+    const running = runSharedHost(
+      { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+      f.adapter,
+      new AbortController().signal
+    );
+    const failed = expect(running).rejects.toBeInstanceOf(SharedHostFencedError);
+    await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalled());
+    if (source === 'stream')
+      streamFailure(Object.assign(new Error('Host changed'), { code: 'HOST_NOT_OWNER' }));
+    else takeover = true;
+    await failed;
+    expect(await readFile(join(f.root, 'inbox.jsonl'), 'utf8')).toContain('"type":"stopped"');
+  }
+);
+
+it('retains pending identities and cleanup causes when fencing fails to stop the provider', async () => {
+  const f = await fixture();
+  await writeFile(
+    join(f.root, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'held' }) + '\n'
+  );
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const cleanup = new Error('Provider process did not exit');
+  vi.mocked(f.adapter.stopSession).mockRejectedValue(cleanup);
+  const original = f.fetchMock.getMockImplementation()!;
+  f.fetchMock.mockImplementation(async (url, options) =>
+    url.endsWith('/room-message')
+      ? Response.json({ code: 'HOST_NOT_OWNER', message: 'Host changed' }, { status: 409 })
+      : original(url, options)
+  );
+  const failure = await runSharedHost(
+    { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+    f.adapter,
+    new AbortController().signal
+  ).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(SharedHostFencedError);
+  expect(failure).toMatchObject({
+    message: expect.stringContaining('Stop and start the agent'),
+    pendingMessages: [{ roomId: 'room', messageId: 'held' }],
+    cause: expect.any(AggregateError),
+  });
+  expect((failure as Error).cause).toMatchObject({ errors: expect.arrayContaining([cleanup]) });
 });

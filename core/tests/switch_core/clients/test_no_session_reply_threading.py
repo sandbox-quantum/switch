@@ -66,7 +66,7 @@ def _fake_self(
         # No addressing policy in these tests — the message stays addressed.
         return _GateOutcome(addressed=True, refusal=None)
 
-    async def _note_hosted_addressed(_session: object, _agent: object) -> None:
+    async def _note_hosted_addressed(_agent: object) -> None:
         return None  # not a hosted agent
 
     async def _is_available(_session: object, _agent: object, _room_id: str) -> bool:

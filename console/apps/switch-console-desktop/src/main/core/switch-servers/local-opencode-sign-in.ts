@@ -52,7 +52,9 @@ export function readOpenCodeConsole(path: string): string | null {
 }
 
 let cliInfo: { expires: number; value: { version: string; command: string } } | undefined;
+let cliFailure: { expires: number; error: Error } | undefined;
 export async function getOpenCodeLoginCommand() {
+  if (cliFailure && cliFailure.expires > Date.now()) throw cliFailure.error;
   if (cliInfo && cliInfo.expires > Date.now()) return cliInfo.value;
   const ctx = new LocalExecutionContext();
   try {
@@ -73,9 +75,11 @@ export async function getOpenCodeLoginCommand() {
     cliInfo = { expires: Date.now() + 30000, value };
     return value;
   } catch {
-    throw new Error(
+    const error = new Error(
       'Could not detect the installed OpenCode CLI. Check its installation in Settings.'
     );
+    cliFailure = { expires: Date.now() + 30000, error };
+    throw error;
   } finally {
     ctx.dispose();
   }

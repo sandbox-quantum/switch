@@ -365,7 +365,7 @@ async def test_expired_host_cannot_execute_or_renew_with_a_stale_lease(session_f
     service, epoch = await setup(session_factory)
     with pytest.raises(SessionError) as conflict:
         await service.renew("another-agent", "session-demo", "host-demo", epoch)
-    assert conflict.value.code == "NOT_AUTHORIZED"
+    assert conflict.value.code == "HOST_NOT_OWNER"
     with pytest.raises(SessionError) as conflict:
         await service.renew("agent-demo", "session-demo", "host-demo", "stale")
     assert conflict.value.code == "STALE_EPOCH"

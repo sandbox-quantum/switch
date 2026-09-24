@@ -5,7 +5,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import {
+  assertCurrentOwnershipMachine,
+  ownerMachineIdentitySchema,
+  replaceOwner,
+  withOwnershipLock,
+} from './ownership-lock';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 export function sharedSessionsBase(): string {
@@ -62,6 +67,29 @@ export function detachedSupervision(entrypoint: string): Supervision {
           child.once('spawn', resolve);
           child.once('error', reject);
         });
+        try {
+          const deadline = Date.now() + 10000;
+          while (true) {
+            if (child.exitCode !== null || child.signalCode !== null)
+              throw new Error('Shared SDK supervisor exited before acquiring ownership.');
+            try {
+              const owner = JSON.parse(
+                await readFile(join(root, 'supervisor', 'owner.json'), 'utf8')
+              );
+              assertCurrentOwnershipMachine(ownerMachineIdentitySchema().parse(owner.machine));
+              if (owner.pid === child.pid) break;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            }
+            if (Date.now() >= deadline)
+              throw new Error('Shared SDK supervisor did not acquire ownership within 10 seconds.');
+            await delay(25);
+          }
+        } catch (error) {
+          child.kill('SIGTERM');
+          child.unref();
+          throw error;
+        }
         child.unref();
       } finally {
         await log.close();
@@ -126,7 +154,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
       'The saved SDK host identity or working directory differs from the requested session.'
     );
   if (input.restart) await input.supervision.stop(input.root);
-  {
+  if (created || input.resuming || input.restart || input.watcher) {
     await replaceOwner(path, {
       ...input.config,
       session: saved.session,
@@ -162,9 +190,24 @@ export async function liveSupervisor(root: string): Promise<{ build: unknown } |
     const owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
     if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
       throw new Error('Invalid shared host supervisor owner.');
+    assertCurrentOwnershipMachine(ownerMachineIdentitySchema().parse(owner.machine));
     process.kill(owner.pid, 0);
+    if (process.platform !== 'win32') {
+      const { stdout } = await promisify(execFile)('ps', [
+        '-p',
+        String(owner.pid),
+        '-o',
+        'command=',
+      ]);
+      if (!stdout.trim()) return null;
+      if (!stdout.includes(root))
+        throw new Error(
+          'FENCING_REQUIRED: the saved PID no longer identifies this SDK supervisor.'
+        );
+    }
     return { build: owner.build };
   } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return null;
     if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     return null;
   }

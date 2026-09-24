@@ -1,8 +1,10 @@
 import hashlib
-from typing import Annotated
+import json
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
@@ -17,7 +19,8 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.db.models import Agent
+from switch_core.db.models import Agent, Client, Message, require_tenant_id
+from switch_core.db.session_scope import tenant_session
 from switch_core.sessions.contract import (
     MAX_EVENT_BYTES,
     Command,
@@ -176,6 +179,7 @@ async def room_message(
     factory: Factory,
     buffer: Annotated[EventBuffer, Depends(get_event_buffer)],
     lifecycle: Lifecycle,
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> CommandStatus:
     status = await SessionAuthority(factory).submit_room_message(
         agent.id,
@@ -188,6 +192,7 @@ async def room_message(
         body.missed_count,
         body.gap_reason,
         buffer,
+        protocol.connections.live_agent_ids,
     )
 
     await lifecycle.refresh_sdk_session(session_id)
@@ -238,3 +243,64 @@ async def bind_room_connection(
         protocol.connections,
     )
     return {"rooms": rooms}
+
+
+class RoomFailure(RoomConnection):
+    room_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    reason: Literal["startup", "delivery", "conversation"]
+
+
+@router.post("/{session_id}/room-failure")
+async def room_failure(
+    session_id: str,
+    body: RoomFailure,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict[str, str]:
+    thread_id = await SessionAuthority(factory).failure_notice_thread(
+        agent.id,
+        session_id,
+        body.host_id,
+        body.epoch,
+        body.connection_id,
+        body.room_id,
+        body.message_id,
+        protocol.connections,
+    )
+    messages = {
+        "startup": "I could not start the provider, so I could not process your request. Open this session in Switch Console to check the error and restart it.",
+        "delivery": "I could not verify your earlier message after reconnecting, so I did not process it. Please send the message and any attachments again.",
+        "conversation": f"This saved conversation cannot continue. Send !reset @{agent.name} here, or choose Start a fresh conversation in Switch Console. Your pending messages will be delivered after you make that choice.",
+    }
+    key = json.dumps([agent.id, body.room_id, body.message_id, body.reason])
+    async with tenant_session(factory, require_tenant_id()) as db, db.begin():
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"room-failure:{require_tenant_id()}:{key}"},
+        )
+        sender = (
+            select(Client.matrix_user_id)
+            .join(Agent, Agent.client_id == Client.id)
+            .where(Agent.id == agent.id)
+            .scalar_subquery()
+        )
+        previous = await db.scalar(
+            select(Message.id)
+            .where(
+                Message.room_id == body.room_id,
+                Message.sender_id == sender,
+                Message.content["switch_room_failure"].astext == key,
+            )
+            .limit(1)
+        )
+        if previous is None:
+            await protocol.send_message(
+                agent.id,
+                body.room_id,
+                messages[body.reason],
+                thread_id=thread_id,
+                extra_content={"switch_room_failure": key},
+            )
+    return {"room_id": body.room_id, "message_id": body.message_id}

@@ -10,6 +10,21 @@ export class Journal<T> {
     readonly records: T[]
   ) {}
 
+  static async read<T>(path: string, parse: (input: unknown) => T): Promise<T[]> {
+    let text: string;
+    try {
+      text = await readFile(path, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    return text
+      .split('\n')
+      .slice(0, -1)
+      .filter(Boolean)
+      .map((line) => parse(JSON.parse(line)));
+  }
+
   static async load<T>(path: string, parse: (input: unknown) => T): Promise<Journal<T>> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const file = await open(path, 'a', 0o600);

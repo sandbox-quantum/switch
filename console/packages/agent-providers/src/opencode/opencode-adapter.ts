@@ -155,6 +155,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       sessionId: input.sessionId,
       cwd: input.cwd,
       env: input.env,
+      signal: input.signal,
       config: buildConfigFile(input.runtimeMode, input.mcpServers),
       permission: permissionRulesFor(input.runtimeMode, Object.keys(input.mcpServers)),
       ...(input.resume ? { resumeNativeSessionId: input.resume.nativeSessionId } : {}),
@@ -372,7 +373,7 @@ export class OpencodeAdapter implements ProviderAdapter {
   }
 
   async stopAll(): Promise<void> {
-    await Promise.allSettled([...this.sessions.keys()].map((id) => this.stopSession(id)));
+    await Promise.all([...this.sessions.keys()].map((id) => this.stopSession(id)));
   }
 
   private require(sessionId: string): SessionRecord {

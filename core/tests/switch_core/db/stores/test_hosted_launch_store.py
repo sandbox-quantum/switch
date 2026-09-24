@@ -116,7 +116,7 @@ async def test_addressing_a_sleeping_launch_wakes_it(launches):
         "queued",
         2,
     )
-    assert woken.sleeping is False
+    assert woken.sleeping is True
     assert woken.error is None
     assert datetime.now(UTC) - woken.active_at < timedelta(minutes=1)
 
@@ -143,3 +143,23 @@ async def test_addressing_never_wakes_a_launch_its_owner_stopped(launches, desir
 async def test_addressing_a_missing_launch_returns_none(launches):
     store, factory = launches
     assert await address(store, factory, "no-such-launch") is None
+
+
+async def test_addressing_preserves_a_sleeping_worker_error(launches):
+    store, factory = launches
+    await reserve(store, factory, "request-1", "helper")
+    launch = await address(
+        store,
+        factory,
+        "request-1",
+        desired_state="stopped",
+        state="error",
+        sleeping=True,
+        error="Stop failed",
+    )
+    assert (launch.desired_state, launch.state, launch.revision, launch.error) == (
+        "stopped",
+        "error",
+        1,
+        "Stop failed",
+    )

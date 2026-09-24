@@ -137,7 +137,12 @@ async def lifecycle(
     launch = await HostedLaunchStore().owned(session, str(request_id), user.id)
     if launch is None:
         raise HTTPException(404, "Cloud launch not found.")
-    if launch.revision != body.revision:
+    if launch.revision != body.revision and not (
+        body.action == "stop"
+        and launch.sleeping
+        and launch.desired_state == "stopped"
+        and launch.revision == body.revision + 1
+    ):
         raise HTTPException(
             409, "The worker changed. Refresh its status before trying again."
         )
@@ -149,6 +154,7 @@ async def lifecycle(
         )
     if body.action == "restart" and launch.state != "ready":
         raise HTTPException(409, "Only a ready worker can be restarted.")
+    already_stopped = launch.state == "stopped"
     launch.desired_state = {
         "stop": "stopped",
         "start": "running",
@@ -162,6 +168,8 @@ async def lifecycle(
         "restart": "stopping",
         "deleted": "deleting",
     }[launch.desired_state]
+    if body.action == "stop" and already_stopped:
+        launch.state = "stopped"
     launch.error = None
     launch.sleeping = False
     launch.revision += 1

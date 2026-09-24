@@ -188,7 +188,8 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
             </Button>
           </>
         )}
-        {['ready', 'provisioning', 'queued', 'error'].includes(launch.state) && (
+        {(launch.sleeping ||
+          ['ready', 'provisioning', 'queued', 'error'].includes(launch.state)) && (
           <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
             Stop worker
           </Button>

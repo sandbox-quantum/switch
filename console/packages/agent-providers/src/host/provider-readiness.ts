@@ -164,6 +164,15 @@ export async function checkProviderReadiness(input: {
     );
   } catch (error) {
     if (
+      /invalid_grant|refresh[_ -]?token[_ -]?(reused|expired|revoked)|refresh token.*(already|expired|revoked)/i.test(
+        String(error)
+      )
+    )
+      return result(
+        'unauthenticated',
+        'The provider rejected the saved sign-in. Sign in again and reconnect the provider.'
+      );
+    if (
       input.provider === 'antigravity' &&
       /sign in|auth required|unauthenticated/i.test(String(error))
     )

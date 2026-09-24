@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -30,7 +31,7 @@ from switch_core.gateway.dependencies import (
     get_protocol,
     get_session_factory,
 )
-from switch_core.gateway.hosted_controller import router
+from switch_core.gateway.hosted_controller import launch_by_id, router
 from switch_core.providers.github_installation import RepositoryCredential
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
@@ -441,9 +442,11 @@ async def test_worker_without_auto_session_is_never_idle_stopped(controller_app)
     "state",
     [
         {"status": "running", "pendingRequestIds": []},
+        {"status": "starting", "pendingRequestIds": []},
+        {"status": "error", "pendingRequestIds": []},
         {"status": "ready", "pendingRequestIds": ["approval-1"]},
     ],
-    ids=["running-turn", "pending-approval"],
+    ids=["running-turn", "starting", "awaiting-reset", "pending-approval"],
 )
 async def test_busy_session_blocks_idle_stop_while_its_lease_lives(
     controller_app, lease, expected, state
@@ -466,6 +469,8 @@ async def test_busy_session_blocks_idle_stop_while_its_lease_lives(
             )
         )
         await session.commit()
+    if state["status"] == "error":
+        expected = "stopping"
     assert (await _observe_running(controller_app))["state"] == expected
     if expected == "ready":
         async with factory() as session:
@@ -487,3 +492,123 @@ async def test_pending_operation_blocks_idle_stop(controller_app):
         )
         await session.commit()
     assert (await _observe_running(controller_app))["state"] == "ready"
+
+
+async def test_preparation_does_not_hold_launch_lock_during_github_call(
+    controller_app, monkeypatch
+):
+    client, request_id, _, _, factory, _ = controller_app
+
+    async def issue(*args):
+        async with factory() as session:
+            launch = await asyncio.wait_for(
+                launch_by_id(session, UUID(request_id)), timeout=1
+            )
+            launch.desired_state = "stopped"
+            launch.revision += 1
+            await session.commit()
+        return RepositoryCredential(
+            "SYNTHETIC-REPOSITORY",
+            datetime.now(UTC) + timedelta(hours=1),
+            456,
+            "example/project",
+        )
+
+    monkeypatch.setattr(
+        "switch_core.gateway.hosted_controller.GitHubInstallationCredentials",
+        lambda *_: SimpleNamespace(issue=issue),
+    )
+    result = await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={},
+    )
+    assert result.status_code == 409
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert launch.desired_state == "stopped"
+
+
+async def test_previous_stopped_observation_cannot_label_a_wake_stopped(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    result = await client.post(
+        f"/hosted-controller/{request_id}/observation",
+        headers={"Authorization": "Bearer " + TOKEN},
+        json={"state": "stopped", "revision": 1},
+    )
+    assert result.status_code == 200
+    assert result.json()["state"] == "provisioning"
+
+
+async def test_provider_status_waits_then_rejects_replaced_revision(controller_app):
+    client, request_id, _, _, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    old = (await client.post("/hosted/provider-credential")).json()
+    async with factory() as writer:
+        launch = await writer.get(HostedLaunch, (require_tenant_id(), request_id))
+        await ProviderConnectionStore().lock_user(writer, launch.owner_id)
+        connection = await writer.get(
+            ProviderConnection, (require_tenant_id(), launch.owner_id, "claude")
+        )
+        replacement = connection.verified_at + timedelta(seconds=1)
+        connection.verified_at = replacement
+        connection.verification_status = "configured"
+        request = asyncio.create_task(
+            client.post(
+                "/hosted/provider-status",
+                json={
+                    "authenticated": True,
+                    "revision": old["revision"],
+                },
+            )
+        )
+        try:
+            await asyncio.sleep(0.05)
+            assert not request.done()
+        finally:
+            await writer.commit()
+        response = await asyncio.wait_for(request, timeout=5)
+        assert response.status_code == 409
+    async with factory() as db:
+        saved = await db.get(
+            ProviderConnection, (require_tenant_id(), launch.owner_id, "claude")
+        )
+        assert saved.verified_at == replacement
+        assert saved.verification_status == "configured"
+
+
+@pytest.mark.parametrize("desired", ["stopped", "removed"])
+async def test_provider_status_does_not_overwrite_stop_during_lock_wait(
+    controller_app, desired
+):
+    client, request_id, _, _, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    old = (await client.post("/hosted/provider-credential")).json()
+    async with factory() as writer:
+        launch = await writer.get(HostedLaunch, (require_tenant_id(), request_id))
+        await ProviderConnectionStore().lock_user(writer, launch.owner_id)
+        request = asyncio.create_task(
+            client.post(
+                "/hosted/provider-status",
+                json={"authenticated": False, "revision": old["revision"]},
+            )
+        )
+        try:
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            launch.desired_state = desired
+            launch.state = "stopping"
+        finally:
+            await writer.commit()
+        response = await asyncio.wait_for(request, timeout=5)
+        assert response.status_code == 409
+    async with factory() as db:
+        saved = await db.get(HostedLaunch, (require_tenant_id(), request_id))
+        assert saved.desired_state == desired
+        assert saved.state == "stopping"

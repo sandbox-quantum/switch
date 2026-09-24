@@ -1,6 +1,7 @@
 import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import {
@@ -42,7 +43,19 @@ export function localProviderAuthPath(provider: LocalSignInProvider): string {
   }
 }
 
+class SignInWritePending extends Error {}
+
 export async function readLocalProviderSignIn(provider: LocalSignInProvider, path: string) {
+  try {
+    return await readLocalProviderSignInOnce(provider, path);
+  } catch (error) {
+    if (!(error instanceof SignInWritePending)) throw error;
+    await delay(150);
+    return readLocalProviderSignInOnce(provider, path);
+  }
+}
+
+async function readLocalProviderSignInOnce(provider: LocalSignInProvider, path: string) {
   if (provider === 'opencode') {
     const account = readOpenCodeConsole(localOpenCodeDatabasePath());
     if (account) return account;
@@ -68,7 +81,7 @@ export async function readLocalProviderSignIn(provider: LocalSignInProvider, pat
     try {
       parsed = JSON.parse(credential);
     } catch {
-      throw new Error(`Waiting for ${name} to finish writing its sign-in file.`);
+      throw new SignInWritePending(`Waiting for ${name} to finish writing its sign-in file.`);
     }
     if (provider === 'codex' && !subscriptionSchema.safeParse(parsed).success) {
       throw new Error('No subscription login found in this file. Sign in to Codex with ChatGPT.');
@@ -81,6 +94,23 @@ export async function readLocalProviderSignIn(provider: LocalSignInProvider, pat
     ) {
       throw new Error(`No sign-in data found in the local ${name} file. Sign in locally first.`);
     }
+    if (provider === 'opencode') {
+      const login = z
+        .object({
+          opencode: z.discriminatedUnion('type', [
+            z.object({ type: z.literal('api'), key: z.string().min(1) }),
+            z.object({
+              type: z.literal('oauth'),
+              access: z.string().min(1),
+              refresh: z.string().min(1),
+              expires: z.number(),
+            }),
+          ]),
+        })
+        .safeParse(parsed);
+      if (!login.success) throw new Error('No OpenCode login found. Sign in to OpenCode first.');
+      return JSON.stringify(login.data);
+    }
     return credential;
   } finally {
     await file.close();
@@ -89,10 +119,22 @@ export async function readLocalProviderSignIn(provider: LocalSignInProvider, pat
 
 export async function getLocalProviderSignIn(provider: LocalSignInProvider) {
   if (provider === 'opencode') {
-    const info = await getOpenCodeLoginCommand();
     const account = readOpenCodeConsole(localOpenCodeDatabasePath());
     const credential =
       account ?? (await readLocalProviderSignIn(provider, localProviderAuthPath(provider)));
+    let info;
+    try {
+      info = await getOpenCodeLoginCommand();
+    } catch (error) {
+      if (!credential) throw error;
+      return {
+        path: account ? localOpenCodeDatabasePath() : localProviderAuthPath(provider),
+        status: 'ready' as const,
+        version: 'unknown',
+        command: account ? 'opencode console login' : 'opencode auth login opencode',
+        detectionWarning: String(error),
+      };
+    }
     const path =
       account || (!credential && info.command === 'opencode console login')
         ? localOpenCodeDatabasePath()

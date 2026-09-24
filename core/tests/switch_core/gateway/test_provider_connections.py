@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,6 +21,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.provider_connections import router
 from switch_core.providers.claude_verifier import ClaudeVerificationError
+from switch_core.providers.credentials import validate_provider_credential
 from switch_core.tenant_context import tenant_scope
 
 
@@ -205,7 +207,7 @@ async def test_simultaneous_connection_changes_fail_without_waiting(connection_a
         (
             "opencode",
             "auth-json",
-            '{"example":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}',
+            '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}',
         ),
         ("antigravity", "auth-json", '{"access_token":"SYNTHETIC-PLACEHOLDER"}'),
     ],
@@ -305,3 +307,62 @@ async def test_disconnect_stops_only_owners_workers_for_that_provider(
             assert (
                 await session.get(HostedLaunch, (require_tenant_id(), key))
             ).state == "ready"
+
+
+async def test_opencode_stores_only_its_own_login(connection_app):
+    client, _, _, factory, _ = connection_app
+    response = await client.put(
+        "/provider-connections/opencode",
+        json={
+            "kind": "auth-json",
+            "credential": '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"},"other":{"key":"MUST-STAY-LOCAL"}}',
+        },
+    )
+    assert response.status_code == 200
+    async with factory() as session:
+        row = await session.get(
+            ProviderConnection, (require_tenant_id(), "first", "opencode")
+        )
+        assert (
+            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
+            == '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}'
+        )
+
+
+async def test_deeply_nested_auth_is_a_client_error(connection_app):
+    client, _, _, _, _ = connection_app
+    response = await client.put(
+        "/provider-connections/opencode",
+        json={
+            "kind": "auth-json",
+            "credential": "[" * 2000 + "0" + "]" * 2000,
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "url", ["https://console.example.test", "https://console.example.test/"]
+)
+def test_opencode_account_url_is_preserved(url):
+    credential = {
+        "format": "switch-opencode-console-v1",
+        "organization": "example",
+        "account": {
+            "id": "example",
+            "email": "account@example.test",
+            "url": url,
+            "access_token": "SYNTHETIC",
+            "refresh_token": "SYNTHETIC",
+            "token_expiry": None,
+            "time_created": 0,
+            "time_updated": 0,
+        },
+    }
+    saved = validate_provider_credential(
+        "opencode", "auth-json", json.dumps(credential)
+    )
+    assert json.loads(saved)["account"]["url"] == url
+    credential["account"]["url"] = "http://console.example.test"
+    with pytest.raises(ValueError, match="Sign in to OpenCode"):
+        validate_provider_credential("opencode", "auth-json", json.dumps(credential))

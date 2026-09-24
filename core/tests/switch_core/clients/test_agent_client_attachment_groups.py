@@ -83,7 +83,7 @@ def _fake_client() -> SimpleNamespace:
     ) -> _GateOutcome:
         return _GateOutcome(addressed=True, refusal=None)
 
-    async def _note_hosted_addressed(_session: Any, _agent: Any) -> None:
+    async def _note_hosted_addressed(_agent: Any) -> None:
         return None
 
     ns = SimpleNamespace(

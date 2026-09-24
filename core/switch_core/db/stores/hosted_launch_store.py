@@ -143,14 +143,31 @@ class HostedLaunchStore:
         if launch is None:
             return None
         now = datetime.now(UTC)
-        if launch.sleeping and launch.desired_state == "stopped":
+        if (
+            launch.sleeping
+            and launch.desired_state == "stopped"
+            and launch.state != "error"
+        ):
             launch.desired_state = "running"
             launch.state = "queued"
             launch.revision += 1
-            launch.sleeping = False
             launch.error = None
             launch.active_at = now
             launch.updated_at = now
         elif launch.desired_state not in {"stopped", "deleted"}:
             launch.active_at = now
         return launch
+
+
+def is_waking(launch: HostedLaunch) -> bool:
+    return (
+        launch.sleeping
+        and launch.desired_state == "running"
+        and launch.state
+        in {
+            "queued",
+            "provisioning",
+            "stopping",
+            "stopped",
+        }
+    )

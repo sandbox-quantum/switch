@@ -78,7 +78,7 @@ async def connect_claude(
             raise HTTPException(413, "The credential is too long.")
     try:
         payload = json.loads(body)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise HTTPException(400, "Provide a credential and its type.") from None
     if not isinstance(payload, dict) or set(payload) != {"kind", "credential"}:
         raise HTTPException(400, "Provide a credential and its type.")
@@ -203,7 +203,7 @@ async def connect_other_provider(
         credential = validate_provider_credential(
             provider, payload["kind"], payload["credential"]
         )
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise HTTPException(
             400, "Provide a valid credential and supported type."
         ) from None

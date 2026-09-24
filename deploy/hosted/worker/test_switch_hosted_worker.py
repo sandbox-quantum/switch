@@ -140,6 +140,21 @@ class WorkerTests(unittest.TestCase):
         )
         self.assertEqual(len(requests), 2)
 
+    def test_refreshing_provider_never_copies_an_assignment_credential(self):
+        value = json.loads(secret())
+        value["deployment"]["provider"]["credential"]["refresh"] = True
+        self.assertIsNone(
+            worker.parse_secret_document(
+                json.dumps(value), config()
+            ).provider_credential
+        )
+        del value["providerCredential"]
+        self.assertIsNone(
+            worker.parse_secret_document(
+                json.dumps(value), config()
+            ).provider_credential
+        )
+
     def test_secret_boundary_is_strict_and_launch_has_no_secret_values(self):
         parsed = worker.parse_secret_document(secret(), config())
         identity = worker.MachineIdentity(INSTANCE, BOOT_1, 7)
@@ -440,7 +455,9 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(
             worker.SecretsManager("eu-west-1", client).read("secret-id"), secret()
         )
-        self.assertEqual(client.calls, [{"SecretId": "secret-id"}])
+        self.assertEqual(
+            client.calls, [{"SecretId": "secret-id", "VersionStage": "AWSCURRENT"}]
+        )
 
     def test_storage_resolves_nitro_device_by_ebs_serial(self):
         class FakeCommands:
@@ -590,6 +607,11 @@ class WorkerTests(unittest.TestCase):
                 "machine": previous.json(),
             }
             (supervisor / "owner.json").write_text(json.dumps(owner_value))
+            session_root = state / "home/.local/state/switch/sdk-sessions" / ("a" * 64)
+            session_supervisor = session_root / "supervisor"
+            session_supervisor.mkdir(parents=True, mode=0o700)
+            (session_supervisor / "owner.json").write_text(json.dumps(owner_value))
+            (session_root / "config.json").write_text('{"session":"preserve"}')
             (ownership / f"{os.getpid()}-ticket.json").write_text(
                 json.dumps({"choosing": False, "ticket": 1, "machine": previous.json()})
             )
@@ -622,7 +644,11 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(journal.read_text(), '{"journal":"preserve"}\n')
             self.assertFalse((supervisor / "owner.json").exists())
             quarantined = list((marker_directory / "quarantine").rglob("owner.json"))
-            self.assertEqual(len(quarantined), 1)
+            self.assertEqual(len(quarantined), 2)
+            self.assertFalse((session_supervisor / "owner.json").exists())
+            self.assertEqual(
+                (session_root / "config.json").read_text(), '{"session":"preserve"}'
+            )
             with mock.patch.object(worker, "ROOT_UID", os.getuid()):
                 self.assertEqual(worker._read_root_marker(marker)["bootId"], BOOT_2)
 

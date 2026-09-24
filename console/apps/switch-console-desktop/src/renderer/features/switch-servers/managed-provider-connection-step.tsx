@@ -114,6 +114,13 @@ function OtherProviderConnectionStep({
   const queryClient = useQueryClient();
   const wasVerifying = useRef(false);
   const attemptedLocalConnection = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     const status = connection.data?.status;
     if (status === 'verifying') wasVerifying.current = true;
@@ -137,17 +144,19 @@ function OtherProviderConnectionStep({
         saved = await rpc.switchServers.connectLocalProviderSignIn(serverId, provider);
       else
         saved = await rpc.switchServers.connectCloudProvider(serverId, provider, kind, credential);
+      if (!mounted.current) return;
       if (saved) queryClient.setQueryData(['cloud-provider', serverId, provider], saved);
       await connection.refetch();
+      if (!mounted.current) return;
       if (remove || saved?.status !== 'verifying') {
         setCredential('');
       }
       if (remove) onBack();
       else if (saved?.status === 'connected') onDone();
     } catch (cause) {
-      setError(String(cause));
+      if (mounted.current) setError(String(cause));
     } finally {
-      setPending(false);
+      if (mounted.current) setPending(false);
     }
   };
   useEffect(() => {
@@ -162,7 +171,7 @@ function OtherProviderConnectionStep({
       connection.isFetchedAfterMount &&
       !connection.isFetching &&
       !connection.isError &&
-      (connection.data?.status === 'not_connected' || connection.data?.status === 'configured')
+      connection.data?.status === 'not_connected'
     ) {
       void run(false);
     }
@@ -234,7 +243,7 @@ function OtherProviderConnectionStep({
                 <CommandRow
                   command={
                     localSignIn.data && 'command' in localSignIn.data
-                      ? localSignIn.data.command
+                      ? (localSignIn.data.command ?? info.command)
                       : info.command
                   }
                   action={null}
@@ -271,6 +280,11 @@ function OtherProviderConnectionStep({
         {!verifying &&
           (localAuthentication ? (
             <div className="space-y-2 rounded-lg border p-3 text-sm" role="status">
+              {localSignIn.data &&
+                'detectionWarning' in localSignIn.data &&
+                localSignIn.data.detectionWarning && (
+                  <p className="text-muted-foreground">{localSignIn.data.detectionWarning}</p>
+                )}
               <p>
                 {localSignIn.error
                   ? String(localSignIn.error)

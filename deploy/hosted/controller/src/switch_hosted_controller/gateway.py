@@ -254,7 +254,6 @@ class Gateway:
                 "dataVolumeId": volume_id,
             },
             "deployment": deployment,
-            "providerCredential": prepared["provider_credential"],
             "switchCredentials": prepared["switch_credentials"],
             "githubCredential": prepared["github_credential"],
         }

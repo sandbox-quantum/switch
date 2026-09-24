@@ -1,4 +1,6 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 from fastapi import FastAPI
@@ -9,8 +11,16 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import (
     get_collab_lifecycle as host_lifecycle,
 )
+from switch_core.bridges.agent.dependencies import (
+    get_protocol,
+)
 from switch_core.bridges.agent.dependencies import get_session_factory as host_factory
-from switch_core.db.models import Agent, User
+from switch_core.bridges.agent.protocol.connections import (
+    ClientDeclaration,
+    ConnectionRegistry,
+)
+from switch_core.db.models import Agent, Client, Message, User
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
 from switch_core.gateway.sessions import router
@@ -118,3 +128,101 @@ def test_room_message_accepts_an_existing_host_without_context_metadata():
     )
     assert request.missed_count == 0
     assert request.gap_reason is None
+
+
+async def test_startup_failure_notice_requires_current_lease_and_owned_room_connection(
+    session_factory,
+):
+    _, epoch = await setup(session_factory)
+    connections = ConnectionRegistry()
+    connection = connections.open(
+        agent_id="agent-demo",
+        connection_id="connection",
+        scope="single",
+        delivery_filter="addressed",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(),
+    )
+    connections.claim_room(connection, "room-demo")
+    async with session_factory() as db, db.begin():
+        await MessageStore().create(
+            db,
+            Message(
+                room_id="room-demo",
+                transport_event_id="trigger",
+                sender_id="@owner:example.test",
+                sender_name="Owner",
+                event_type="m.room.message",
+                msgtype="m.text",
+                body="@agent-demo hello",
+                content={},
+                sent_at=datetime.now(UTC),
+                thread_root_event_id="thread",
+            ),
+            [],
+        )
+
+    async def send_message(agent_id, room_id, body, *, thread_id, extra_content):
+        async with session_factory() as db, db.begin():
+            agent = await db.get(Agent, agent_id)
+            sender = await db.get(Client, agent.client_id)
+            await MessageStore().create(
+                db,
+                Message(
+                    room_id=room_id,
+                    transport_event_id="failure-notice",
+                    sender_id=sender.matrix_user_id,
+                    sender_name="Agent",
+                    event_type="m.room.message",
+                    msgtype="m.text",
+                    body=body,
+                    content=extra_content,
+                    sent_at=datetime.now(UTC),
+                    thread_root_event_id=thread_id,
+                ),
+                [],
+            )
+
+    protocol = SimpleNamespace(
+        connections=connections, send_message=AsyncMock(side_effect=send_message)
+    )
+    app = FastAPI()
+    app.include_router(host_router, prefix="/host")
+    app.add_exception_handler(SessionError, session_error_response)
+    app.dependency_overrides[host_factory] = lambda: session_factory
+    app.dependency_overrides[get_protocol] = lambda: protocol
+    app.dependency_overrides[get_agent_from_scope] = lambda: Agent(id="agent-demo")
+    body = {
+        "host_id": "host-demo",
+        "epoch": epoch,
+        "connection_id": "connection",
+        "room_id": "room-demo",
+        "message_id": "trigger",
+        "reason": "startup",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        url = "/host/sessions/session-demo/room-failure"
+        for override in [
+            {"epoch": "stale"},
+            {"host_id": "other"},
+            {"connection_id": "unknown"},
+            {"room_id": "unrelated-room"},
+            {"message_id": "unknown"},
+        ]:
+            response = await client.post(url, json={**body, **override})
+            assert response.status_code in (403, 409)
+        protocol.send_message.assert_not_awaited()
+        response = await client.post(url, json=body)
+        assert response.status_code == 200
+        assert response.json() == {"room_id": "room-demo", "message_id": "trigger"}
+        protocol.send_message.assert_awaited_once()
+        assert protocol.send_message.call_args.args[:2] == ("agent-demo", "room-demo")
+        assert "could not start" in protocol.send_message.call_args.args[2]
+        assert protocol.send_message.call_args.kwargs["thread_id"] == "thread"
+        assert response.status_code == 200
+        response = await client.post(url, json=body)
+        assert response.status_code == 200
+        protocol.send_message.assert_awaited_once()

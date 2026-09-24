@@ -116,8 +116,8 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     await writeFile(join(returnedRoot, 'room-inbox.jsonl'), '{');
     await expect(
       restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
-    ).rejects.toThrow('incomplete record');
-    expect(restarted.cursor).toBe(10);
+    ).resolves.toEqual(returned);
+    expect(restarted.cursor).toBe(11);
   }
 );
 

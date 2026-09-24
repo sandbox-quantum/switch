@@ -35,7 +35,7 @@ resource "aws_iam_role_policy" "worker_secret" {
   for_each = var.assignments
   role     = aws_iam_role.worker[each.key].id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = each.value.secret_arn },
+    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = each.value.secret_arn, Condition = { StringEquals = { "secretsmanager:VersionStage" = "AWSCURRENT" } } },
     { Effect = "Allow", Action = ["kms:Decrypt"], Resource = each.value.kms_key_arn,
       Condition = { StringEquals = {
         "kms:ViaService"                  = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"

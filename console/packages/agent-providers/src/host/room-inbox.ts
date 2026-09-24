@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
@@ -58,6 +57,11 @@ const storedReceivedSchema = receivedSchema.extend({
   gap: receivedSchema.shape.gap.default(null),
 });
 const recordSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('failure-notified'),
+    identity: z.string().min(1),
+    reason: z.enum(['startup', 'conversation', 'delivery']),
+  }),
   storedReceivedSchema,
   z.strictObject({
     type: z.literal('ack'),
@@ -77,6 +81,7 @@ const identity = (event: Pick<Received, 'roomId' | 'messageId'>): string =>
   JSON.stringify([event.roomId, event.messageId]);
 
 export class SharedRoomInbox {
+  private readonly failureNotified = new Set<string>();
   private readonly received = new Map<string, Received>();
   private readonly outstanding = new Map<string, Received>();
   private readonly sequences = new Map<number, string>();
@@ -86,6 +91,10 @@ export class SharedRoomInbox {
   private gap: Received['gap'] = null;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
     for (const record of journal.records) {
+      if (record.type === 'failure-notified') {
+        this.failureNotified.add(JSON.stringify([record.identity, record.reason]));
+        continue;
+      }
       if (record.type === 'received') {
         // Older journals carried restart evidence only on the next delivery.
         if (record.gap && this.cursor !== null && record.sequence < this.cursor)
@@ -109,18 +118,10 @@ export class SharedRoomInbox {
   }
 
   static async savedRooms(root: string): Promise<string[] | null> {
-    let text: string;
-    try {
-      text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    }
-    if (text && !text.endsWith('\n'))
-      throw new Error('Room inbox has an incomplete record; recovery review is required.');
     let rooms: string[] | null = null;
-    for (const line of text.split('\n').slice(0, -1)) {
-      const record = recordSchema.parse(JSON.parse(line));
+    for (const record of await Journal.read(join(root, 'room-inbox.jsonl'), (value) =>
+      recordSchema.parse(value)
+    )) {
       if (record.type === 'rooms') rooms = record.rooms;
     }
     return rooms;
@@ -130,6 +131,45 @@ export class SharedRoomInbox {
     return new SharedRoomInbox(
       await Journal.load(join(root, 'room-inbox.jsonl'), (value) => recordSchema.parse(value))
     );
+  }
+
+  static async readMessageState(
+    root: string,
+    roomId: string,
+    messageId: string
+  ): Promise<'pending' | 'acknowledged' | null> {
+    const key = identity({ roomId, messageId });
+    let state: 'pending' | 'acknowledged' | null = null;
+    let sequence: number | null = null;
+    for (const record of await Journal.read(join(root, 'room-inbox.jsonl'), (value) =>
+      recordSchema.parse(value)
+    )) {
+      if (record.type === 'received' && identity(record) === key) {
+        sequence = record.sequence;
+        state = 'pending';
+      } else if (
+        record.type === 'ack' &&
+        (record.identity === key || (!record.identity && record.sequence === sequence))
+      ) {
+        state = 'acknowledged';
+      } else if (record.type === 'cursor' && record.reset) sequence = null;
+    }
+    return state;
+  }
+
+  unreportedFailures(reason: 'startup' | 'conversation' | 'delivery'): Received[] {
+    return this.pending().filter(
+      (event) => !this.failureNotified.has(JSON.stringify([identity(event), reason]))
+    );
+  }
+
+  async markFailureNotified(
+    event: Pick<Received, 'roomId' | 'messageId'>,
+    reason: 'startup' | 'conversation' | 'delivery'
+  ): Promise<void> {
+    const key = identity(event);
+    await this.journal.append({ type: 'failure-notified', identity: key, reason });
+    this.failureNotified.add(JSON.stringify([key, reason]));
   }
 
   async connect(

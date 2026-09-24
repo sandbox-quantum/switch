@@ -11,7 +11,7 @@ from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import ProviderVerification, require_tenant_id
 
 ACTIVE = ("queued", "running", "finishing")
-FAILURE = "The provider could not complete the connection check. Check your sign-in, plan or API billing, then retry."
+FAILURE = "The provider could not complete the connection check. Sign in again and retry. If it still fails, check your plan or API billing."
 
 
 def summary(job: ProviderVerification) -> dict:

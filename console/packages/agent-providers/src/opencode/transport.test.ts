@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { ProviderConversationUnavailableError } from '../adapter';
 
 const mocks = vi.hoisted(() => ({
   start: vi.fn(),
@@ -60,4 +61,32 @@ it('discloses an inconclusive backend check for local models', async () => {
   const session = await createHttpTransport(options).open(input);
   expect(warning).toHaveBeenCalledWith(expect.stringContaining('No connected OpenCode backends'));
   await session.dispose();
+});
+
+it('preserves the startup error when cleanup also fails', async () => {
+  const original = new Error('database is locked', { cause: { status: 500 } });
+  const cleanup = new Error('process did not exit');
+  mocks.providers.mockRejectedValue(original);
+  mocks.stop.mockRejectedValue(cleanup);
+  await expect(createHttpTransport(options).open(input)).rejects.toMatchObject({
+    message: 'OpenCode startup cleanup failed. Stop and start the agent before retrying.',
+    cause: { errors: [original, cleanup] },
+  });
+});
+
+it('blocks reset and explains recovery when conversation lookup and cleanup both fail', async () => {
+  const original = new ProviderConversationUnavailableError(
+    'opencode',
+    'session',
+    'Conversation missing'
+  );
+  const cleanup = new Error('process did not exit');
+  mocks.providers.mockRejectedValue(original);
+  mocks.stop.mockRejectedValue(cleanup);
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  await expect(createHttpTransport(options).open(input)).rejects.toMatchObject({
+    message: expect.stringContaining('conversation is unavailable and provider cleanup failed'),
+    cause: { errors: [original, cleanup] },
+  });
+  expect(logged).toHaveBeenCalledWith('OpenCode startup and cleanup failed:', original, cleanup);
 });

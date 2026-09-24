@@ -524,7 +524,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
 
         # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
         # events and client registrations never leak across tests.
-        event_buffer = EventBuffer()
+        event_buffer = EventBuffer(sequence_base=0)
         connections = ConnectionRegistry()
         collab_lifecycle = _NoBridges()
 

@@ -180,7 +180,8 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
                 1,
                 0,
                 None,
-                EventBuffer(),
+                EventBuffer(sequence_base=0),
+                live_agent_ids=set,
             ),
             lambda: authority.bind_connection(
                 "tenant-b",

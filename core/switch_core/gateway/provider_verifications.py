@@ -128,7 +128,7 @@ async def observe(
     session: Annotated[AsyncSession, Depends(controller_session)],
 ) -> dict:
     job = await get_job(session, job_id)
-    await ProviderConnectionStore().lock_user(session, job.user_id)
+    await ProviderConnectionStore().wait_user(session, job.user_id)
     await session.refresh(job, with_for_update=True)
     if job.state in ("succeeded", "failed"):
         return {"state": job.state}
@@ -179,7 +179,7 @@ async def result(
         if len(raw) > 20 * 1024:
             raise HTTPException(413, "Verification result is too large.")
     job = await get_job(session, job_id)
-    await ProviderConnectionStore().lock_user(session, job.user_id)
+    await ProviderConnectionStore().wait_user(session, job.user_id)
     await session.refresh(job, with_for_update=True)
     if job.state not in ACTIVE or job.deadline <= datetime.now(UTC):
         raise HTTPException(409, "Connection check is no longer pending.")
@@ -198,7 +198,7 @@ async def result(
             if not isinstance(updated, str):
                 raise ValueError()
             updated = validate_provider_credential(job.provider, job.kind, updated)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise HTTPException(400, "Invalid verification result.") from None
     job.result = value["succeeded"]
     job.state = "finishing"

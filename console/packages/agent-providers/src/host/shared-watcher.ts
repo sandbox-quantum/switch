@@ -21,6 +21,7 @@ import {
   withOwnershipLock,
 } from './ownership-lock';
 import { roomInputId, SharedRoomInbox } from './room-inbox';
+import { HostedSession } from './session-host';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 const assignmentSchema = z.strictObject({
@@ -52,20 +53,7 @@ function sessionIdFor(agentId: string, roomId: string, messageId: string): strin
 }
 
 async function stopped(sessionId: string): Promise<boolean> {
-  try {
-    const text = await readFile(join(sharedSessionRoot(sessionId), 'inbox.jsonl'), 'utf8');
-    if (text && !text.endsWith('\n'))
-      throw new Error(
-        'Watcher session journal has an incomplete record; recovery review is required.'
-      );
-    return text
-      .split('\n')
-      .slice(0, -1)
-      .some((line) => JSON.parse(line).type === 'stopped');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
+  return HostedSession.isStopped(sharedSessionRoot(sessionId));
 }
 
 /**
@@ -81,26 +69,7 @@ export async function replaceSupersededSessions(
   agentId: string,
   supervision: Supervision
 ): Promise<void> {
-  const base = sharedSessionsBase();
-  let names: string[];
-  try {
-    names = await readdir(base);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
-  }
-  for (const name of names) {
-    const root = join(base, name);
-    let config: SharedHostConfig;
-    try {
-      config = sharedConfigSchema.parse(
-        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
-      );
-    } catch (error) {
-      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
-      throw error;
-    }
-    if (config.session.agentId !== agentId) continue;
+  for (const { root, config } of await savedSessions(agentId)) {
     const running = await liveSupervisor(root);
     if (!running || running.build === supervision.build) continue;
     console.warn(
@@ -115,6 +84,35 @@ export async function replaceSupersededSessions(
       supervision,
     });
   }
+}
+
+async function savedSessions(
+  agentId: string
+): Promise<Array<{ root: string; config: SharedHostConfig }>> {
+  const base = sharedSessionsBase();
+  let names: string[];
+  try {
+    names = await readdir(base);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const configs: Array<{ root: string; config: SharedHostConfig }> = [];
+  for (const name of names) {
+    const root = join(base, name);
+    let config: SharedHostConfig;
+    try {
+      config = sharedConfigSchema.parse(
+        JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      );
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+      throw error;
+    }
+    if (config.session.agentId !== agentId) continue;
+    configs.push({ root, config });
+  }
+  return configs;
 }
 
 /** Each assignment is durable before the watcher lets the stream advance its cursor. */
@@ -162,7 +160,17 @@ export class SharedWatchAssignments {
         throw new Error('Watcher sequence changed message identity.');
       return duplicate.config;
     }
-    const previous = [...this.every].reverse().find((record) => record.roomId === event.roomId);
+    let previous = [...this.every].reverse().find((record) => record.roomId === event.roomId);
+    for (const { config: saved } of await savedSessions(template.session.agentId)) {
+      const rooms = await SharedRoomInbox.savedRooms(sharedSessionRoot(saved.session.sessionId));
+      if (
+        (rooms ?? saved.roomConnection?.rooms ?? []).includes(event.roomId) &&
+        !(await stopped(saved.session.sessionId))
+      ) {
+        previous = { ...event, config: saved };
+        break;
+      }
+    }
     let config: SharedHostConfig;
     const savedRooms = previous
       ? await SharedRoomInbox.savedRooms(sharedSessionRoot(previous.config.session.sessionId))
@@ -281,6 +289,16 @@ export async function runSharedWatcher(
           pending = pending.then(async () => {
             const messageId = roomInputId(event);
             if (!messageId) return;
+            for (const { config } of await savedSessions(template.session.agentId)) {
+              const received = await SharedRoomInbox.readMessageState(
+                sharedSessionRoot(config.session.sessionId),
+                event.room_id,
+                messageId
+              );
+              if (received === null) continue;
+              if (received === 'pending') await launch(config);
+              return;
+            }
             const config = await assignments.assign(
               sharedConfigSchema.parse(
                 JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))

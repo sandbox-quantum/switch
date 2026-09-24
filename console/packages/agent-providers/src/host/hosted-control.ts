@@ -11,6 +11,7 @@ import {
   liveSupervisor,
   type Supervision,
 } from './launch';
+import { HostedSession } from './session-host';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 const operationSchema = z.object({
@@ -123,7 +124,11 @@ export async function runHostedControl(
           if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
           throw error;
         }
-        if (saved.session.agentId !== template.session.agentId) continue;
+        if (
+          saved.session.agentId !== template.session.agentId ||
+          (await HostedSession.isStopped(root))
+        )
+          continue;
         const sessionId = saved.session.sessionId;
         const live = await liveSupervisor(root);
         if (!live) {

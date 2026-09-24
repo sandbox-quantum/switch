@@ -11,7 +11,7 @@ import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
-import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
+import { runSharedHost, SharedHostFencedError, SharedHostLeaseExpiredError } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
 
@@ -161,11 +161,15 @@ async function main(): Promise<void> {
         env: input.env,
       });
       if (cloudCredential?.status === 'connected') {
+        if (readiness.status === 'unknown') throw new Error(readiness.message);
         await hostedRequest(config, '/provider-status', {
           authenticated: readiness.status === 'authenticated',
           revision: cloudCredential.revision,
         });
-        if (readiness.status !== 'authenticated') throw new Error(readiness.message);
+        if (readiness.status !== 'authenticated')
+          throw new Error(
+            'The provider rejected the saved sign-in. Sign in again and reconnect the provider in Switch Console.'
+          );
       }
       if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
       if (readiness.status === 'unknown') console.warn(readiness.message);
@@ -210,13 +214,14 @@ try {
   ) {
     await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
     const message =
-      process.env.SWITCH_HOSTED_BOOTSTRAP === '1'
+      process.env.SWITCH_HOSTED_BOOTSTRAP === '1' && !(error instanceof SharedHostFencedError)
         ? 'Hosted SDK worker failed. Inspect the redacted worker log.'
         : error instanceof Error
           ? error.message
           : String(error);
     await replaceOwner(join(root, 'supervisor', 'failure.json'), {
       message,
+      ...(error instanceof SharedHostFencedError ? { pendingMessages: error.pendingMessages } : {}),
     });
   }
   console.error(error);

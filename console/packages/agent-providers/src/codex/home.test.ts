@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
@@ -30,7 +30,12 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     model_reasoning_effort: 'high',
   });
   expect(await readFile(join(home, 'skills/switch/SKILL.md'), 'utf8')).toBe(input.skill);
-  expect(await readdir(home)).toEqual(['auth.json', 'config.toml', 'skills']);
+  expect(await readdir(home)).toEqual([
+    '.switch-auth-source',
+    'auth.json',
+    'config.toml',
+    'skills',
+  ]);
   if (process.platform !== 'win32')
     expect((await stat(join(home, 'auth.json'))).mode & 0o777).toBe(0o600);
   await writeFile(join(home, 'auth.json'), 'refreshed-fixture');
@@ -40,8 +45,19 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
   expect(await readFile(join(sourceHome, 'config.toml'), 'utf8')).toBe(
     'model_reasoning_effort = "high"'
   );
+  await rm(join(home, '.switch-auth-source'));
+  await prepareCodexSessionHome(input);
+  expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe('refreshed-fixture');
+  expect((await stat(join(home, '.switch-auth-source'))).mode & 0o777).toBe(0o600);
+  await writeFile(join(sourceHome, 'auth.json'), 'replacement-fixture');
+  await prepareCodexSessionHome(input);
+  expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe('replacement-fixture');
   const other = await prepareCodexSessionHome({ ...input, sessionId: 'other' });
   expect(other).not.toBe(home);
+  await rm(join(home, 'auth.json'));
+  await symlink(join(sourceHome, 'auth.json'), join(home, 'auth.json'));
+  await expect(prepareCodexSessionHome(input)).rejects.toThrow('must be a regular file');
+  expect(await readFile(join(sourceHome, 'auth.json'), 'utf8')).toBe('replacement-fixture');
 });
 
 it('allows native environment or keychain authentication when no login file exists', async () => {
