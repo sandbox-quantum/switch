@@ -139,14 +139,13 @@ The session status line reuses the existing `agent_runtime_states` table
    - The old `/sessions/events` upload is unchanged: the host gates work on
      its `session.upsert` receipt, and Console still reads transcripts
      through it.
+   - Console polling: session discovery lists every 5 s (was 2 s) with one
+     server read shared by every agent on the server per round, and doubles
+     its wait after each failed round up to 60 s. The startup readiness loop
+     backs off from 50 ms to 1 s, fails at once on 401/403, and logs any
+     error other than the expected 404 instead of swallowing it.
 
 ## What is left
-
-### Step 5 (rest) — Console polling
-
-- Session list every 2 s **per linked agent** with no backoff
-  (`remote-session-reconciler.ts`), 50 ms startup loop ignoring 404
-  (`shared-agent-runtime.ts`).
 
 ### Step 6 — Console reads transcripts locally
 

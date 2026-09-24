@@ -20,9 +20,18 @@ import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { getAgentById } from './getAgentById';
 
+/** How often a linked agent's sessions are listed while discovery is healthy. */
+export const DISCOVERY_MS = 5000;
+/** The longest a failing discovery waits before trying again. */
+export const DISCOVERY_MAX_BACKOFF_MS = 60000;
+// Every agent on a server reads the same list; one read serves all of them
+// for the round, however their timers are staggered.
+const SERVER_LIST_TTL_MS = DISCOVERY_MS - 500;
+
 /** Discover server-owned sessions on either execution transport without starting providers. */
 class RemoteSessionReconciler {
-  private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly failedRounds = new Map<string, number>();
   private readonly inFlight = new Set<string>();
   // Agents on one server discover the same list. Share overlapping reads and
   // briefly reuse their result so staggered agent timers do not refetch it.
@@ -50,15 +59,28 @@ class RemoteSessionReconciler {
 
   start(agentId: string): void {
     if (this.timers.has(agentId)) return;
-    const timer = setInterval(() => void this.tick(agentId), 2000);
+    this.schedule(agentId, 0);
+  }
+  /** The next round: steady while healthy, doubling while it keeps failing. */
+  private schedule(agentId: string, delay: number): void {
+    const timer = setTimeout(() => {
+      void this.tick(agentId).then(() => {
+        if (this.timers.get(agentId) !== timer) return;
+        const failed = this.failedRounds.get(agentId) ?? 0;
+        this.schedule(
+          agentId,
+          failed ? Math.min(DISCOVERY_MS * 2 ** failed, DISCOVERY_MAX_BACKOFF_MS) : DISCOVERY_MS
+        );
+      });
+    }, delay);
     timer.unref();
     this.timers.set(agentId, timer);
-    void this.tick(agentId);
   }
   stop(agentId: string): void {
-    clearInterval(this.timers.get(agentId));
+    clearTimeout(this.timers.get(agentId));
     this.timers.delete(agentId);
     this.failures.delete(agentId);
+    this.failedRounds.delete(agentId);
   }
   dispose(): void {
     for (const agentId of this.timers.keys()) this.stop(agentId);
@@ -78,7 +100,7 @@ class RemoteSessionReconciler {
     this.serverLists.set(server.id, entry);
     void entry.promise.then(
       () => {
-        entry.expiresAt = Date.now() + 1000;
+        entry.expiresAt = Date.now() + SERVER_LIST_TTL_MS;
       },
       () => {
         if (this.serverLists.get(server.id) === entry) this.serverLists.delete(server.id);
@@ -209,7 +231,9 @@ class RemoteSessionReconciler {
           `${failures.length} SDK session(s) could not be discovered. ${failures[0]}`
         );
       this.failures.delete(agentId);
+      this.failedRounds.delete(agentId);
     } catch (error) {
+      this.failedRounds.set(agentId, (this.failedRounds.get(agentId) ?? 0) + 1);
       const message = `Session discovery failed: ${String(error)}`;
       const changed = this.failures.get(agentId) !== message;
       this.failures.set(agentId, message);

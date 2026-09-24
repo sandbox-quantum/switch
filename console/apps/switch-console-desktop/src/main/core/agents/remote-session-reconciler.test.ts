@@ -1,5 +1,9 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { remoteSessionReconciler } from './remote-session-reconciler';
+import {
+  DISCOVERY_MAX_BACKOFF_MS,
+  DISCOVERY_MS,
+  remoteSessionReconciler,
+} from './remote-session-reconciler';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -82,7 +86,7 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockImplementation(() => now);
 });
 async function tick() {
-  now += 2000;
+  now += DISCOVERY_MS;
   await (remoteSessionReconciler as unknown as { tick(id: string): Promise<void> }).tick('local');
 }
 afterEach(() => {
@@ -268,7 +272,7 @@ it('shares one server list across overlapping and staggered agent discovery', as
   now += 500;
   await reconciler.tick('three');
   expect(mocks.list).toHaveBeenCalledTimes(1);
-  now += 2000;
+  now += DISCOVERY_MS;
   mocks.list.mockResolvedValue([]);
   await reconciler.tick('one');
   expect(mocks.list).toHaveBeenCalledTimes(2);
@@ -294,4 +298,31 @@ it('keeps server lists separate and invalidates a changed gateway URL', async ()
   mocks.server.mockResolvedValueOnce({ id: 'server', gatewayUrl: 'https://changed.example.test' });
   await reconciler.tick('one');
   expect(mocks.list).toHaveBeenCalledTimes(3);
+});
+
+it('waits longer after each failed round and returns to its pace once one succeeds', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    mocks.list.mockRejectedValue(new Error('Temporarily unavailable'));
+    remoteSessionReconciler.start('local');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(DISCOVERY_MS * 2 - 1);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(DISCOVERY_MS * 4);
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(DISCOVERY_MAX_BACKOFF_MS);
+    expect(mocks.list).toHaveBeenCalledTimes(4);
+
+    mocks.list.mockResolvedValue([]);
+    await vi.advanceTimersByTimeAsync(DISCOVERY_MAX_BACKOFF_MS);
+    expect(mocks.list).toHaveBeenCalledTimes(5);
+    now += DISCOVERY_MS;
+    await vi.advanceTimersByTimeAsync(DISCOVERY_MS);
+    expect(mocks.list).toHaveBeenCalledTimes(6);
+  } finally {
+    vi.useRealTimers();
+  }
 });

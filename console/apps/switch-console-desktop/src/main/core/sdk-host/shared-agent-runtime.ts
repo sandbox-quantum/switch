@@ -195,6 +195,11 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     let snapshot;
     const deadline = Date.now() + 120000;
     let nextFailureCheck = 0;
+    // Quick at first, when the host usually answers within a beat, then
+    // slower: a host still installing its provider can take a minute, and
+    // every wait here is a read of the whole session from Switch.
+    let pause = 50;
+    let reported = '';
     while (Date.now() < deadline) {
       if (Date.now() >= nextFailureCheck) {
         const failure = await readFailure();
@@ -220,9 +225,22 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         )
           break;
       } catch (error) {
+        // Refused credentials will not start working by waiting.
+        if (error instanceof GatewayError && (error.status === 401 || error.status === 403))
+          throw error;
         if (Date.now() + 500 >= deadline) throw error;
+        // Not found is the session not claimed yet, which is the wait itself.
+        const notYet = error instanceof GatewayError && error.status === 404;
+        if (!notYet && String(error) !== reported) {
+          reported = String(error);
+          log.warn('Shared SDK host readiness check failed; still waiting', {
+            sessionId: session.id,
+            error: reported,
+          });
+        }
       }
-      await delay(50);
+      await delay(pause);
+      pause = Math.min(pause * 1.5, 1000);
     }
     if (
       !snapshot ||
