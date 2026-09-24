@@ -9,7 +9,7 @@ import type * as StackState from './stack-state';
 const getConsoleIdentity = vi.hoisted(() =>
   vi.fn(() => Promise.resolve({ id: '3f2a9c1e-5b7d-4e8f-a1b2-c3d4e5f6a7b8', name: 'alice@laptop' }))
 );
-const listProjectResources = vi.hoisted(() => vi.fn());
+const stateVolumeExists = vi.hoisted(() => vi.fn());
 const readStateVolume = vi.hoisted(() => vi.fn());
 const writeStateVolume = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const logWarn = vi.hoisted(() => vi.fn());
@@ -19,7 +19,7 @@ vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: () => Promise.resolv
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn } }));
 vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
-  listProjectResources,
+  stateVolumeExists,
   readStateVolume,
   writeStateVolume,
 }));
@@ -210,7 +210,7 @@ describe('reading the register', () => {
   };
 
   it('lists the Consoles most recently seen first, and the activity newest first', async () => {
-    listProjectResources.mockResolvedValue({ containers: [], dataVolumes: [], stateVolume: true });
+    stateVolumeExists.mockResolvedValue(true);
     readStateVolume.mockResolvedValue(
       [
         JSON.stringify(alice),
@@ -231,7 +231,7 @@ describe('reading the register', () => {
   });
 
   it('skips a line it cannot read rather than hiding everyone else', async () => {
-    listProjectResources.mockResolvedValue({ containers: [], dataVolumes: [], stateVolume: true });
+    stateVolumeExists.mockResolvedValue(true);
     readStateVolume.mockResolvedValue(
       [
         JSON.stringify(alice),
@@ -255,7 +255,7 @@ describe('reading the register', () => {
   });
 
   it('is empty, not an error, before anything has been recorded', async () => {
-    listProjectResources.mockResolvedValue({ containers: [], dataVolumes: [], stateVolume: false });
+    stateVolumeExists.mockResolvedValue(false);
     const { host: h } = host();
 
     expect(await readRegister(h)).toEqual({ self: SELF, consoles: [], activity: [] });

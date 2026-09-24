@@ -8,9 +8,9 @@ import type {
   StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
-  listProjectResources,
   readStateVolume,
   type StackStateHost,
+  stateVolumeExists,
   writeStateVolume,
 } from './stack-state';
 
@@ -219,8 +219,7 @@ function parseLines<T>(
  */
 export async function readRegister(host: StackStateHost): Promise<StackRegister> {
   const self = (await getConsoleIdentity()).id;
-  const { stateVolume } = await listProjectResources(host);
-  if (!stateVolume) return { self, consoles: [], activity: [] };
+  if (!(await stateVolumeExists(host))) return { self, consoles: [], activity: [] };
 
   const out = await readStateVolume(host, READ_SCRIPT);
   const split = out.indexOf(ACTIVITY_MARKER);

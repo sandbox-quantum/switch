@@ -56,6 +56,12 @@ import { readDeployedTelemetry } from './telemetry-consent';
  * failing requests, which arrive in bursts. */
 const RECHECK_INTERVAL_MS = 30_000;
 
+/** How often picking a stack back up also records that this Console still
+ * uses it. Every real action records it too; this only keeps a Console that
+ * does nothing but use the server inside the register's two-week window,
+ * without a container run on the host at every launch and re-check. */
+const SIGHTING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 function initialStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
@@ -154,6 +160,8 @@ class RemoteServerService {
   private readonly busy = new Set<string>();
   private readonly startAborts = new Map<string, AbortController>();
   private readonly lastRecheck = new Map<string, number>();
+  /** When this Console last got a record onto each host. */
+  private readonly lastRecorded = new Map<string, number>();
 
   getStatuses(): RemoteServerStatus[] {
     return [...this.statuses.values()];
@@ -182,6 +190,7 @@ class RemoteServerService {
   ): Promise<void> {
     try {
       await writeRecord(host, action);
+      this.lastRecorded.set(sshHost, Date.now());
       this.setStatus(sshHost, { recordWarning: null });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -339,7 +348,9 @@ class RemoteServerService {
         // Only for a running stack: a stopped one sends nothing, so it
         // cannot be out of step with the user's answer.
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
-        await this.record(sshHost, host, null);
+        if (Date.now() - (this.lastRecorded.get(sshHost) ?? 0) >= SIGHTING_INTERVAL_MS) {
+          await this.record(sshHost, host, null);
+        }
       } else {
         this.releaseHost(sshHost, live);
         this.setStatus(sshHost, {
@@ -584,6 +595,7 @@ class RemoteServerService {
       this.setStatus(sshHost, initialStatus(sshHost));
       this.statuses.delete(sshHost);
       this.lastRecheck.delete(sshHost);
+      this.lastRecorded.delete(sshHost);
     } finally {
       this.busy.delete(sshHost);
     }

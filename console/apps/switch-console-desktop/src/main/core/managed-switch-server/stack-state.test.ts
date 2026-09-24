@@ -207,16 +207,19 @@ describe('the published copy', () => {
     expect(await readPublishedCopy(host)).toBeNull();
   });
 
-  it('pulls the helper image on a host that does not have it yet', async () => {
+  it('pulls the helper image on a host that does not have it yet, and asks only once', async () => {
     const { host, calls } = fakeHost({
       stateVolume: true,
       published: envFor(),
       imagePresent: false,
     });
+    // A host this test file has not used, so nothing is known about its images.
+    const fresh = { ...host, label: 'fresh-host' };
 
-    await readPublishedCopy(host);
+    await readPublishedCopy(fresh);
+    await readPublishedCopy(fresh);
 
-    expect(calls.map((args) => args[0])).toEqual(['image', 'pull', 'run']);
+    expect(calls.map((args) => args[0])).toEqual(['image', 'pull', 'run', 'run']);
   });
 
   it('is published on stdin and never as an argument, which every account could read', async () => {

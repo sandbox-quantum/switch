@@ -137,13 +137,22 @@ export type ProjectResources = {
  * account started from a working dir this one cannot read.
  */
 export async function listProjectResources(host: StackStateHost): Promise<ProjectResources> {
-  const project = host.composeProjectName;
-  const containers = lines(
+  // Independent questions, asked at once: each is an SSH round trip.
+  const [containers, dataVolumes, stateVolume] = await Promise.all([
+    listContainers(host),
+    listDataVolumes(host),
+    stateVolumeExists(host),
+  ]);
+  return { containers, dataVolumes, stateVolume };
+}
+
+async function listContainers(host: StackStateHost): Promise<ProjectContainer[]> {
+  return lines(
     await docker(host, [
       'ps',
       '--all',
       '--filter',
-      `label=${COMPOSE_PROJECT_LABEL}=${project}`,
+      `label=${COMPOSE_PROJECT_LABEL}=${host.composeProjectName}`,
       '--format',
       `{{.Label "${COMPOSE_SERVICE_LABEL}"}}\t{{.State}}\t{{.Label "${COMPOSE_WORKING_DIR_LABEL}"}}`,
     ])
@@ -151,22 +160,22 @@ export async function listProjectResources(host: StackStateHost): Promise<Projec
     const [service = '', state = '', workingDir = ''] = line.split('\t');
     return { service, state, workingDir: workingDir || null };
   });
-  const dataVolumes = await listDataVolumes(host);
+}
+
+/** Whether the shared state volume exists — the one question a read of the
+ * register or a withdrawal needs answered before touching it. */
+export async function stateVolumeExists(host: StackStateHost): Promise<boolean> {
   const stateVolumes = lines(
     await docker(host, [
       'volume',
       'ls',
       '--filter',
-      `label=${STACK_STATE_LABEL}=${project}`,
+      `label=${STACK_STATE_LABEL}=${host.composeProjectName}`,
       '--format',
       '{{.Name}}',
     ])
   );
-  return {
-    containers,
-    dataVolumes,
-    stateVolume: stateVolumes.includes(stackStateVolume(host)),
-  };
+  return stateVolumes.includes(stackStateVolume(host));
 }
 
 /** The stack's own named volumes — Postgres and Mattermost data. */
@@ -196,15 +205,23 @@ async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promi
   return stamp.trim() || null;
 }
 
+/** Hosts, by label, already known to have the helper image. A host keeps an
+ * image it has, and `docker run` pulls one that has since been removed, so
+ * each is asked once per run of this Console rather than before every read. */
+const hostsWithHelperImage = new Set<string>();
+
 /** Pull the helper image when this host does not have it yet. */
 async function ensureHelperImage(host: StackStateHost): Promise<void> {
+  if (hostsWithHelperImage.has(host.label)) return;
   try {
     await docker(host, ['image', 'inspect', '--format', '{{.Id}}', STACK_HELPER_IMAGE]);
+    hostsWithHelperImage.add(host.label);
     return;
   } catch {
     // Absent (or unreadable, which the pull will report properly).
   }
   await docker(host, ['pull', '--quiet', STACK_HELPER_IMAGE], PULL_TIMEOUT_MS);
+  hostsWithHelperImage.add(host.label);
 }
 
 /**
@@ -362,8 +379,7 @@ export async function stampPublishedEnv(host: StackStateHost): Promise<void> {
  * record above all — is kept.
  */
 export async function withdrawPublishedEnv(host: StackStateHost): Promise<void> {
-  const resources = await listProjectResources(host);
-  if (!resources.stateVolume) return;
+  if (!(await stateVolumeExists(host))) return;
   await writeStateVolume(
     host,
     `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" ` +
@@ -495,10 +511,12 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   let database: string | null = null;
   let own: string | null;
   try {
-    resources = await listProjectResources(host);
+    [resources, own] = await Promise.all([
+      listProjectResources(host),
+      host.readFile(ENV_FILE_NAME),
+    ]);
     if (resources.stateVolume) published = await readPublishedCopy(host);
     if (published?.stamp) database = await databaseStamp(host, resources.dataVolumes);
-    own = await host.readFile(ENV_FILE_NAME);
   } catch (error) {
     return { kind: 'unreadable', reason: errorText(error) };
   }

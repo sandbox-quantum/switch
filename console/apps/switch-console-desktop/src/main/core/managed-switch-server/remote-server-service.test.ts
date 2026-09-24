@@ -367,6 +367,41 @@ describe('picking a shared stack back up', () => {
   });
 });
 
+describe('recording that this Console still uses the stack', () => {
+  it('records it when picking the stack up, but not again at every re-check', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    const service = await loadService();
+
+    await service.initialize();
+    expect(writeRecord).toHaveBeenCalledExactlyOnceWith(expect.anything(), null);
+
+    // Requests fail; the stack is looked at again, and is still there.
+    service.recheck('vm-1');
+    await vi.waitFor(() => expect(inspectStack).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(service.getStatus('vm-1').phase).toBe('running'));
+
+    expect(writeRecord).toHaveBeenCalledOnce();
+  });
+
+  it('records it again once a day has passed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      createRemoteServerHost.mockResolvedValue(fakeHost());
+      inspectStack.mockResolvedValue(present(true));
+      const service = await loadService();
+      await service.initialize();
+
+      vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
+      service.recheck('vm-1');
+
+      await vi.waitFor(() => expect(writeRecord).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('recheck', () => {
   async function runningService() {
     const first = fakeHost();

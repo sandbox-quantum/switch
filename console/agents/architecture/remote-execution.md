@@ -136,8 +136,10 @@ per-person accounts would hide each person's sessions from the others. Instead:
   and is told nothing about the desktop.
 - Each Console records itself in the state volume (`console-register.ts`): a
   register of who uses the stack and an activity log of starts, connects,
-  stops, resets and disconnects. A disconnect takes the Console off the
-  register and keeps its line of activity. A reset keeps the activity. The
+  stops, resets and disconnects. Every action refreshes the Console's entry;
+  otherwise it is refreshed at most once a day, since each write is a
+  container run on the host. A disconnect takes the Console off the register
+  and keeps its line of activity. A reset keeps the activity. The
   record is for people, never a control, and a write that fails does not fail
   the operation: the server page says what could not be recorded
   (`recordWarning`) until a later record gets through.
