@@ -1,8 +1,10 @@
+import { READ_JSON } from './remote-json';
+
 /** Runs on the execution host; paths are resolved there and never supplied by the renderer. */
-export const inspectWatchers = String.raw`
+export const inspectWatchers = String.raw`${READ_JSON}
 const fs=require('node:fs'), path=require('node:path'), cp=require('node:child_process');
 const directory=path.join(require('node:os').homedir(),'.local','state','switch','sdk-watchers');
-const read=p=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch(e){if(e.code==='ENOENT')return null;throw e}};
+const read=p=>{try{return readJson(p)}catch(e){if(e.code==='ENOENT')return null;throw e}};
 const owner=p=>{
  const saved=read(p); if(!saved)return null;
  if(!Number.isSafeInteger(saved.pid)||saved.pid<=0)throw new Error('Invalid host PID');

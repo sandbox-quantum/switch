@@ -5,6 +5,7 @@ import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
+import { READ_JSON } from './remote-json';
 
 /**
  * The sessions an agent has on its host, read from the hosts' own state.
@@ -14,7 +15,7 @@ import type { IExecutionContext } from '@main/core/execution-context/types';
  * finds them. One `node` run per call, locally or over the agent's SSH
  * connection: the same script either way.
  */
-export const LIST_SCRIPT = String.raw`
+export const LIST_SCRIPT = String.raw`${READ_JSON}
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -42,7 +43,7 @@ const found = [];
 for (const name of names) {
   const root = path.join(base, name);
   let config;
-  try { config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8')); } catch { continue; }
+  try { config = readJson(path.join(root, 'config.json')); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
   if (!config || !config.session || config.session.agentId !== agentId) continue;
   const upserts = lines(path.join(root, 'events.jsonl')).filter((e) => e && e.body && e.body.type === 'session.upsert');
   const latest = upserts.length ? upserts[upserts.length - 1].body.session : null;

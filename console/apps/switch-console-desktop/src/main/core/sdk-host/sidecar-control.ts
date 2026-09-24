@@ -2,6 +2,7 @@ import { CONTROL_FILE, ControlClient } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { READ_JSON } from './remote-json';
 
 /**
  * Console's connection to an agent's sidecar on its SSH host.
@@ -13,14 +14,14 @@ import { getAgentById } from '@main/core/agents/getAgentById';
  * on first use and again after it drops.
  */
 
-const WATCHER_ROOT_SCRIPT = String.raw`
+const WATCHER_ROOT_SCRIPT = String.raw`${READ_JSON}
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const [identity, file] = process.argv.slice(1);
 const base = path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-watchers');
 let root = path.join(base, crypto.createHash('sha256').update(identity).digest('hex'));
 if (fs.existsSync(base)) {
   const matches = fs.readdirSync(base).filter((name) => {
-    try { return JSON.parse(fs.readFileSync(path.join(base, name, 'config.json'), 'utf8')).session.agentId === identity; }
+    try { return readJson(path.join(base, name, 'config.json')).session.agentId === identity; }
     catch (e) { if (e.code === 'ENOENT') return false; throw e; }
   });
   if (matches.length > 1) throw new Error('Competing saved watchers require explicit cleanup.');
