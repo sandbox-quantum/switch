@@ -3,7 +3,7 @@ from starlette.requests import Request
 
 from switch_core.bridges.agent.api.session_routes import read_host_event
 from switch_core.sessions.contract import MAX_EVENT_BYTES
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 
 async def test_event_body_stops_reading_at_limit():

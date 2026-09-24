@@ -20,7 +20,7 @@ from switch_core.session_activity.service import (
     PlatformPerson,
     SessionActivityService,
 )
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 from switch_core.tenant_context import tenant_scope
 
 

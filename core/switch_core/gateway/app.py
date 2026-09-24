@@ -50,8 +50,8 @@ from switch_core.gateway.sessions import router as sessions_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.room_service import RoomService
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 
 
 def create_gateway_app(

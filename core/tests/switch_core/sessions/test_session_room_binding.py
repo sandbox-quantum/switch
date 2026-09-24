@@ -19,7 +19,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
     ConnectionRegistry,
 )
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 from .test_authority import setup
 

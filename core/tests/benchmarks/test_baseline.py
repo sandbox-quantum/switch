@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from switch_core.sessions.contract import CommandStatus
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 from tests.benchmarks.host import (
     BenchWatcher,
     bench_watcher,

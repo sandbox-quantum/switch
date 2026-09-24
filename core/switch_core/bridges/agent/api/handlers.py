@@ -108,7 +108,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)

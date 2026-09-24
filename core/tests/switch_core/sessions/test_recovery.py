@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from switch_core.db.models import SdkSession, require_tenant_id
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 from tests.switch_core.sessions.test_authority import (
     answer,
     command,

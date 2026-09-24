@@ -12,8 +12,8 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory
 from switch_core.db.models import Agent, ApprovalRequest
 from switch_core.session_activity.service import ApprovalOption, PlatformPerson
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 
 from .conftest import AGENT, make_agent
 

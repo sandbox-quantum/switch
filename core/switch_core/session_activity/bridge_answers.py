@@ -52,7 +52,7 @@ from switch_core.session_activity.service import (
     SessionActivityService,
 )
 from switch_core.sessions.contract import ApprovalResult, RequestResult
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 logger = logging.getLogger(__name__)
 

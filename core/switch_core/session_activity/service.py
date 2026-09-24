@@ -36,7 +36,7 @@ from switch_core.db.stores.session_activity_store import (
     SessionActivityStore,
 )
 from switch_core.delivery.addressing import AddressingResolver
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 MAX_SUMMARY_CHARS = 2000
 MAX_OPTIONS = 10

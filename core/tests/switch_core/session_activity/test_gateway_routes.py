@@ -9,8 +9,8 @@ from switch_core.gateway.agent_sessions import router
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session_factory
 from switch_core.session_activity.service import ApprovalOption
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 
 from .conftest import make_agent
 

@@ -12,7 +12,7 @@ from switch_core.session_activity.service import (
     PlatformPerson,
     SwitchUser,
 )
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 from .conftest import AGENT, make_agent, make_person, make_room
 

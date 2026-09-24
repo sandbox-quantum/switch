@@ -18,8 +18,8 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.publication import refresh_cards
-from switch_core.sessions.service import SessionError
 
 from .test_authority import answer, host_event, opened, setup
 

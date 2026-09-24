@@ -42,12 +42,12 @@ from switch_core.sessions.contract import (
     TurnUpsert,
     decided,
 )
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.presentation import (
     activity_error_summary,
     notification_recipient,
     session_console_url,
 )
-from switch_core.sessions.service import SessionError
 
 logger = logging.getLogger(__name__)
 

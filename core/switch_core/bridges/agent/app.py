@@ -36,8 +36,8 @@ from switch_core.observability.http import MetricsMiddleware
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
 from switch_core.session_activity.outcomes import ApprovalOutcomes
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 from switch_core.telemetry import TelemetryService
 
 logger = logging.getLogger(__name__)

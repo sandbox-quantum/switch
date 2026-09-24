@@ -88,6 +88,7 @@ from switch_core.sessions.contract import (
     UnavailableSession,
     parse_host_event,
 )
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.projection import SessionProjection
 from switch_core.sessions.validation import validate_answer
 
@@ -109,12 +110,6 @@ GRANT_SECONDS = 120
 # How many of a session's rooms one pull answers for. The rooms waiting
 # longest come first, so a room left out of an answer is in the next one.
 PULLED_ROOMS = 32
-
-
-class SessionError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 @dataclass(frozen=True)

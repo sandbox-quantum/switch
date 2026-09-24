@@ -24,7 +24,7 @@ from switch_core.bridges.collaboration.session.inbound import Refused
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 from .test_session_answers import _interactions, _post, _press, _run
 from .test_session_text_answers import CARD, _bridge, _typed

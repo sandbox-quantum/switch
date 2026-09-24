@@ -16,8 +16,8 @@ from switch_core.db.models import Agent, User
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
 from switch_core.gateway.sessions import router
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 
 from .test_authority import answer, opened, setup
 from .test_room_messages import event

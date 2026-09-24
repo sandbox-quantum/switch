@@ -27,7 +27,7 @@ from switch_core.db.models import (
     RoomRole,
     SdkSessionCommand,
 )
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 from tests.switch_core.sessions.test_authority import (
     command as build_command,
 )

@@ -4,7 +4,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.errors import SessionError
 
 from .test_authority import setup
 from .test_shared_connection import (
