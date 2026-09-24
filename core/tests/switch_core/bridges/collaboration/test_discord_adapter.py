@@ -576,6 +576,48 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     assert ref == f"{CHANNEL_ID}:901"
 
 
+def test_an_agent_message_cannot_page_the_channel() -> None:
+    # Discord decides who a message pings from the request, not the markup, so
+    # the webhook path pins the same guard every other send path does.
+    adapter = _adapter()
+    adapter._client = _FakeClient({CHANNEL_ID: _FakeChannel()})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+
+    _run(adapter.send_message(str(CHANNEL_ID), "my-agent", "hello"))
+
+    assert webhook.sent[0]["allowed_mentions"].everyone is False
+
+
+def test_a_room_wide_mention_is_permitted_on_the_request() -> None:
+    adapter = _adapter()
+    adapter._client = _FakeClient({CHANNEL_ID: _FakeChannel()})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+
+    _run(
+        adapter.send_message(
+            str(CHANNEL_ID),
+            "my-agent",
+            adapter.render_room_wide_mention("@everyone deploy at five"),
+            room_wide_mention=True,
+        )
+    )
+
+    assert webhook.sent[0]["content"] == "@everyone deploy at five"
+    assert webhook.sent[0]["allowed_mentions"].everyone is True
+
+
+def test_an_admin_message_cannot_page_the_channel() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+
+    _run(adapter.admin_message(str(CHANNEL_ID), "notice"))
+
+    assert channel.sent[0]["allowed_mentions"].everyone is False
+
+
 def test_long_message_is_split_across_posts_not_dropped() -> None:
     adapter = _adapter()
     channel = _FakeChannel()

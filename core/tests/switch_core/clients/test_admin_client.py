@@ -253,6 +253,18 @@ class TestAdminAbsentAgentWarning:
         await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
         assert sent == []
 
+    async def test_room_wide_mention_word_skipped(self) -> None:
+        # `@everyone` pages the room's people. An agent registered under the
+        # name before it was reserved is not who it was aimed at, and telling
+        # the room that agent is absent would be a warning about nothing.
+        agents = {
+            "everyone": SimpleNamespace(id="a-old", name="everyone", display_name=None)
+        }
+        client, sent = _admin_client(agents_by_name=agents)
+        event = _event("@everyone the deploy is at five")
+        await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
+        assert sent == []
+
     async def test_role_token_skipped(self) -> None:
         # A tagged role is left to _warn_unreachable_roles, not double-flagged.
         roles = [SimpleNamespace(id="r-mgr", name="manager")]

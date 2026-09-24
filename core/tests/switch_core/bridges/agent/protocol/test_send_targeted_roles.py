@@ -7,7 +7,10 @@ import pytest
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.bridges.agent.protocol.types import (
+    AgentStatus,
+    RoomWideMentionStatus,
+)
 
 
 class _FakeSession:
@@ -45,11 +48,15 @@ class _FakeAgentStore:
 
 
 class _FakeRoomStore:
-    def __init__(self, group_id: str | None) -> None:
+    def __init__(self, group_id: str | None, bridge_id: str | None = None) -> None:
         self._group_id = group_id
+        self._bridge_id = bridge_id
 
     async def get(self, _session: Any, _room_id: str) -> Any:
-        return SimpleNamespace(group_id=self._group_id)
+        return SimpleNamespace(group_id=self._group_id, bridge_id=self._bridge_id)
+
+    async def list_aliases(self, _session: Any, _room_id: str) -> dict[str, str]:
+        return {}
 
 
 def _participant(
@@ -325,3 +332,55 @@ class TestSendTargetedAddressingGate:
             "sender", "room-1", ["alice"], "ping"
         )
         assert out_of_group.target_statuses == {"alice": AgentStatus.NOT_PERMITTED}
+
+
+class TestRoomWideMentionStatus:
+    """What the room's bridge does with a room-wide mention, reported under
+    `everyone`. Whether it wakes an agent is pinned against a real database in
+    `test_room_wide_mention_wakes_no_agent.py`."""
+
+    async def _send(self, bridges: dict[str, Any], bridge_id: str | None) -> Any:
+        svc, bodies = _build_service(
+            participants=[_participant("alice", "agent", AgentStatus.LIVE)],
+            roles=[],
+            holders={},
+            agents={},
+        )
+        svc.room_store = _FakeRoomStore(None, bridge_id)  # type: ignore[assignment]
+        svc.collab_lifecycle = SimpleNamespace(get=bridges.get)  # type: ignore[assignment]
+        result = await svc.send_targeted_message("sender", "room-1", ["everyone"], "hi")
+        assert bodies == ["@everyone hi"]
+        return result.target_statuses
+
+    @staticmethod
+    def _bridge(notifies: bool) -> Any:
+        return SimpleNamespace(
+            adapter=SimpleNamespace(room_wide_mention_notifies=notifies)
+        )
+
+    async def test_a_platform_that_pages_the_room(self) -> None:
+        statuses = await self._send({"b1": self._bridge(True)}, "b1")
+        assert statuses == {"everyone": RoomWideMentionStatus.SENT}
+
+    async def test_a_platform_with_no_channel_mention(self) -> None:
+        statuses = await self._send({"b1": self._bridge(False)}, "b1")
+        assert statuses == {"everyone": RoomWideMentionStatus.UNSUPPORTED}
+
+    async def test_a_bridge_that_is_not_running(self) -> None:
+        statuses = await self._send({}, "b1")
+        assert statuses == {"everyone": RoomWideMentionStatus.BRIDGE_UNAVAILABLE}
+
+    async def test_a_room_with_no_bridge(self) -> None:
+        statuses = await self._send({}, None)
+        assert statuses == {"everyone": RoomWideMentionStatus.NO_BRIDGE}
+
+    async def test_a_platform_word_points_at_the_real_target(self) -> None:
+        svc, bodies = _build_service(
+            participants=[_participant("alice", "agent", AgentStatus.LIVE)],
+            roles=[],
+            holders={},
+            agents={},
+        )
+        with pytest.raises(ValueError, match="target 'everyone'"):
+            await svc.send_targeted_message("sender", "room-1", ["channel"], "hi")
+        assert bodies == []
