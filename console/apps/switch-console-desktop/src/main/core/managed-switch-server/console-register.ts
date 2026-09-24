@@ -45,18 +45,35 @@ const ACTIVITY_MARKER = '---switch-console-activity---';
 const CONSOLE_ID = /^[0-9A-Fa-f-]{1,64}$/;
 
 /**
- * Writes this Console's register entry and, when `$2` is 1, appends one line of
- * activity — both read from stdin, so no value is spliced into the script and
- * none has to be quoted. The activity file is trimmed once it doubles past
- * what is kept.
+ * How a record touches the register: `seen` refreshes this Console's entry,
+ * `act` refreshes it and adds a line of activity, and `leave` adds the line and
+ * takes the entry out — a Console that has disconnected no longer uses the
+ * stack, and must not go on being named to everyone else as if it did.
  */
-const RECORD_SCRIPT = [
+type RecordMode = 'seen' | 'act' | 'leave';
+
+function recordModeFor(action: StackActivityAction | null): RecordMode {
+  if (action === null) return 'seen';
+  return action === 'disconnected' ? 'leave' : 'act';
+}
+
+/**
+ * Applies a {@link RecordMode} (`$2`) for the Console `$1`. The entry and the
+ * activity line are read from stdin, so no value is spliced into the script
+ * and none has to be quoted. The activity file is trimmed once it doubles past
+ * what is kept. Exported for the test that runs it against a real directory.
+ */
+export const RECORD_SCRIPT = [
   'umask 077',
   'mkdir -p /state/consoles',
   'IFS= read -r entry || exit 1',
-  'printf "%s\\n" "$entry" > "/state/consoles/.$1.tmp"',
-  'mv "/state/consoles/.$1.tmp" "/state/consoles/$1.json"',
-  'if [ "$2" = 1 ]; then',
+  'if [ "$2" = leave ]; then',
+  '  rm -f "/state/consoles/$1.json"',
+  'else',
+  '  printf "%s\\n" "$entry" > "/state/consoles/.$1.tmp"',
+  '  mv "/state/consoles/.$1.tmp" "/state/consoles/$1.json"',
+  'fi',
+  'if [ "$2" != seen ]; then',
   '  IFS= read -r activity || exit 1',
   '  printf "%s\\n" "$activity" >> /state/activity.jsonl',
   `  if [ "$(wc -l < /state/activity.jsonl)" -gt ${ACTIVITY_TRIM_AT} ]; then`,
@@ -100,6 +117,7 @@ function hostAccount(host: StackStateHost): Promise<string> {
 /**
  * Record this Console on the stack's host: refresh its register entry and,
  * for anything but a quiet sighting (`action` null), add a line of activity.
+ * A disconnect adds its line and takes the entry out instead of refreshing it.
  * Throws on failure; {@link recordOnHost} is the caller-facing form.
  */
 export async function writeRecord(
@@ -132,7 +150,7 @@ export async function writeRecord(
   }
   await writeStateVolume(host, RECORD_SCRIPT, `${lines.join('\n')}\n`, [
     identity.id,
-    action === null ? '0' : '1',
+    recordModeFor(action),
   ]);
 }
 
