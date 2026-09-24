@@ -153,6 +153,10 @@ room.
 **Say Sev, not P.** PagerDuty's priorities start at P1, so Sev0 is P1, Sev1 is
 P2 and Sev2 is P3. A bare P-number will be read one level too low by somebody.
 
+**A situation report on demand:** `@responder sitrep`, in the incident's thread
+or its war room. **To stop the reports:** say the issue is mitigated. The clock
+stops there.
+
 **Severity, acknowledgement and resolution live in PagerDuty.** If PagerDuty
 and this room disagree, PagerDuty is right. Fix it there and say so here.
 
@@ -557,9 +561,11 @@ firing about every 10 minutes. It is a poll, not an alarm. Each time it fires,
 compare the deadline you posted with the time now, and act only if something
 is due. Its prompt:
 
-> Incident check for this room. If the room has no open incident, delete this
-> job and say nothing. Otherwise, compare the `next update due` line you last
-> posted with the time now. If nothing is due, say nothing. If an update is due
+> Incident check for this room. First, read this room since your last pass. If
+> a person has said the issue is mitigated, or asked you to stop the reports,
+> stop the clock: say so once, and delete this job. If the room has no open
+> incident, delete this job and say nothing. Otherwise, compare the
+> `next update due` line you last posted with the time now. If nothing is due, say nothing. If an update is due
 > or overdue: re-read the incident in PagerDuty (its severity may have moved),
 > post a situation-report draft, and post the new deadline. In the alert hub,
 > also carry any war-room milestones into their banner threads.
@@ -574,6 +580,14 @@ Why a frequent poll rather than a timer set to the SOP's interval:
 
 **Say nothing when nothing is due.** A poll that announces itself trains the
 room to ignore you.
+
+**Read the room before every report, and keep the timer in the session that
+lives in that room.** An earlier drill had the timer in one session and the
+reports landing in another room. People declared mitigation, and then said
+"stop" twice, in the room the reports were landing in. The timer never read
+that room, so it kept reporting for two hours. The stop condition has to be
+something people can say where they are reading. It cannot live only in the
+timer's prompt.
 
 **Layer 3: the start-of-shift check.** Something outside Switch addresses you
 at the start of each coverage window. Answer it with how many incidents are
