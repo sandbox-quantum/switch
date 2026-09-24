@@ -18,6 +18,7 @@ vi.mock('@main/core/agents/getAgentById', () => ({
   }),
 }));
 vi.mock('@main/core/agents/agent-location', () => ({ getAgentLocation: mocks.location }));
+vi.mock('@main/core/agents/updateAgent', () => ({ updateAgent: vi.fn() }));
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: {
     openLocation: async () => ({ success: true, data: { fs: {}, settings: {} } }),
