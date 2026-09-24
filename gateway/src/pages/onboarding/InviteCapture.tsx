@@ -1,15 +1,15 @@
 import { useEffect } from "react";
-import { Navigate, useSearchParams } from "react-router";
+import { Navigate, useLocation } from "react-router";
 import { useAuth } from "../../data/AuthContext";
-import { storePendingInvite } from "../../data/sessionState";
+import { inviteTokenFromHash, storePendingInvite } from "../../data/sessionState";
 
-/** `/invite?token=…`: keep the token for this tab and carry on. Signed out,
+/** `/invite#token=…`: keep the token for this tab and carry on. Signed out,
  * that is the login page, and the token waits through sign-in (including an
  * identity-provider round trip, which is why it is not kept in memory). */
 export default function InviteCapture() {
-  const [params] = useSearchParams();
+  const { hash } = useLocation();
   const { refresh } = useAuth();
-  const token = params.get("token");
+  const token = inviteTokenFromHash(hash);
 
   useEffect(() => {
     if (token) {

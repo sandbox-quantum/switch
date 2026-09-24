@@ -8,7 +8,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type Invitation, fetchInvitations, revokeInvitation } from "../../data/api";
 import { formatDate, titleCase } from "../../theme/hootFormat";
@@ -33,6 +33,13 @@ export default function InvitationsSection({
   const { data: invitations, error, loading, refetch } = useLoad(load);
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Re-evaluated on a timer so an invitation that expires while the page is
+  // open stops showing as active.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const revoke = useCallback(
     async (id: string) => {
@@ -48,7 +55,6 @@ export default function InvitationsSection({
   );
 
   const columns = useMemo<GridColDef<Invitation>[]>(() => {
-    const now = Date.now();
     return [
       {
         field: "email",
@@ -92,7 +98,7 @@ export default function InvitationsSection({
           ) : null,
       },
     ];
-  }, [revoke]);
+  }, [now, revoke]);
 
   return (
     <Stack spacing={1.5}>

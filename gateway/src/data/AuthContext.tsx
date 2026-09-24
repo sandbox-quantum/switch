@@ -8,7 +8,7 @@ import {
   logout as apiLogout,
   switchTenant,
 } from "./api";
-import { canAdminTenant as sessionCanAdminTenant } from "./sessionState";
+import { canAdminTenant as sessionCanAdminTenant, clearPendingInvite } from "./sessionState";
 
 interface AuthState {
   session: Session | null;
@@ -54,6 +54,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    // The next person to sign in on this tab must not inherit an invitation
+    // they never followed.
+    clearPendingInvite();
     await apiLogout();
     setSession(null);
   }, []);

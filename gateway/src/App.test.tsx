@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "./App";
@@ -68,7 +68,7 @@ describe("AppRoutes", () => {
 
   it("keeps an invite link through sign-in", async () => {
     mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
-    renderAt("/invite?token=abc");
+    renderAt("/invite#token=abc");
     expect(await screen.findByText("Sign in to accept your invitation.")).toBeTruthy();
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
@@ -114,6 +114,19 @@ describe("AppRoutes", () => {
     });
     renderAt("/rooms");
     expect(await screen.findByText("Join a workspace")).toBeTruthy();
+  });
+
+  it("drops a pending invite on sign-out, so the next person does not inherit it", async () => {
+    storePendingInvite("abc");
+    mockFetch({
+      "/auth/session": [200, session({ state: "ready", tenant: acme, tenants: [acme] })],
+      "/auth/logout": [200, { ok: true }],
+      "/auth/config": [200, authConfig],
+    });
+    renderAt("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
   it("says so when the session cannot be read, instead of showing sign-in", async () => {

@@ -10,6 +10,7 @@ import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import VpnKeyOutlined from "@mui/icons-material/VpnKeyOutlined";
 import WorkspacesOutlined from "@mui/icons-material/WorkspacesOutlined";
 import {
+  Alert,
   Box,
   Dialog,
   DialogContent,
@@ -17,6 +18,7 @@ import {
   Divider,
   Menu,
   MenuItem,
+  Snackbar,
   Stack,
   Tooltip,
   Typography,
@@ -106,6 +108,16 @@ export default memo(function NavRail() {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+
+  const switchWorkspace = async (tenantId: string) => {
+    setAnchor(null);
+    try {
+      await switchTo(tenantId);
+    } catch (err) {
+      setSwitchError(err instanceof Error ? err.message : "Could not switch workspace");
+    }
+  };
 
   const items = isOperator ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
   const current = session?.tenant ?? null;
@@ -228,10 +240,7 @@ export default memo(function NavRail() {
         {others.map((tenant) => (
           <MenuItem
             key={tenant.id}
-            onClick={() => {
-              setAnchor(null);
-              void switchTo(tenant.id);
-            }}
+            onClick={() => switchWorkspace(tenant.id)}
           >
             <Typography variant="body2" noWrap>
               Switch to {tenant.name}
@@ -286,6 +295,16 @@ export default memo(function NavRail() {
           <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
         </DialogContent>
       </Dialog>
+
+      <Snackbar
+        open={switchError !== null}
+        onClose={() => setSwitchError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Alert severity="error" onClose={() => setSwitchError(null)}>
+          {switchError}
+        </Alert>
+      </Snackbar>
 
       <ChangePasswordDialog
         open={passwordDialogOpen}

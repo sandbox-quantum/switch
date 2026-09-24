@@ -75,18 +75,20 @@ describe("invite tokens", () => {
   afterEach(() => clearPendingInvite());
 
   it("reads a token from a full link or a bare token", () => {
-    expect(inviteTokenFrom("https://switch.example.com/invite?token=abc123")).toBe("abc123");
+    expect(inviteTokenFrom("https://switch.example.com/invite#token=abc123")).toBe("abc123");
     expect(inviteTokenFrom("  abc123  ")).toBe("abc123");
   });
 
   it("finds none in empty input, a link without one, or prose", () => {
     expect(inviteTokenFrom("   ")).toBeNull();
     expect(inviteTokenFrom("https://switch.example.com/invite")).toBeNull();
+    expect(inviteTokenFrom("https://switch.example.com/invite?token=abc123")).toBeNull();
     expect(inviteTokenFrom("please let me in")).toBeNull();
   });
 
-  it("round-trips through the link it builds", () => {
+  it("builds links that keep the token out of the query string", () => {
     const link = inviteUrl("https://switch.example.com", "a+b/c=");
+    expect(new URL(link).search).toBe("");
     expect(inviteTokenFrom(link)).toBe("a+b/c=");
   });
 

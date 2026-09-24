@@ -13,6 +13,7 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
+import { useAuth } from "../../data/AuthContext";
 import {
   type Member,
   type TenantRole,
@@ -40,6 +41,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   const { data: members, error, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const { refresh } = useAuth();
 
   const act = useCallback(
     async (userId: string, action: () => Promise<unknown>) => {
@@ -48,13 +50,15 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
       try {
         await action();
         await refetch();
+        // Your own role decides what this page offers you.
+        if (userId === selfId) await refresh();
       } catch (err) {
         setActionError(err instanceof Error ? err.message : "The change failed");
       } finally {
         setBusy(null);
       }
     },
-    [refetch],
+    [refetch, refresh, selfId],
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {

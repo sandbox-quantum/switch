@@ -44,21 +44,28 @@ export function clearPendingInvite(): void {
   window.sessionStorage.removeItem(INVITE_KEY);
 }
 
+/** The token in an invite link's fragment (`#token=…`), or null. */
+export function inviteTokenFromHash(hash: string): string | null {
+  return new URLSearchParams(hash.replace(/^#/, "")).get("token");
+}
+
 /** An invite token from whatever someone pasted: the full link, or the bare
  * token. Null when there is nothing token-like in it. */
 export function inviteTokenFrom(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === "") return null;
   try {
-    const url = new URL(trimmed);
-    return url.searchParams.get("token");
+    return inviteTokenFromHash(new URL(trimmed).hash);
   } catch {
     return /\s/.test(trimmed) ? null : trimmed;
   }
 }
 
+/** The token rides in the fragment, which the browser never sends, so it
+ * stays out of proxy and access logs — the same reason the accept call takes
+ * it in the request body. */
 export function inviteUrl(origin: string, token: string): string {
-  return `${origin}/invite?token=${encodeURIComponent(token)}`;
+  return `${origin}/invite#token=${encodeURIComponent(token)}`;
 }
 
 /** May this session change who owns the workspace — grant or revoke the
