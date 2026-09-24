@@ -10,9 +10,6 @@ import {
   uploadSdkAttachment,
   fetchSdkSnapshot,
   fetchSdkEvents,
-  fetchSdkCommandStatus,
-  submitSdkCommand,
-  reconcileSdkCommand,
   retireSdkSession,
 } from '../switch-servers/gateway-client';
 import { reconnectSdkRoom } from '../switch-servers/gateway-client';
@@ -21,6 +18,11 @@ import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { hostJournals, transcriptSource } from './host-journal';
 import { syncSdkSessionActivity } from './session-activity';
+import {
+  reconcileSessionCommand,
+  sessionCommandStatus,
+  submitSessionCommand,
+} from './session-commands';
 import { manageAgentSidecar } from './sidecar-management';
 import { stopSharedSession } from './stop-shared-session';
 async function sharedServer(serverId: string) {
@@ -29,8 +31,7 @@ async function sharedServer(serverId: string) {
   return server;
 }
 export const sdkHostController = createRPCController({
-  stop: async (serverId: string, sessionId: string) =>
-    stopSharedSession(await sharedServer(serverId), sessionId),
+  stop: (agentId: string, sessionId: string) => stopSharedSession(agentId, sessionId),
   startupStatus: (sessionId: string) =>
     sessionRuntimeManager.getAgent(sessionId)?.startupStatus?.() ?? null,
   discoveryErrors: () => remoteSessionReconciler.errors(),
@@ -91,10 +92,10 @@ export const sdkHostController = createRPCController({
     if (latest?.body.type === 'session.upsert') await syncSdkSessionActivity(latest.body.session);
     return batch;
   },
-  sharedSubmit: async (serverId: string, command: ClientCommand) =>
-    submitSdkCommand(await sharedServer(serverId), command),
-  sharedReconcile: async (serverId: string, command: ClientCommand) =>
-    reconcileSdkCommand(await sharedServer(serverId), command),
-  sharedCommandStatus: async (serverId: string, sessionId: string, commandId: string) =>
-    fetchSdkCommandStatus(await sharedServer(serverId), sessionId, commandId),
+  sessionSubmit: (agentId: string, command: ClientCommand) =>
+    submitSessionCommand(agentId, command),
+  sessionReconcile: (agentId: string, command: ClientCommand) =>
+    reconcileSessionCommand(agentId, command),
+  sessionCommandStatus: (agentId: string, sessionId: string, commandId: string) =>
+    sessionCommandStatus(agentId, sessionId, commandId),
 });

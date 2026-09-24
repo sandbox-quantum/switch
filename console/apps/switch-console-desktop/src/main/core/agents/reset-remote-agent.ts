@@ -29,7 +29,7 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
   const remote = sessionSchema.array().parse(await fetchSdkSessions(server));
   for (const session of remote) {
     if (session.agentId === agent.switchAgentId && session.status !== 'stopped')
-      await stopSharedSession(server, session.sessionId);
+      await stopSharedSession(agentId, session.sessionId);
   }
   const local = await db
     .select({ id: sessions.id })

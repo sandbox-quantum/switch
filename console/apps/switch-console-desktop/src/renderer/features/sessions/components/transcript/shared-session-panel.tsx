@@ -66,7 +66,7 @@ export function SharedSessionPanel({
           sessionId,
           source.kind === 'journal'
             ? hostJournalTransport(agentId, serverId)
-            : sharedSessionTransport(serverId)
+            : sharedSessionTransport(agentId, serverId)
         )
       );
     })().catch((error: unknown) => {
@@ -98,10 +98,7 @@ export function SharedSessionPanel({
       <SessionV1Chat
         client={client}
         startup={startup}
-        stopHost={async () => {
-          const serverId = await rpc.sdkHost.serverForAgent(agentId);
-          await rpc.sdkHost.stop(serverId, sessionId);
-        }}
+        stopHost={() => rpc.sdkHost.stop(agentId, sessionId)}
         initialPromptDelivery={initialPromptDelivery}
         restartHost={() => rpc.sessions.restartAgent(sessionId)}
         retireHost={async (epoch) => {

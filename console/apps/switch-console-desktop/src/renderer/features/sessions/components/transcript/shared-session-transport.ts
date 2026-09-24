@@ -44,13 +44,17 @@ function polling(read: Poll): SessionTransport['subscribe'] {
  */
 export function hostJournalTransport(agentId: string, serverId: string): SessionTransport {
   return {
-    ...sharedSessionTransport(serverId),
+    ...sharedSessionTransport(agentId, serverId),
     snapshot: (id) => rpc.sdkHost.journalSnapshot(agentId, id),
     subscribe: polling((id, after) => rpc.sdkHost.journalEvents(agentId, id, after)),
   };
 }
 
-export function sharedSessionTransport(serverId: string): SessionTransport {
+/**
+ * The transcript Switch holds, for a session whose host journal cannot be
+ * read from here. Commands go to the host through Switch's relay either way.
+ */
+export function sharedSessionTransport(agentId: string, serverId: string): SessionTransport {
   return {
     uploadAttachment: async (sessionId, file) => {
       const value = await rpc.sdkHost.uploadAttachment(serverId, sessionId, file);
@@ -58,11 +62,11 @@ export function sharedSessionTransport(serverId: string): SessionTransport {
     },
     snapshot: (id) => rpc.sdkHost.sharedSnapshot(serverId, id),
     submit: async (command) =>
-      commandStatusSchema.parse(await rpc.sdkHost.sharedSubmit(serverId, command)),
+      commandStatusSchema.parse(await rpc.sdkHost.sessionSubmit(agentId, command)),
     reconcile: async (command) =>
-      commandStatusSchema.parse(await rpc.sdkHost.sharedReconcile(serverId, command)),
+      commandStatusSchema.parse(await rpc.sdkHost.sessionReconcile(agentId, command)),
     commandStatus: async (id, commandId) =>
-      commandStatusSchema.parse(await rpc.sdkHost.sharedCommandStatus(serverId, id, commandId)),
+      commandStatusSchema.parse(await rpc.sdkHost.sessionCommandStatus(agentId, id, commandId)),
     subscribe: polling((id, after) => rpc.sdkHost.sharedEvents(serverId, id, after)),
   };
 }

@@ -1,6 +1,11 @@
+import {
+  CommandNotRecordedError,
+  sessionCommandStatus,
+  submitSessionCommand,
+} from './session-commands';
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
-import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
+import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
@@ -38,12 +43,7 @@ import { controllerConnectionId } from '@main/core/switch-rooms/session-connecti
 import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import {
-  fetchSdkCommandStatus,
-  fetchSdkSnapshot,
-  GatewayError,
-  submitSdkCommand,
-} from '@main/core/switch-servers/gateway-client';
+import { fetchSdkSnapshot, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
@@ -132,7 +132,6 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error('Link this agent to a Switch server before starting a session.');
     this.server = await getServer(agent.serverId);
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
-    const server = this.server;
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport);
     const previousEpoch = restart
@@ -253,14 +252,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       );
     await bindRoom();
     if (!awaitingResetDecision(snapshot))
-      await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
+      await this.deliverInitialPrompt(session, initialPrompt, snapshot);
   }
 
   private async deliverInitialPrompt(
     session: Session,
     initialPrompt: string | undefined,
-    snapshot: Snapshot,
-    server: SwitchServer
+    snapshot: Snapshot
   ): Promise<void> {
     const epoch = snapshot.session.epoch;
     const saved = (await loadSessionWithAgent(session.id))?.row.config;
@@ -274,9 +272,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       hasPriorActivity: snapshot.turns.length > 0 || snapshot.items.length > 0,
       lookup: async (commandId) => {
         try {
-          const status = commandStatusSchema.parse(
-            await fetchSdkCommandStatus(server, session.id, commandId)
-          );
+          const status = await sessionCommandStatus(session.agentId, session.id, commandId);
           return {
             recorded: true,
             status: status.status,
@@ -284,14 +280,14 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
             message: status.message,
           };
         } catch (error) {
-          if (error instanceof GatewayError && isCommandNotFound(error)) return { recorded: false };
+          if (error instanceof CommandNotRecordedError) return { recorded: false };
           throw error;
         }
       },
       persist: (record) => setInitialPromptDelivery(session.id, record),
       submit: async (commandId, commandEpoch) => {
         const receipt = commandStatusSchema.parse(
-          await submitSdkCommand(server, {
+          await submitSessionCommand(session.agentId, {
             contractVersion: 1,
             sessionId: session.id,
             epoch: commandEpoch,
@@ -357,8 +353,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   }
   async stop(): Promise<void> {
     if (this.starting) await this.starting.catch(() => {});
-    await this.resolveServer();
-    await stopSharedSession(this.server!, this.params.sessionId);
+    const joined = await loadSessionWithAgent(this.params.sessionId);
+    if (!joined) throw new Error('The session is no longer recorded in Console.');
+    await stopSharedSession(joined.row.agentId, this.params.sessionId);
   }
   private async resolveServer(): Promise<void> {
     if (this.server) return;

@@ -13,5 +13,5 @@ export async function stopSharedAgentSessions(agent: Agent): Promise<void> {
     (session) =>
       session.agentId === agent.switchAgentId && session.status !== 'stopped' && !session.retired
   ))
-    await stopSharedSession(server, session.sessionId);
+    await stopSharedSession(agent.id, session.sessionId);
 }

@@ -2,6 +2,7 @@ import {
   SessionReplica,
   serverEventSchema,
   snapshotSchema,
+  type CommandStatus,
   type ServerEvent,
   type Snapshot,
 } from '@switch-console/shared/session-v1';
@@ -198,6 +199,15 @@ export class JournalTail {
     if (this.lease?.retired !== null && this.lease?.retired !== undefined)
       snapshot.session.retired = this.lease.retired;
     return snapshotSchema.parse(snapshot);
+  }
+
+  /** The host's latest word on a command, or null if it has not recorded it. */
+  commandStatus(commandId: string): CommandStatus | null {
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      const { body } = this.events[index]!;
+      if (body.type === 'command.status' && body.commandId === commandId) return body;
+    }
+    return null;
   }
 
   after(sequence: number): ServerEvent[] {

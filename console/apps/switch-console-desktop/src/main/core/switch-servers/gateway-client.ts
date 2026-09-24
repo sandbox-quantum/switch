@@ -1581,6 +1581,27 @@ export async function submitSdkCommand(
   ).json();
 }
 
+/**
+ * Hand a command to the agent's watcher through Switch, which sets its origin
+ * from the signed-in owner and stores nothing. A 409 `HOST_OFFLINE` means no
+ * watcher of the agent's is connected, so nothing was sent.
+ */
+export async function relaySessionCommand(
+  server: SwitchServer,
+  switchAgentId: string,
+  command: ClientCommand
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/agent-sessions/${encodeURIComponent(switchAgentId)}/${encodeURIComponent(command.sessionId)}/commands`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { commandId: command.commandId, epoch: command.epoch, body: command.body },
+    }
+  );
+}
+
 export async function reconcileSdkCommand(
   server: SwitchServer,
   command: ClientCommand

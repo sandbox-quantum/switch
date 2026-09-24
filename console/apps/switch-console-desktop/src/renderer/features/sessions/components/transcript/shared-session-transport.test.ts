@@ -7,7 +7,7 @@ const ipc = vi.hoisted(() => ({
   journalEvents: vi.fn(),
   sharedSnapshot: vi.fn(),
   sharedEvents: vi.fn(),
-  sharedSubmit: vi.fn(),
+  sessionSubmit: vi.fn(),
 }));
 vi.mock('@renderer/lib/ipc', () => ({ rpc: { sdkHost: { uploadAttachment: upload, ...ipc } } }));
 
@@ -21,7 +21,7 @@ it('preserves the server attachment digest for provider staging', async () => {
   };
   upload.mockResolvedValueOnce(attachment);
   expect(
-    await sharedSessionTransport('server').uploadAttachment!('session', {
+    await sharedSessionTransport('agent', 'server').uploadAttachment!('session', {
       attachmentId: 'attachment',
       name: 'example.txt',
       mimeType: 'text/plain',
@@ -39,7 +39,7 @@ it('rejects a malformed attachment digest before composer delivery', async () =>
     sha256: 'invalid',
   });
   await expect(
-    sharedSessionTransport('server').uploadAttachment!('session', {
+    sharedSessionTransport('agent', 'server').uploadAttachment!('session', {
       attachmentId: 'attachment',
       name: 'example.txt',
       mimeType: 'text/plain',
@@ -48,7 +48,7 @@ it('rejects a malformed attachment digest before composer delivery', async () =>
   ).rejects.toThrow();
 });
 
-it('reads the host journal but still sends commands through Switch', async () => {
+it('reads the host journal and sends commands through the relay', async () => {
   const transport = hostJournalTransport('agent', 'server');
   ipc.journalSnapshot.mockResolvedValueOnce('snapshot');
   expect(await transport.snapshot('session', null)).toBe('snapshot');
@@ -62,7 +62,7 @@ it('reads the host journal but still sends commands through Switch', async () =>
   expect(ipc.journalEvents).toHaveBeenCalledWith('agent', 'session', 7);
   expect(ipc.sharedEvents).not.toHaveBeenCalled();
 
-  ipc.sharedSubmit.mockResolvedValueOnce({
+  ipc.sessionSubmit.mockResolvedValueOnce({
     type: 'command.status',
     commandId: 'c',
     status: 'accepted',
@@ -76,8 +76,8 @@ it('reads the host journal but still sends commands through Switch', async () =>
     epoch: 'epoch',
     body: { type: 'turn.interrupt', turnId: 'turn' },
   } as never);
-  expect(ipc.sharedSubmit).toHaveBeenCalledWith(
-    'server',
+  expect(ipc.sessionSubmit).toHaveBeenCalledWith(
+    'agent',
     expect.objectContaining({ commandId: 'c' })
   );
 });

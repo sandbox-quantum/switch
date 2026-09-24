@@ -2,83 +2,77 @@ import { beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   snapshot: vi.fn(),
+  tail: vi.fn(),
   submit: vi.fn(),
   status: vi.fn(),
-  retire: vi.fn(),
 }));
 
-vi.mock('@switch-console/shared/session-v1', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  snapshotSchema: { parse: (value: unknown) => value },
-  commandStatusSchema: { parse: (value: unknown) => value },
+class Unavailable extends Error {}
+class NotRecorded extends Error {}
+class FakeGatewayError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number
+  ) {
+    super(message);
+  }
+}
+vi.mock('@main/core/switch-servers/gateway-client', () => ({ GatewayError: FakeGatewayError }));
+vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
+vi.mock('./host-journal', () => ({
+  JournalUnavailableError: Unavailable,
+  hostJournals: { tail: mocks.tail },
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  fetchSdkSnapshot: mocks.snapshot,
-  submitSdkCommand: mocks.submit,
-  fetchSdkCommandStatus: mocks.status,
-  retireSdkSession: mocks.retire,
+vi.mock('./session-commands', () => ({
+  CommandNotRecordedError: NotRecorded,
+  submitSessionCommand: mocks.submit,
+  sessionCommandStatus: mocks.status,
 }));
 
 const { stopSharedSession } = await import('./stop-shared-session');
-const server = { id: 'server' } as never;
 
 function session(overrides: Record<string, unknown>) {
-  return {
-    session: {
-      status: 'ready',
-      retired: false,
-      connectivity: 'online',
-      epoch: 'epoch-1',
-      ...overrides,
-    },
-  };
+  return { session: { status: 'ready', connectivity: 'online', epoch: 'epoch-1', ...overrides } };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.retire.mockResolvedValue({});
+  mocks.tail.mockResolvedValue({ snapshot: mocks.snapshot });
   mocks.submit.mockResolvedValue({});
 });
 
-it('stops a connected session through its host', async () => {
-  mocks.snapshot.mockResolvedValue(session({}));
-  mocks.status.mockResolvedValue({ commandId: 'stop-epoch-1', status: 'applied' });
-  await stopSharedSession(server, 'session-1');
+it('stops a running session through its host and waits for it to say so', async () => {
+  mocks.snapshot.mockReturnValue(session({}));
+  mocks.status
+    .mockRejectedValueOnce(new NotRecorded('not yet'))
+    .mockResolvedValue({ commandId: 'stop-epoch-1', status: 'applied' });
+  await stopSharedSession('agent', 'session-1');
   expect(mocks.submit).toHaveBeenCalledWith(
-    server,
-    expect.objectContaining({ body: { type: 'session.stop' } })
+    'agent',
+    expect.objectContaining({ commandId: 'stop-epoch-1', body: { type: 'session.stop' } })
   );
-  expect(mocks.retire).not.toHaveBeenCalled();
 });
 
-// The reported bug: a session discovered from the server and never opened has
-// no host, so a stop command could never be applied and delete failed forever.
-it('retires a session whose host is not connected instead of awaiting a host', async () => {
-  mocks.snapshot.mockResolvedValue(session({ connectivity: 'offline' }));
-  await stopSharedSession(server, 'session-1');
-  expect(mocks.retire).toHaveBeenCalledWith(server, 'session-1', 'epoch-1');
+it('sends nothing to a host that is not running', async () => {
+  mocks.snapshot.mockReturnValue(session({ connectivity: 'offline' }));
+  await stopSharedSession('agent', 'session-1');
   expect(mocks.submit).not.toHaveBeenCalled();
-  expect(mocks.status).not.toHaveBeenCalled();
 });
 
-it('reports the server refusing to retire while a host still holds the session', async () => {
-  mocks.snapshot.mockResolvedValue(session({ connectivity: 'offline' }));
-  mocks.retire.mockRejectedValue(new Error('Stop the active host before retiring this session.'));
-  await expect(stopSharedSession(server, 'session-1')).rejects.toThrow('Stop the active host');
+it('sends nothing for a session whose host is not reachable from here', async () => {
+  mocks.tail.mockRejectedValue(new Unavailable('not on this host'));
+  await stopSharedSession('agent', 'session-1');
+  expect(mocks.submit).not.toHaveBeenCalled();
 });
 
-it.each([{ status: 'stopped' }, { retired: true }])(
-  'leaves a finished session alone (%o)',
-  async (overrides) => {
-    mocks.snapshot.mockResolvedValue(session({ connectivity: 'offline', ...overrides }));
-    await stopSharedSession(server, 'session-1');
-    expect(mocks.retire).not.toHaveBeenCalled();
-    expect(mocks.submit).not.toHaveBeenCalled();
-  }
-);
+it('fails when Switch cannot relay the stop', async () => {
+  mocks.snapshot.mockReturnValue(session({}));
+  mocks.submit.mockRejectedValue(new FakeGatewayError('HOST_OFFLINE', 409));
+  await expect(stopSharedSession('agent', 'session-1')).rejects.toThrow('HOST_OFFLINE');
+});
 
-it('still refuses to report a connected session stopped without a receipt', async () => {
-  mocks.snapshot.mockResolvedValue(session({}));
-  mocks.status.mockResolvedValue({ commandId: 'stop-epoch-1', status: 'rejected' });
-  await expect(stopSharedSession(server, 'session-1')).rejects.toThrow();
+it('fails when the host refuses the stop', async () => {
+  mocks.snapshot.mockReturnValue(session({}));
+  mocks.status.mockResolvedValue({ status: 'rejected', message: 'Busy resetting' });
+  await expect(stopSharedSession('agent', 'session-1')).rejects.toThrow('Busy resetting');
 });

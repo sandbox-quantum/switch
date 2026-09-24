@@ -79,7 +79,7 @@ it('stops all server-owned sessions for this agent before removing local views',
     { connected: false, spawning: false },
     'explicit'
   );
-  expect(mocks.stop).toHaveBeenCalledExactlyOnceWith({ id: 'server' }, 'remote-only');
+  expect(mocks.stop).toHaveBeenCalledExactlyOnceWith('local', 'remote-only');
   expect(mocks.remove).toHaveBeenCalledTimes(1);
   expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit');
 });

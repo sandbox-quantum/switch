@@ -40,8 +40,12 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.ser
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: FakeGatewayError,
   fetchSdkSnapshot: mocks.snapshot,
-  fetchSdkCommandStatus: mocks.commandStatus,
-  submitSdkCommand: mocks.submit,
+}));
+class FakeNotRecorded extends Error {}
+vi.mock('./session-commands', () => ({
+  CommandNotRecordedError: FakeNotRecorded,
+  sessionCommandStatus: mocks.commandStatus,
+  submitSessionCommand: mocks.submit,
 }));
 vi.mock('@main/core/sessions/session-join', () => ({ loadSessionWithAgent: mocks.loadSession }));
 vi.mock('@main/core/sessions/operations/set-initial-prompt-delivery', () => ({
@@ -127,13 +131,7 @@ beforeEach(() => {
     providerId: 'claude',
     name: 'scout',
   });
-  mocks.commandStatus.mockRejectedValue(
-    new FakeGatewayError(
-      'http',
-      'Switch gateway returned 404: {"code":"NOT_FOUND","message":"No such command"}',
-      404
-    )
-  );
+  mocks.commandStatus.mockRejectedValue(new FakeNotRecorded('No such command'));
   mocks.submit.mockResolvedValue({
     type: 'command.status',
     commandId: 'minted',
@@ -202,14 +200,8 @@ it('does not resend a prompt the server already holds', async () => {
   });
 });
 
-it('treats a 404 that names another code as an uncertain lookup', async () => {
-  mocks.commandStatus.mockRejectedValue(
-    new FakeGatewayError(
-      'http',
-      'Switch gateway returned 404: {"code":"NOT_AUTHORIZED","message":"No"}',
-      404
-    )
-  );
+it('treats a lookup that fails for another reason as uncertain', async () => {
+  mocks.commandStatus.mockRejectedValue(new Error('The session journal reader stopped.'));
 
   await runtime().start(session, false, 'Say hello');
 
