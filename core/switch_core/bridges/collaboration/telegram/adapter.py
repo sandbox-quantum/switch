@@ -86,6 +86,9 @@ from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
+# Code as `_render_outbound` leaves it: rendered HTML, not Markdown.
+_TELEGRAM_CODE = re.compile(r"<pre>.*?</pre>|<code>.*?</code>", re.DOTALL)
+
 # A caption over this is posted as its own message ahead of the file. The
 # message-length cap lives in `chunking`, which owns the splitting.
 _MAX_CAPTION_CHARS = 1024
@@ -2119,7 +2122,7 @@ class TelegramAdapter(CollaborationAdapter):
     _ITALIC_USCORE_RE = re.compile(r"(?<![\w_])_([^_\n]+?)_(?![\w_])")
     _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
 
-    def translate_outbound(self, content: str) -> str:
+    def _render_outbound(self, content: str) -> str:
         """Render Switch's Markdown as the HTML subset Telegram accepts.
 
         Telegram's own MarkdownV2 is not Markdown — it requires escaping a long
@@ -2179,12 +2182,25 @@ class TelegramAdapter(CollaborationAdapter):
 
         text = self._LINK_RE.sub(_link, text)
         text = self._MENTION_RE.sub(self._render_mention, text)
-        # Before the stash is restored, so code spans keep their text exactly.
-        text = self.defuse_mass_mentions(text)
 
         for index, rendered in enumerate(stash):
             text = text.replace(f"\x00{index}\x00", rendered)
         return text
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """The base defusal, outside the code this adapter has already rendered.
+
+        By the time it runs a code span is `<code>` or `<pre>` HTML rather than
+        backticks, so the base rule's own code check cannot see it, and a
+        command copied out of the message would carry the zero-width space."""
+        parts: list[str] = []
+        last = 0
+        for span in _TELEGRAM_CODE.finditer(text):
+            parts.append(super().defuse_mass_mentions(text[last : span.start()]))
+            parts.append(span.group(0))
+            last = span.end()
+        parts.append(super().defuse_mass_mentions(text[last:]))
+        return "".join(parts)
 
     def _render_mention(self, match: re.Match[str]) -> str:
         """An `@name` we can resolve becomes a real mention; anything else is

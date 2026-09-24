@@ -106,12 +106,12 @@ _UNKNOWN_MESSAGE_CODE = 10008
 # and not the reader's.
 _UNKNOWN_MEMBER_CODE = 10007
 
-# Applied to every post that carries text Switch did not write: the DM path,
-# which inlines an agent's name into the body, and the webhook path agents'
-# messages take. Escaping the text is not enough on its own: Discord decides
-# who a message pings from the raw content it receives, so `@everyone` is
-# refused here rather than in markup. Only the mass mentions are withheld; a
-# user or role the agent deliberately mentioned still resolves.
+# The client's default, and passed again on every post that carries text
+# Switch did not write, so no single path depends on the other. Escaping the
+# text is not enough on its own: Discord decides who a message pings from the
+# raw content it receives, so `@everyone` is refused here rather than in
+# markup. Only the mass mentions are withheld; a user or role the agent
+# deliberately mentioned still resolves.
 _NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
 
 # The one exception, for a message the server marked as a room-wide mention.
@@ -565,7 +565,9 @@ class DiscordAdapter(CollaborationAdapter):
         intents.message_content = True
         intents.members = True
 
-        client = discord.Client(intents=intents)
+        # The default for every send the client makes, webhooks bound to it
+        # included, so a path that forgets to pass the guard still has it.
+        client = discord.Client(intents=intents, allowed_mentions=_NO_MASS_MENTIONS)
         client.event(self._make_on_message())
         # Presses on a card's buttons. Registered alongside the command tree
         # rather than through it: the tree is handed application-command
@@ -903,6 +905,7 @@ class DiscordAdapter(CollaborationAdapter):
                     "content": body,
                     "avatar_url": agent.icon_url,
                     "file": discord.File(io.BytesIO(data), filename=filename),
+                    "allowed_mentions": _NO_MASS_MENTIONS,
                     "wait": True,
                     **kwargs,
                 },
@@ -2479,7 +2482,7 @@ class DiscordAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
+    def _render_outbound(self, content: str) -> str:
         # Discord renders markdown natively (bold, code, headers, masked
         # links), so only @name mentions need rewriting to real Discord
         # mentions: a resolved user, or an agent that has a role of its own so
@@ -2492,9 +2495,7 @@ class DiscordAdapter(CollaborationAdapter):
             role_id = self._agent_role_ids.get(match.group(1).casefold())
             return f"<@&{role_id}>" if role_id else match.group(0)
 
-        return self.defuse_mass_mentions(
-            re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
-        )
+        return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
 
     def escape_label_for_body(self, label: str) -> str:
         """Defuse Discord's markdown, mentions and `<…>` entity syntax.

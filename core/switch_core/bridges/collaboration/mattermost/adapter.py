@@ -2352,8 +2352,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
-        return self.defuse_mass_mentions(re.sub(r"@(\w+):\S+", r"@\1", content))
+    def _render_outbound(self, content: str) -> str:
+        return re.sub(r"@(\w+):\S+", r"@\1", content)
 
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message

@@ -203,6 +203,8 @@ mention: it notifies every *person* in the room on its chat platform —
 `@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no
 agent**. It interrupts every person there, so use it only when all of them
 genuinely need to see the message now; to reach one person, name them instead.
+Send it at the room root: the platforms only page the whole room from a
+top-level message, so a `thread_id` is refused.
 `target_statuses` reports what happened under `everyone`: `sent`,
 `unsupported` (Teams has no channel-wide mention a bot can send, so the message
 posts but pages nobody), `no_bridge` (the room has no chat platform) or

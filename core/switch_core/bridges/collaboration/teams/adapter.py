@@ -2158,8 +2158,8 @@ class TeamsAdapter(CollaborationAdapter):
             )
         return self._mention_pattern
 
-    def translate_outbound(self, content: str) -> str:
-        return self.defuse_mass_mentions(self._mark_mentions(content))
+    def _render_outbound(self, content: str) -> str:
+        return self._mark_mentions(content)
 
     def escape_label_for_body(self, label: str) -> str:
         """Add the `<at>` tag to what the base class already defuses.

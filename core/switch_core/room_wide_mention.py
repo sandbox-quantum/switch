@@ -45,10 +45,15 @@ _MASS_MENTION_AT = re.compile(
     re.IGNORECASE,
 )
 
-# No platform resolves a mention inside code, and code is where a defused `@`
-# would do harm: `npm install @here/sdk` copied out of a message would carry
-# the zero-width space with it.
-_CODE_SPAN = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+# Left exactly as written. No platform resolves a mention inside code or a
+# URL, and those are where a defused `@` would do harm: `npm install
+# @here/sdk` copied out of a message, or a link to `…/package/@here/sdk`,
+# would carry the zero-width space with it. A URL must start its host with a
+# letter or digit, so `http://@channel` is not one.
+_UNTOUCHED = re.compile(
+    r"```.*?```|~~~.*?~~~|`[^`\n]*`|https?://[A-Za-z0-9]\S*",
+    re.DOTALL | re.IGNORECASE,
+)
 
 _LEADING_TARGET = re.compile(rf"\A@{ROOM_WIDE_TARGET}(?!{NAME_CHAR})[ \t]*")
 
@@ -65,8 +70,8 @@ def reject_reserved_mention_name(name: str, *, kind: str) -> None:
     """
     if is_reserved_mention_name(name):
         raise ValueError(
-            f"{kind} {name!r} is reserved: `@{name.casefold()}` notifies every "
-            "person in a room, so it cannot also name an agent, alias or role."
+            f"{kind} {name!r} is reserved for room-wide mentions, so it cannot "
+            "name an agent, alias or role."
         )
 
 
@@ -86,14 +91,15 @@ def strip_room_wide_target(body: str) -> str:
 
 
 def defuse_mass_mention_words(text: str) -> str:
-    """Break every `@everyone`, `@channel`, `@here` and `@all` outside code.
+    """Break every `@everyone`, `@channel`, `@here` and `@all` outside code
+    and URLs.
 
     A zero-width space after the `@` leaves the word legible and the mention
     dead, the same defusal `defuse_label_markup` applies to display names.
     """
     parts: list[str] = []
     last = 0
-    for span in _CODE_SPAN.finditer(text):
+    for span in _UNTOUCHED.finditer(text):
         parts.append(
             _MASS_MENTION_AT.sub("@" + _ZERO_WIDTH_SPACE, text[last : span.start()])
         )

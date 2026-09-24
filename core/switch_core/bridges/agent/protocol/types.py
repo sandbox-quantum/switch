@@ -135,8 +135,8 @@ class RoomWideMentionStatus(StrEnum):
     UNSUPPORTED = "unsupported"
     # The room has no chat platform, so there is nobody to page.
     NO_BRIDGE = "no_bridge"
-    # The room's bridge is not running, so the message reaches the room but
-    # not its chat platform.
+    # The room's bridge is not running, or has no channel for the room, so the
+    # message reaches the room but not its chat platform.
     BRIDGE_UNAVAILABLE = "bridge_unavailable"
 
 

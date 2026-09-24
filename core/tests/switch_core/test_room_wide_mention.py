@@ -44,6 +44,9 @@ RESERVED = ["everyone", "channel", "here", "all", "Everyone", "CHANNEL"]
         ("ping @all.", f"ping @{ZWSP}all."),
         ("ping @channel-", f"ping @{ZWSP}channel-"),
         ("mail@here", f"mail@{ZWSP}here"),
+        # Not a URL: a host starts with a letter or digit.
+        ("http://@channel", f"http://@{ZWSP}channel"),
+        ("see https://x.io then @here", f"see https://x.io then @{ZWSP}here"),
     ],
 )
 def test_the_words_are_defused(text: str, expected: str) -> None:
@@ -59,6 +62,10 @@ def test_the_words_are_defused(text: str, expected: str) -> None:
         "@channels",
         "`@here`",
         "```\n@all\n```",
+        "~~~\nnpm i @here/sdk\n~~~",
+        "https://www.npmjs.com/package/@here/harp.gl",
+        "[profile](https://mastodon.social/@all)",
+        "alice@here.com",
         "no mention here",
     ],
 )
@@ -91,7 +98,7 @@ def test_the_leading_target_is_taken_off(body: str, rest: str) -> None:
 
 @pytest.mark.parametrize("name", RESERVED)
 def test_reserved_names_are_refused(name: str) -> None:
-    with pytest.raises(ValueError, match="reserved"):
+    with pytest.raises(ValueError, match="reserved for room-wide mentions"):
         reject_reserved_mention_name(name, kind="Name")
 
 

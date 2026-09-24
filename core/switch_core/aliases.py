@@ -29,8 +29,8 @@ def validate_alias_format(alias: str) -> None:
         )
     if is_reserved_mention_name(alias):
         raise AliasError(
-            f"Alias '{alias}' is reserved: `@{alias.casefold()}` notifies every "
-            "person in a room, so it cannot name an agent."
+            f"Alias '{alias}' is reserved for room-wide mentions, so it cannot "
+            "name an agent."
         )
 
 

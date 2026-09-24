@@ -608,6 +608,21 @@ def test_a_room_wide_mention_is_permitted_on_the_request() -> None:
     assert webhook.sent[0]["allowed_mentions"].everyone is True
 
 
+def test_an_attachment_caption_cannot_page_the_channel() -> None:
+    adapter = _adapter()
+    adapter._client = _FakeClient({CHANNEL_ID: _FakeChannel()})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+
+    _run(
+        adapter.send_attachment(
+            str(CHANNEL_ID), "my-agent", "a.txt", "text/plain", b"x", "`@everyone`"
+        )
+    )
+
+    assert webhook.sent[0]["allowed_mentions"].everyone is False
+
+
 def test_an_admin_message_cannot_page_the_channel() -> None:
     adapter = _adapter()
     channel = _FakeChannel()

@@ -330,6 +330,14 @@ class BridgeCore:
     def adapter(self) -> CollaborationAdapter:
         return self._adapter
 
+    def relays_room(self, room_id: str) -> bool:
+        """Whether a message in this Switch room reaches the platform now.
+
+        A bridge is registered before `start` has loaded its channel map, and a
+        room it has no channel for is dropped by `handle_outbound_message`, so
+        being registered is not the same as relaying."""
+        return self._find_channel(room_id=room_id) is not None
+
     @property
     def tenant_id(self) -> str:
         return self._bridge_tenant_id

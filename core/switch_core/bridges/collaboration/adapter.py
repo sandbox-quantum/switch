@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, final
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -1182,14 +1182,20 @@ class CollaborationAdapter(ABC):
     @abstractmethod
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
 
-    @abstractmethod
+    @final
     def translate_outbound(self, content: str) -> str:
-        """Render a Switch body in this platform's markup.
+        """Render a Switch body in this platform's markup, unable to page.
 
-        Every implementation finishes with `defuse_mass_mentions`, so that
-        nothing a body says can page a channel: only `render_room_wide_mention`
-        does that, for a message the server marked.
+        Final so that no adapter can forget the defusal: a platform renders in
+        `_render_outbound`, and nothing a body says can then page a channel.
+        Only `render_room_wide_mention` does that, for a message the server
+        marked.
         """
+        return self.defuse_mass_mentions(self._render_outbound(content))
+
+    @abstractmethod
+    def _render_outbound(self, content: str) -> str:
+        """Render a Switch body in this platform's markup."""
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Break every channel-wide mention in text on its way to the platform.

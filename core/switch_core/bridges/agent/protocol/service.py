@@ -1428,6 +1428,15 @@ class ProtocolService:
             raise ValueError("at least one of target_names / target_roles is required")
         room_wide = any(n.casefold() == ROOM_WIDE_TARGET for n in target_names)
         target_names = [n for n in target_names if n.casefold() != ROOM_WIDE_TARGET]
+        if room_wide and thread_id is not None:
+            # Slack sends no channel-wide alert from a thread, and Discord's
+            # reaches only people already in it: a threaded room-wide mention
+            # would report "sent" having paged next to nobody.
+            raise ValueError(
+                "A room-wide mention cannot go in a thread: the chat platforms "
+                "only page the whole room from a top-level message. Send it "
+                "without thread_id."
+            )
 
         participants = await self.list_participants(room_id)
         if room_wide:
@@ -1553,7 +1562,7 @@ class ProtocolService:
                 target_statuses[name] = participant.status
         if room_wide:
             target_statuses[ROOM_WIDE_TARGET] = self._room_wide_mention_status(
-                room_row.bridge_id if room_row is not None else None
+                room_id, room_row.bridge_id if room_row is not None else None
             )
         return SendTargetedResult(event_id=event_id, target_statuses=target_statuses)
 
@@ -1593,7 +1602,9 @@ class ProtocolService:
                 "Rename it first — the name is reserved for room-wide mentions."
             )
 
-    def _room_wide_mention_status(self, bridge_id: str | None) -> RoomWideMentionStatus:
+    def _room_wide_mention_status(
+        self, room_id: str, bridge_id: str | None
+    ) -> RoomWideMentionStatus:
         """What the room's bridge does with a room-wide mention.
 
         This is what Switch sends, not what the platform confirmed: the bridge
@@ -1602,7 +1613,7 @@ class ProtocolService:
         if bridge_id is None:
             return RoomWideMentionStatus.NO_BRIDGE
         bridge_core = self.collab_lifecycle.get(bridge_id)
-        if bridge_core is None:
+        if bridge_core is None or not bridge_core.relays_room(room_id):
             return RoomWideMentionStatus.BRIDGE_UNAVAILABLE
         if bridge_core.adapter.room_wide_mention_notifies:
             return RoomWideMentionStatus.SENT

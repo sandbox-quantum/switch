@@ -182,9 +182,17 @@ def test_code_keeps_its_text_exactly(platform: str) -> None:
     assert ZWSP not in rendered
 
 
-def test_telegram_code_keeps_its_text_exactly() -> None:
-    rendered = _telegram().translate_outbound("run `npm i @here/sdk`")
-    assert rendered == "run <code>npm i @here/sdk</code>"
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("run `npm i @here/sdk`", "run <code>npm i @here/sdk</code>"),
+        ("```\nnpm i @here/sdk\n```", "<pre>npm i @here/sdk</pre>"),
+    ],
+)
+def test_telegram_code_keeps_its_text_exactly(body: str, expected: str) -> None:
+    # Telegram's code is already HTML by the time it is defused, so the base
+    # rule's backtick check cannot see it; the adapter's own override does.
+    assert _telegram().translate_outbound(body) == expected
 
 
 @pytest.mark.parametrize(
@@ -194,6 +202,7 @@ def test_telegram_code_keeps_its_text_exactly() -> None:
         "<!here>",
         "<!everyone>",
         "<!channel|channel>",
+        "<!group>",
         # The Markdown translation writes Slack syntax itself: a link to
         # `!channel` comes out of it as `<!channel|x>`.
         "[x](!channel)",
@@ -209,6 +218,14 @@ def test_slacks_own_mentions_still_resolve() -> None:
     adapter = _slack()
     adapter.prime_mention_targets({"doe.jane": "U123"})
     assert adapter.translate_outbound("@doe.jane look") == "<@U123> look"
+
+
+@pytest.mark.parametrize("platform", ADAPTERS)
+def test_the_defusal_is_not_an_adapters_to_forget(platform: str) -> None:
+    # An adapter renders in `_render_outbound`; `translate_outbound` is the
+    # base class's, final, and defuses whatever comes back.
+    assert "translate_outbound" not in type(ADAPTERS[platform]()).__dict__
+    assert getattr(CollaborationAdapter.translate_outbound, "__final__", False)
 
 
 # ── The relay ────────────────────────────────────────────────────────────────

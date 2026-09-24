@@ -665,6 +665,8 @@ async def send_targeted_message(
             every person in the room on its chat platform (`@channel` on Slack
             and Mattermost, `@everyone` on Discord) and wakes no agent. Use it
             only when every person there genuinely needs to see the message.
+            It cannot go in a thread: the platforms only page the whole room
+            from a top-level message.
         target_roles: Role names (from list_roles) to address. Each is
             prepended as `@role` and fans out to every live holder of that
             role — the single holder for an exclusive role, all current
@@ -697,8 +699,9 @@ async def send_targeted_message(
         every message), `unsupported` (the platform has no channel-wide
         mention a bot can send, as on Teams; the message still posts),
         `no_bridge` (the room has no chat platform) or `bridge_unavailable`
-        (its bridge is down, so the message never reaches the platform). It
-        says what Switch sent, not what the platform confirmed.
+        (its bridge is down or has no channel for the room, so the message
+        never reaches the platform). It says what Switch sent, not what the
+        platform confirmed.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()

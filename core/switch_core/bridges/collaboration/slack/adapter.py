@@ -67,9 +67,9 @@ from switch_core.sessions.contract import TURN_ENDED
 logger = logging.getLogger(__name__)
 
 # A channel-wide mention in Slack's own syntax, with or without the `|label`
-# a client may add.
+# a client may add. `group` is the legacy name for `channel` in a private one.
 _SLACK_MASS_MENTION = re.compile(
-    r"<(!(?:channel|here|everyone)(?:\|[^>]*)?)>", re.IGNORECASE
+    r"<(!(?:channel|here|everyone|group)(?:\|[^>]*)?)>", re.IGNORECASE
 )
 
 # Stamped on the description of every user group we mint for an agent, so a
@@ -2489,16 +2489,14 @@ class SlackAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
-        return self.defuse_mass_mentions(
-            self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
-        )
+    def _render_outbound(self, content: str) -> str:
+        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Escape Slack's own channel-wide syntax, over the base defusal.
 
-        `<!channel>`, `<!here>` and `<!everyone>` page a channel from any text
-        Slack parses, and this runs on the finished mrkdwn because the
+        `<!channel>`, `<!here>`, `<!everyone>` and the legacy `<!group>` page
+        a channel from any text Slack parses, and this runs on the finished mrkdwn because the
         translation can write one: a Markdown link to `!channel` comes out of
         it as `<!channel|…>`. Escaping shows the token as written rather than
         hiding it."""
