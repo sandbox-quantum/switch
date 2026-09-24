@@ -93,6 +93,39 @@ export class RemoteServerHost implements ServerHost {
     onLine: (line: string) => void,
     opts: { timeoutMs?: number } = {}
   ): Promise<void> {
+    return this.runOverSsh(command, args, { onLine, timeoutMs: opts.timeoutMs });
+  }
+
+  /**
+   * Run a command on the host with `input` as its stdin, rooted at
+   * {@link workingDir}. Rejects on non-zero exit or timeout.
+   *
+   * For handing a command a secret: stdin never appears in the host's process
+   * table, where anything passed as an argument is readable by every account
+   * on the machine. Its output is discarded — the login shell may print to
+   * stdout before the command does, and nothing that writes needs to read.
+   */
+  writeCommandInput(
+    command: string,
+    args: string[],
+    input: string,
+    opts: { timeoutMs: number }
+  ): Promise<void> {
+    return this.runOverSsh(command, args, { input, timeoutMs: opts.timeoutMs });
+  }
+
+  /**
+   * Run `command` in the host's login shell, rooted at {@link workingDir}, and
+   * settle once it exits: resolved on status 0, rejected otherwise with the
+   * tail of its stderr, or on timeout. `onLine` gets each non-empty line of its
+   * stdout and stderr; without one, output is drained and dropped. `input`,
+   * when given, is written to its stdin, which is then closed.
+   */
+  private runOverSsh(
+    command: string,
+    args: string[],
+    opts: { onLine?: (line: string) => void; input?: string; timeoutMs?: number }
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       this.proxy
         .getRemoteShellProfile()
@@ -106,9 +139,10 @@ export class RemoteServerHost implements ServerHost {
             let stderrTail = '';
             let settled = false;
             const emit = (buf: Buffer) => {
+              if (!opts.onLine) return;
               for (const raw of buf.toString('utf8').split('\n')) {
                 const line = raw.replace(/\r$/, '');
-                if (line.length > 0) onLine(line);
+                if (line.length > 0) opts.onLine(line);
               }
             };
             const settle = (fn: () => void) => {
@@ -138,63 +172,7 @@ export class RemoteServerHost implements ServerHost {
               });
             });
             stream.on('error', (err: Error) => settle(() => reject(err)));
-          });
-        })
-        .catch(reject);
-    });
-  }
-
-  /**
-   * Run a command on the host with `input` as its stdin, rooted at
-   * {@link workingDir}. Rejects on non-zero exit or timeout.
-   *
-   * For handing a command a secret: stdin never appears in the host's process
-   * table, where anything passed as an argument is readable by every account
-   * on the machine. Its output is discarded — the login shell may print to
-   * stdout before the command does, and nothing that writes needs to read.
-   */
-  writeCommandInput(
-    command: string,
-    args: string[],
-    input: string,
-    opts: { timeoutMs: number }
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.proxy
-        .getRemoteShellProfile()
-        .then((profile) => {
-          const full = buildSshCommand(this.workingDir, command, args, profile);
-          this.proxy.exec(full, (execErr, stream) => {
-            if (execErr) {
-              reject(execErr);
-              return;
-            }
-            let stderrTail = '';
-            let settled = false;
-            const settle = (fn: () => void) => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              fn();
-            };
-            const timer = setTimeout(() => {
-              settle(() => {
-                stream.destroy();
-                reject(new Error(`${command} timed out after ${opts.timeoutMs}ms`));
-              });
-            }, opts.timeoutMs);
-            stream.on('data', () => {});
-            stream.stderr.on('data', (buf: Buffer) => {
-              stderrTail = (stderrTail + buf.toString('utf8')).slice(-4000);
-            });
-            stream.on('close', (code: number | null) => {
-              settle(() => {
-                if ((code ?? 0) === 0) resolve();
-                else reject(new Error(`${command} failed (exit ${code}): ${stderrTail.trim()}`));
-              });
-            });
-            stream.on('error', (err: Error) => settle(() => reject(err)));
-            stream.end(input);
+            if (opts.input !== undefined) stream.end(opts.input);
           });
         })
         .catch(reject);
