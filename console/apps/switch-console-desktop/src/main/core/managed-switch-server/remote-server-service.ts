@@ -251,6 +251,10 @@ class RemoteServerService {
    */
   private async reconcileHost(sshHost: string, serverId: string): Promise<void> {
     if (hostReachabilityService.isBlocked(sshHost)) return;
+    // Checked here, with no await before the add, and not only by the callers:
+    // they look before awaiting the server list, and a Start clicked in that
+    // gap must not have this read run beside it and give back its flag.
+    if (this.busy.has(sshHost)) return;
     const wasRunning = this.getStatus(sshHost).phase === 'running';
     this.busy.add(sshHost);
     // The forward this Console holds stays until the host gives an answer that

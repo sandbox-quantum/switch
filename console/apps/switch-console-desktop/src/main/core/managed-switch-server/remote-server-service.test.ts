@@ -12,6 +12,7 @@ import type * as StackState from './stack-state';
 
 const requireReachable = vi.hoisted(() => vi.fn());
 const isBlocked = vi.hoisted(() => vi.fn(() => false));
+const onReachability = vi.hoisted(() => vi.fn());
 const createRemoteServerHost = vi.hoisted(() => vi.fn());
 const inspectStack = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
 const connectStack = vi.hoisted(() => vi.fn());
@@ -34,7 +35,7 @@ const recordOnHost = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const readRegister = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
-  hostReachabilityService: { requireReachable, isBlocked, on: vi.fn() },
+  hostReachabilityService: { requireReachable, isBlocked, on: onReachability },
 }));
 vi.mock('./host/remote-host', () => ({ createRemoteServerHost }));
 vi.mock('./stack-state', async (importOriginal) => ({
@@ -419,6 +420,53 @@ describe('recheck', () => {
     service.recheck('vm-1');
 
     expect(createRemoteServerHost).not.toHaveBeenCalled();
+  });
+});
+
+describe('a host coming back while an operation starts', () => {
+  it('does not read the host beside the operation, nor give back its flag', async () => {
+    // Launch finds the stack stopped, so there is no forward and a recovered
+    // host is picked back up.
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(false));
+    const service = await loadService();
+    await service.initialize();
+    const [, onChange] = onReachability.mock.calls[0] as [
+      string,
+      (change: { current: { status: string; sshHost: string } }) => void,
+    ];
+    inspectStack.mockClear();
+
+    // The host comes back; the pick-up is waiting on the server list...
+    let listed!: () => void;
+    listManagedServers.mockImplementationOnce(
+      () => new Promise((resolve) => (listed = () => resolve([RECORD])))
+    );
+    onChange({ current: { status: 'reachable', sshHost: 'vm-1' } });
+
+    // ...when the user clicks Connect, which holds the host until it is done.
+    let joined!: () => void;
+    connectStack.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          joined = () => resolve({ kind: 'connected', serverId: 'srv-1', deployedVersion: null });
+        })
+    );
+    const connecting = service.connect('vm-1', 'Team server');
+    await vi.waitFor(() => expect(connectStack).toHaveBeenCalledOnce());
+
+    listed();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(inspectStack).not.toHaveBeenCalled();
+    // The flag is still Connect's: a second operation is refused.
+    expect(await service.connect('vm-1', 'Team server')).toMatchObject({
+      kind: 'error',
+      message: expect.stringMatching(/already in progress/),
+    });
+
+    joined();
+    expect(await connecting).toMatchObject({ kind: 'connected' });
   });
 });
 
