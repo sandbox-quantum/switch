@@ -149,8 +149,9 @@ and each ships its own copy of the Switch room-workflow skill at
   Because the app writes the files it also **embeds** them, and the embedded
   copies must not drift from this directory — `connector-assets.test.ts` fails
   if they do. Edit the files here; the test names what to update. Nothing
-  fetched the install, so it has no version of its own to report: a status read
-  compares the app version that stamped it against the running one.
+  fetched the install, so the install records the connector's own version (from
+  `artifacts.yaml`) and a status read compares that against the version the
+  running app carries.
 
   The MCP server is registered as a `local` (stdio) server, deliberately.
   OpenCode spawns a local server with the parent environment, so the runtime
@@ -225,6 +226,11 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   docs repository, never here. Start at `docs/README.md` for how the sync
   works; `docs/official/internals/` covers architecture and the agent
   protocol for readers of this repo.
+- `docs/ARTIFACT_VERSIONING.md` — how the independently released artifacts
+  (switch-core, Switch Console, the agent runtime, the SDK host, the connector
+  plugins) depend on each other, how each is updated, what checks
+  compatibility, and the known failure modes. Read it before changing an
+  interface another artifact consumes, or a version pin
 - `docs/old/ARCHITECTURE.md` — historical system overview: components, domain
   model, key flows, entry points, and a code map. Predates the docs sync and
   may lag the tree.

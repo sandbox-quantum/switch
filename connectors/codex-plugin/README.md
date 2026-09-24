@@ -33,13 +33,15 @@ The config holds **no secret**. It names the variables the runtime needs under
   "mcpServers": {
     "switch": {
       "command": "npx",
-      "args": ["-y", "@sandboxaq/switch-agent-runtime@0.1.6"],
+      "args": ["-y", "@sandboxaq/switch-agent-runtime@<version>"],
       "env_vars": ["SWITCH_API_ENDPOINT", "SWITCH_API_TOKEN", "SWITCH_AGENT_ID", "…"],
       "startup_timeout_sec": 60
     }
   }
 }
 ```
+
+`<version>` is the runtime this plugin pins in its own `.mcp.json`.
 
 Naming them is not optional. Codex hands an MCP server a fixed allowlist
 (`HOME`, `PATH`, `SHELL`, `USER`, `TMPDIR`, …) rather than a copy of its own

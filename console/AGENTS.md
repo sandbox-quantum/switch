@@ -547,6 +547,9 @@ execution machine. Never replace unknown command outcomes with retries.
 
 ## Versioned Artifacts — Bump Them
 
+How these artifacts depend on each other and reach users is mapped in
+[`../docs/ARTIFACT_VERSIONING.md`](../docs/ARTIFACT_VERSIONING.md).
+
 Four things here ship independently of the app and carry their own version.
 **If you make a non-trivial change to one, bump its version in the same commit.**
 Not at release time, not "later" — in the commit that changes it, or it will be
