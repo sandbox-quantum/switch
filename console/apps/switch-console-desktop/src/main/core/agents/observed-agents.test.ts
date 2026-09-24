@@ -16,6 +16,7 @@ const createAgent = vi.hoisted(() => vi.fn());
 const emit = vi.hoisted(() => vi.fn());
 const startRemoteDiscovery = vi.hoisted(() => vi.fn(async () => {}));
 const resolveWorkspaceFsFor = vi.hoisted(() => vi.fn());
+const discoverConfiguredAgents = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({
   ensureSshConnected: async () => ({}),
@@ -29,7 +30,12 @@ vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
 vi.mock('@main/core/locations/location-transport', () => ({
   sshConnectionIdForHost: (host: string) => `ssh:${host}`,
 }));
-vi.mock('@main/core/locations/store', () => ({ ensureObservedLocation, getLocationByHostDir }));
+vi.mock('@main/core/locations/store', () => ({
+  ensureObservedLocation,
+  getLocationByHostDir,
+  ObservedLocationError: class ObservedLocationError extends Error {},
+}));
+vi.mock('./discover-configured-agents', () => ({ discoverConfiguredAgents }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchAgents,
@@ -54,6 +60,7 @@ vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), info: vi.fn() } }));
 const { attachObservedAgents, probeDirAccess } = await import('./observed-agents');
 const { accountOwning, parseHomes, repoDirOf } = await import('./observed-agent-paths');
 const { GatewayError } = await import('@main/core/switch-servers/gateway-client');
+const { FileSystemError, FileSystemErrorCodes } = await import('@main/core/fs/types');
 
 const SERVER = {
   id: 'srv-1',
@@ -224,6 +231,52 @@ describe('attachObservedAgents', () => {
     expect(result.success).toBe(false);
     expect(!result.success && 'message' in result.error && result.error.message).toMatch(
       /loaded and run the ordinary way/
+    );
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  it('follows an agent in a readable directory whose files this account cannot read', async () => {
+    // What discovery offers for following — a shared project directory
+    // holding another account's agent files — the attach must accept.
+    fetchAgents.mockResolvedValue([
+      summary('a1', { knownAgentOptions: { repo_dir: '/srv/shared/reviewer' } }),
+      summary('a2', { knownAgentOptions: { repo_dir: '/srv/shared/reviewer' } }),
+    ]);
+    hostAnswers(['readable']);
+    discoverConfiguredAgents.mockRejectedValue(
+      new FileSystemError('Permission denied', FileSystemErrorCodes.PERMISSION_DENIED)
+    );
+
+    const result = await attachObservedAgents({
+      sshHost: 'vm-1',
+      serverId: 'srv-1',
+      switchAgentIds: ['a1', 'a2'],
+    });
+
+    expect(result.success).toBe(true);
+    expect(createAgent).toHaveBeenCalledTimes(2);
+    // Asked once for the directory, not once per agent in it.
+    expect(discoverConfiguredAgents).toHaveBeenCalledOnce();
+    expect(discoverConfiguredAgents).toHaveBeenCalledWith({
+      sshHost: 'vm-1',
+      dir: '/srv/shared/reviewer',
+      serverId: 'srv-1',
+    });
+  });
+
+  it('does not take a failed read of a readable directory for another account’s', async () => {
+    fetchAgents.mockResolvedValue([summary('a1')]);
+    hostAnswers(['readable']);
+    discoverConfiguredAgents.mockRejectedValue(new Error('Channel open failure'));
+
+    const result = await attachObservedAgents({
+      sshHost: 'vm-1',
+      serverId: 'srv-1',
+      switchAgentIds: ['a1'],
+    });
+
+    expect(!result.success && 'message' in result.error && result.error.message).toMatch(
+      /Could not tell whether agent-a1's files .* Channel open failure/
     );
     expect(createAgent).not.toHaveBeenCalled();
   });

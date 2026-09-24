@@ -1,7 +1,5 @@
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
-import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { ObservedLocationError } from '@main/core/locations/store';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { fetchAgents, fetchMe } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
@@ -9,6 +7,7 @@ import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteAgentSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { deniedToThisAccount } from './agent-files-denied';
 import type { DiscoveredConfiguredAgent, ProviderSource } from './discover-configured-agents';
 import { discoverConfiguredAgents } from './discover-configured-agents';
 import { getAgents } from './getAgents';
@@ -250,13 +249,6 @@ export async function discoverLoadableAgentsOnHost(
 
 /** Whether a scan failed because this account may not read what it found —
  * the one failure that says the directory's agents are another account's. */
-function deniedToThisAccount(error: unknown): boolean {
-  return (
-    (error instanceof FileSystemError && error.code === FileSystemErrorCodes.PERMISSION_DENIED) ||
-    error instanceof ObservedLocationError
-  );
-}
-
 /** An agent another account runs here, as the server describes it. */
 function observedCandidate(
   agent: RemoteAgentSummary,

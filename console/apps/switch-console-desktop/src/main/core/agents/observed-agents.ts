@@ -13,7 +13,9 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
+import { deniedToThisAccount } from './agent-files-denied';
 import { createAgent } from './createAgent';
+import { discoverConfiguredAgents } from './discover-configured-agents';
 import { getAgents } from './getAgents';
 import { providerForKnownAgentType } from './known-agent-type';
 import {
@@ -97,6 +99,21 @@ export async function probeDirAccess(
 }
 
 /**
+ * Whether the agent files in `dir`, a directory this account can read, are
+ * refused to it. Asked the same way discovery asks, so an agent it offers for
+ * following is one the attach accepts.
+ */
+async function agentFilesRefused(sshHost: string, dir: string, serverId: string): Promise<boolean> {
+  try {
+    await discoverConfiguredAgents({ sshHost, dir, serverId });
+    return false;
+  } catch (error) {
+    if (deniedToThisAccount(error)) return true;
+    throw error;
+  }
+}
+
+/**
  * The accounts on `sshHost` and their homes, for saying whose an observed
  * directory is. Best-effort: a host that will not say leaves the owner unnamed,
  * which is shown as "another account" rather than guessed.
@@ -126,14 +143,15 @@ export type AttachObservedAgentsParams = {
 
 /**
  * Follow agents another account runs on `sshHost` from this Console, with
- * their identity taken from the server alone. Reads nothing in their working
- * directories and starts nothing on the host; their sessions are found by the
- * session reconciler, which asks the server.
+ * their identity taken from the server alone. Reads nothing of theirs — in a
+ * directory this account can list it only tries its agent files, to learn they
+ * are refused — and starts nothing on the host; their sessions are found by
+ * the session reconciler, which asks the server.
  *
  * Refuses anything that is not what it claims: an agent the server does not
- * have, one whose directory the server does not name or this account can in
- * fact read — which is loaded and run the ordinary way — or one that is not on
- * this host at all.
+ * have, one whose directory the server does not name, one whose files this
+ * account can in fact read — which is loaded and run the ordinary way — or one
+ * that is not on this host at all.
  */
 export async function attachObservedAgents(
   params: AttachObservedAgentsParams
@@ -189,14 +207,33 @@ export async function attachObservedAgents(
   }
 
   const access = await probeDirAccess(params.sshHost, [...new Set(wanted.map(({ dir }) => dir))]);
+  // A directory this account can list may still hold another account's agent
+  // files — a shared project directory, say — and discovery offers those for
+  // following. Asked once per directory, and only for the readable ones.
+  const refusedFiles = new Map<string, boolean>();
   for (const { summary, dir } of wanted) {
     const reach = access.get(dir);
     if (reach === 'readable') {
-      return err({
-        type: 'invalid-directory',
-        dir,
-        message: `This account can read ${dir}, so ${summary.name} is loaded and run the ordinary way, not followed.`,
-      });
+      let refused = refusedFiles.get(dir);
+      if (refused === undefined) {
+        try {
+          refused = await agentFilesRefused(params.sshHost, dir, server.id);
+        } catch (error) {
+          return err({
+            type: 'error',
+            message: `Could not tell whether ${summary.name}'s files in ${dir} are this account's: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        refusedFiles.set(dir, refused);
+      }
+      if (!refused) {
+        return err({
+          type: 'invalid-directory',
+          dir,
+          message: `This account can read ${summary.name}'s files in ${dir}, so it is loaded and run the ordinary way, not followed.`,
+        });
+      }
+      continue;
     }
     if (reach === 'missing') {
       return err({
