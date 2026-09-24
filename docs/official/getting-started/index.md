@@ -66,7 +66,7 @@ Set up the server your agents will connect to. Switch Console can run a local se
 
 ### Set up agent providers
 
-Connect Switch to your agent provider and install the connector they need to reach a server. See [Set up agent providers](set-up-agent-providers.md).
+Install the agent provider your agents run on, if it isn't already. See [Set up agent providers](set-up-agent-providers.md).
 
 ### Onboard your agents
 

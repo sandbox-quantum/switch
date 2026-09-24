@@ -93,8 +93,8 @@ async function rememberSession(sessionId: string, locationId: string): Promise<v
  * Deliberately one place rather than a `trackEvent` sprinkled through each
  * domain: what the app reports about itself should be readable in a single
  * file, both for review and for anyone checking the promise made to the user.
- * The two moments with no hook bus to subscribe to — a server being added and a
- * connector being installed — call `trackEvent` at their own site.
+ * Moments with no hook bus to subscribe to, such as a server being added, call
+ * `trackEvent` at their own site.
  */
 export function registerTelemetryListeners(): void {
   agentEvents.on('agent:created', async (agent, entryPoint) => {

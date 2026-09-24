@@ -193,8 +193,8 @@ describe('the record that gets built', () => {
   it('stays far under the attribute count the relay drops a record for', () => {
     // The guard drops any record with more than 128 attributes.
     const payload = buildOtlpPayload(
-      'connector_installed',
-      { agent_type: 'claude', target: 'remote', outcome: 'success' },
+      'session_ended',
+      { agent_type: 'claude', location: 'remote', outcome: 'normal' },
       CONTEXT
     );
 

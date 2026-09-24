@@ -208,18 +208,18 @@ describe('the payload', () => {
   });
 
   it('carries the event, the build and the app version', async () => {
-    await telemetryService.track('connector_installed', {
+    await telemetryService.track('session_ended', {
       agent_type: 'claude',
-      target: 'remote',
-      outcome: 'failure',
+      location: 'remote',
+      outcome: 'failed',
     });
 
     expect(sentResource()['service.version']).toBe('1.2.3');
     expect(sentAttributes()).toEqual({
-      'event.name': 'switch_console.connector_installed',
+      'event.name': 'switch_console.session_ended',
       agent_type: 'claude',
-      target: 'remote',
-      outcome: 'failure',
+      location: 'remote',
+      outcome: 'failed',
       build: 'dev',
     });
   });

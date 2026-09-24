@@ -14,7 +14,7 @@ import { runtimeInstructions } from './hosted';
  * a connection that holds for the session.
  */
 function instructions(): string {
-  return runtimeInstructions(true);
+  return runtimeInstructions();
 }
 
 describe('MCP server instructions', () => {
@@ -25,7 +25,7 @@ describe('MCP server instructions', () => {
     // The condition is the whole point: an unqualified "call read_context" here
     // is the bug this file guards.
     expect(step).toMatch(/ONLY if|only if/);
-    expect(step).toContain('missed_count');
+    expect(step).toContain('unread count');
   });
 
   it('describes the room connection as holding for the session', () => {
@@ -46,8 +46,8 @@ describe('MCP server instructions', () => {
   });
 });
 
-it('tells a session run by Console or a sidecar how its events arrive', () => {
-  const managed = runtimeInstructions(false);
+it('tells the session how its events arrive', () => {
+  const managed = runtimeInstructions();
   expect(managed).toContain('[Switch]');
   expect(managed).not.toContain('PostToolUse');
   expect(managed).not.toContain('<channel');

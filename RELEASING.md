@@ -36,7 +36,7 @@ of its own — a version nobody publishes independently is a number that drifts
 from reality, which is exactly what `Chart.yaml` did while it claimed `0.2.1`.
 
 The separately-versioned artifacts are switch-core, switch-console, the
-agent-runtime package, the sidecar, and the two connector plugins.
+agent-runtime package, and the sidecar.
 
 ### A known gap: the Helm chart has no contract
 
@@ -177,9 +177,6 @@ change. The full list:
   `SWITCH_IMAGE_NAMESPACE` in `.env.example` (and the inline `${…:-default}`
   fallbacks in `deploy/local/standalone-docker-compose.yml`).
 - **Python package URLs** — `[project.urls]` in `core/pyproject.toml`.
-- **Plugin marketplace source** — `SWITCH_MARKETPLACE_SOURCE` in
-  `console/packages/plugins/src/distribution.ts` (used by the Claude
-  connector plugin descriptor).
 - **Switch Console auto-update target** — `RELEASE_REPO_OWNER` / `RELEASE_REPO_NAME`
   in `console/apps/switch-console-desktop/src/shared/app-identity.ts` (mirrored
   in `app-identity.canary.ts`), consumed by both electron-builder configs.

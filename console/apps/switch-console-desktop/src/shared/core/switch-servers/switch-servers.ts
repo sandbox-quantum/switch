@@ -649,7 +649,7 @@ export type AgentVerifyResult = 'found' | 'not-found' | 'unauthenticated';
 
 /** Suggested defaults for a new Claude Code agent, derived in the main process
  * from the directory and the OS user (so the name disambiguates which person's
- * Claude Code this is — mirrors the `configure` skill's naming guidance). */
+ * Claude Code this is). */
 export type AgentDefaults = {
   name: string;
   description: string;
@@ -666,8 +666,7 @@ export type AgentProviderKind = 'anthropic' | 'third-party';
 
 /**
  * Parameters to register a brand-new Claude Code agent on a server and write
- * its credentials into the directory's `.claude/settings.local.json` — the
- * desktop equivalent of running the switch-connector `configure` skill.
+ * its credentials into the directory's `.claude/settings.local.json`.
  */
 export type ProvisionAgentParams = {
   serverId: string;

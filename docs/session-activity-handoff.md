@@ -253,8 +253,9 @@ Compatibility with deployed Consoles is waived (owner's call).
 
 ### Also required
 
-- `CLAUDE.md`: agent-facing protocol changes must update all three connector
-  skills (`connectors/*/skills/switch/SKILL.md`) — applies to steps 4–5.
+- `CLAUDE.md`: agent-facing protocol changes must update the pushed Switch
+  skill (`console/packages/plugins/src/switch-skill/SKILL.md`) — applies to
+  steps 4–5.
 - Tell the author of PR #528 before opening a PR against its branch.
 
 ## Notes for running tests
@@ -501,10 +502,8 @@ declares 5 until it takes `room_released`):
 
 - `switch-agent-runtime/src/hosted.ts` (`./hosted` export): tool catalog,
   operation calls, attachments, typing and the loopback MCP server, all taking
-  the caller's context as an argument. `bin.ts` stays as the standalone binary
-  for sessions started by hand (channel delivery, its own connection).
-  `runtimeInstructions(channel)` tells managed sessions that events arrive as
-  `[Switch] …` lines.
+  the caller's context as an argument. `runtimeInstructions()` tells the
+  session that events arrive as `[Switch] …` lines.
 - `host/session-mcp.ts`: each session host binds `127.0.0.1:0/mcp` with a
   32-byte bearer token before the provider starts; a restart gets a new port
   and token. The CLI's environment carries no Switch credentials.
@@ -557,3 +556,24 @@ attends which room, so Console asks it rather than Switch.
   fetches once and applies pushes, with no polling. `disconnected` and a
   `not-running` watcher with no failure show as `connecting` for 15 s, then
   `failed`.
+
+### Plugins and standalone removed (owner decision)
+
+Switch no longer supports running an agent outside Console or its sidecar.
+
+- `connectors/` is gone (all five hosts), with the marketplace manifest, the
+  runtime's npm publish workflow, the Console switch-setup machinery
+  (marketplace install/update, the Console-written OpenCode connector, the
+  per-host `agent-plugin` setup step, the connector UI) and the
+  `SWITCH_AGENT_RUNTIME_PIN`. Agent-type availability is now the CLI being
+  installed.
+- `switch-agent-runtime` keeps the protocol client (`index`) and `hosted`;
+  `bin.ts`, `credentials.ts`, `reap.ts` and the desktop boot reaper went. The
+  package is private.
+- The skill is one file, `console/packages/plugins/src/switch-skill/SKILL.md`
+  (`@switch-console/plugins/switch-skill`). Console puts it in
+  `execution.skill` for Codex (written into the session's Codex home) and
+  OpenCode (a managed skill, via `adapterFor(..., skill)` in the shared host),
+  and in `execution.context` (frontmatter stripped) for Claude Code, Cursor and
+  Antigravity. A host's own `switch` skill is not linked into Codex or OpenCode
+  session homes.

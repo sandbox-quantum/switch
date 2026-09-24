@@ -14,9 +14,8 @@ import type { getPlugin } from '@main/core/providers/plugin-registry';
  * effort / instructions), or null for a provider that takes those another way
  * (Claude, on argv) and for an agent that specializes nothing.
  *
- * It does not register the Switch MCP server — the connector plugins ship that
- * in their own bundled `.mcp.json`, so it is present for every session of that
- * host rather than only the ones Switch Console launches.
+ * It does not register the Switch MCP server: the session host supplies that to
+ * every session it starts.
  *
  * Pure — no write — so the caller decides where the files land: a direct write
  * for local/SSH sessions, or a baked launch spec the VM sidecar writes for remote

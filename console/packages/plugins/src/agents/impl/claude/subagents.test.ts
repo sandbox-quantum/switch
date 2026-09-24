@@ -203,7 +203,7 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     expect(await first.read(defRel('reviewer'))).toBe(await second.read(defRel('reviewer')));
   });
 
-  it('always merges the Switch connector tools into a non-empty tools list', async () => {
+  it('always merges the Switch tools into a non-empty tools list', async () => {
     const workspaceFs = fakeFs({});
     await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
       name: 'reviewer',
@@ -213,14 +213,14 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     });
 
     const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
-    expect(raw).toContain('tools: Read, Grep, mcp__plugin_switch-connector_switch');
+    expect(raw).toContain('tools: Read, Grep, mcp__switch');
 
     // Read-back strips the Switch rules so the form shows only the user's tools.
     const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
     expect(attrs?.tools).toEqual(['Read', 'Grep']);
   });
 
-  it('strips the retired switch-channel rule an older Switch Console wrote', async () => {
+  it('strips the retired connector-plugin rules an older Switch Console wrote', async () => {
     const workspaceFs = fakeFs({
       [defRel('reviewer')]: [
         '---',
@@ -239,7 +239,8 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     // And it is not written back: only the rule Switch Console still authors is.
     await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, attrs ?? {});
     const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
-    expect(raw).toContain('tools: Read, mcp__plugin_switch-connector_switch\n');
+    expect(raw).toContain('tools: Read, mcp__switch\n');
+    expect(raw).not.toContain('switch-connector');
     expect(raw).not.toContain('switch-channel');
   });
 

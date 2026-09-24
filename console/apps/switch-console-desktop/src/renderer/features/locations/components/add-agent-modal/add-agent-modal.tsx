@@ -57,9 +57,8 @@ import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
 import { useConfigureAgentForm, usePickMode } from './modes';
 
-// Switch Console adds a Switch *agent* by pointing at a local directory that the
-// switch-connector `configure` skill has set up (its `.claude/settings.local.json`
-// carries the SWITCH_* env block). The richer Switch Console flows — SSH, clone, create
+// Switch Console adds a Switch *agent* by pointing at a local directory whose
+// `.claude/settings.local.json` carries the SWITCH_* env block. The richer Switch Console flows — SSH, clone, create
 // new GitHub repo — are out of scope for v0, so this modal is local + pick only.
 export type AddLocationModalProps = BaseModalProps<void> & {
   /**
@@ -220,7 +219,7 @@ export const AddAgentModal = observer(function AddAgentModal({
   // into the failing state this ticket exists to surface (CHOO-1676).
   const runHostReachable = !isRemoteRun || !hostReachabilityStore.isBlocked(runHost);
 
-  // A reachable host that is missing git (or node, or the connector) will
+  // A reachable host that is missing git (or node, or the agent CLI) will
   // produce an agent that cannot start. Refuse, rather than letting the failure
   // surface later as a mystery (CHOO-1809). An unchecked host is probed first
   // and only then judged — `checking` withholds the verdict, it is not one.

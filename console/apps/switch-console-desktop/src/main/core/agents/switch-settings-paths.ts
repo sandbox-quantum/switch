@@ -15,14 +15,14 @@ import path from 'node:path';
 
 /**
  * Relative path, from an agent's working directory, to the Claude Code settings
- * file that the switch-connector `configure` skill writes the `SWITCH_*` env
- * block into for a per-location agent.
+ * file Switch Console writes the `SWITCH_*` env block into for a per-location
+ * agent.
  */
 export const SWITCH_SETTINGS_RELATIVE_PATH = '.claude/settings.local.json';
 
 /**
- * Directory, relative to an agent's working directory, where the switch-connector
- * `configure` skill writes per-subagent Switch credential files
+ * Directory, relative to an agent's working directory, where Switch Console
+ * writes per-subagent Switch credential files
  * (`<subagent_name>.settings.json`). Switch Console discovers a parent agent's
  * launchable Claude Code subagents by scanning this directory.
  */

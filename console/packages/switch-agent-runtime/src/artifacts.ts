@@ -28,9 +28,6 @@ export const ARTIFACT_VERSIONS = {
   setup: '0.27.0',
   'helm-chart': '0.27.0',
   compose: '0.27.0',
-  'switch-connector': '0.9.16',
-  'switch-connector-codex': '0.3.17',
-  'switch-connector-opencode': '0.1.12',
 } as const satisfies Record<string, string>;
 
 export type ArtifactName = keyof typeof ARTIFACT_VERSIONS;

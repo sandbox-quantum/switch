@@ -319,11 +319,6 @@ export type TelemetryEventMap = {
     server_kind: 'local' | 'remote_managed' | 'external';
     outcome: TelemetryOutcome;
   };
-  connector_installed: {
-    agent_type: TelemetryAgentType;
-    target: TelemetryLocationKind;
-    outcome: 'success' | 'failure';
-  };
   /**
    * The app checked for an update. `trigger` separates a check someone asked for
    * from the hourly one, because only the first says anything about intent.
@@ -366,29 +361,6 @@ export type TelemetryEventMap = {
   /** Someone linked their account on a messaging platform to their Switch user. */
   bridge_identity_claimed: {
     bridge_platform: TelemetryBridgePlatform;
-    outcome: TelemetryOutcome;
-  };
-  /**
-   * The connector was updated. `was_reinstall` separates a host with a single
-   * update verb from one where the connector must be removed and put back —
-   * Codex has no update verb, so for it every update has a window in the middle
-   * with nothing installed, and a failure there leaves the agent without one.
-   */
-  connector_updated: {
-    agent_type: TelemetryAgentType;
-    target: 'local' | 'remote';
-    outcome: TelemetryOutcome;
-    was_reinstall: boolean;
-  };
-  /**
-   * The connector was removed. The churn signal.
-   *
-   * Only ever `local`: there is no remote uninstall anywhere above the service,
-   * so a `remote` value here would be one that cannot occur.
-   */
-  connector_uninstalled: {
-    agent_type: TelemetryAgentType;
-    target: 'local';
     outcome: TelemetryOutcome;
   };
   /**
@@ -449,8 +421,7 @@ export type TelemetryEventMap = {
     outcome: TelemetryOutcome;
   };
   /**
-   * An agent's own CLI was installed, updated or removed — not the Switch
-   * connector, which `connector_installed` and friends report.
+   * An agent's own CLI was installed, updated or removed.
    *
    * The single biggest wall a new user hits, and until now entirely uncounted.
    */
@@ -605,15 +576,12 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   ],
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome'],
-  connector_installed: ['agent_type', 'target', 'outcome'],
   update_checked: ['trigger', 'result'],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
-  connector_updated: ['agent_type', 'target', 'outcome', 'was_reinstall'],
-  connector_uninstalled: ['agent_type', 'target', 'outcome'],
   agent_removed: [
     'agent_type',
     'location',

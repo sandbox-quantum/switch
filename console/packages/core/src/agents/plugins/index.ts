@@ -10,7 +10,6 @@ import { pluginsCapability } from './capabilities/plugins';
 import { promptCapability } from './capabilities/prompt';
 import { repoAgentsCapability } from './capabilities/repo-agents';
 import { sessionsCapability } from './capabilities/sessions';
-import { switchSetupCapability } from './capabilities/switch-setup';
 
 export const PLUGIN_CAPABILITIES = {
   autoApprove: autoApproveCapability,
@@ -22,7 +21,6 @@ export const PLUGIN_CAPABILITIES = {
   prompt: promptCapability,
   sessions: sessionsCapability,
   repoAgents: repoAgentsCapability,
-  switchSetup: switchSetupCapability,
 } as const;
 
 export type Capabilities = typeof PLUGIN_CAPABILITIES;
@@ -76,9 +74,9 @@ export {
 export type { IPlugins, PluginScope } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
 export {
-  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
+  RECOGNISED_SWITCH_TOOL_RULES,
   SWITCH_AGENT_SETTINGS_DIR,
-  SWITCH_CONNECTOR_TOOL_RULES,
+  SWITCH_TOOL_RULES,
 } from './capabilities/repo-agents';
 export type {
   IRepoAgentsBehavior,
@@ -92,13 +90,6 @@ export type {
   RepoAgentFieldType,
   RepoAgentsDescriptor,
 } from './capabilities/repo-agents';
-export type {
-  ISwitchSetupBehavior,
-  ISwitchSetupFilesBehavior,
-  SwitchSetupCliDialect,
-  SwitchSetupDescriptor,
-} from './capabilities/switch-setup';
-export { SWITCH_SETUP_CLI_DIALECTS } from './capabilities/switch-setup';
 
 // Typed registry factory
 export { createPluginRegistry } from '../../lib/plugins/registry';

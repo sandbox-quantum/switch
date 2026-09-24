@@ -90,99 +90,22 @@ just test -k "test_name"         # run specific test
 - Session management: API endpoints use middleware-provided sessions; background work creates sessions explicitly
 - All participants in rooms are clients reading and writing the `messages` table through the transport port
 
-## Connector plugins
+## The Switch skill
 
-There are **three** connector plugins under `connectors/`, one per agent host,
-and each ships its own copy of the Switch room-workflow skill at
-`skills/switch/SKILL.md`:
-
-- `connectors/claude-code-plugin/` — manifest `.claude-plugin/plugin.json`.
-  Ships the skill plus an MCP config (`.mcp.json`) and hooks. It contains **no
-  runtime code**: the MCP server is `@sandboxaq/switch-agent-runtime`,
-  fetched with `npx` and built from `console/packages/switch-agent-runtime/`.
-  Switch Console imports the same package for its protocol client, so there is one
-  implementation of the agent protocol rather than a copy per consumer.
-- `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
-  room-workflow skill, a **`configure`** skill (the standalone setup path — it
-  registers the agent and supplies the bundled server's credentials so Codex
-  reaches Switch with no Switch Console involved), and its own MCP config,
-  declared as `"mcpServers": "./.mcp.json"`, so a
-  Codex session gets the Switch tools from the plugin alone. Codex does not
-  expand `${VAR}` in a bundled config, so the server names its variables under
-  `env_vars` and Codex forwards them **by name** from its own environment — no
-  expansion, and no secret in the file. An unset name is simply not forwarded,
-  which is why the list can include the Switch Console-only variables without
-  breaking a standalone session.
-
-  The plugin's `.mcp.json` also carries `default_tools_approval_mode =
-  "approve"`, so the Switch tools never prompt. It has to live there rather than
-  in anything Switch Console writes: **no per-server setting can be layered onto a
-  plugin-provided MCP server.** An `mcp_servers.switch.*` entry with no
-  transport of its own — from the base config, a profile, or `-c` on argv —
-  makes Codex reject the whole config as "invalid transport" and the session
-  dies with it.
-
-  Switch Console writes a per-agent Codex profile
-  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`) carrying
-  **only** model, reasoning effort and instructions. It registers no MCP server.
-  An agent that specializes none of those gets no profile and no `--profile`
-  argv at all.
-
-  Note a connector plugin is only upgraded when a user clicks Update in
-  settings, and Codex caches an install per version, so an install on an older
-  plugin has no Switch tools until it is upgraded.
-
-- `connectors/opencode-plugin/` — manifest `package.json` (OpenCode plugins are
-  npm modules, so that is its native manifest shape). Ships the skill, an MCP
-  config (`opencode.json`) and a reporting plugin (`plugin/`).
-
-  **It is written, not installed, and that is the one real difference between
-  it and the other two.** OpenCode has no plugin marketplace — its `plugin`
-  subcommand installs a single npm module and has no list, remove or version
-  verb — so there is nothing for the marketplace driver to drive. Switch Console
-  writes the files itself via `switchSetup: { kind: 'files' }`
-  (`console/packages/plugins/src/agents/impl/opencode/switch-connector.ts`), and
-  this directory is **not** registered in `.claude-plugin/marketplace.json`. The
-  user-facing surface is the same: install, update and uninstall on the agent's
-  card and in a remote host's setup.
-
-  Because the app writes the files it also **embeds** them, and the embedded
-  copies must not drift from this directory — `connector-assets.test.ts` fails
-  if they do. Edit the files here; the test names what to update. Nothing
-  fetched the install, so it has no version of its own to report: a status read
-  compares the app version that stamped it against the running one.
-
-  The MCP server is registered as a `local` (stdio) server, deliberately.
-  OpenCode spawns a local server with the parent environment, so the runtime
-  inherits `SWITCH_*` from the session and no credential is written into a
-  config file shared by every OpenCode session on the machine. OpenCode *does*
-  interpolate `{env:VAR}` and `{file:path}` (unlike Codex's name-forwarding and
-  Claude's `${VAR}`), so a remote server carrying a header would also have
-  worked; stdio was chosen because it needs no interpolation at all. Its config
-  rejects unknown keys on an MCP entry and fails the whole config with them,
-  which is why the install bookkeeping sits beside `opencode.json` rather than
-  inside it.
+Every agent session is started by Switch Console or its sidecar; there are no
+connector plugins and no standalone runtime. Each session gets the Switch MCP
+tools from its own session host, and the room-workflow skill from Console:
+`console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
+exported as `@switch-console/plugins/switch-skill`. Codex and OpenCode load it
+as a skill file; Claude Code, Cursor and Antigravity get it (without its
+frontmatter) as system context.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
-commands, room workflow, or anything an agent-facing client needs to know:
-
-- **Update all three skills.** A room-workflow change must land in
-  `connectors/claude-code-plugin/skills/switch/SKILL.md`,
-  `connectors/codex-plugin/skills/switch/SKILL.md` *and*
-  `connectors/opencode-plugin/skills/switch/SKILL.md` so the documented workflow
-  matches actual behavior on every host.
-  `core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` compares the
-  three `## Tool index` sections against each other and against the tools the
-  server actually registers, so a host left undocumented fails there.
-- **Diff the skills against each other after editing.** They are deliberately not identical
-  (host-specific wording for tool namespacing, event delivery, attachments, and
-  MCP registration), so diff them to confirm
-  every remaining difference is intentional rather than a fix that only landed
-  on one side.
-- **Publishing the runtime is a tag**, not a merge:
-  `git tag switch-agent-runtime-v<version> && git push origin <tag>`. It works
-  from a branch, so a version can be tested before it lands. The tag must match
-  the version in `package.json` or the workflow fails.
+commands, room workflow, event delivery, or anything an agent needs to know —
+update that file. It covers every host, so host-specific behavior is named in
+the text rather than split into copies.
+`core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` checks its
+`## Tool index` against the tools the server registers.
 
 ## Code Style
 

@@ -31,7 +31,6 @@ When reporting, please include where relevant:
 
 This policy covers the code in this repository: the Switch control plane
 (`core/`), the operator gateway (`gateway/`), the Switch Console desktop app
-(`console/`), the connector plugins (`connectors/`), and the deployment assets
-(`deploy/`). Vulnerabilities in third-party dependencies should be reported to
+(`console/`), and the deployment assets (`deploy/`). Vulnerabilities in third-party dependencies should be reported to
 the upstream project; if a dependency issue affects Switch specifically, let us
 know so we can pull in the fix.

@@ -28,7 +28,7 @@ The two macOS downloads are built separately, and the filename is what tells the
 
 When you open Switch Console, the **Setting up Switch** checklist appears in the sidebar. It reflects your setup's current state—it doesn't track which pages you've read or which buttons you've clicked.
 
-Some steps may already be complete. That’s normal. For example, **Set up agent providers** is complete when Switch detects a **Switch connector** in an **agent provider** — the application that runs an agent on your machine. The connector lets Switch communicate with the provider and may have been installed before Switch Console.
+Some steps may already be complete. That’s normal. For example, **Set up agent providers** is complete when Switch detects an installed **agent provider** — the application that runs an agent on your machine — which may have been there before Switch Console.
 
 The checklist isn't a strict sequence. Each step checks a separate setup requirement, so steps can complete in any order.
 

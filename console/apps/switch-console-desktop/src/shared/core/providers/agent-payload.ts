@@ -168,7 +168,6 @@ export type AgentCapabilities = {
   mcp: { kind: string };
   plugins: { kind: string };
   repoAgents: { kind: string };
-  switchSetup: { kind: string };
 };
 
 // ---------------------------------------------------------------------------

@@ -60,7 +60,6 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    switchSetup: { kind: 'none' },
   },
   { icon }
 );

@@ -27,6 +27,10 @@ export async function linkHomeAsset(source: string, destination: string): Promis
   await symlink(source, destination, (await lstat(source)).isDirectory() ? 'junction' : 'file');
 }
 
+/**
+ * Link the host's skills one by one, leaving out `switch`: the session is given
+ * Console's copy of that skill, and a stale one beside it would contradict it.
+ */
 export async function linkSkills(source: string, destination: string): Promise<void> {
   let entries: string[];
   try {

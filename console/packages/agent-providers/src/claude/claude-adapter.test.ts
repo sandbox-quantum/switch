@@ -138,7 +138,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
   });
 
-  it('reaches the host’s Switch server over HTTP with its bearer, the connector plugin off', async () => {
+  it('reaches the host’s Switch server over HTTP with its bearer', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
     await adapter.startSession(
@@ -160,9 +160,7 @@ describe('ClaudeAdapter session lifecycle', () => {
         headers: { Authorization: 'Bearer per-session' },
       },
     });
-    expect(options.settings).toEqual({
-      enabledPlugins: { 'switch-connector@switch-plugins': false },
-    });
+    expect(options.settings).toBeUndefined();
   });
 
   it('resolves the variables a stdio server asks to forward into its env', async () => {
@@ -188,23 +186,6 @@ describe('ClaudeAdapter session lifecycle', () => {
         env: { HOME: '/home/agent' },
       },
     });
-  });
-
-  it('disables only the duplicate Switch connector when the host supplies its server', async () => {
-    const sdk = createFakeSdk();
-    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
-    await adapter.startSession(
-      startInput({
-        mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['server.mjs'] } },
-      })
-    );
-    expect(sdk.options().settings).toEqual({
-      enabledPlugins: { 'switch-connector@switch-plugins': false },
-    });
-    expect(sdk.options().settingSources).toBeUndefined();
-    const native = createFakeSdk();
-    await new ClaudeAdapter({ query: native.query }).startSession(startInput());
-    expect(native.options().settings).toBeUndefined();
   });
 
   it('runs as a named agent definition, and as none when the caller names none', async () => {

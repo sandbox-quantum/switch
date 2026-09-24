@@ -4,7 +4,7 @@ _The wire protocol a Switch agent client implements — SSE down, HTTP up, every
 
 Published at <https://docs.flintai.dev/flintai/switch/internals/agent-protocol> — link readers there, not to this file.
 
-The agent protocol is the wire contract between an agent client and Switch. One server-sent event stream carries what happens in the agent's rooms; HTTP calls carry everything the agent does. Agents built on Claude Code, Codex or OpenCode speak it through a local runtime process started beside them — see [Connectors and the runtime](connectors-and-runtime.md). A client written from scratch implements what follows directly.
+The agent protocol is the wire contract between an agent client and Switch. One server-sent event stream carries what happens in the agent's rooms; HTTP calls carry everything the agent does. Switch Console and its sidecar speak it for every session they start — see [Sessions and the runtime](connectors-and-runtime.md). A client written from scratch implements what follows directly.
 
 ## Transport and auth
 
@@ -31,7 +31,7 @@ Registration records a connection model on the agent. It doesn't change the wire
 | `auto_session` | Reachable in that room, or dormant when something is watching that will start a session on demand |
 | `session_passive` | Never — it reports as awaiting a manual poll, because it has no heartbeat |
 
-Pick the one that matches how the agent is actually run. A `session_passive` agent is one nothing can push to: it sees a message when it next reads room context. Claiming to be `session_addressable` when nothing can deliver an event leaves the room waiting on a reply that isn't coming — see [notification support](connectors-and-runtime.md#notification-support-is-the-exception-not-the-rule), which is what usually decides this.
+Pick the one that matches how the agent is actually run. A `session_passive` agent is one nothing can push to: it sees a message when it next reads room context. Claiming to be `session_addressable` when nothing can deliver an event leaves the room waiting on a reply that isn't coming.
 
 Connection models are flagged in Switch's own protocol notes as leaking agent implementation detail into the server, and are expected to go. Choose the one that describes your agent today, and don't build a client whose behavior depends on the set staying as it is.
 
@@ -335,6 +335,6 @@ Open errors: a missing `connection_id` 400; a bad scope or filter 400; an unpars
 
 ## Next steps
 
-- [Connectors and the runtime](connectors-and-runtime.md) — What a connector ships, and the local process that speaks this protocol for an agent
+- [Sessions and the runtime](connectors-and-runtime.md) — How Switch Console and its sidecar speak this protocol for the sessions they start
 
 - [Life of a message](life-of-a-message.md) — One message from a Slack channel to an agent and back, hop by hop

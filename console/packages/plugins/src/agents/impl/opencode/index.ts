@@ -11,7 +11,6 @@ import {
   opencodeLaunchProfileFields,
   opencodeProfilePaths,
 } from './profile';
-import { buildOpencodeSwitchConnector } from './switch-connector';
 
 const validateSessionId = (id: string) => id.startsWith('ses');
 
@@ -80,14 +79,6 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    // OpenCode has no plugin marketplace to install a connector from — its
-    // `plugin` subcommand installs one npm module and has no list, remove or
-    // version verb — so Switch Console writes the connector's files itself.
-    switchSetup: {
-      kind: 'files',
-      connectorName: 'Switch connector',
-      artifact: 'switch-connector-opencode',
-    },
   },
   { icon }
 );
@@ -106,15 +97,13 @@ export const provider = registerPluginBehavior(plugin, {
       }),
   },
   sessions: { validateSessionId },
-  switchSetup: { files: buildOpencodeSwitchConnector() },
   mcp: {
     ...opencodeMcpAdapter(),
     // The profile carries per-agent model / variant / sampling / instructions in
     // a config file under `~/.config/opencode/switch`, loaded with
     // `OPENCODE_CONFIG` because OpenCode has no flag that would load it. It
-    // registers no MCP server: the global config the connector writes does that,
-    // for every OpenCode session rather than only Switch Console's, and
-    // OpenCode merges the two.
+    // registers no MCP server: the session host supplies the Switch one to each
+    // session it starts.
     launchProfile: opencodeLaunchProfile,
     launchProfilePaths: opencodeProfilePaths,
     launchProfileFields: opencodeLaunchProfileFields,

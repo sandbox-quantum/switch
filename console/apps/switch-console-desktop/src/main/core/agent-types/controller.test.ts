@@ -10,18 +10,12 @@ vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
   hostReachabilityService: { isBlocked: () => false },
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
-vi.mock('./switch-setup-service', () => ({ switchSetupService: {} }));
-vi.mock('./remote-switch-setup', () => ({
-  getRemoteSwitchSetupService: async () => ({
-    listAgentTypeStatuses: async () => [{ agentId: 'claude', supported: true, installed: true }],
-  }),
-}));
-const { switchSetupController } = await import('./controller');
-it('offers installed remote ACP providers without requiring connector plugins', async () => {
+const { agentTypesController } = await import('./controller');
+it('offers remote agent types whose CLI is installed on the host', async () => {
   mocks.probe.mockImplementation(async (id) => ({
-    status: id === 'cursor' ? 'available' : 'missing',
+    status: id === 'cursor' || id === 'claude' ? 'available' : 'missing',
   }));
-  const statuses = await switchSetupController.listAgentTypeAvailabilityRemote('example-host');
+  const statuses = await agentTypesController.listAvailabilityRemote('example-host');
   expect(statuses).toContainEqual({
     agentId: 'cursor',
     available: true,
@@ -40,10 +34,16 @@ it('offers installed remote ACP providers without requiring connector plugins', 
     blockedReason: null,
     blockedKind: null,
   });
+  expect(statuses).toContainEqual({
+    agentId: 'codex',
+    available: false,
+    blockedReason: 'Install Codex on example-host.',
+    blockedKind: 'not-installed',
+  });
 });
 it('does not call a failed remote probe an installed CLI', async () => {
   mocks.probe.mockResolvedValue({ status: 'error' });
-  const statuses = await switchSetupController.listAgentTypeAvailabilityRemote('example-host');
+  const statuses = await agentTypesController.listAvailabilityRemote('example-host');
   expect(statuses.find((status) => status.agentId === 'cursor')).toMatchObject({
     available: false,
     blockedReason: 'Could not verify this CLI on example-host. Recheck the host setup.',

@@ -822,8 +822,7 @@ export const switchServersController = createRPCController({
   /**
    * Register a new agent on the chosen server (owned by the signed-in user) and
    * write its credentials into the directory's `.claude/settings.local.json`.
-   * This is the desktop equivalent of running the switch-connector `configure`
-   * skill. Recoverable gateway failures are mapped to a typed result; the minted
+   * Recoverable gateway failures are mapped to a typed result; the minted
    * token is written to disk and never returned.
    */
   provisionAgent: async (params: ProvisionAgentParams): Promise<ProvisionAgentResult> => {
@@ -846,7 +845,7 @@ export const switchServersController = createRPCController({
     });
     if (registered.kind !== 'created') return registered;
 
-    // The connector's SWITCH_API_ENDPOINT must point at the Switch core (agent
+    // The agent's SWITCH_API_ENDPOINT must point at the Switch core (agent
     // bridge), which is a distinct endpoint from the gateway.
     await writeSwitchSettings({
       dir: params.dir,

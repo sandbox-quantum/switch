@@ -1,5 +1,6 @@
 import { createRPCNamespace, createRPCRouter } from '../shared/lib/ipc/rpc';
 import { agentTemplatesController } from './core/agent-templates/controller';
+import { agentTypesController } from './core/agent-types/controller';
 import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
 import { filesController } from './core/fs/controller';
@@ -19,7 +20,6 @@ import { appSettingsController } from './core/settings/controller';
 import { providerSettingsController } from './core/settings/provider-settings-controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
-import { switchSetupController } from './core/switch-setup/controller';
 import { telemetryController } from './core/telemetry/controller';
 import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
@@ -42,7 +42,7 @@ export const rpcRouter = createRPCRouter({
   switchRooms: switchRoomsController,
   locationRuntimeSettings: locationRuntimeSettingsController,
   switchServers: switchServersController,
-  switchSetup: switchSetupController,
+  agentTypes: agentTypesController,
   localSwitchServer: localSwitchServerController,
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,

@@ -152,7 +152,7 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
-    await removeSwitchCredentials(agent.providerId, ctx.fs);
+    await removeSwitchCredentials(ctx.fs);
     // A provider that registers the Switch server itself (Codex) leaves a
     // per-agent launch profile under the user's home — a different scope than
     // ctx.fs, reached through its own home filesystem (local or remote).

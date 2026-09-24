@@ -4,7 +4,6 @@ import {
   homebrewOption,
   passthroughMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
-import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
 import { icon } from './icon';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
@@ -90,14 +89,6 @@ export const plugin = definePlugin(
       dirRelative: CLAUDE_SUBAGENTS.dirRelative,
       settingsSuffix: CLAUDE_SUBAGENTS.settingsSuffix,
       definitionsDirRelative: CLAUDE_SUBAGENTS.definitionsDirRelative,
-    },
-    switchSetup: {
-      kind: 'cli',
-      pluginName: 'switch-connector',
-      marketplaceName: 'switch-plugins',
-      marketplaceSource: SWITCH_MARKETPLACE_SOURCE,
-      scope: 'user',
-      dialect: 'claude-code',
     },
   },
   { icon }

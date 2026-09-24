@@ -19,10 +19,7 @@ import {
   sharedSessionRoot,
   type SharedHostConfig,
 } from '@switch-console/agent-providers';
-import { ANTIGRAVITY_SKILL_CONTENT } from '@switch-console/plugins/agents/antigravity/skill';
-import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
-import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
-import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
+import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins/switch-skill';
 import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
@@ -475,15 +472,11 @@ export async function buildSharedHostConfig(
           }
         : {}),
       codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
-      skill: provider === 'codex' ? CODEX_SKILL_CONTENT : '',
+      // Codex and OpenCode load the skill as a file; the others take it as
+      // system context.
+      skill: provider === 'codex' || provider === 'opencode' ? SWITCH_SKILL_FILE : '',
       context: [
-        provider === 'claude'
-          ? CLAUDE_SKILL_CONTENT
-          : provider === 'antigravity'
-            ? ANTIGRAVITY_SKILL_CONTENT
-            : provider === 'cursor'
-              ? CURSOR_SKILL_CONTENT
-              : '',
+        provider === 'codex' || provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
         specialization.instructions,
       ]
         .filter(Boolean)

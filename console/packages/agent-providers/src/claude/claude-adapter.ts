@@ -328,9 +328,6 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       ...(permissionMode ? { permissionMode } : {}),
       strictMcpConfig: false,
-      ...(mcpServers.switch
-        ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
-        : {}),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

@@ -138,14 +138,6 @@ Note the shape of `failure_reason` everywhere: a short enumerated code such as
 a stack trace, or a command's stderr — those are mapped to `error` if they don't
 match a known code.
 
-**Connector**
-
-| Event | Fields, with example values |
-|---|---|
-| `connector_installed` | `agent_type`: `claude` · `target`: `local` · `outcome`: `success` |
-| `connector_updated` | `agent_type` · `target`: `remote` · `outcome` · `was_reinstall`: `false` |
-| `connector_uninstalled` | `agent_type` · `target`: `local` · `outcome` |
-
 **Servers and sign-in**
 
 | Event | Fields, with example values |
@@ -178,7 +170,7 @@ agents.
 
 | Event | Fields, with example values |
 |---|---|
-| `host_setup_step` | `step_kind`: `core-dependency` / `agent-cli` / `agent-plugin` / `unknown` · `agent_type` · `action`: `install` / `update` / `skip` · `outcome` |
+| `host_setup_step` | `step_kind`: `core-dependency` / `agent-cli` / `unknown` · `agent_type` · `action`: `install` / `update` / `skip` · `outcome` |
 | `host_onboarded` | `outcome`: `success` · `picked_from_ssh_config`: `true` (**a boolean — the SSH host is never sent**) |
 | `host_removed` | `outcome` |
 

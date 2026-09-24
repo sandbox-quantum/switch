@@ -96,11 +96,10 @@ async function readStoreIdentity(dir: string): Promise<SwitchAgentConfig | null>
  * Detect whether `dir` is configured as a Switch agent.
  *
  * Two layouts count, because two things configure a directory. Switch Console
- * writes the identity into `.claude/settings.local.json`; the connector's
- * `configure` skill deliberately writes no `SWITCH_*` there at all and leaves
- * only the credentials store, since a half-set environment is what breaks a
- * standalone session. Reading the settings file alone would make every
- * skill-configured directory invisible here.
+ * writes the identity into `.claude/settings.local.json`; a directory set up by
+ * the retired connector plugin's `configure` skill has no `SWITCH_*` there at
+ * all and only the credentials store. Reading the settings file alone would
+ * make every such directory invisible here.
  *
  * The settings file wins when both exist: it is what Claude Code exports into
  * the session, so it is what that directory actually resolves as.

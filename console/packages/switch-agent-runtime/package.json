@@ -1,7 +1,8 @@
 {
   "name": "@sandboxaq/switch-agent-runtime",
   "version": "0.7.0",
-  "description": "Switch agent protocol client, and the local MCP runtime built on it",
+  "private": true,
+  "description": "Switch agent protocol client, and the Switch tool surface a session host serves",
   "license": "Apache-2.0",
   "author": {
     "name": "Switch Contributors"
@@ -11,12 +12,6 @@
     "url": "git+https://github.com/sandbox-quantum/switch.git",
     "directory": "console/packages/switch-agent-runtime"
   },
-  "bin": {
-    "switch-agent-runtime": "./dist/bin.mjs"
-  },
-  "files": [
-    "dist"
-  ],
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -29,10 +24,6 @@
       "default": "./dist/hosted.mjs"
     },
     "./package.json": "./package.json"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "dev": "tsdown --watch",

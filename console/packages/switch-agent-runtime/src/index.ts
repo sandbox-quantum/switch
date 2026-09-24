@@ -8,14 +8,12 @@
  * surfacing them as MCP notifications, or deciding to start a session are all
  * the consumer's business.
  *
- * Imported by Switch Console (which submits them to a session's SDK adapter)
- * and by this package's own MCP runtime (which serves them next to the agent).
- * It exists because those two had a copy each and the copies drifted within a
- * day.
+ * Imported by Switch Console and the agent sidecar, which submit them to a
+ * session's SDK adapter.
  *
- * The MCP runtime is in separate entry points — `./hosted`, the tool surface a
- * session host serves and its watcher runs, and `./bin`, the standalone
- * binary — so importing the client does not drag in the MCP SDK.
+ * The tool surface a session host serves and its watcher runs is a separate
+ * entry point, `./hosted`, so importing the client does not drag in the MCP
+ * SDK.
  */
 
 export {
@@ -43,14 +41,6 @@ export {
   type StreamScope,
   type SwitchEventStreamDeps,
 } from './event-stream';
-export {
-  findOrphanedRuntimes,
-  parseProcessTable,
-  reapOrphanedRuntimes,
-  staleSessionDirs,
-  type ProcessRow,
-  type ReapOutcome,
-} from './reap';
 export {
   RoomAdmissionError,
   SwitchRoomAdmissions,

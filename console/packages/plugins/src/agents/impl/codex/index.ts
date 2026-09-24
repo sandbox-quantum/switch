@@ -6,7 +6,6 @@ import {
   npmDependency,
 } from '@switch-console/core/agents/plugins/helpers';
 import type { HostDependencyDescriptor, InstallOption } from '@switch-console/core/deps';
-import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
 import { icon } from './icon';
 import { codexLaunchProfile, codexLaunchProfileFields, codexProfilePaths } from './profile';
 
@@ -106,15 +105,6 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    switchSetup: {
-      kind: 'cli',
-      pluginName: 'switch-connector-codex',
-      marketplaceName: 'switch-plugins',
-      marketplaceSource: SWITCH_MARKETPLACE_SOURCE,
-      // Codex has no install-scope flag; the value is unused for this dialect.
-      scope: 'user',
-      dialect: 'codex',
-    },
   },
   { icon }
 );

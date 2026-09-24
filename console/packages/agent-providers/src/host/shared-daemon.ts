@@ -26,7 +26,7 @@ if (!root || !configPath)
 async function main(): Promise<void> {
   if (root === '--models') {
     const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
-    const adapter = adapterFor(provider, process.argv[5]);
+    const adapter = adapterFor(provider, process.argv[5], '');
     const sessionId = randomUUID();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -176,7 +176,11 @@ async function main(): Promise<void> {
       await hostSessionProcess({
         root,
         config,
-        adapter: adapterFor(config.start.provider, config.execution?.binaryPath),
+        adapter: adapterFor(
+          config.start.provider,
+          config.execution?.binaryPath,
+          config.execution?.skill ?? ''
+        ),
         port: process,
         authenticate:
           config.start.provider === 'claude'
