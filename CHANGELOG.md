@@ -44,14 +44,6 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
-#### Added
-- **Which Switch Console made a request.** Log lines carry `console_id` and
-  `console_name` when a request says, from `X-Switch-Console-Id` and
-  `X-Switch-Console-Name`. On a server a Console runs on a shared host, everyone
-  signs in as the one seeded account, so `user_id` cannot tell them apart and
-  these can. They are attribution the caller supplies, not authentication, and
-  are reduced to a character set that cannot forge a log line.
-
 ### [0.27.0] - 2026-09-23
 
 #### Added
@@ -1324,39 +1316,6 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
-
-#### Added
-- **Share a remote Switch server with everyone who has access to its host.** A
-  second person's Switch Console can now join a server someone else set up on a
-  VM they share — under the same account or their own — instead of overwriting
-  its credentials and taking it down. The host holds the server's settings in a
-  Docker volume beside the stack, so every account that can run Docker there
-  reads the same ones; a Console's own copy is only a cache of them. Add server
-  looks at the host first and offers Connect for a running server, Start for a
-  stopped or absent one, and nothing — with the reason — for one it cannot
-  safely touch.
-- **Leave a shared server without deleting it.** Removing a remote server now
-  offers Disconnect, which leaves it running for everyone else, or Delete for
-  everyone, which is the reset it always was. Stop, Restart and Reset say who
-  else uses the server and ask first when someone else has used it recently.
-- **See who uses a shared server.** Each Console records itself on the host,
-  and the server page lists the Consoles that use it and what they last did.
-  Consoles also identify themselves to the servers they manage, which switch-core
-  stamps on its log lines.
-- **Follow agents another account runs on a shared host.** Load existing agents
-  offers an agent whose directory belongs to another account; this Console then
-  shows its sessions live and can prompt and stop them through the server,
-  without reading its files or running anything on the host as itself.
-
-#### Fixed
-- A managed server's silent re-login no longer makes up an admin password when
-  none is stored.
-- Registering a server whose address another server record already holds is
-  refused with an explanation, instead of silently taking that record over.
-- Removing a remote agent from this Console no longer switches off its automatic
-  sessions on the host; that happens only when the agent is terminated.
-- A port forward that cannot bind says which port is in use and why it has to
-  be that one.
 
 ### [0.35.0] - 2026-09-23
 
