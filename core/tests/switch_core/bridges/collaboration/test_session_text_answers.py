@@ -27,6 +27,7 @@ from switch_core.bridges.collaboration.session.transport import (
     project,
 )
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
+from switch_core.session_activity.bridge_answers import Answered
 
 from .test_session_answers import (
     EXAMPLES_PATH,
@@ -423,3 +424,57 @@ def test_a_message_the_grammar_refuses_still_reaches_the_room(said: str) -> None
             "matrix_room_id": "!room:test",
         }
     ]
+
+
+# ── Approval cards drawn from the host's reports ─────────────────────────────
+
+
+class _ApprovalAnswers:
+    def __init__(self, outcome: Answered | Refused | None) -> None:
+        self.outcome = outcome
+        self.asked: list[InboundMessage] = []
+
+    async def for_text(self, message: InboundMessage) -> Answered | Refused | None:
+        self.asked.append(message)
+        return self.outcome
+
+
+def test_an_answer_to_an_approval_card_does_not_reach_the_old_path() -> None:
+    bridge, relayed = _bridge(_interactions(_post()))
+    submit = AsyncMock()
+    bridge._session_authority = SimpleNamespace(submit=submit)
+    bridge._approval_answers = _ApprovalAnswers(Answered(handle="A1"))
+
+    _run(bridge._handle_inbound_message(_typed("A1 yes")))
+
+    submit.assert_not_awaited()
+    assert bridge._adapter.told == []
+    assert len(relayed) == 1
+
+
+def test_a_refused_approval_answer_is_told_in_the_cards_thread() -> None:
+    bridge, relayed = _bridge(_interactions(_post()))
+    bridge._approval_answers = _ApprovalAnswers(
+        Refused(reason="the request is expired", handle="A1", card_ref="C1:999.0")
+    )
+
+    _run(bridge._handle_inbound_message(_typed("A1 yes")))
+
+    [(_, _, _, thread, text)] = bridge._adapter.told
+    assert thread == "C1:999.0"
+    assert text == "Your answer to A1 did not land, because the request is expired."
+    assert len(relayed) == 1
+
+
+def test_a_message_that_is_no_approval_answer_goes_on_to_the_old_path() -> None:
+    bridge, relayed = _bridge(_interactions(_post()))
+    submit = AsyncMock()
+    bridge._session_authority = SimpleNamespace(submit=submit)
+    approvals = _ApprovalAnswers(None)
+    bridge._approval_answers = approvals
+
+    _run(bridge._handle_inbound_message(_typed("R42 1")))
+
+    assert len(approvals.asked) == 1
+    submit.assert_awaited_once()
+    assert len(relayed) == 1

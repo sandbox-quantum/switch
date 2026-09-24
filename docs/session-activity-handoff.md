@@ -70,62 +70,43 @@ The session status line reuses the existing `agent_runtime_states` table
    runtimes ≤ 0.6.1 hand unknown frames to their room-event path and crash on a
    frame without `type`. switch-core speaks 4; agent-runtime still 3.
 
-## Left mid-way (committed as WIP, tests not re-run)
-
-Step 4 (bridges) had started:
-
-- Approval options now carry `decision` (accept/acceptForSession/decline/
-  cancel) — service, host route, gateway view, tests updated.
-- `session_activity_events.thread_id` added (model, migration, service, route).
-- Models + migration for `approval_request_posts` and `turn_status_posts`
-  written; schema guard tests passed. **No store, publisher or inbound code yet.**
-
-Run first: `just test core/tests/switch_core/session_activity` plus the schema
-guards (`test_migration_parity.py`, `test_tenant_schema_catalogue.py`,
-`test_frozen_ddl_matches_create_all.py`), then the full suite.
+4. Step 4 — bridges render from the new tables (push):
+   - Approval options carry `decision`; activity lines carry `thread_id`;
+     tables `approval_request_posts` / `turn_status_posts`
+     (`db/stores/session_activity_post_store.py`).
+   - `session_activity/cards.py` turns a row into the renderers'
+     `SnapshotRequest`/`RequestCard`, so every platform draws it unchanged
+     (answerer shown as `DecidedBy`, with the platform handle when they
+     answered on this bridge).
+   - `session_activity/bridge_publisher.py` (`SessionActivityBridgePublisher`):
+     one per bridge whose adapter `publishes_sdk_sessions`, subscribed to the
+     listener for the bridge's tenant, with its own queue and task. Keys are
+     coalesced while queued and handled by reading the rows as they are now.
+     Cards: reserve `A<n>` handle + token (committed before the platform
+     call, `external_post_id` null until confirmed), `post_rich`, thread via
+     `BridgeMessageMap` (waits up to 5 s for the mapping, then channel root),
+     `update_rich` on every later change, `find_request_card` for an
+     unconfirmed post, never a repost. Turns: one `send_message` status per
+     turn, then `update_message` ("**Working…** · N tool calls" + latest
+     summary, "**Finished** …" at the end). Resync: every open request on the
+     bridge, requests settled in the last 15 minutes that have a card, and
+     every unfinished status message.
+   - `session_activity/bridge_answers.py` (`ApprovalAnswers`): a press (token
+     + option id or position) or typed answer (`A3 yes`, `A3 2`, bare yes/no
+     as the first reply to the card) → `answer_approval(PlatformPerson(mxid))`;
+     refusals reach the person via `tell_actor`. `BridgeCore` asks it first
+     and falls through to the old path when it returns None. The typed-handle
+     grammar accepts `A` as well as `R`.
+   - Transition: `SessionPublisher.publish_pending` skips any session that
+     has rows in `approval_requests` or `session_activity_events`, so a host
+     reporting both ways does not get every card twice.
+   - Wiring: `main.py` → `CollaborationBridgeLifecycleService` → `BridgeCore`
+     (`session_activity_listener`, `session_activity_service`).
+   - Not done: taking answered cards off the platform
+     (`removes_answered_cards`), and the unconfirmed-card notice the old path
+     posts. Teams and Telegram still lack `find_request_card`.
 
 ## What is left
-
-### Step 4 — bridges render from the new tables (push)
-
-Design agreed, not built:
-
-- **Stores**: `ApprovalRequestPostStore` (create with handle retry on unique
-  violation, get by token / by handle in channel / by external post),
-  `TurnStatusPostStore`.
-- **Card**: build the existing `RequestCard` from a row so all five platform
-  renderers work unchanged — `SnapshotRequest(request_id, turn_id, revision,
-  state=open|resolved|closed, content=ApprovalContent(kind="approval",
-  title=question, detail=None, options=[ApprovalOption(option_id, label,
-  decision)]), expires_at, result=RequestSettled(... outcome answered/expired/
-  cancelled, result=ApprovalResult(option_id=answer)), decided_by=None)` and
-  `RequestReference(token, handle)`.
-- **Per-bridge publisher** (new module, e.g. `session_activity/bridge_publisher.py`):
-  subscribes to `SessionActivityListener` for the bridge's tenant, with its
-  **own queue/task** (the listener awaits subscribers serially; never call a
-  platform inline). On `approval.open` post the card if the room is on this
-  bridge (`Room.bridge_id`, `Room.external_channel_id`; thread via
-  `BridgeMessageMap(bridge_id, external_channel_id, transport_event_id=thread_id)`,
-  fall back to channel root on `ThreadUnavailable`); on answered/expired/closed
-  `update_rich`; on `activity` create/edit the turn's status message
-  (`send_message` + `update_message`, content through `translate_outbound`);
-  on resync post cards for open requests with no post.
-- **Inbound**: in `bridge_core._handle_inbound_interaction` and
-  `_handle_text_answer`, try the new tables first (token from
-  `parse_answer_action` / `parse_answer_position`; typed `A<n>` handle — widen
-  the regex in `collaboration/session/text.py` from `[Rr]` to `[RrAa]`; bare
-  "yes"/"no" as a reply to the card via `external_post_id`), resolve the person
-  with `_identify_actor` (returns the mxid), call
-  `answer_approval(..., answerer=PlatformPerson(mxid))`, report `SessionError`
-  with `adapter.tell_actor`. Fall through to the old path when not found.
-- **Wiring**: pass the listener from `main.py` to
-  `CollaborationBridgeLifecycleService` → `BridgeCore`; start the subscriber in
-  `BridgeCore.start` (inside `tenant_scope(bridge tenant)`), stop it in `stop`.
-- **Gap**: Teams and Telegram lack `find_request_card`.
-- Reusable test fakes: `tests/switch_core/sessions/test_publication.py`
-  `Platform`, `test_turn_activity_publication.py` `ActivityPlatform`,
-  `bridges/collaboration/test_rich_content_port.py` `_BareAdapter`,
-  `test_session_text_answers.py` (BridgeCore built with `__new__`).
 
 ### Step 5 — the host sends activity and approvals (Switch Console)
 

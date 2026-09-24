@@ -148,6 +148,21 @@ class SessionActivityStore:
         )
         return list(result.scalars())
 
+    async def turn(
+        self, session: AsyncSession, agent_id: str, session_id: str, turn_id: str
+    ) -> list[SessionActivityEvent]:
+        """Every recorded line of one turn, in the host's order."""
+        result = await session.execute(
+            select(SessionActivityEvent)
+            .where(
+                SessionActivityEvent.agent_id == agent_id,
+                SessionActivityEvent.session_id == session_id,
+                SessionActivityEvent.turn_id == turn_id,
+            )
+            .order_by(SessionActivityEvent.seq)
+        )
+        return list(result.scalars())
+
     async def prune_before(self, session: AsyncSession, cutoff: datetime) -> int:
         result = await session.execute(
             delete(SessionActivityEvent).where(SessionActivityEvent.created_at < cutoff)

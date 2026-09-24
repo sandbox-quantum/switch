@@ -84,6 +84,8 @@ def _service(
         session_factory=session_factory,
         config=MagicMock(),
         client_factory=MagicMock(),
+        session_activity_listener=MagicMock(),
+        session_activity_service=MagicMock(),
     )
 
 

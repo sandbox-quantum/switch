@@ -68,6 +68,12 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
+from switch_core.session_activity.bridge_answers import ApprovalAnswers
+from switch_core.session_activity.bridge_publisher import (
+    SessionActivityBridgePublisher,
+)
+from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.service import SessionActivityService
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.sessions.contract import Command, Origin, Surface
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -152,6 +158,10 @@ def _no_agents_notice(slash_hint: str | None) -> str:
 
 
 class BridgeCore:
+    # Tests assemble a BridgeCore with `__new__`; these read as "not wired".
+    _activity_publisher: SessionActivityBridgePublisher | None = None
+    _approval_answers: ApprovalAnswers | None = None
+
     def __init__(
         self,
         *,
@@ -174,6 +184,8 @@ class BridgeCore:
         bridge_client_matrix_user_id: str,
         max_attachment_bytes: int,
         session_demo_enabled: bool,
+        session_activity_listener: SessionActivityListener,
+        session_activity_service: SessionActivityService,
         gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
@@ -273,6 +285,30 @@ class BridgeCore:
         )
         self._session_interactions = self._build_session_interactions(
             session_request_post_store
+        )
+        # Approval cards and turn status from the tables the host reports to,
+        # pushed as they change. Only where the platform draws request cards.
+        self._activity_publisher = (
+            SessionActivityBridgePublisher(
+                adapter=adapter,
+                bridge_id=bridge_id,
+                tenant_id=bridge_tenant_id,
+                listener=session_activity_listener,
+                session_factory=session_factory,
+            )
+            if adapter.publishes_sdk_sessions
+            else None
+        )
+        self._approval_answers = (
+            ApprovalAnswers(
+                bridge_id=bridge_id,
+                service=session_activity_service,
+                session_factory=session_factory,
+                identify=self._identify_actor,
+                is_first_reply=adapter.is_first_reply,
+            )
+            if adapter.publishes_sdk_sessions
+            else None
         )
         # A recorded session, posting a real card into a real channel, so the
         # answer path above has something to resolve against before any host
@@ -441,6 +477,8 @@ class BridgeCore:
                 self._session_publication_task = asyncio.create_task(
                     self._session_publisher.run()
                 )
+        if self._activity_publisher is not None:
+            self._activity_publisher.start()
         # Deliberately not awaited. Provisioning is one call per agent against
         # the platform, and a rate-limited platform makes that minutes of
         # mostly waiting — which would hold up the bridge coming online, and
@@ -450,6 +488,8 @@ class BridgeCore:
         self._identity_task = asyncio.create_task(self._run_agent_identities())
 
     async def stop(self) -> None:
+        if self._activity_publisher is not None:
+            await self._activity_publisher.stop()
         if self._session_publication_task is not None:
             self._session_publication_task.cancel()
             try:
@@ -1404,6 +1444,14 @@ class BridgeCore:
         if interaction.action_id == INTERRUPT_ACTION:
             await self._handle_interrupt_press(interaction)
             return
+        if self._approval_answers is not None:
+            answered = await self._approval_answers.for_press(interaction)
+            if isinstance(answered, Refused):
+                await self._tell_refused(
+                    interaction, answered, thread_ref=interaction.thread_ref
+                )
+            if answered is not None:
+                return
         interactions = self._session_interactions
         if interactions is None:
             return
@@ -1560,6 +1608,12 @@ class BridgeCore:
         something the person said in the channel, and the room sees it either
         way.
         """
+        if self._approval_answers is not None:
+            answered = await self._approval_answers.for_text(msg)
+            if isinstance(answered, Refused):
+                await self._tell_refused(msg, answered, thread_ref=answered.card_ref)
+            if answered is not None:
+                return
         interactions = self._session_interactions
         if interactions is None:
             return

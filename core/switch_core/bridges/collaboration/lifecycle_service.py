@@ -40,6 +40,8 @@ from switch_core.tenant_context import current_tenant_id, no_tenant
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
+    from switch_core.session_activity.listener import SessionActivityListener
+    from switch_core.session_activity.service import SessionActivityService
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,8 @@ class CollaborationBridgeLifecycleService:
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         client_factory: ClientFactory,
+        session_activity_listener: SessionActivityListener,
+        session_activity_service: SessionActivityService,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self._bridge_store = bridge_store
@@ -137,6 +141,8 @@ class CollaborationBridgeLifecycleService:
         self._session_factory = session_factory
         self._config = config
         self._client_factory = client_factory
+        self._session_activity_listener = session_activity_listener
+        self._session_activity_service = session_activity_service
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -608,6 +614,8 @@ class CollaborationBridgeLifecycleService:
             max_attachment_bytes=self._config.agent_media_max_bytes,
             session_demo_enabled=self._config.session_demo_enabled,
             gateway_public_url=self._config.gateway_public_url,
+            session_activity_listener=self._session_activity_listener,
+            session_activity_service=self._session_activity_service,
         )
 
         bridge_client = BridgeClient(

@@ -503,6 +503,8 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
+        session_activity_listener=session_activity_listener,
+        session_activity_service=SessionActivityService(session_factory),
         telemetry=telemetry,
     )
 

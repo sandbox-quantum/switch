@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, union
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import (
@@ -22,12 +22,14 @@ from switch_core.bridges.collaboration.session.outbound import (
 )
 from switch_core.db.models import (
     Agent,
+    ApprovalRequest,
     BridgeMessageMap,
     ClientRoom,
     Room,
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
+    SessionActivityEvent,
     require_tenant_id,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
@@ -1217,6 +1219,24 @@ class _PermanentlyHeldBack:
         self._turns.setdefault(session_id, set()).add(turn_id)
 
 
+async def _sessions_reporting_activity(
+    db: AsyncSession, session_ids: list[str]
+) -> set[str]:
+    if not session_ids:
+        return set()
+    result = await db.execute(
+        union(
+            select(ApprovalRequest.session_id).where(
+                ApprovalRequest.session_id.in_(session_ids)
+            ),
+            select(SessionActivityEvent.session_id).where(
+                SessionActivityEvent.session_id.in_(session_ids)
+            ),
+        )
+    )
+    return set(result.scalars())
+
+
 class SessionPublisher:
     """Reconcile persisted snapshots independently of host acknowledgements."""
 
@@ -1294,7 +1314,15 @@ class SessionPublisher:
                     ).where(SdkSession.tenant_id == require_tenant_id())
                 )
             ).all()
+            reported = await _sessions_reporting_activity(
+                db, [session_id for session_id, _, _ in rows]
+            )
         for session_id, sequence, online in rows:
+            if session_id in reported:
+                # Its host reports activity and approvals to the new tables,
+                # and `SessionActivityBridgePublisher` draws those; drawing the
+                # snapshot too would put every card and status up twice.
+                continue
             published_state = (sequence, online)
             unchanged = self._published.get(session_id) == published_state
             if unchanged and session_id not in self._clock_sessions:
