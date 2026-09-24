@@ -1288,10 +1288,12 @@ invalidate a later phase.**
 
 ### Phase 0 — verify the assumptions
 
-- [ ] **The Switch server has `create_room_from_yaml`.** It shipped with the
-      template work. Check it appears in the agent's tool list. Without it,
-      the agent cannot build a room from the template, and falls back to
-      telling on-call to use the Console.
+- [ ] **The Switch server has `create_room_from_yaml`.** It shipped in
+      switch-core 0.27.0, with the template work. The agent's tool list comes
+      from the server, so check the tool appears there. Without it, the agent
+      cannot build a room from the template, and falls back to telling
+      on-call to use the Console. That makes the server's version a
+      go-live blocker, not a detail.
 - [ ] **An alert can wake the agent.** Create a test monitor carrying the block
       in section 8, trigger it, and check that the agent is woken. Then compare
       what the agent reads (`read_context` on the hub) with what Slack shows.
@@ -1325,6 +1327,8 @@ Record each answer in the bindings or in the SOP document.
 - [ ] Whether an unanswered ping is repeated, and after how long.
 - [ ] Which on-call engineers are invited to a war room.
 - [ ] The Sev0 escalation rule. The SOP states only Sev1's.
+- [ ] When the Sev1 clock stops. The SOP gives "until mitigated" for Sev0
+      only; this design assumes the same for Sev1.
 - [ ] Whether Sev2 has an update cadence.
 - [ ] That "mitigated" is announced in the room by a person, since it stops the
       clock.
