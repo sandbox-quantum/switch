@@ -276,8 +276,9 @@ small rows, and the bridge redraws from them with the existing renderers
 `.../sessions/publication.py`, `.../session/inbound.py`) is the reference for
 behaviour; its tables do not come back.
 
-Migration `545f80e11f13` is unreleased, so it is edited in place rather than
-followed by another revision.
+Migration `545f80e11f13` had already been applied to a shared deployment, so
+it keeps its original content; `c4f7e2a90b13` (after `b9e4d2a71c05`) converts
+that schema to the one below. Never edit an applied revision in place.
 
 ### Contract: host → Switch
 

@@ -5,9 +5,9 @@ Revises: 4d18ba7c6f31
 Create Date: 2026-09-23
 
 A session and its transcript belong to the host that runs it. What the server
-needs is far smaller: each turn's steps as a messaging platform draws them, and
-the requests a session is waiting on, so an answer given on any platform can be
-checked and handed back to the agent. Both are one small row per write.
+needs is far smaller: short activity lines a messaging platform can show, and
+the questions a session is waiting on, so an answer given on any platform can
+be checked and handed back to the agent. Both are one small row per write.
 """
 
 import sqlalchemy as sa
@@ -38,18 +38,13 @@ def upgrade() -> None:
         sa.Column("agent_id", sa.Text(), nullable=False),
         sa.Column("session_id", sa.Text(), nullable=False),
         sa.Column("request_id", sa.Text(), nullable=False),
-        sa.Column("turn_id", sa.Text(), nullable=False),
-        sa.Column("kind", sa.Text(), nullable=False),
         sa.Column("room_id", sa.Text(), nullable=True),
         sa.Column("thread_id", sa.Text(), nullable=True),
-        sa.Column("title", sa.Text(), nullable=False),
-        sa.Column("detail", sa.Text(), nullable=True),
+        sa.Column("question", sa.Text(), nullable=False),
         sa.Column("options", postgresql.JSONB(), nullable=False),
-        sa.Column("questions", postgresql.JSONB(), nullable=False),
         sa.Column("state", sa.Text(), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("answer", sa.Text(), nullable=True),
-        sa.Column("answers", postgresql.JSONB(), nullable=True),
         sa.Column("answered_by", sa.Text(), nullable=True),
         sa.Column("answered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
@@ -82,10 +77,6 @@ def upgrade() -> None:
             "state IN ('open', 'answered', 'expired', 'closed')",
             name="ck_approval_requests_state",
         ),
-        sa.CheckConstraint(
-            "kind IN ('approval', 'questions')",
-            name="ck_approval_requests_kind",
-        ),
     )
     op.create_index(
         "ix_approval_requests_open_expiry",
@@ -105,26 +96,22 @@ def upgrade() -> None:
     op.execute(_POLICY.format(table="approval_requests"))
 
     op.create_table(
-        "session_activity_items",
+        "session_activity_events",
         sa.Column(
             "tenant_id",
             sa.Text(),
-            sa.ForeignKey("tenants.id", name="fk_session_activity_items_tenant"),
+            sa.ForeignKey("tenants.id", name="fk_session_activity_events_tenant"),
             nullable=False,
         ),
         sa.Column("agent_id", sa.Text(), nullable=False),
         sa.Column("session_id", sa.Text(), nullable=False),
-        sa.Column("turn_id", sa.Text(), nullable=False),
-        sa.Column("item_id", sa.Text(), nullable=False),
-        sa.Column("kind", sa.Text(), nullable=False),
-        sa.Column("revision", sa.BigInteger(), nullable=False),
-        sa.Column("status", sa.Text(), nullable=False),
-        sa.Column("title", sa.Text(), nullable=False),
-        sa.Column("text", sa.Text(), nullable=False),
-        sa.Column("command_id", sa.Text(), nullable=True),
+        sa.Column("seq", sa.BigInteger(), nullable=False),
         sa.Column("room_id", sa.Text(), nullable=True),
         sa.Column("thread_id", sa.Text(), nullable=True),
-        sa.Column("message_id", sa.Text(), nullable=True),
+        sa.Column("turn_id", sa.Text(), nullable=True),
+        sa.Column("type", sa.Text(), nullable=False),
+        sa.Column("summary", sa.Text(), nullable=False),
+        sa.Column("detail", postgresql.JSONB(), server_default="{}", nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
             "created_at",
@@ -132,40 +119,32 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint(
-            "tenant_id", "agent_id", "session_id", "turn_id", "item_id"
-        ),
+        sa.PrimaryKeyConstraint("tenant_id", "agent_id", "session_id", "seq"),
         sa.ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
-            name="fk_session_activity_items_agent",
+            name="fk_session_activity_events_agent",
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
-            name="fk_session_activity_items_room",
+            name="fk_session_activity_events_room",
             ondelete="CASCADE",
         ),
         sa.CheckConstraint(
-            "kind IN ('turn', 'user-message', 'assistant-message', "
-            "'tool-activity', 'notice')",
-            name="ck_session_activity_items_kind",
+            "type IN ('turn.started', 'tool.called', 'tool.finished', "
+            "'turn.finished', 'notice')",
+            name="ck_session_activity_events_type",
         ),
     )
     op.create_index(
-        "ix_session_activity_items_updated_at",
-        "session_activity_items",
-        ["updated_at"],
+        "ix_session_activity_events_created_at",
+        "session_activity_events",
+        ["created_at"],
     )
-    op.execute("ALTER TABLE session_activity_items ENABLE ROW LEVEL SECURITY")
-    op.execute(_POLICY.format(table="session_activity_items"))
+    op.execute("ALTER TABLE session_activity_events ENABLE ROW LEVEL SECURITY")
+    op.execute(_POLICY.format(table="session_activity_events"))
 
     op.execute(_NOTIFY_FUNCTION)
     for trigger in _TRIGGERS:
@@ -188,8 +167,6 @@ def upgrade() -> None:
         sa.Column("external_channel_id", sa.Text(), nullable=False),
         sa.Column("external_post_id", sa.Text(), nullable=True),
         sa.Column("thread_ref", sa.Text(), nullable=True),
-        sa.Column("removed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("unconfirmed_notice_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -237,9 +214,8 @@ def upgrade() -> None:
         sa.Column("external_channel_id", sa.Text(), nullable=False),
         sa.Column("external_post_id", sa.Text(), nullable=False),
         sa.Column("thread_ref", sa.Text(), nullable=True),
-        sa.Column("reaction_message_ref", sa.Text(), nullable=True),
-        sa.Column("mark", sa.Text(), nullable=True),
-        sa.Column("attention_post_id", sa.Text(), nullable=True),
+        sa.Column("tool_calls", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("finished", sa.Boolean(), server_default="false", nullable=False),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
@@ -261,10 +237,6 @@ def upgrade() -> None:
             name="fk_turn_status_posts_agent",
             ondelete="CASCADE",
         ),
-        sa.CheckConstraint(
-            "mark IN ('queued', 'working')",
-            name="ck_turn_status_posts_mark",
-        ),
     )
     op.execute("ALTER TABLE turn_status_posts ENABLE ROW LEVEL SECURITY")
     op.execute(_POLICY.format(table="turn_status_posts"))
@@ -273,7 +245,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("turn_status_posts")
     op.drop_table("approval_request_posts")
-    op.drop_table("session_activity_items")
+    op.drop_table("session_activity_events")
     op.drop_table("approval_requests")
     op.execute("DROP FUNCTION IF EXISTS switch_notify_session_activity()")
 
@@ -287,25 +259,18 @@ DECLARE
     key jsonb;
     payload text;
 BEGIN
-    IF TG_TABLE_NAME = 'session_activity_items' THEN
-        key := jsonb_build_object(
-            'tenant_id', NEW.tenant_id,
-            'agent_id', NEW.agent_id,
-            'session_id', NEW.session_id,
-            'key', body->>'turn_id'
-        );
+    key := jsonb_build_object(
+        'tenant_id', NEW.tenant_id,
+        'agent_id', NEW.agent_id,
+        'session_id', NEW.session_id,
+        'key', CASE TG_TABLE_NAME
+            WHEN 'approval_requests' THEN body->>'request_id'
+            ELSE body->>'seq'
+        END
+    );
+    payload := jsonb_build_object('table', TG_TABLE_NAME, 'row', body)::text;
+    IF octet_length(payload) > 7500 THEN
         payload := jsonb_build_object('table', TG_TABLE_NAME, 'key', key)::text;
-    ELSE
-        key := jsonb_build_object(
-            'tenant_id', NEW.tenant_id,
-            'agent_id', NEW.agent_id,
-            'session_id', NEW.session_id,
-            'key', body->>'request_id'
-        );
-        payload := jsonb_build_object('table', TG_TABLE_NAME, 'row', body)::text;
-        IF octet_length(payload) > 7500 THEN
-            payload := jsonb_build_object('table', TG_TABLE_NAME, 'key', key)::text;
-        END IF;
     END IF;
     PERFORM pg_notify('switch_session_activity', payload);
     RETURN NULL;
@@ -315,8 +280,8 @@ $$ LANGUAGE plpgsql
 
 _TRIGGERS = (
     """
-CREATE TRIGGER session_activity_items_notify
-    AFTER INSERT OR UPDATE ON session_activity_items
+CREATE TRIGGER session_activity_events_notify
+    AFTER INSERT ON session_activity_events
     FOR EACH ROW EXECUTE FUNCTION switch_notify_session_activity()
 """,
     """
