@@ -103,8 +103,16 @@ stack's `.env` and took the running server down. Now:
 - A start reads the host first (`inspectStack`) and takes the published copy,
   then this account's `.env`, then this desktop's cache. New credentials are
   made **only** on a host with nothing of the stack at all. Another account's
-  unpublished stack, a partial `.env`, or a host that cannot be read with no
-  cache to fall back on are refused before anything is written.
+  unpublished stack, or a host that cannot be read with no cache to fall back
+  on, is refused before anything is written. The cache may fill gaps in a
+  partial `.env` only when it agrees with every port and credential the file
+  does carry — a cache from before someone else's reset would otherwise put
+  the old database password back.
+- The published copy is stamped with the creation time of the Postgres volume
+  it was written for (after compose up on a first start, when the volume did
+  not exist at publish). A copy whose stamp no longer matches is ignored: a
+  Console from before settings were shared can reset the stack without
+  knowing the copy exists, leaving it naming credentials that open nothing.
 - Every account's Console writes the published `.env` verbatim. Compose run
   from a second working dir with a byte-identical `.env` recreates nothing
   (measured; it follows from the bundled compose referencing nothing by path),
@@ -128,8 +136,29 @@ per-person accounts would hide each person's sessions from the others. Instead:
   and is told nothing about the desktop.
 - Each Console records itself in the state volume (`console-register.ts`): a
   register of who uses the stack and an activity log of starts, connects,
-  stops, resets and disconnects. A reset keeps the activity. The record is for
-  people, never a control, and a write that fails does not fail the operation.
+  stops, resets and disconnects. A disconnect takes the Console off the
+  register and keeps its line of activity. A reset keeps the activity. The
+  record is for people, never a control, and a write that fails does not fail
+  the operation.
+
+**Several Consoles, one agent.** Under one account, each Console holds its own
+row for the same agent and writes the agent's one watcher on the host. Model
+and instructions come from the agent's config file on the host, so they agree.
+Auto-approve lives in each row, so the watcher's saved spec on the host is
+what they share: every watcher write takes auto-approve from it and brings the
+row in line, except the write that follows the person changing it
+(`pushRemoteAutoApprove`), and with automatic sessions off that change goes
+into the saved spec directly (`recordAutoApproveOnHost`).
+
+Two people acting on one session do not collide: prompts queue in the session's
+SDK host and run in turn, and either person's interrupt or stop ends the turn
+for both — it is one session, shown to everyone who can see it.
+
+**Removing an agent.** A plain remove takes the row out of this Console and
+leaves the agent running on its host, for its automatic sessions and anyone
+else using it there. *Also remove it from the host* stops it there and deletes
+the files Console provisioned. Deleting it in Switch implies that: a deleted
+identity has nothing left to run.
 
 **Agents another account runs are observed, not run.** Their working
 directories, credentials and watchers are in the other account's home. A
