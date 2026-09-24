@@ -11,6 +11,7 @@ import {
   COMMAND_WAKE_FILE,
   declareHandoffCapability,
   HANDOFF_FILE,
+  RELAYED_COMMANDS_FILE,
 } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { sharedConfigSchema } from './shared-config';
@@ -1659,6 +1660,34 @@ it('wakes the session an approval answer is for, and only that one', async () =>
       code: 'ENOENT',
     });
     expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('hands a relayed command to the session it names, and only if it runs here', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config, true);
+  const otherConfig = structuredClone(config);
+  otherConfig.session.agentId = randomUUID();
+  const other = await existing(root, otherConfig, true);
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, supervision);
+  const command = (sessionId: string) => ({ sessionId, commandId: `command-${sessionId}` });
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!(command(own.sessionId));
+    await streams[0]!.onSessionCommand!(command(other.sessionId));
+    expect(await readFile(join(own.sessionRoot, RELAYED_COMMANDS_FILE), 'utf8')).toBe(
+      JSON.stringify(command(own.sessionId)) + '\n'
+    );
+    await expect(readFile(join(other.sessionRoot, RELAYED_COMMANDS_FILE))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   } finally {
     abort.abort();
     await run;

@@ -9,6 +9,7 @@ import {
   HANDOFF_PROTOCOL,
   HandoffInbox,
   readsHandoffs,
+  relayCommand,
   wakeApprovals,
   wakeCommands,
 } from './handoff';
@@ -261,6 +262,25 @@ it('wakes for approval answers apart from commands', async () => {
     expect(inbox.takeApprovalWake()).toBe(true);
     expect(inbox.takeApprovalWake()).toBe(false);
     expect(inbox.takeCommandWake()).toBe(false);
+  } finally {
+    stop.abort();
+  }
+});
+
+it('hands relayed commands over in order, once each, including those written before it started', async () => {
+  const session = await root();
+  await relayCommand(session, { commandId: 'first' });
+  const inbox = new HandoffInbox(session);
+  const stop = new AbortController();
+  inbox.listen(stop.signal);
+  try {
+    expect(await inbox.drainCommands()).toEqual([{ commandId: 'first' }]);
+    const waiting = inbox.idle(5000, stop.signal);
+    await relayCommand(session, { commandId: 'second' });
+    await waiting;
+    expect(await inbox.drainCommands()).toEqual([{ commandId: 'second' }]);
+    expect(await inbox.drainCommands()).toEqual([]);
+    expect(await inbox.drain()).toEqual([]);
   } finally {
     stop.abort();
   }

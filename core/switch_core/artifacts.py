@@ -37,7 +37,7 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     # The wire protocol between switch-core's agent bridge and an agent runtime: the event stream, its frame shapes, the resume cursor, and the tool-call channel.
     "agent-protocol": {
         "switch-core": ContractRange(speaks=5, accepts=1),
-        "agent-runtime": ContractRange(speaks=4, accepts=1),
+        "agent-runtime": ContractRange(speaks=5, accepts=1),
     },
     # The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
     "gateway-api": {

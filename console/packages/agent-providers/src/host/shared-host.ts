@@ -410,7 +410,10 @@ export async function runSharedHost(
     }
     await state.journal.append({ type: 'running' });
     let rooms: SharedRoomInbox | null = null;
-    let handoffs: HandoffInbox | null = null;
+    // Read whether or not this session serves rooms: it is also where the
+    // agent's controller hands over commands Switch relayed from Console.
+    const handoffs = new HandoffInbox(options.root);
+    handoffs.listen(executionSignal);
     // Names the connection this session's room events arrive over, and answers
     // with the rooms the server has it serving. Re-asserted while the session
     // runs, because the connection belongs to the agent's controller, which can
@@ -606,8 +609,6 @@ export async function runSharedHost(
       // lands waits in the inbox, rather than being written to a worker that
       // had not yet said it reads one.
       await declareHandoffCapability(options.root);
-      handoffs = new HandoffInbox(options.root);
-      handoffs.listen(executionSignal);
       await assertRoomBinding();
     }
     starting = true;
@@ -744,7 +745,7 @@ export async function runSharedHost(
     let outcomesCheckedAt = -Infinity;
     const applyOutcomes = async (force: boolean) => {
       if (reportingUnsupported) return;
-      const woken = handoffs?.takeApprovalWake() ?? false;
+      const woken = handoffs.takeApprovalWake();
       const waiting = host!
         .snapshot()
         .requests.some((r) => r.state === 'open' && r.content.kind === 'approval');
@@ -820,8 +821,7 @@ export async function runSharedHost(
           startPull();
           await drainPull(rooms);
         }
-        if (rooms && handoffs)
-          for (const event of await handoffs.drain()) await rooms.accept(event);
+        if (rooms) for (const event of await handoffs.drain()) await rooms.accept(event);
         for (const event of rooms?.pending() ?? []) {
           try {
             const receipt = roomMessageReceiptSchema.parse(
@@ -890,7 +890,7 @@ export async function runSharedHost(
       // Room handoffs and Console controls share the durable command queue.
       // The watcher wakes us for committed commands; a slow check recovers
       // missed notifications, older watchers and disconnected controllers.
-      const commandWake = handoffs?.takeCommandWake() ?? false;
+      const commandWake = handoffs.takeCommandWake();
       const checkCommands = commandWake || performance.now() - commandsCheckedAt >= 5000;
       let commands: unknown = admitted;
       if (admitted.length === 0 && checkCommands) {
@@ -898,9 +898,10 @@ export async function runSharedHost(
         commands = await request(`${sessionPath}/commands`, hostLease);
       }
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
+      const batch: unknown[] = [...(await handoffs.drainCommands()), ...commands];
       // Drain queued work promptly; only an empty response starts the idle interval.
-      if (commands.length > 0) commandsCheckedAt = -Infinity;
-      for (const value of commands) {
+      if (batch.length > 0) commandsCheckedAt = -Infinity;
+      for (const value of batch) {
         executionSignal.throwIfAborted();
         if (performance.now() >= deadline) {
           if (lease) throw new SharedHostLeaseExpiredError();
@@ -908,7 +909,12 @@ export async function runSharedHost(
             'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
           );
         }
-        const command = commandSchema.parse(value);
+        const parsed = commandSchema.safeParse(value);
+        if (!parsed.success) {
+          console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
+          continue;
+        }
+        const command = parsed.data;
         if (command.sessionId !== session.sessionId)
           throw new Error('Switch returned a command for another session.');
         if (command.epoch !== hostLease.epoch) continue;
@@ -930,8 +936,7 @@ export async function runSharedHost(
         }
         await flush();
       }
-      if (handoffs) await handoffs.idle(250, executionSignal);
-      else await delay(250, undefined, { signal: executionSignal });
+      await handoffs.idle(250, executionSignal);
     }
   } catch (error) {
     if (!signal.aborted) failure ??= error;

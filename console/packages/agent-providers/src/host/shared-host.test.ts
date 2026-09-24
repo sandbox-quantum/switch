@@ -7,7 +7,13 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
-import { declareHandoffCapability, handOff, readsHandoffs, wakeCommands } from './handoff';
+import {
+  declareHandoffCapability,
+  handOff,
+  readsHandoffs,
+  relayCommand,
+  wakeCommands,
+} from './handoff';
 import { runSharedHost, SharedHostUnavailableError } from './shared-host';
 
 /** Every answer Switch has given this session's room binding, in order. */
@@ -2302,3 +2308,147 @@ it('reports activity and approvals to Switch and applies the answer it records',
     expect(await outcome).toBeNull();
   }
 }, 20000);
+
+it('runs a command its controller relayed from Console', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
+  roots.push(root);
+  const stop = new AbortController();
+  const events: HostEvent[] = [];
+  let listener: (event: ProviderRuntimeEvent) => void = () => {};
+  let live = false;
+  const emit = (event: Record<string, unknown>) =>
+    listener({
+      ...event,
+      sessionId: 'session',
+      provider: 'claude',
+      eventId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    } as ProviderRuntimeEvent);
+  const adapter: ProviderAdapter = {
+    provider: 'claude',
+    capabilities: {
+      resume: true,
+      steering: false,
+      approvals: true,
+      userInput: true,
+      modelSwitchInSession: false,
+    },
+    startSession: vi.fn(async () => {
+      live = true;
+      emit({ type: 'session.state.changed', status: 'ready' });
+      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+    }),
+    sendTurn: vi.fn(async ({ turnId }) => {
+      emit({ type: 'turn.started', turnId });
+      return { turnId };
+    }),
+    respondToRequest: vi.fn(async () => {}),
+    respondToUserInput: vi.fn(async () => {}),
+    interruptTurn: vi.fn(async () => {}),
+    stopSession: vi.fn(async () => {
+      live = false;
+    }),
+    stopAll: vi.fn(async () => {}),
+    hasSession: () => live,
+    subscribe: (fn) => {
+      listener = fn;
+      return () => {
+        listener = () => {};
+      };
+    },
+  };
+  const session: Session = {
+    sessionId: 'session',
+    agentId: 'agent',
+    hostId: 'host',
+    epoch: 'proposed',
+    provider: 'claude',
+    status: 'starting',
+    connectivity: 'online',
+    pendingRequestIds: [],
+    capabilities: {
+      input: 'queue',
+      approvals: true,
+      questions: true,
+      interrupt: false,
+      reset: false,
+      compact: false,
+      modelChange: false,
+      attachmentMimeTypes: [],
+    },
+  };
+  stubSwitchFetch(
+    vi.fn(async (url: string, options: RequestInit) => {
+      const path = new URL(url).pathname;
+      let result: unknown = { leaseSeconds: 30 };
+      if (path.endsWith('/claim'))
+        result = {
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...session, epoch: 'server-epoch' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        };
+      else if (path.endsWith('/events')) {
+        const event = JSON.parse(options.body as string) as HostEvent;
+        events.push(event);
+        result = { throughHostSequence: event.hostSequence };
+      } else if (path.endsWith('/commands')) result = [];
+      return Response.json(result);
+    })
+  );
+  const sessionRoot = join(root, 'session');
+  const running = runSharedHost(
+    {
+      root: sessionRoot,
+      agentApiUrl: 'http://127.0.0.1/agent',
+      token: randomUUID(),
+      session,
+      input: {
+        sessionId: 'session',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+      },
+    },
+    adapter,
+    stop.signal
+  );
+  const outcome = running.then(
+    () => null,
+    (error: unknown) => error
+  );
+  try {
+    await vi.waitFor(
+      () =>
+        expect(
+          events.some(
+            (event) => event.body.type === 'session.upsert' && event.body.session.status === 'ready'
+          )
+        ).toBe(true),
+      { timeout: 5000 }
+    );
+    await relayCommand(sessionRoot, {
+      contractVersion: 1,
+      commandId: 'turn',
+      sessionId: 'session',
+      epoch: 'server-epoch',
+      origin: {
+        actorId: 'owner',
+        surface: 'console',
+        roomId: null,
+        threadId: null,
+        messageId: null,
+      },
+      body: { type: 'message.send', delivery: 'queue', text: 'Hello', attachments: [] },
+    } satisfies Command);
+    await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  } finally {
+    stop.abort();
+    expect(await outcome).toBeNull();
+  }
+});

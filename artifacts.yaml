@@ -183,7 +183,7 @@ contracts:
     # that declares this revision, for the same reason as revision 4.
     artifacts:
       switch-core: { speaks: 5, accepts: 1 }
-      agent-runtime: { speaks: 4, accepts: 1 }
+      agent-runtime: { speaks: 5, accepts: 1 }
 
   gateway-api:
     description: >-

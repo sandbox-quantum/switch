@@ -34,6 +34,7 @@ export {
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
   type ApprovalOutcome,
+  type SessionCommand,
   type DeliveryFilter,
   type EventStreamLogger,
   type Eviction,

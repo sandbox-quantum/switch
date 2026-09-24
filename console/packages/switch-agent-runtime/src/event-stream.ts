@@ -140,6 +140,13 @@ export interface EventStreamLogger {
   error(message: string, meta?: Record<string, unknown>): void;
 }
 
+/** A contract `Command`, as relayed; the receiver validates the rest. */
+export interface SessionCommand {
+  sessionId: string;
+  commandId: string;
+  [key: string]: unknown;
+}
+
 export interface ApprovalOutcome {
   session_id: string;
   request_id: string;
@@ -206,6 +213,12 @@ export interface SwitchEventStreamDeps {
    * Only a connection speaking agent-protocol 4 with scope `all` receives it.
    */
   onApprovalOutcome?: (outcome: ApprovalOutcome) => Promise<void> | void;
+  /**
+   * A command for one of this agent's sessions, sent by its owner from Switch
+   * Console. Switch keeps no copy: whoever receives it is where it lives.
+   * Only a connection speaking agent-protocol 5 with scope `all` receives it.
+   */
+  onSessionCommand?: (command: SessionCommand) => Promise<void> | void;
   /**
    * The rooms the server says this connection covers — on connect, and again
    * whenever they change. The server is the authority here: a room claimed by
@@ -719,6 +732,16 @@ export class SwitchEventStream {
           reason: String(frame.data.reason ?? 'connection closed'),
           roomId: typeof frame.data.room_id === 'string' ? frame.data.room_id : null,
         });
+        return;
+      }
+      case 'session_command': {
+        const sessionId = frame.data.sessionId;
+        if (typeof sessionId === 'string' && typeof frame.data.commandId === 'string')
+          await this.deps.onSessionCommand?.({ ...frame.data, sessionId } as SessionCommand);
+        else
+          log.warn('SwitchEventStream: unreadable session command dropped', {
+            event: 'switch_stream_bad_command',
+          });
         return;
       }
       case 'approval_outcome': {

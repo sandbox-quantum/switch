@@ -18,6 +18,18 @@ export async function wakeApprovals(root: string): Promise<void> {
   await writeFile(join(root, APPROVALS_WAKE_FILE), randomUUID(), { mode: 0o600 });
 }
 export const CAPABILITY_FILE = 'worker.json';
+export const RELAYED_COMMANDS_FILE = 'relayed-commands.jsonl';
+
+/**
+ * Hand a command Switch relayed from Console to the worker running its
+ * session. Appended and synced before returning, so a controller that dies
+ * afterwards has already made it durable; the worker reads the file from where
+ * it last got to. Handing the same command over twice is harmless — the host
+ * refuses a command id it has already taken unless it is the same command.
+ */
+export async function relayCommand(root: string, command: unknown): Promise<void> {
+  await appendRecord(root, RELAYED_COMMANDS_FILE, JSON.stringify(command));
+}
 const NEWLINE = 0x0a;
 
 /**
@@ -96,10 +108,14 @@ export async function readsHandoffs(root: string): Promise<boolean> {
  * while its own connection can see the same one.
  */
 export async function handOff(root: string, event: Handoff): Promise<void> {
-  const file = await open(join(root, HANDOFF_FILE), 'a+', 0o600);
+  await appendRecord(root, HANDOFF_FILE, JSON.stringify(handoffSchema.parse(event)));
+}
+
+async function appendRecord(root: string, name: string, line: string): Promise<void> {
+  const file = await open(join(root, name), 'a+', 0o600);
   try {
-    await discardTornRecord(file);
-    await file.writeFile(`${JSON.stringify(handoffSchema.parse(event))}\n`);
+    await discardTornRecord(file, name);
+    await file.writeFile(`${line}\n`);
     await file.sync();
   } finally {
     await file.close();
@@ -114,7 +130,7 @@ export async function handOff(root: string, event: Handoff): Promise<void> {
  * damage. The bytes discarded are a record that was never completed, so nothing
  * that reached the journal is lost with them.
  */
-async function discardTornRecord(file: FileHandle): Promise<void> {
+async function discardTornRecord(file: FileHandle, name: string): Promise<void> {
   const { size } = await file.stat();
   if (size === 0) return;
   const tail = Buffer.alloc(1);
@@ -122,7 +138,7 @@ async function discardTornRecord(file: FileHandle): Promise<void> {
   if (bytesRead !== 1 || tail[0] === NEWLINE) return;
   const complete = await lastRecordEnd(file, size);
   console.warn(
-    `Discarding ${size - complete} unfinished bytes at the end of ${HANDOFF_FILE}; the controller that began that record did not finish it.`
+    `Discarding ${size - complete} unfinished bytes at the end of ${name}; the controller that began that record did not finish it.`
   );
   await file.truncate(complete);
 }
@@ -169,7 +185,9 @@ async function readFully(
  */
 export class HandoffInbox {
   private offset = 0;
+  private commandsOffset = 0;
   private appended = false;
+  private relayed = false;
   private commands = false;
   private approvals = false;
 
@@ -216,6 +234,10 @@ export class HandoffInbox {
           this.approvals = true;
           this.wake?.();
         }
+        if (filename === null || filename === RELAYED_COMMANDS_FILE) {
+          this.relayed = true;
+          this.wake?.();
+        }
         if (filename !== null && filename !== HANDOFF_FILE) return;
         this.appended = true;
         this.wake?.();
@@ -238,7 +260,7 @@ export class HandoffInbox {
   idle(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);
-      if (this.appended || this.commands || this.approvals) return resolve();
+      if (this.appended || this.commands || this.approvals || this.relayed) return resolve();
       const finish = (error?: unknown) => {
         clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
@@ -256,26 +278,53 @@ export class HandoffInbox {
   async drain(): Promise<Handoff[]> {
     // Cleared before the read, so an append landing during it is still a wake.
     this.appended = false;
-    let file;
-    try {
-      file = await open(join(this.root, HANDOFF_FILE), 'r');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-    try {
-      const { size } = await file.stat();
-      if (size < this.offset)
-        throw new Error('The controller handoff journal shrank; recovery review is required.');
-      if (size === this.offset) return [];
-      const buffer = Buffer.alloc(size - this.offset);
-      const filled = await readFully(file, buffer, buffer.byteLength, this.offset);
-      const complete = buffer.subarray(0, filled).lastIndexOf(NEWLINE) + 1;
-      this.offset += complete;
-      return records(buffer.subarray(0, complete));
-    } finally {
-      await file.close();
-    }
+    const { lines, offset } = await readAppended(this.root, HANDOFF_FILE, this.offset);
+    this.offset = offset;
+    return lines.map((line) => handoffSchema.parse(JSON.parse(line)));
+  }
+
+  /**
+   * Commands relayed from Console since the last read, oldest first, as the
+   * controller wrote them. Read from the start of the file on a fresh worker:
+   * the host refuses a command it has already taken, so a replay costs
+   * nothing and a command written while no worker ran is not lost.
+   */
+  async drainCommands(): Promise<unknown[]> {
+    this.relayed = false;
+    const { lines, offset } = await readAppended(
+      this.root,
+      RELAYED_COMMANDS_FILE,
+      this.commandsOffset
+    );
+    this.commandsOffset = offset;
+    return lines.map((line) => JSON.parse(line) as unknown);
+  }
+}
+
+/** The complete lines appended to a journal after `from`, and where they end. */
+async function readAppended(
+  root: string,
+  name: string,
+  from: number
+): Promise<{ lines: string[]; offset: number }> {
+  let file;
+  try {
+    file = await open(join(root, name), 'r');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { lines: [], offset: from };
+    throw error;
+  }
+  try {
+    const { size } = await file.stat();
+    if (size < from)
+      throw new Error(`The controller journal ${name} shrank; recovery review is required.`);
+    if (size === from) return { lines: [], offset: from };
+    const buffer = Buffer.alloc(size - from);
+    const filled = await readFully(file, buffer, buffer.byteLength, from);
+    const complete = buffer.subarray(0, filled).lastIndexOf(NEWLINE) + 1;
+    return { lines: records(buffer.subarray(0, complete)), offset: from + complete };
+  } finally {
+    await file.close();
   }
 }
 
@@ -286,8 +335,8 @@ export class HandoffInbox {
  * appending the next, so a line that will not read is damage and is refused
  * rather than skipped past.
  */
-function records(complete: Buffer): Handoff[] {
-  const handoffs: Handoff[] = [];
+function records(complete: Buffer): string[] {
+  const lines: string[] = [];
   let start = 0;
   for (
     let end = complete.indexOf(NEWLINE, start);
@@ -297,7 +346,7 @@ function records(complete: Buffer): Handoff[] {
     const line = complete.subarray(start, end).toString('utf8');
     start = end + 1;
     if (!line) continue;
-    handoffs.push(handoffSchema.parse(JSON.parse(line)));
+    lines.push(line);
   }
-  return handoffs;
+  return lines;
 }

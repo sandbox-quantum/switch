@@ -1300,3 +1300,30 @@ it('drops a frame it does not know that is not a room event', async () => {
     abort.abort();
   }
 });
+
+it('hands a relayed session command to its own callback', async () => {
+  const onSessionCommand = vi.fn();
+  const onEvent = vi.fn();
+  const command = {
+    contractVersion: 1,
+    commandId: 'command-1',
+    sessionId: 'session',
+    epoch: 'epoch',
+    origin: { surface: 'console', actorId: 'owner', roomId: null, threadId: null, messageId: null },
+    body: { type: 'turn.interrupt', turnId: 'turn' },
+  };
+  const { abort } = makeStream(
+    streaming(
+      encodeFrame('session_command', { commandId: 'no-session' }),
+      encodeFrame('session_command', command)
+    ),
+    { rooms: [], scope: 'all', onSessionCommand, onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onSessionCommand).toHaveBeenCalledWith(command));
+    expect(onSessionCommand).toHaveBeenCalledTimes(1);
+    expect(onEvent).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+  }
+});
