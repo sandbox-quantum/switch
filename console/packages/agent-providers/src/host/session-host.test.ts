@@ -810,15 +810,20 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
   }
 );
 
-it('overlaps authentication with startup but waits for authentication before returning', async () => {
+it('waits for authentication to prepare the environment before starting the provider', async () => {
   const root = await mkdtemp(join(tmpdir(), 'startup-auth-'));
   roots.push(root);
-  const fixture = setup('claude');
+  const fixture = setup('opencode');
+  const env: Record<string, string> = {};
+  fixture.config.input.env = env;
   let authenticated!: () => void;
   const authenticate = vi.fn(
     () =>
       new Promise<void>((resolve) => {
-        authenticated = resolve;
+        authenticated = () => {
+          env.XDG_DATA_HOME = join(root, 'provider-data');
+          resolve();
+        };
       })
   );
   let returned = false;
@@ -831,14 +836,21 @@ it('overlaps authentication with startup but waits for authentication before ret
     hosts.push(host);
     return host;
   });
-  await vi.waitFor(() => expect(fixture.adapter.startSession).toHaveBeenCalledOnce());
-  expect(authenticate).toHaveBeenCalledOnce();
-  expect(returned).toBe(false);
-  authenticated();
+  await vi.waitFor(() => expect(authenticate).toHaveBeenCalledOnce());
+  try {
+    expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+    expect(returned).toBe(false);
+  } finally {
+    authenticated();
+    await starting;
+  }
   expect((await starting).snapshot().session.status).toBe('ready');
+  expect(fixture.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ env: { XDG_DATA_HOME: join(root, 'provider-data') } })
+  );
 });
 
-it('cleans up the started provider when authentication fails', async () => {
+it('does not start the provider when authentication fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'startup-auth-failed-'));
   roots.push(root);
   const fixture = setup('claude');
@@ -854,7 +866,8 @@ it('cleans up the started provider when authentication fails', async () => {
       fixture.adapter
     )
   ).rejects.toThrow('Sign in required');
-  expect(fixture.adapter.stopSession).toHaveBeenCalledOnce();
+  expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+  expect(fixture.adapter.stopSession).not.toHaveBeenCalled();
   expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
 });
 

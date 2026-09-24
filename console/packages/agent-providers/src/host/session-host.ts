@@ -253,13 +253,8 @@ export class HostedSession {
   }
 
   private async startProvider(input: ProviderSessionStartInput) {
-    const [authentication, provider] = await Promise.allSettled([
-      Promise.resolve().then(() => this.config.authenticate?.()),
-      this.adapter.startSession(input),
-    ]);
-    if (authentication.status === 'rejected') throw authentication.reason;
-    if (provider.status === 'rejected') throw provider.reason;
-    return provider.value;
+    await this.config.authenticate?.();
+    return this.adapter.startSession(input);
   }
 
   private async awaitResetDecision(code: string, message: string): Promise<void> {
