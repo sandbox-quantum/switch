@@ -14,7 +14,7 @@ import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
 import { localSessionLinks } from './local-host';
-import { sidecarControl } from './sidecar-control';
+import { withSidecar } from './sidecar-control';
 
 /**
  * Commands for a shared session, sent to its host directly.
@@ -54,7 +54,7 @@ export async function askHost(
     const running = await liveSupervisor(root);
     return localSessionLinks.request(root, request, running ? HOST_WAIT_MS : 0);
   }
-  return (await sidecarControl(agentId)).request(sessionId, request);
+  return withSidecar(agentId, (client) => client.request(sessionId, request));
 }
 
 export async function submitSessionCommand(

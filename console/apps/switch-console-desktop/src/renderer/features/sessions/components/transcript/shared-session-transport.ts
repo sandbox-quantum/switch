@@ -4,7 +4,10 @@ import {
   type SessionTransport,
 } from '@switch-console/shared/session-v1';
 import { events, rpc } from '@renderer/lib/ipc';
-import { sessionTranscriptEventChannel } from '@shared/core/sessions/sessionEvents';
+import {
+  sessionTranscriptEventChannel,
+  sessionTranscriptResetChannel,
+} from '@shared/core/sessions/sessionEvents';
 
 /**
  * A shared session as its host records it: the snapshot and every event after
@@ -37,9 +40,15 @@ export function hostJournalTransport(agentId: string): SessionTransport {
         },
         id
       );
+      const offReset = events.on(
+        sessionTranscriptResetChannel,
+        ({ reason }) => onError(new Error(`The live feed from the session stopped (${reason}).`)),
+        id
+      );
       onCursor(cursor);
       return () => {
         off();
+        offReset();
         void rpc.sdkHost.transcriptClose(id);
       };
     },

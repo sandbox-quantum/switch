@@ -6,12 +6,15 @@ import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { sessionTranscriptEventChannel } from '@shared/core/sessions/sessionEvents';
+import {
+  sessionTranscriptEventChannel,
+  sessionTranscriptResetChannel,
+} from '@shared/core/sessions/sessionEvents';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
 import { syncSdkSessionActivity } from './session-activity';
 import { askHost } from './session-commands';
-import { sidecarControl } from './sidecar-control';
+import { withSidecar } from './sidecar-control';
 
 /**
  * A shared session's transcript, pushed to the windows showing it.
@@ -107,9 +110,27 @@ export async function openTranscript(agentId: string, sessionId: string): Promis
       ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
           forward(sessionId, event)
         )
-      : await (
-          await sidecarControl(agentId)
-        ).subscribe(sessionId, (event) => forward(sessionId, event));
+      : await withSidecar(agentId, async (client) => {
+          const unsubscribe = await client.subscribe(sessionId, (event) =>
+            forward(sessionId, event)
+          );
+          // Events recorded while the connection is down never arrive, so the
+          // windows showing the session reload it rather than carry on with a gap.
+          const offClose = client.onClose((error) => {
+            if (open.get(sessionId)?.close !== close) return;
+            open.delete(sessionId);
+            events.emit(
+              sessionTranscriptResetChannel,
+              { sessionId, reason: error.message },
+              sessionId
+            );
+          });
+          const close = () => {
+            offClose();
+            unsubscribe();
+          };
+          return close;
+        });
     entry = { viewers: 0, close };
     open.set(sessionId, entry);
   }

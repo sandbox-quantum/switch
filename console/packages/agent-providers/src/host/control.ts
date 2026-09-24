@@ -206,6 +206,14 @@ const placeOutcomeSchema = z.object({
   displaced: z.string().nullable(),
 });
 
+/** Raised when the control connection closed before the sidecar answered. */
+export class SidecarConnectionClosedError extends Error {
+  constructor() {
+    super('The connection to the agent sidecar closed.');
+    this.name = 'SidecarConnectionClosedError';
+  }
+}
+
 /** Console's end of the control connection, over whatever stream reaches the port. */
 export class ControlClient {
   private nextId = 0;
@@ -240,7 +248,7 @@ export class ControlClient {
       this.closeListeners.clear();
     };
     stream.on('error', (error: Error) => fail(error));
-    stream.on('close', () => fail(new Error('The connection to the agent sidecar closed.')));
+    stream.on('close', () => fail(new SidecarConnectionClosedError()));
     lines(stream, (line) => {
       const message = serverMessageSchema.safeParse(JSON.parse(line));
       if (!message.success) return;

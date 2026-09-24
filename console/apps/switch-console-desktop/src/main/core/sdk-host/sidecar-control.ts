@@ -2,6 +2,7 @@ import { CONTROL_FILE, ControlClient } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { log } from '@main/lib/logger';
 import { READ_JSON } from './remote-json';
 
 /**
@@ -77,4 +78,36 @@ export async function sidecarControl(agentId: string): Promise<ControlClient> {
   clients.set(agentId, opening);
   opening.catch(() => clients.delete(agentId));
   return opening;
+}
+
+/** How long a call keeps trying while the sidecar is restarting or its connection drops. */
+const SIDECAR_RETRY_MS = 20000;
+
+/**
+ * Runs `call` against the agent's sidecar, again on a fresh connection if the
+ * sidecar could not be reached or the connection closed before it answered,
+ * as it does while Console replaces the sidecar with a newer build. Every call
+ * made this way is safe to repeat: the sidecar and its hosts deduplicate
+ * starts, commands and room messages. The last error is raised once the
+ * sidecar has not come back within `SIDECAR_RETRY_MS`.
+ */
+export async function withSidecar<T>(
+  agentId: string,
+  call: (client: ControlClient) => Promise<T>
+): Promise<T> {
+  const deadline = Date.now() + SIDECAR_RETRY_MS;
+  let pause = 250;
+  for (;;) {
+    let client: ControlClient | null = null;
+    try {
+      client = await sidecarControl(agentId);
+      return await call(client);
+    } catch (error) {
+      const dropped = client === null || client.isClosed;
+      if (!dropped || Date.now() + pause > deadline) throw error;
+      log.warn('Agent sidecar not reachable; trying again', { agentId, error: String(error) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, pause));
+    pause = Math.min(pause * 2, 2000);
+  }
 }

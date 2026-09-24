@@ -2,7 +2,7 @@ import type { PlaceOutcome } from '@switch-console/agent-providers';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { localWatcherControl } from './local-host';
-import { sidecarControl } from './sidecar-control';
+import { withSidecar } from './sidecar-control';
 
 /**
  * "Reconnect to room": move a room's messages to this session.
@@ -20,5 +20,5 @@ export async function placeSession(
   if (!agent?.switchAgentId) throw new Error('This agent is not linked to Switch.');
   if (!(await getAgentLocation(agent)).sshHost)
     return localWatcherControl(agent.switchAgentId).place(sessionId, roomId);
-  return (await sidecarControl(agentId)).place(sessionId, roomId);
+  return withSidecar(agentId, (client) => client.place(sessionId, roomId));
 }

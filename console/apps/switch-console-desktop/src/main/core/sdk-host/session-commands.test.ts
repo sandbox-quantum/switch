@@ -20,7 +20,9 @@ vi.mock('@main/core/agents/agent-location', () => ({
   getAgentLocation: async () => ({ sshHost: mocks.sshHost }),
 }));
 vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
-vi.mock('./sidecar-control', () => ({ sidecarControl: async () => mocks.sidecar }));
+vi.mock('./sidecar-control', () => ({
+  withSidecar: async (_agentId: string, call: (client: unknown) => unknown) => call(mocks.sidecar),
+}));
 vi.mock('@main/core/sessions/operations/hydrateSession', () => ({
   hydrateSession: mocks.hydrate,
 }));

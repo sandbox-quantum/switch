@@ -93,3 +93,9 @@ export const sessionTranscriptEventChannel = defineEvent<{
   sessionId: string;
   event: unknown;
 }>('session:transcript-event');
+
+/** The live feed for a session broke; windows showing it reload its snapshot. */
+export const sessionTranscriptResetChannel = defineEvent<{
+  sessionId: string;
+  reason: string;
+}>('session:transcript-reset');
