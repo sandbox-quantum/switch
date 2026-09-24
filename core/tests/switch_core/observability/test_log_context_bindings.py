@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
     ClientDeclaration,
     ConnectionRegistry,
@@ -130,7 +131,7 @@ class TestTheProtocolBindsItsAgent:
             expected_generation=None,
         )
 
-        registry.close("c1", "heartbeat lapsed")
+        registry.close("c1", HEARTBEAT_LAPSED)
 
         closed = [r for r in captured.records if "[CONN] closed" in r.getMessage()]
         assert closed, "the registry did not report the close at all"
