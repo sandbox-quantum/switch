@@ -437,8 +437,16 @@ async def test_worker_without_auto_session_is_never_idle_stopped(controller_app)
     [(timedelta(minutes=1), "ready"), (timedelta(minutes=-1), "stopping")],
     ids=["live-session-keeps-it-awake", "expired-lease-does-not"],
 )
-async def test_running_session_blocks_idle_stop_while_its_lease_lives(
-    controller_app, lease, expected
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"status": "running", "pendingRequestIds": []},
+        {"status": "ready", "pendingRequestIds": ["approval-1"]},
+    ],
+    ids=["running-turn", "pending-approval"],
+)
+async def test_busy_session_blocks_idle_stop_while_its_lease_lives(
+    controller_app, lease, expected, state
 ):
     client, request_id, agent_id, _, factory, _ = controller_app
     await client.post(
@@ -454,7 +462,7 @@ async def test_running_session_blocks_idle_stop_while_its_lease_lives(
                 host_id="host-1",
                 epoch="epoch-1",
                 lease_expires_at=datetime.now(UTC) + lease,
-                snapshot={"session": {"status": "running"}},
+                snapshot={"session": state},
             )
         )
         await session.commit()

@@ -112,7 +112,7 @@ class HostedLaunchStore:
             state = row.snapshot.get("session", {})
             if not state.get("retired") and (
                 state.get("status") in ("starting", "running")
-                or state.get("pending_request_ids")
+                or state.get("pendingRequestIds")
             ):
                 return True
         pending = await session.scalar(
