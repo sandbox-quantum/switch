@@ -8,6 +8,7 @@ import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { HostWaker } from './handoff';
+import { followupCommandId, roomControlFollowup } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
@@ -397,6 +398,53 @@ export async function runSharedHost(
       if (!running) return null;
       return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
     };
+    // ── Rejoining the room after a room reset or compaction ─────────────────
+    type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
+    const followups = (): Followup[] =>
+      state.journal.records.filter((record): record is Followup => record.type === 'followup');
+    const followupFor = (command: Command): Followup | null => {
+      const action =
+        command.body.type === 'session.reset'
+          ? 'reset'
+          : command.body.type === 'session.compact'
+            ? 'compact'
+            : null;
+      if (!action || !command.origin?.roomId) return null;
+      return {
+        type: 'followup',
+        commandId: command.commandId,
+        action,
+        roomId: command.origin.roomId,
+        threadId: command.origin.threadId,
+        actorId: command.origin.actorId,
+        surface: command.origin.surface,
+      };
+    };
+    /** Queues the follow-up once; a replay after a restart finds it already recorded. */
+    const sendFollowup = async (owed: Followup): Promise<void> => {
+      const commandId = followupCommandId(owed.commandId);
+      const snapshot = host!.snapshot();
+      if (snapshot.commandStatuses.some((entry) => entry.commandId === commandId)) return;
+      await run({
+        contractVersion: 1,
+        commandId,
+        sessionId: options.session.sessionId,
+        epoch: snapshot.session.epoch,
+        origin: {
+          surface: owed.surface,
+          actorId: owed.actorId,
+          roomId: owed.roomId,
+          threadId: owed.threadId,
+          messageId: null,
+        },
+        body: {
+          type: 'message.send',
+          text: roomControlFollowup(owed),
+          attachments: [],
+          delivery: 'queue',
+        },
+      });
+    };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (value: unknown): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
@@ -416,15 +464,19 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
+      const owed = followupFor(command);
+      if (owed && !followups().some((record) => record.commandId === command.commandId))
+        await state.journal.append(owed);
       try {
         await host!.command(command);
       } catch (error) {
         await host!.reject(command, error);
       }
-      return (
-        host!.snapshot().commandStatuses.find((status) => status.commandId === command.commandId) ??
-        'The host did not record the command.'
-      );
+      const status = host!
+        .snapshot()
+        .commandStatuses.find((entry) => entry.commandId === command.commandId);
+      if (owed && status?.status === 'applied') await sendFollowup(owed);
+      return status ?? 'The host did not record the command.';
     };
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
@@ -514,6 +566,14 @@ export async function runSharedHost(
         !(rooms?.pending().length ?? 0)
       );
     };
+    for (const owed of followups()) {
+      const applied = host
+        .snapshot()
+        .commandStatuses.some(
+          (entry) => entry.commandId === owed.commandId && entry.status === 'applied'
+        );
+      if (applied) await sendFollowup(owed);
+    }
     // Reporting runs beside the session rather than in its way: while Switch
     // is unreachable the reports wait and retry, and the session keeps working.
     let reportingFailure: unknown = null;

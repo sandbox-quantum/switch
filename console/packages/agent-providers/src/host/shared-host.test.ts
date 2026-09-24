@@ -90,7 +90,12 @@ type Harness = {
 
 /** A host run against a scripted provider and a Switch that answers `/agent-sessions` and media. */
 async function start(
-  opts: { rooms?: boolean; ask?: 'approval' | 'questions'; parkAfterMs?: number } = {}
+  opts: {
+    rooms?: boolean;
+    ask?: 'approval' | 'questions';
+    parkAfterMs?: number;
+    resettable?: boolean;
+  } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
   const base = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
@@ -186,6 +191,7 @@ async function start(
   );
   const session = structuredClone(SESSION);
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
+  if (opts.resettable) session.capabilities.reset = true;
   const running = runSharedHost(
     {
       root,
@@ -656,3 +662,34 @@ it('keeps running room messages while Switch cannot take its reports', async () 
     await host.stop();
   }
 });
+
+it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
+  const host = await start({ resettable: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({ type: 'command', command: reset });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
+    expect(host.turns[0]!.text).toContain('in thread "thread"');
+    // Asked again (a relay retried), the follow-up is not sent twice.
+    await host.parent.ask({ type: 'command', command: reset });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);

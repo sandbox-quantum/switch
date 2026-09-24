@@ -25,6 +25,16 @@ const schema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('quiesced') }),
   /** The host stopped itself after sitting idle; it is started again when needed. */
   z.strictObject({ type: z.literal('parked') }),
+  /** A room reset or compaction whose follow-up message is owed once it applies. */
+  z.strictObject({
+    type: z.literal('followup'),
+    commandId: z.string(),
+    action: z.enum(['reset', 'compact']),
+    roomId: z.string(),
+    threadId: z.string().nullable(),
+    actorId: z.string(),
+    surface: z.string(),
+  }),
   z.strictObject({
     type: z.literal('recover'),
     operationId: z.string(),
