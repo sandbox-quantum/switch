@@ -3,10 +3,10 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_session_store import AgentSessionStore
-from switch_core.sessions.service import agents_present_in
 
 
 async def compute_agent_statuses(
@@ -97,12 +97,8 @@ async def compute_agent_statuses(
     # would report an agent as present in a room where nothing but a watcher is
     # listening, suppressing both the "no session" reply and the auto_session
     # promise to start one.
-    live_auto_room |= await agents_present_in(
-        session, auto_session_ids, room_id, connections
-    )
-    live_addressable |= await agents_present_in(
-        session, addressable_ids, room_id, connections
-    )
+    live_auto_room |= agents_present_in(auto_session_ids, room_id, connections)
+    live_addressable |= agents_present_in(addressable_ids, room_id, connections)
     # …whereas DORMANT is a promise that a session is coming, so what it asks
     # of a connection is willingness, not mere connectivity. The client says so
     # when it opens the stream, and one connection of an agent says nothing

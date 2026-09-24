@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
-import type { Session } from '@switch-console/shared/session-v1';
+import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
@@ -53,6 +53,9 @@ class RequestError extends Error {
     super(message);
   }
 }
+
+/** How a room control names the session's current generation and turn. */
+const CURRENT = 'current';
 
 const approvalOutcomesSchema = z.array(
   z.object({
@@ -320,6 +323,21 @@ export async function runSharedHost(
     };
 
     // ── What reaches the host ────────────────────────────────────────────────
+    /**
+     * A room control names the session's generation and turn as `current`:
+     * Switch keeps neither, so the host puts in its own. Null for an
+     * interrupt with no turn running, which has nothing to stop.
+     */
+    const current = (command: Command): Command | null => {
+      const snapshot = host!.snapshot();
+      const resolved =
+        command.epoch === CURRENT ? { ...command, epoch: snapshot.session.epoch } : command;
+      if (resolved.body.type !== 'turn.interrupt' || resolved.body.turnId !== CURRENT)
+        return resolved;
+      const running = snapshot.turns.find((turn) => turn.status === 'running');
+      if (!running) return null;
+      return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
+    };
     const run = async (value: unknown): Promise<void> => {
       executionSignal.throwIfAborted();
       const parsed = commandSchema.safeParse(value);
@@ -327,7 +345,8 @@ export async function runSharedHost(
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
         return;
       }
-      const command = parsed.data;
+      const command = current(parsed.data);
+      if (!command) return;
       if (command.sessionId !== options.session.sessionId) {
         console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
         return;

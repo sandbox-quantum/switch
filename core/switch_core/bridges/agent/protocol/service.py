@@ -33,10 +33,10 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
-    Connection,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -79,7 +79,6 @@ from switch_core.db.models import (
     Task,
     Tool,
     User,
-    require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
@@ -102,10 +101,6 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.sessions.attachments import normalise_mime_type
-from switch_core.sessions.service import (
-    require_recorded_rooms_unmoved,
-    rooms_occupied,
-)
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -1019,23 +1014,6 @@ class ProtocolService:
             raise PermissionError("Agent is not a member of this room")
         return _describe_room(room)
 
-    async def require_recorded_rooms_unmoved(
-        self,
-        agent_id: str,
-        connection: Connection,
-        claiming: frozenset[str],
-        dropping: frozenset[str],
-    ) -> None:
-        """Refuse a room slot move that contradicts what the room is recorded to.
-
-        Read under the caller's hold on the agent's room slots, which is what
-        makes the answer good for the write that follows it.
-        """
-        async with tenant_session(self.session_factory, require_tenant_id()) as db:
-            await require_recorded_rooms_unmoved(
-                db, agent_id, connection, claiming, dropping
-            )
-
     async def list_rooms(
         self, agent_id: str, *, include_archived: bool = False
     ) -> list[RoomDescriptor]:
@@ -1769,9 +1747,7 @@ class ProtocolService:
                 for agent_id in {row.agent_id for row in active}:
                     occupied.update(
                         (agent_id, room)
-                        for room in await rooms_occupied(
-                            session, agent_id, self.connections
-                        )
+                        for room in rooms_occupied(agent_id, self.connections)
                     )
         for row in rows:
             if (row.agent_id, row.room_id) in occupied:
@@ -2841,9 +2817,7 @@ class ProtocolService:
             connections.
             """
             if lease.session_id is not None:
-                return await self.agent_session_store.get_sdk_session_room(
-                    session, lease.session_id
-                )
+                return self.connections.session_room(lease.agent_id, lease.session_id)
             if lease.transport_session_id is None:
                 return None
             connection = self.connections.get(lease.transport_session_id)

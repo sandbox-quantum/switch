@@ -108,7 +108,6 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
-from switch_core.sessions.errors import SessionError
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -871,24 +870,10 @@ async def _open_event_stream(
             # share connections keeps the slot, and the supervisor's restored
             # stream 409s and retries forever.
             async with protocol.connections.slots(agent.id):
-                await protocol.require_recorded_rooms_unmoved(
-                    agent.id, conn, frozenset({room_id}), frozenset()
-                )
                 protocol.connections.claim_room(conn, room_id, takeover=True)
             # The room's unread count follows the slot: whoever is told how far
             # behind the room is has to be the one whose reading clears it.
             protocol.event_buffer.take_counting(agent.id, conn.id, room_id, conn.cursor)
-        except SessionError as exc:
-            # Caught ahead of the ValueError it is one of: a room the record
-            # gives to another session is a refusal in its own right, and the
-            # client acts on its code rather than reading a membership failure.
-            protocol.connections.close(
-                conn.id,
-                Closure(code="closed", message=str(exc), room_id=room_id),
-            )
-            raise HTTPException(
-                status_code=409, detail={"code": exc.code, "message": str(exc)}
-            ) from exc
         except (ValueError, PermissionError) as exc:
             protocol.connections.close(
                 conn.id,
@@ -1040,9 +1025,6 @@ async def connection_subscribe(
             if conn.scope == "single"
             else frozenset()
         )
-        await protocol.require_recorded_rooms_unmoved(
-            agent.id, conn, frozenset({req.room_id}), departing
-        )
         # Named again now the wait for the slots is over, and with nothing
         # awaited between here and the write: a client displaced while it waited
         # would otherwise move a room on the connection its successor holds.
@@ -1094,9 +1076,6 @@ async def connection_unsubscribe(
     conn = _current_connection(protocol, agent.id, req)
 
     async with protocol.connections.slots(agent.id):
-        await protocol.require_recorded_rooms_unmoved(
-            agent.id, conn, frozenset(), frozenset({req.room_id})
-        )
         conn = _current_connection(protocol, agent.id, req)
         protocol.connections.release_room(conn, req.room_id)
     return {"ok": True, "rooms": sorted(conn.rooms)}

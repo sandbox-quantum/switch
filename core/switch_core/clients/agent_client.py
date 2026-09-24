@@ -17,6 +17,10 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.presence import (
+    agents_present_in,
+    rooms_occupied,
+)
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
@@ -75,7 +79,6 @@ from switch_core.events import (
     TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
-from switch_core.sessions.service import agents_present_in, rooms_occupied
 from switch_core.transport import (
     InboundMedia,
     InboundMembership,
@@ -936,7 +939,7 @@ class AgentClient(ClientBase[ClientConfig]):
             if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
-        occupied = await rooms_occupied(session, self.agent.id, self._connections)
+        occupied = rooms_occupied(self.agent.id, self._connections)
         room_ids = await self._agent_session_store.live_connected_rooms(
             session, self.agent.id
         )
@@ -1100,8 +1103,8 @@ class AgentClient(ClientBase[ClientConfig]):
         if connection_model == "always_on":
             if self._connections.is_live(self.agent.id):
                 return True
-        elif self.agent.id in await agents_present_in(
-            session, [self.agent.id], room_id, self._connections
+        elif self.agent.id in agents_present_in(
+            [self.agent.id], room_id, self._connections
         ):
             # A session in the room, or a claimed room slot no session of this
             # agent accounts for — not mere coverage: an `all`-scope watcher

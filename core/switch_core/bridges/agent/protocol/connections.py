@@ -811,6 +811,9 @@ class ConnectionRegistry:
     def session_room(self, agent_id: str, session_id: str) -> str | None:
         return self._session_rooms.get(agent_id, {}).get(session_id)
 
+    def placed_rooms(self, agent_id: str) -> set[str]:
+        return set(self._session_rooms.get(agent_id, {}).values())
+
     def session_in_room(self, agent_id: str, room_id: str) -> str | None:
         return next(
             (
@@ -981,7 +984,7 @@ class ConnectionRegistry:
 
         Covers, not claims: an `all`-scope daemon is genuinely reachable in the
         rooms it has not yielded to a session. This is the *delivery* question.
-        For "is a session in this room", ask `sessions.service.rooms_occupied`,
+        For "is a session in this room", ask `protocol.presence.rooms_occupied`,
         which weighs a claim against the sessions that could account for it.
         """
         return any(self.covers(conn, room_id) for conn in self.for_agent(agent_id))

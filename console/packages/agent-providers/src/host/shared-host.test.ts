@@ -353,3 +353,21 @@ it('stops when its session is stopped', async () => {
   await vi.waitFor(() => expect(host.adapter.stopSession).toHaveBeenCalled(), { timeout: 3000 });
   expect(await host.stop()).toBeNull();
 });
+
+it('fills in its own generation for a command that names the current one', async () => {
+  const host = await start();
+  try {
+    await relayCommand(
+      host.root,
+      relayed('current', 'room-control', {
+        type: 'message.send',
+        delivery: 'queue',
+        text: 'Hello',
+        attachments: [],
+      })
+    );
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 3000 });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});

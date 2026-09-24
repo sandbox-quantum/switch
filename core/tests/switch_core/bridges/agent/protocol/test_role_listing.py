@@ -119,6 +119,15 @@ def _build_service(
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
     svc.connections = ConnectionRegistry()
+    # Where each holding session connected, as `connect_to_room` placed it.
+    for session_id, room_id in sdk_rooms.items():
+        holder = next(
+            lease.agent_id
+            for held in leases.values()
+            for lease in held
+            if lease.session_id == session_id
+        )
+        svc.connections.place_session(holder, session_id, room_id)
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]
