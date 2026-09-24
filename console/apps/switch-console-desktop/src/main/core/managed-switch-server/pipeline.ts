@@ -31,6 +31,7 @@ import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './
 import {
   inspectStack,
   publishEnv,
+  stampPublishedEnv,
   type StackOnHost,
   unsharedStackMessage,
   withdrawPublishedEnv,
@@ -438,6 +439,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       : 'Starting containers (pulling images if needed)…'
   );
   await composeUp(host, onLog, checkoutRoot !== null);
+  if (host.sharedState !== null) await stampPublishedEnv(host.sharedState);
 
   // Make the published ports reachable from the desktop (no-op locally; a
   // mirrored SSH forward remotely) BEFORE the health probe, so the probe takes

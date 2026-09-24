@@ -1,3 +1,4 @@
+import { log } from '@main/lib/logger';
 import type { RemoteStackProbe } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   ENV_FILE_NAME,
@@ -64,6 +65,14 @@ const CORE_SERVICE = 'switch';
 /** Inside the state volume. */
 const STATE_MOUNT = '/state';
 const PUBLISHED_ENV_FILE = 'stack.env';
+/** Beside the published copy: which database volume it was written for. */
+const PUBLISHED_STAMP_FILE = 'stack.db';
+/** Separates the copy from its stamp when both come back from one read. */
+const STAMP_MARKER = '---switch-console-stamp---';
+
+/** The compose volume holding the stack's Postgres data, whose credentials the
+ * published copy has to match. */
+const DATABASE_VOLUME = 'pgdata';
 
 const QUICK_TIMEOUT_MS = 60_000;
 /** A host that has never run the stack has to pull the helper image first. */
@@ -142,16 +151,7 @@ export async function listProjectResources(host: StackStateHost): Promise<Projec
     const [service = '', state = '', workingDir = ''] = line.split('\t');
     return { service, state, workingDir: workingDir || null };
   });
-  const dataVolumes = lines(
-    await docker(host, [
-      'volume',
-      'ls',
-      '--filter',
-      `label=${COMPOSE_PROJECT_LABEL}=${project}`,
-      '--format',
-      '{{.Name}}',
-    ])
-  );
+  const dataVolumes = await listDataVolumes(host);
   const stateVolumes = lines(
     await docker(host, [
       'volume',
@@ -167,6 +167,33 @@ export async function listProjectResources(host: StackStateHost): Promise<Projec
     dataVolumes,
     stateVolume: stateVolumes.includes(stackStateVolume(host)),
   };
+}
+
+/** The stack's own named volumes — Postgres and Mattermost data. */
+async function listDataVolumes(host: StackStateHost): Promise<string[]> {
+  return lines(
+    await docker(host, [
+      'volume',
+      'ls',
+      '--filter',
+      `label=${COMPOSE_PROJECT_LABEL}=${host.composeProjectName}`,
+      '--format',
+      '{{.Name}}',
+    ])
+  );
+}
+
+/**
+ * When the stack's database volume was created, as the daemon records it, or
+ * null when there is no such volume. It changes exactly when the volume is
+ * recreated — which is what a reset does — so it tells a published copy
+ * written for this database from one left over from the database before.
+ */
+async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promise<string | null> {
+  const volume = `${host.composeProjectName}_${DATABASE_VOLUME}`;
+  if (!dataVolumes.includes(volume)) return null;
+  const stamp = await docker(host, ['volume', 'inspect', '--format', '{{.CreatedAt}}', volume]);
+  return stamp.trim() || null;
 }
 
 /** Pull the helper image when this host does not have it yet. */
@@ -251,26 +278,79 @@ export async function writeStateVolume(
   );
 }
 
-/** The published `.env`, or null when the volume holds none. */
-export async function readPublishedEnv(host: StackStateHost): Promise<string | null> {
-  const content = await readStateVolume(
+/** The published `.env`, and the database volume it was written for (null
+ * when that was not recorded). */
+export type PublishedCopy = { env: string; stamp: string | null };
+
+/** The published copy, or null when the volume holds none. */
+export async function readPublishedCopy(host: StackStateHost): Promise<PublishedCopy | null> {
+  const out = await readStateVolume(
     host,
-    `cat "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" 2>/dev/null || true`
+    `cat "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" 2>/dev/null; printf '\\n%s\\n' '${STAMP_MARKER}'; ` +
+      `cat "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}" 2>/dev/null; true`
   );
-  return content.trim().length > 0 ? content : null;
+  // The marker is printed after a newline of its own, so taking exactly that
+  // one back off leaves the copy byte for byte as it was published.
+  const split = out.lastIndexOf(`\n${STAMP_MARKER}`);
+  const env = split === -1 ? out : out.slice(0, split);
+  const stamp = split === -1 ? '' : out.slice(split + 1 + STAMP_MARKER.length).trim();
+  if (env.trim().length === 0) return null;
+  return { env, stamp: stamp || null };
 }
+
+/** Reads the stamp from stdin's first line and the copy from the rest. */
+const PUBLISH_SCRIPT = [
+  'set -e',
+  'umask 077',
+  'IFS= read -r stamp',
+  `cat > "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp"`,
+  `mv "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}"`,
+  'if [ -n "$stamp" ]; then',
+  `  printf "%s\\n" "$stamp" > "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp"`,
+  `  mv "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
+  'else',
+  `  rm -f "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
+  'fi',
+].join('\n');
 
 /**
  * Publish `env` as the stack's shared copy, replacing any earlier one
- * atomically, readable only through the daemon. Called after every start with
- * the exact file that start gave compose.
+ * atomically, readable only through the daemon. Called on every start with
+ * the exact file that start gives compose.
+ *
+ * Stamped with the database volume it is for, when there is one yet — a first
+ * start publishes before compose creates it, and stamps after, with
+ * {@link stampPublishedEnv}. A stamp from before is removed rather than left
+ * to vouch for a copy it was not written with. The copy is written before its
+ * stamp, so a read between the two sees a mismatch and distrusts it, never
+ * the other way round.
  */
 export async function publishEnv(host: StackStateHost, env: string): Promise<void> {
+  const stamp = await databaseStamp(host, await listDataVolumes(host));
+  await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ''}\n${env}`, []);
+}
+
+/**
+ * Stamp the published copy with the database volume a start has just
+ * created, which did not exist when the copy was published. Without it a
+ * first start's copy vouches for nothing, and a later reset from a Console
+ * that does not publish would leave it looking current.
+ */
+export async function stampPublishedEnv(host: StackStateHost): Promise<void> {
+  const stamp = await databaseStamp(host, await listDataVolumes(host));
+  if (stamp === null) {
+    log.warn(
+      `stack-state: the stack on ${host.label} has no database volume after starting, ` +
+        `so its published settings are not stamped with one`
+    );
+    return;
+  }
   await writeStateVolume(
     host,
-    `umask 077 && cat > "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" && ` +
-      `mv "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}"`,
-    env,
+    `umask 077 && IFS= read -r stamp && ` +
+      `printf "%s\\n" "$stamp" > "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" && ` +
+      `mv "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
+    `${stamp}\n`,
     []
   );
 }
@@ -286,7 +366,8 @@ export async function withdrawPublishedEnv(host: StackStateHost): Promise<void> 
   if (!resources.stateVolume) return;
   await writeStateVolume(
     host,
-    `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp"`,
+    `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" ` +
+      `"${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
     '',
     []
   );
@@ -342,7 +423,7 @@ export function unsharedStackMessage(hostLabel: string, ownerDir: string | null)
     `The Switch server on ${hostLabel} was set up from another account${where} and its settings ` +
     `have not been shared, so this account cannot read them. Starting it from here would ` +
     `replace its credentials and take it down, so nothing was changed. It is shared the next ` +
-    `time Switch Console starts or connects to it from the account that set it up.`
+    `time an up-to-date Switch Console starts or connects to it from the account that set it up.`
   );
 }
 
@@ -399,18 +480,24 @@ function fromEnvText(
  *    which is a first start whatever settings are lying about: a `.env` or a
  *    published copy with no stack behind it belongs to one that was reset or
  *    removed, and the credentials in it open nothing;
- * 2. the published copy, which every account shares and every start refreshes;
+ * 2. the published copy, which every account shares and every start refreshes
+ *    — unless it was written for a database volume that is no longer there:
+ *    a Console from before settings were shared can reset the stack and start
+ *    it with new credentials without knowing the copy exists, and the copy
+ *    then names credentials that open nothing;
  * 3. this account's own `.env`, but only when nothing on the daemon says the
  *    stack belongs to another account — a stale file left from before someone
  *    else reset and restarted the stack would otherwise be taken for the truth.
  */
 export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   let resources: ProjectResources;
-  let published: string | null = null;
+  let published: PublishedCopy | null = null;
+  let database: string | null = null;
   let own: string | null;
   try {
     resources = await listProjectResources(host);
-    if (resources.stateVolume) published = await readPublishedEnv(host);
+    if (resources.stateVolume) published = await readPublishedCopy(host);
+    if (published?.stamp) database = await databaseStamp(host, resources.dataVolumes);
     own = await host.readFile(ENV_FILE_NAME);
   } catch (error) {
     return { kind: 'unreadable', reason: errorText(error) };
@@ -420,7 +507,16 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   if (!hasProject) return { kind: 'absent' };
 
   const running = isRunning(resources);
-  if (published !== null) return fromEnvText(published, 'published', running, true);
+  // A copy with no stamp, or a stack with no database volume to compare it
+  // with, cannot be judged, and is trusted as it always was.
+  const stale = published?.stamp != null && database !== null && published.stamp !== database;
+  if (published !== null && !stale) return fromEnvText(published.env, 'published', running, true);
+  if (stale) {
+    log.warn(
+      `stack-state: the published settings on ${host.label} were written for a database that ` +
+        `has since been recreated, by a Console that does not share its settings; ignoring them`
+    );
+  }
 
   // The stack exists and was never published: it is ours only if the account
   // that created its containers is this one.

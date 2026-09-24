@@ -17,6 +17,7 @@ import type { StackOnHost, StackStateHost } from './stack-state';
 const inspectStackMock = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
 const publishEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const withdrawPublishedEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const stampPublishedEnvMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const composeDownMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const waitForHealthMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)));
@@ -44,6 +45,7 @@ vi.mock('@main/lib/logger', () => ({ log: { error: logError, warn: logWarn, info
 vi.mock('./stack-state', () => ({
   inspectStack: inspectStackMock,
   publishEnv: publishEnvMock,
+  stampPublishedEnv: stampPublishedEnvMock,
   withdrawPublishedEnv: withdrawPublishedEnvMock,
   unsharedStackMessage: (host: string, dir: string | null) => `unshared ${host} ${dir}`,
 }));
@@ -222,7 +224,7 @@ describe('starting a shared stack', () => {
     expect(writeFile.mock.calls.filter(([, content]) => content === 'PUBLISHED_ENV\n')).toEqual([]);
   });
 
-  it('publishes the .env it wrote before compose reads it', async () => {
+  it('publishes the .env it wrote before compose reads it, and stamps it after', async () => {
     inspectStackMock.mockResolvedValue(present());
     const { host, sharedState } = sharedHost();
     const order: string[] = [];
@@ -232,11 +234,16 @@ describe('starting a shared stack', () => {
     composeUpMock.mockImplementation(async () => {
       order.push('compose up');
     });
+    stampPublishedEnvMock.mockImplementation(async () => {
+      order.push('stamp');
+    });
 
     await startStack(startOptions(host));
 
     expect(publishEnvMock).toHaveBeenCalledWith(sharedState, 'BUILT_ENV\n');
-    expect(order).toEqual(['publish', 'compose up']);
+    // Stamped once compose has created the database volume the copy is for.
+    expect(stampPublishedEnvMock).toHaveBeenCalledWith(sharedState);
+    expect(order).toEqual(['publish', 'compose up', 'stamp']);
   });
 
   it('fails the start, touching no container, when the settings cannot be shared', async () => {

@@ -1,7 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { STACK_HELPER_IMAGE, STACK_STATE_LABEL } from './constants';
 import { buildEnvFile } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
@@ -9,9 +11,10 @@ import {
   inspectStack,
   listProjectResources,
   publishEnv,
-  readPublishedEnv,
+  readPublishedCopy,
   type StackStateHost,
   stackStateVolume,
+  stampPublishedEnv,
   withdrawPublishedEnv,
 } from './stack-state';
 
@@ -48,6 +51,10 @@ type HostState = {
   dataVolumes: string[];
   stateVolume: boolean;
   published: string | null;
+  /** The database volume the published copy says it was written for. */
+  publishedStamp: string | null;
+  /** When the daemon says the database volume was created. */
+  databaseCreatedAt: string;
   own: string | null;
   imagePresent: boolean;
   /** Commands (joined args) that fail. */
@@ -61,6 +68,8 @@ function fakeHost(initial: Partial<HostState> = {}) {
     dataVolumes: [],
     stateVolume: false,
     published: null,
+    publishedStamp: null,
+    databaseCreatedAt: '2026-09-01T10:00:00Z',
     own: null,
     imagePresent: true,
     failing: null,
@@ -82,6 +91,9 @@ function fakeHost(initial: Partial<HostState> = {}) {
       }
       return { stdout: state.dataVolumes.join('\n'), stderr: '' };
     }
+    if (args[0] === 'volume' && args[1] === 'inspect') {
+      return { stdout: `${state.databaseCreatedAt}\n`, stderr: '' };
+    }
     if (args[0] === 'volume' && args[1] === 'create') {
       state.stateVolume = true;
       return { stdout: `${PROJECT}_console-state\n`, stderr: '' };
@@ -95,7 +107,12 @@ function fakeHost(initial: Partial<HostState> = {}) {
       state.imagePresent = true;
       return { stdout: '', stderr: '' };
     }
-    if (args[0] === 'run') return { stdout: state.published ?? '', stderr: '' };
+    if (args[0] === 'run') {
+      return {
+        stdout: `${state.published ?? ''}\n---switch-console-stamp---\n${state.publishedStamp ?? ''}\n`,
+        stderr: '',
+      };
+    }
     throw new Error(`unexpected docker ${joined}`);
   });
   const writeCommandInput = vi.fn(
@@ -171,7 +188,7 @@ describe('the published copy', () => {
     const env = envFor();
     const { host, calls } = fakeHost({ stateVolume: true, published: env });
 
-    expect(await readPublishedEnv(host)).toBe(env);
+    expect(await readPublishedCopy(host)).toEqual({ env, stamp: null });
     const run = calls.find((args) => args[0] === 'run')!;
     expect(run).toEqual(
       expect.arrayContaining([
@@ -187,7 +204,7 @@ describe('the published copy', () => {
   it('reads as absent when the volume holds no copy', async () => {
     const { host } = fakeHost({ stateVolume: true, published: '' });
 
-    expect(await readPublishedEnv(host)).toBeNull();
+    expect(await readPublishedCopy(host)).toBeNull();
   });
 
   it('pulls the helper image on a host that does not have it yet', async () => {
@@ -197,7 +214,7 @@ describe('the published copy', () => {
       imagePresent: false,
     });
 
-    await readPublishedEnv(host);
+    await readPublishedCopy(host);
 
     expect(calls.map((args) => args[0])).toEqual(['image', 'pull', 'run']);
   });
@@ -217,15 +234,52 @@ describe('the published copy', () => {
     ]);
     expect(writeCommandInput).toHaveBeenCalledOnce();
     const [, args, input] = writeCommandInput.mock.calls[0]!;
-    expect(input).toBe(env);
+    // No database volume yet (a first start), so an empty stamp line.
+    expect(input).toBe(`\n${env}`);
     expect(args.join(' ')).not.toContain(secrets.gatewayAdminPassword);
     expect(args.join(' ')).not.toContain(secrets.dbPassword);
     expect(args).toEqual(
       expect.arrayContaining(['--interactive', `${PROJECT}_console-state:/state`])
     );
     // Written aside and moved into place, so a reader never sees half a file.
-    expect(args.join(' ')).toMatch(/umask 077 && cat > .*\.tmp.* && mv /);
+    const script = args[args.indexOf('-c') + 1]!;
+    expect(script).toMatch(/umask 077\n.*\ncat > .*stack\.env\.tmp.*\nmv /s);
+    expect(script).toContain('rm -f "/state/stack.db"');
     for (const argv of calls) expect(argv.join(' ')).not.toContain(secrets.jwtSecretKey);
+  });
+
+  it('reads the database volume it was written for, when that was recorded', async () => {
+    const env = envFor();
+    const { host } = fakeHost({
+      stateVolume: true,
+      published: env,
+      publishedStamp: '2026-09-01T10:00:00Z',
+    });
+
+    expect(await readPublishedCopy(host)).toEqual({ env, stamp: '2026-09-01T10:00:00Z' });
+  });
+
+  it('is stamped with the database volume it is published for, when there is one', async () => {
+    const env = envFor();
+    const { host, writeCommandInput } = fakeHost({ dataVolumes: [`${PROJECT}_pgdata`] });
+
+    await publishEnv(host, env);
+
+    const [, , input] = writeCommandInput.mock.calls[0]!;
+    expect(input).toBe(`2026-09-01T10:00:00Z\n${env}`);
+  });
+
+  it('is stamped after a first start, once the database volume exists', async () => {
+    const { host, writeCommandInput } = fakeHost({
+      stateVolume: true,
+      dataVolumes: [`${PROJECT}_pgdata`, `${PROJECT}_mmdata`],
+    });
+
+    await stampPublishedEnv(host);
+
+    const [, args, input] = writeCommandInput.mock.calls[0]!;
+    expect(input).toBe('2026-09-01T10:00:00Z\n');
+    expect(args[args.indexOf('-c') + 1]).toContain('/state/stack.db');
   });
 
   it('is withdrawn on reset, and only it: the activity record survives', async () => {
@@ -236,6 +290,7 @@ describe('the published copy', () => {
     const [, args] = writeCommandInput.mock.calls[0]!;
     const script = args[args.indexOf('-c') + 1]!;
     expect(script).toContain('rm -f "/state/stack.env"');
+    expect(script).toContain('"/state/stack.db"');
     expect(script).not.toMatch(/rm -rf|activity/);
   });
 
@@ -246,6 +301,73 @@ describe('the published copy', () => {
 
     expect(writeCommandInput).not.toHaveBeenCalled();
     expect(calls.some((args) => args[1] === 'create')).toBe(false);
+  });
+});
+
+describe('the published copy’s scripts, run for real', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'stack-state-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A host whose state volume is `dir`, with every script run by `sh`. */
+  function realHost(initial: Partial<HostState> = {}) {
+    const fake = fakeHost({ stateVolume: true, ...initial });
+    const sh = (args: string[], input: string) => {
+      const script = args[args.indexOf('-c') + 1]!.replaceAll('/state', dir);
+      return execFileSync('sh', ['-c', script, 'stack-state'], { input, encoding: 'utf8' });
+    };
+    fake.writeCommandInput.mockImplementation(async (_command, args, input) => {
+      sh(args, input);
+    });
+    const exec = fake.exec.getMockImplementation()!;
+    fake.exec.mockImplementation(async (command: string, args: string[] = []) =>
+      args[0] === 'run' ? { stdout: sh(args, ''), stderr: '' } : exec(command, args)
+    );
+    return fake;
+  }
+
+  it('reads back exactly the copy and stamp it wrote', async () => {
+    const env = envFor();
+    const { host } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
+
+    await publishEnv(host, env);
+
+    expect(await readPublishedCopy(host)).toEqual({ env, stamp: '2026-09-01T10:00:00Z' });
+  });
+
+  it('drops an earlier stamp when publishing for a database not created yet', async () => {
+    const { host, state } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
+    await publishEnv(host, envFor({ dbPassword: 'first' }));
+
+    // Reset: the volume is gone when the next start publishes.
+    state.dataVolumes = [];
+    const env = envFor({ dbPassword: 'second' });
+    await publishEnv(host, env);
+
+    expect(await readPublishedCopy(host)).toEqual({ env, stamp: null });
+
+    // And compose creates it; the start then stamps the copy with it.
+    state.dataVolumes = [`${PROJECT}_pgdata`];
+    state.databaseCreatedAt = '2026-09-24T12:00:00Z';
+    await stampPublishedEnv(host);
+
+    expect(await readPublishedCopy(host)).toEqual({ env, stamp: '2026-09-24T12:00:00Z' });
+  });
+
+  it('withdraws the copy and its stamp together', async () => {
+    const { host } = realHost({ dataVolumes: [`${PROJECT}_pgdata`] });
+    await publishEnv(host, envFor());
+
+    await withdrawPublishedEnv(host);
+
+    expect(await readPublishedCopy(host)).toBeNull();
+    expect(() => readFileSync(join(dir, 'stack.db'))).toThrow(/ENOENT/);
   });
 });
 
@@ -288,6 +410,56 @@ describe('inspectStack', () => {
     const stack = await inspectStack(host);
 
     expect(stack.kind === 'present' && stack.env.secrets.dbPassword).toBe('new-owner-pw');
+  });
+
+  it('trusts a published copy written for the database that is there', async () => {
+    const env = envFor();
+    const { host } = fakeHost({
+      containers: [`switch\trunning\t${OTHER_DIR}`],
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: env,
+      publishedStamp: '2026-09-01T10:00:00Z',
+    });
+
+    expect(await inspectStack(host)).toMatchObject({ kind: 'present', source: 'published' });
+  });
+
+  it('ignores a published copy written for a database that has since been recreated', async () => {
+    // A Console from before settings were shared reset the stack from another
+    // account and started it with new credentials, leaving the copy behind.
+    const { host } = fakeHost({
+      containers: [`switch\trunning\t${OTHER_DIR}`],
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: envFor({ dbPassword: 'before-the-reset' }),
+      publishedStamp: '2026-09-01T10:00:00Z',
+      databaseCreatedAt: '2026-09-20T08:30:00Z',
+    });
+
+    expect(await inspectStack(host)).toEqual({
+      kind: 'unshared',
+      ownerDir: OTHER_DIR,
+      running: true,
+    });
+  });
+
+  it('falls back to this account’s own settings past a stale published copy', async () => {
+    const own = envFor({ dbPassword: 'after-the-reset' });
+    const { host } = fakeHost({
+      containers: [`switch\trunning\t${WORKING_DIR}`],
+      dataVolumes: [`${PROJECT}_pgdata`],
+      stateVolume: true,
+      published: envFor({ dbPassword: 'before-the-reset' }),
+      publishedStamp: '2026-09-01T10:00:00Z',
+      databaseCreatedAt: '2026-09-20T08:30:00Z',
+      own,
+    });
+
+    const stack = await inspectStack(host);
+
+    expect(stack).toMatchObject({ kind: 'present', source: 'working-dir', published: false });
+    expect(stack.kind === 'present' && stack.env.secrets.dbPassword).toBe('after-the-reset');
   });
 
   it('reads this account’s own stack, not yet published, from its working dir', async () => {
