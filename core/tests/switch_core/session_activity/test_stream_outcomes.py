@@ -27,7 +27,10 @@ from switch_core.session_activity.service import ApprovalOption, PlatformPerson
 from .conftest import AGENT, make_agent
 
 SESSION = "session-demo"
-OPTIONS = [ApprovalOption("allow", "Allow"), ApprovalOption("deny", "Deny")]
+OPTIONS = [
+    ApprovalOption("allow", "Allow", "accept"),
+    ApprovalOption("deny", "Deny", "decline"),
+]
 
 
 @pytest.fixture

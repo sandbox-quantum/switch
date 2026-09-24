@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -45,10 +45,17 @@ MAX_OPTIONS = 10
 MAX_APPROVAL_LIFETIME = timedelta(hours=24)
 
 
+Decision = Literal["accept", "acceptForSession", "decline", "cancel"]
+DECISIONS: tuple[Decision, ...] = ("accept", "acceptForSession", "decline", "cancel")
+
+
 @dataclass(frozen=True)
 class ApprovalOption:
     id: str
     label: str
+    # What choosing it means. Platforms style the control by it (a decline is
+    # drawn as the dangerous one) and a typed "yes" or "no" resolves by it.
+    decision: Decision
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,7 @@ class SessionActivityService:
         detail: dict[str, Any],
         turn_id: str | None,
         room_id: str | None,
+        thread_id: str | None,
         occurred_at: datetime,
     ) -> bool:
         """Record one activity line. False when this exact line was already recorded."""
@@ -127,6 +135,7 @@ class SessionActivityService:
                 session_id=session_id,
                 seq=seq,
                 room_id=room_id,
+                thread_id=thread_id,
                 turn_id=turn_id,
                 type=type,
                 summary=summary,
@@ -140,8 +149,9 @@ class SessionActivityService:
                     existing.summary,
                     existing.turn_id,
                     existing.room_id,
+                    existing.thread_id,
                     existing.detail,
-                ) != (type, summary, turn_id, room_id, detail):
+                ) != (type, summary, turn_id, room_id, thread_id, detail):
                     raise SessionError(
                         "ACTIVITY_CONFLICT",
                         f"Activity {seq} of session {session_id} was already "
@@ -189,10 +199,12 @@ class SessionActivityService:
                 f"An approval request needs between 1 and {MAX_OPTIONS} options.",
             )
         if len(set(ids)) != len(ids) or not all(
-            option.id and option.label for option in options
+            option.id and option.label and option.decision in DECISIONS
+            for option in options
         ):
             raise SessionError(
-                "INVALID_EVENT", "Options need distinct ids and non-empty labels."
+                "INVALID_EVENT",
+                "Options need distinct ids, non-empty labels and a known decision.",
             )
         now = datetime.now(UTC)
         if expires_at is not None:
@@ -203,7 +215,10 @@ class SessionActivityService:
                     "INVALID_EVENT",
                     "An approval request may stay open for at most 24 hours.",
                 )
-        offered = [{"id": option.id, "label": option.label} for option in options]
+        offered = [
+            {"id": option.id, "label": option.label, "decision": option.decision}
+            for option in options
+        ]
         tenant_id = require_tenant_id()
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             if room_id is not None:

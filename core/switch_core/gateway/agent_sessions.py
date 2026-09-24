@@ -32,6 +32,7 @@ class _Model(BaseModel):
 class OptionView(_Model):
     id: str
     label: str
+    decision: str
 
 
 class ApprovalRequestView(_Model):

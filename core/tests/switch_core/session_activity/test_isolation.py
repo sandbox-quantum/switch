@@ -75,6 +75,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
                 detail={},
                 turn_id=None,
                 room_id=None,
+                thread_id=None,
                 occurred_at=datetime.now(UTC),
             )
             await service.open_approval(
@@ -82,7 +83,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
                 "session-demo",
                 request_id="req-1",
                 question="Proceed?",
-                options=[ApprovalOption("yes", "Yes")],
+                options=[ApprovalOption("yes", "Yes", "accept")],
                 room_id=None,
                 thread_id=None,
                 expires_at=None,
@@ -105,7 +106,7 @@ async def test_one_tenant_cannot_answer_anothers_request(rls_harness):
             "session-demo",
             request_id="req-1",
             question="Proceed?",
-            options=[ApprovalOption("yes", "Yes")],
+            options=[ApprovalOption("yes", "Yes", "accept")],
             room_id=None,
             thread_id=None,
             expires_at=None,

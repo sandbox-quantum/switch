@@ -17,7 +17,10 @@ from switch_core.sessions.service import SessionError
 from .conftest import AGENT, make_agent, make_person, make_room
 
 SESSION = "session-demo"
-OPTIONS = [ApprovalOption("allow", "Allow"), ApprovalOption("deny", "Deny")]
+OPTIONS = [
+    ApprovalOption("allow", "Allow", "accept"),
+    ApprovalOption("deny", "Deny", "decline"),
+]
 
 
 def _activity(**overrides):
@@ -28,6 +31,7 @@ def _activity(**overrides):
         detail={"tool": "bash"},
         turn_id="turn-1",
         room_id=None,
+        thread_id=None,
         occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
     )
     values.update(overrides)
@@ -124,8 +128,8 @@ async def test_opening_is_idempotent_and_announced_once(service, changes):
     again = await _open(service)
     assert (first.state, again.state) == ("open", "open")
     assert again.options == [
-        {"id": "allow", "label": "Allow"},
-        {"id": "deny", "label": "Deny"},
+        {"id": "allow", "label": "Allow", "decision": "accept"},
+        {"id": "deny", "label": "Deny", "decision": "decline"},
     ]
     await changes.expect([("approval.open", "req-1")])
 
@@ -142,8 +146,13 @@ async def test_reopening_with_different_content_is_refused(service):
     [
         {"question": " "},
         {"options": []},
-        {"options": [ApprovalOption("a", "A"), ApprovalOption("a", "B")]},
-        {"options": [ApprovalOption("a", "")]},
+        {
+            "options": [
+                ApprovalOption("a", "A", "accept"),
+                ApprovalOption("a", "B", "decline"),
+            ]
+        },
+        {"options": [ApprovalOption("a", "", "accept")]},
         {"expires_at": datetime.now(UTC) - timedelta(seconds=1)},
         {"expires_at": datetime.now(UTC) + timedelta(hours=25)},
     ],

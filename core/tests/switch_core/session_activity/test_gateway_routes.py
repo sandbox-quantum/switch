@@ -27,7 +27,10 @@ async def owned(session_factory, service):
         SESSION,
         request_id="req-1",
         question="Deploy to production?",
-        options=[ApprovalOption("yes", "Yes"), ApprovalOption("no", "No")],
+        options=[
+            ApprovalOption("yes", "Yes", "accept"),
+            ApprovalOption("no", "No", "decline"),
+        ],
         room_id=None,
         thread_id=None,
         expires_at=None,
@@ -53,8 +56,8 @@ async def test_the_owner_sees_and_answers_their_agents_request(session_factory, 
         [request] = (await client.get("/agent-sessions/approvals")).json()
         assert request["question"] == "Deploy to production?"
         assert request["options"] == [
-            {"id": "yes", "label": "Yes"},
-            {"id": "no", "label": "No"},
+            {"id": "yes", "label": "Yes", "decision": "accept"},
+            {"id": "no", "label": "No", "decision": "decline"},
         ]
         answered = await client.post(
             "/agent-sessions/console-agent/session-demo/approvals/req-1/answer",

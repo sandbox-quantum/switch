@@ -20,6 +20,7 @@ from switch_core.session_activity.service import (
     MAX_OPTIONS,
     MAX_SUMMARY_CHARS,
     ApprovalOption,
+    Decision,
     SessionActivityService,
 )
 
@@ -40,6 +41,7 @@ class ActivityReport(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
     turn_id: _Id | None
     room_id: _Id | None
+    thread_id: _Id | None
     occurred_at: datetime
 
 
@@ -47,6 +49,7 @@ class OptionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: _Id
     label: str = Field(min_length=1, max_length=200)
+    decision: Decision
 
 
 class ApprovalOpen(BaseModel):
@@ -106,6 +109,7 @@ async def report_activity(
         detail=body.detail,
         turn_id=body.turn_id,
         room_id=body.room_id,
+        thread_id=body.thread_id,
         occurred_at=body.occurred_at,
     )
     return ActivityReceipt(recorded=recorded)
@@ -120,7 +124,7 @@ async def open_approval(
         session_id,
         request_id=body.request_id,
         question=body.question,
-        options=[ApprovalOption(o.id, o.label) for o in body.options],
+        options=[ApprovalOption(o.id, o.label, o.decision) for o in body.options],
         room_id=body.room_id,
         thread_id=body.thread_id,
         expires_at=body.expires_at,

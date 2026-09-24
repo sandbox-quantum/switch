@@ -2430,6 +2430,8 @@ class SessionActivityEvent(TenantScoped, Base):
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The Switch message the turn answers, so a platform threads its status there.
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     turn_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2441,6 +2443,100 @@ class SessionActivityEvent(TenantScoped, Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ApprovalRequestPost(TenantScoped, Base):
+    """Where one approval request is shown on one bridge, and how it is named.
+
+    `token` rides in the card's controls and `handle` (`A12`) is what a person
+    types to answer in words; both resolve back to the request through this
+    row, so neither names the session. `external_post_id` is null until the
+    platform confirms the post.
+    """
+
+    __tablename__ = "approval_request_posts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "request_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_approval_request_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_approval_request_posts_agent",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("token", name="uq_approval_request_posts_token"),
+        Index(
+            "uq_approval_request_posts_handle",
+            "bridge_id",
+            "external_channel_id",
+            text("lower(handle)"),
+            unique=True,
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The platform's thread root the card was posted under, if any.
+    thread_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TurnStatusPost(TenantScoped, Base):
+    """The one status message a turn has on a bridge, edited as the turn goes."""
+
+    __tablename__ = "turn_status_posts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "turn_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_turn_status_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_turn_status_posts_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    thread_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    finished: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 

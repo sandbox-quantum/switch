@@ -107,6 +107,7 @@ def upgrade() -> None:
         sa.Column("session_id", sa.Text(), nullable=False),
         sa.Column("seq", sa.BigInteger(), nullable=False),
         sa.Column("room_id", sa.Text(), nullable=True),
+        sa.Column("thread_id", sa.Text(), nullable=True),
         sa.Column("turn_id", sa.Text(), nullable=True),
         sa.Column("type", sa.Text(), nullable=False),
         sa.Column("summary", sa.Text(), nullable=False),
@@ -149,8 +150,101 @@ def upgrade() -> None:
     for trigger in _TRIGGERS:
         op.execute(trigger)
 
+    op.create_table(
+        "approval_request_posts",
+        sa.Column(
+            "tenant_id",
+            sa.Text(),
+            sa.ForeignKey("tenants.id", name="fk_approval_request_posts_tenant"),
+            nullable=False,
+        ),
+        sa.Column("bridge_id", sa.Text(), nullable=False),
+        sa.Column("agent_id", sa.Text(), nullable=False),
+        sa.Column("session_id", sa.Text(), nullable=False),
+        sa.Column("request_id", sa.Text(), nullable=False),
+        sa.Column("token", sa.Text(), nullable=False),
+        sa.Column("handle", sa.Text(), nullable=False),
+        sa.Column("external_channel_id", sa.Text(), nullable=False),
+        sa.Column("external_post_id", sa.Text(), nullable=True),
+        sa.Column("thread_ref", sa.Text(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "request_id"
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_approval_request_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_approval_request_posts_agent",
+            ondelete="CASCADE",
+        ),
+        sa.UniqueConstraint("token", name="uq_approval_request_posts_token"),
+    )
+    op.create_index(
+        "uq_approval_request_posts_handle",
+        "approval_request_posts",
+        ["bridge_id", "external_channel_id", sa.text("lower(handle)")],
+        unique=True,
+    )
+    op.execute("ALTER TABLE approval_request_posts ENABLE ROW LEVEL SECURITY")
+    op.execute(_POLICY.format(table="approval_request_posts"))
+
+    op.create_table(
+        "turn_status_posts",
+        sa.Column(
+            "tenant_id",
+            sa.Text(),
+            sa.ForeignKey("tenants.id", name="fk_turn_status_posts_tenant"),
+            nullable=False,
+        ),
+        sa.Column("bridge_id", sa.Text(), nullable=False),
+        sa.Column("agent_id", sa.Text(), nullable=False),
+        sa.Column("session_id", sa.Text(), nullable=False),
+        sa.Column("turn_id", sa.Text(), nullable=False),
+        sa.Column("external_channel_id", sa.Text(), nullable=False),
+        sa.Column("external_post_id", sa.Text(), nullable=False),
+        sa.Column("thread_ref", sa.Text(), nullable=True),
+        sa.Column("tool_calls", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("finished", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "turn_id"
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_turn_status_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_turn_status_posts_agent",
+            ondelete="CASCADE",
+        ),
+    )
+    op.execute("ALTER TABLE turn_status_posts ENABLE ROW LEVEL SECURITY")
+    op.execute(_POLICY.format(table="turn_status_posts"))
+
 
 def downgrade() -> None:
+    op.drop_table("turn_status_posts")
+    op.drop_table("approval_request_posts")
     op.drop_table("session_activity_events")
     op.drop_table("approval_requests")
     op.execute("DROP FUNCTION IF EXISTS switch_notify_session_activity()")

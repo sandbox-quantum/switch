@@ -26,7 +26,7 @@ async def test_a_pass_expires_overdue_requests_and_prunes_only_when_asked(
         SESSION,
         request_id="req-1",
         question="Deploy?",
-        options=[ApprovalOption("yes", "Yes")],
+        options=[ApprovalOption("yes", "Yes", "accept")],
         room_id=None,
         thread_id=None,
         expires_at=datetime.now(UTC) + timedelta(minutes=5),
@@ -40,6 +40,7 @@ async def test_a_pass_expires_overdue_requests_and_prunes_only_when_asked(
         detail={},
         turn_id=None,
         room_id=None,
+        thread_id=None,
         occurred_at=datetime.now(UTC),
     )
     past = datetime.now(UTC) - timedelta(days=30)

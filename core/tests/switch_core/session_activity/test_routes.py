@@ -41,6 +41,7 @@ def _activity(**overrides):
         "detail": {"tool": "bash"},
         "turn_id": "turn-1",
         "room_id": None,
+        "thread_id": None,
         "occurred_at": "2026-09-23T12:00:00Z",
     }
     body.update(overrides)
@@ -51,7 +52,10 @@ def _approval(**overrides):
     body = {
         "request_id": "req-1",
         "question": "Run `rm -rf build`?",
-        "options": [{"id": "allow", "label": "Allow"}, {"id": "deny", "label": "Deny"}],
+        "options": [
+            {"id": "allow", "label": "Allow", "decision": "accept"},
+            {"id": "deny", "label": "Deny", "decision": "decline"},
+        ],
         "room_id": None,
         "thread_id": None,
         "expires_at": None,
@@ -151,7 +155,7 @@ async def test_a_host_only_sees_its_own_agents_requests(
         SESSION,
         request_id="theirs",
         question="Theirs?",
-        options=[ApprovalOption("ok", "OK")],
+        options=[ApprovalOption("ok", "OK", "accept")],
         room_id=None,
         thread_id=None,
         expires_at=None,
