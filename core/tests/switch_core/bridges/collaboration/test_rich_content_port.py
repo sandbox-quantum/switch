@@ -76,7 +76,7 @@ class _BareAdapter(CollaborationAdapter):
         self.updated.append((channel_id, message_ref, new_content))
         self._update(new_content)
 
-    def translate_outbound(self, content: str) -> str:
+    def _render_outbound(self, content: str) -> str:
         return self._translate(content)
 
     async def start(self, *a: Any, **k: Any) -> Any: ...

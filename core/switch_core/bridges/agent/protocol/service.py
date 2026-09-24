@@ -48,6 +48,7 @@ from switch_core.bridges.agent.protocol.types import (
     RegistrationResult,
     RoomDescriptor,
     RoomDetailDescriptor,
+    RoomWideMentionStatus,
     SendTargetedResult,
     ToolCallReport,
     ToolSpec,
@@ -99,6 +100,12 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.room_wide_mention import (
+    ROOM_WIDE_TARGET,
+    is_reserved_mention_name,
+    reject_reserved_mention_name,
+    room_wide_mention_content,
+)
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -361,7 +368,8 @@ class ProtocolService:
 
         Raises:
             ValueError: name is invalid (lowercase alphanumeric, dots, hyphens,
-                or underscores — no spaces).
+                or underscores — no spaces), or is a room-wide mention word
+                and no agent already has it.
             RuntimeError: no tenant is bound. Checked before anything is
                 written, because the agent's row and its bridge identities
                 both belong to a tenant and neither can be placed without one.
@@ -444,6 +452,10 @@ class ProtocolService:
                 )
                 logger.info("Re-registered agent: %s (%s)", name, agent_id)
             else:
+                # New agents only: one registered under the name before it was
+                # reserved keeps reconnecting, and a room-wide mention in a
+                # room it belongs to is refused instead.
+                reject_reserved_mention_name(name, kind="Agent name")
                 agent_id = await self._create_agent(
                     session=session,
                     name=name,
@@ -1176,11 +1188,14 @@ class ProtocolService:
         room_id: str,
         content: str,
         thread_id: str | None = None,
+        *,
+        extra_content: dict[str, object] | None = None,
     ) -> str:
         """Send a message to a room. Returns event_id.
 
         When thread_id is set the message is posted as a reply in that thread
-        (the id is normalised to the thread root). Raises ValueError if the
+        (the id is normalised to the thread root). `extra_content` carries
+        `com.switch.*` markers alongside the body. Raises ValueError if the
         agent is not a room member, the client is not running, or thread_id
         does not resolve to an event in the room.
         Raises PermissionError if auth fails (should not happen in same-process).
@@ -1198,7 +1213,10 @@ class ProtocolService:
                 client, room.matrix_room_id, thread_id
             )
         event_id = await client.send_message(
-            room.matrix_room_id, content, thread_root_id=thread_root_id
+            room.matrix_room_id,
+            content,
+            thread_root_id=thread_root_id,
+            extra_content=extra_content,
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -1389,19 +1407,45 @@ class ProtocolService:
         role); others still see the message as room context. When thread_id is
         set the message is posted into that thread.
 
+        The reserved name `everyone` is a room-wide mention: it notifies the
+        room's people on its chat platform and addresses no agent. It is
+        marked on the message rather than read from the text, so only this
+        call can page a room (see `room_wide_mention`).
+
         Returns the posted event_id plus the reachability status of each
         addressed agent at send time — for role targets this is each live
         holder. User targets are omitted from target_statuses — their
-        reachability is the bridge's concern.
+        reachability is the bridge's concern. A room-wide mention reports
+        under `everyone` what the room's bridge does with it.
 
         Raises ValueError if no targets are given, if a name does not match a
-        room participant, or if a role does not exist in the room.
+        room participant, if a role does not exist in the room, or if a
+        room-wide mention would address an agent that predates the name being
+        reserved.
         """
         roles = target_roles or []
         if not target_names and not roles:
             raise ValueError("at least one of target_names / target_roles is required")
+        # `@everyone` too: agents write the sigil out of habit.
+        room_wide = any(
+            n.lstrip("@").casefold() == ROOM_WIDE_TARGET for n in target_names
+        )
+        target_names = [
+            n for n in target_names if n.lstrip("@").casefold() != ROOM_WIDE_TARGET
+        ]
+        if room_wide and thread_id is not None:
+            # Slack sends no channel-wide alert from a thread, and Discord's
+            # reaches only people already in it: a threaded room-wide mention
+            # would report "sent" having paged next to nobody.
+            raise ValueError(
+                "A room-wide mention cannot go in a thread: the chat platforms "
+                "only page the whole room from a top-level message. Send it "
+                "without thread_id."
+            )
 
         participants = await self.list_participants(room_id)
+        if room_wide:
+            await self._refuse_room_wide_mention_collisions(room_id, participants)
         participant_by_name = {p.name: p for p in participants}
         # Allow addressing an agent by its room alias: resolve any target that
         # isn't a known participant name through the room's aliases. The alias
@@ -1419,9 +1463,14 @@ class ProtocolService:
                     participant_by_name[name] = participant_by_id[resolved_id]
             unknown = [n for n in target_names if n not in participant_by_name]
         if unknown:
+            hint = (
+                f" For a room-wide mention, target {ROOM_WIDE_TARGET!r}."
+                if any(is_reserved_mention_name(n.lstrip("@")) for n in unknown)
+                else ""
+            )
             raise ValueError(
                 f"Targets not in room: {', '.join(unknown)}. "
-                f"Room participants: {', '.join(sorted(participant_by_name))}"
+                f"Room participants: {', '.join(sorted(participant_by_name))}.{hint}"
             )
 
         # Validate role targets and resolve their live holders (for statuses).
@@ -1481,10 +1530,19 @@ class ProtocolService:
                 ):
                     refused.add(name)
 
-        mention_tokens = [f"@{name}" for name in target_names]
+        # The room-wide token goes first: a bridge replaces exactly that
+        # leading token with its platform's own channel-wide mention.
+        mention_tokens = [f"@{ROOM_WIDE_TARGET}"] if room_wide else []
+        mention_tokens += [f"@{name}" for name in target_names]
         mention_tokens += [f"@{role}" for role in roles]
         body = f"{' '.join(mention_tokens)} {content}"
-        event_id = await self.send_message(agent_id, room_id, body, thread_id=thread_id)
+        event_id = await self.send_message(
+            agent_id,
+            room_id,
+            body,
+            thread_id=thread_id,
+            extra_content=room_wide_mention_content() if room_wide else None,
+        )
 
         # Reachability: direct agent name targets plus each role's live holders.
         status_names = {
@@ -1498,17 +1556,73 @@ class ProtocolService:
         # matter to the sender, but only one of them explains a reply that says
         # no — and "live" for an agent that will decline is the reading that
         # sends someone looking for a bug.
-        target_statuses = {
-            name: (
-                AgentStatus.NOT_PERMITTED
-                if name in refused
-                else participant_by_name[name].status
+        target_statuses: dict[str, AgentStatus | RoomWideMentionStatus] = {}
+        for name in status_names:
+            participant = participant_by_name.get(name)
+            if participant is None:
+                continue
+            if name in refused:
+                target_statuses[name] = AgentStatus.NOT_PERMITTED
+            elif participant.status is not None:
+                target_statuses[name] = participant.status
+        if room_wide:
+            target_statuses[ROOM_WIDE_TARGET] = self._room_wide_mention_status(
+                room_id, room_row.bridge_id if room_row is not None else None
             )
-            for name in status_names
-            if name in participant_by_name
-            and (name in refused or participant_by_name[name].status is not None)
-        }
         return SendTargetedResult(event_id=event_id, target_statuses=target_statuses)
+
+    async def _refuse_room_wide_mention_collisions(
+        self, room_id: str, participants: list[ParticipantDescriptor]
+    ) -> None:
+        """Raise ValueError if anything in the room answers to `@everyone`.
+
+        Addressing matches a mention against an agent's name, its room alias
+        and a role it holds, case-insensitively. The name is reserved for all
+        three, but a row made before the reservation still matches, and a
+        room-wide mention that woke it would break the one promise the feature
+        makes. So the send is refused, naming what to rename.
+        """
+        clashes = [
+            f"agent {p.name!r}"
+            for p in participants
+            if p.type == "agent" and p.name.casefold() == ROOM_WIDE_TARGET
+        ]
+        async with self.session_factory() as session:
+            aliases = await self.room_store.list_aliases(session, room_id)
+            roles = await self.room_role_store.list_roles(session, room_id)
+        clashes += [
+            f"alias {alias!r}"
+            for alias in aliases.values()
+            if alias.casefold() == ROOM_WIDE_TARGET
+        ]
+        clashes += [
+            f"role {role.name!r}"
+            for role in roles
+            if role.name.casefold() == ROOM_WIDE_TARGET
+        ]
+        if clashes:
+            raise ValueError(
+                "Cannot send a room-wide mention: in this room "
+                f"`@{ROOM_WIDE_TARGET}` would also address {', '.join(clashes)}. "
+                "Rename it first — the name is reserved for room-wide mentions."
+            )
+
+    def _room_wide_mention_status(
+        self, room_id: str, bridge_id: str | None
+    ) -> RoomWideMentionStatus:
+        """What the room's bridge does with a room-wide mention.
+
+        This is what Switch sends, not what the platform confirmed: the bridge
+        posts after this call has returned.
+        """
+        if bridge_id is None:
+            return RoomWideMentionStatus.NO_BRIDGE
+        bridge_core = self.collab_lifecycle.get(bridge_id)
+        if bridge_core is None or not bridge_core.relays_room(room_id):
+            return RoomWideMentionStatus.BRIDGE_UNAVAILABLE
+        if bridge_core.adapter.room_wide_mention_notifies:
+            return RoomWideMentionStatus.SENT
+        return RoomWideMentionStatus.UNSUPPORTED
 
     async def set_typing(
         self,

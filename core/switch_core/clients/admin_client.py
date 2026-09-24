@@ -32,6 +32,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import CommandEvent
+from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.transport import InboundMessage, RoomRef
 
 if TYPE_CHECKING:
@@ -221,8 +222,9 @@ class AdminClient(ClientBase[ClientConfig]):
         An `@name` that resolves to a registered agent which is not in this room
         routes to nobody, so the admin posts a heads-up in the triggering
         message's thread naming the absent agent(s). Tokens that map to a
-        room-role (handled by `_warn_unreachable_roles`), to a current member, or
-        to no agent at all (a human user or a typo) are ignored.
+        room-role (handled by `_warn_unreachable_roles`), to a current member,
+        to no agent at all (a human user or a typo), or that is a room-wide
+        mention word (`@everyone` pages the room's people) are ignored.
         """
         body = getattr(event, "body", "") or ""
         if "@" not in body:
@@ -238,7 +240,7 @@ class AdminClient(ClientBase[ClientConfig]):
                 for role in await self._room_role_store.list_roles(session, room_id)
             }
             for token in tokens:
-                if token.lower() in role_names:
+                if token.lower() in role_names or is_reserved_mention_name(token):
                     continue
                 agent = await self._agent_store.get_by_name_insensitive(session, token)
                 if agent is None or agent.id in member_ids:

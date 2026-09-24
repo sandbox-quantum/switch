@@ -62,9 +62,19 @@ from switch_core.bridges.collaboration.slack.agent_groups import (
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
+
+# A channel-wide mention in Slack's own syntax, with or without the `|label`
+# a client may add. `group` is the legacy name for `channel` in a private one.
+_SLACK_MASS_MENTION = re.compile(
+    r"<(!(?:channel|here|everyone|group)(?:\|[^>]*)?)>", re.IGNORECASE
+)
 
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
@@ -312,6 +322,7 @@ class _ActivityStream:
 class SlackAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "<!channel>"
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
@@ -498,6 +509,8 @@ class SlackAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         if not self._web_client:
             logger.error("Cannot send message: Slack client not connected")
@@ -512,7 +525,12 @@ class SlackAdapter(CollaborationAdapter):
                 if ":" in thread_root_id
                 else thread_root_id
             )
-        elif self._channel_type_cache.get(channel_id) in ("im", "mpim"):
+        elif (
+            self._channel_type_cache.get(channel_id) in ("im", "mpim")
+            and not room_wide_mention
+        ):
+            # Not for a room-wide mention: Slack sends no channel-wide alert
+            # from a thread.
             thread_ts = self._last_user_message_ts.get(channel_id)
 
         agent = await self.agent_rendering(sender_name)
@@ -2480,8 +2498,22 @@ class SlackAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
+    def _render_outbound(self, content: str) -> str:
         return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Escape Slack's own channel-wide syntax; defuse the words as prose.
+
+        `<!channel>`, `<!here>`, `<!everyone>` and the legacy `<!group>` page
+        a channel from any text Slack parses, and this runs on the finished
+        mrkdwn because the translation can write one: a Markdown link to
+        `!channel` comes out of it as `<!channel|…>`. Escaping shows the token
+        as written rather than hiding it. The words themselves page nobody on
+        Slack, so they are defused only where that leaves code and links
+        exact."""
+        return defuse_mass_mention_words_in_prose(
+            _SLACK_MASS_MENTION.sub(r"&lt;\1&gt;", text), keep=CODE_AND_URLS
+        )
 
     def escape_label_for_body(self, label: str) -> str:
         """Escape the three characters Slack reserves, over the base defusal.

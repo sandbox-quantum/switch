@@ -279,6 +279,7 @@ class MattermostAdapter(CollaborationAdapter):
     #: post with nobody to name says as much. This is the legacy ping's policy,
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "@channel"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -718,6 +719,8 @@ class MattermostAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         bot_driver = self._bot_drivers.get(sender_name)
         if not bot_driver:
@@ -2349,12 +2352,8 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
-        return re.sub(
-            r"@(\w+):\S+",
-            r"@\1",
-            content,
-        )
+    def _render_outbound(self, content: str) -> str:
+        return re.sub(r"@(\w+):\S+", r"@\1", content)
 
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message

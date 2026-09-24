@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.aliases import validate_alias_map
+from switch_core.aliases import validate_alias_format, validate_alias_map
 from switch_core.authz import Principal, can, validate_visibility_pair
 from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
@@ -33,6 +33,7 @@ from switch_core.db.models import Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
@@ -451,6 +452,13 @@ class RoomService:
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
+        # Before anything is provisioned: a name refused after the channel and
+        # the room exist would leave both behind. Alias collisions need the
+        # resolved agents and are checked with them, below.
+        for spec in config.roles or []:
+            validate_role_name(spec.name)
+        for alias in (config.aliases or {}).values():
+            validate_alias_format(alias)
         # Validate the group up front so a bad id fails before we provision a
         # Matrix room / external channel.
         if config.group_id is not None:

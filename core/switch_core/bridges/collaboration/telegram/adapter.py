@@ -82,9 +82,19 @@ from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
     chunk_message,
 )
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
+
+# Code and links as `_render_outbound` leaves them: rendered HTML, not Markdown.
+_TELEGRAM_KEEP = re.compile(
+    rf"<pre>.*?</pre>|<code>.*?</code>|{CODE_AND_URLS.pattern}",
+    re.DOTALL | re.IGNORECASE,
+)
 
 # A caption over this is posted as its own message ahead of the file. The
 # message-length cap lives in `chunking`, which owns the splitting.
@@ -474,6 +484,7 @@ class TelegramAdapter(CollaborationAdapter):
     #: named, so a mention is an emphasis rather than the only route to a
     #: reader. Naming the asker still happens; it is not what delivery rests on.
     notifies_only_by_mention: ClassVar[bool] = False
+    every_message_notifies_members: ClassVar[bool] = True
 
     #: The status is the turn's one post, so the seconds ride along with the
     #: next real change rather than rewriting it on a timer. Telegram's edit
@@ -944,6 +955,8 @@ class TelegramAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         """Post as the bot with the agent's name at the head of the message.
 
@@ -2116,7 +2129,7 @@ class TelegramAdapter(CollaborationAdapter):
     _ITALIC_USCORE_RE = re.compile(r"(?<![\w_])_([^_\n]+?)_(?![\w_])")
     _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
 
-    def translate_outbound(self, content: str) -> str:
+    def _render_outbound(self, content: str) -> str:
         """Render Switch's Markdown as the HTML subset Telegram accepts.
 
         Telegram's own MarkdownV2 is not Markdown — it requires escaping a long
@@ -2180,6 +2193,15 @@ class TelegramAdapter(CollaborationAdapter):
         for index, rendered in enumerate(stash):
             text = text.replace(f"\x00{index}\x00", rendered)
         return text
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Defuse the words as prose: Telegram has no channel-wide mention.
+
+        What it does to a public `@here` is link it, so the words are still
+        defused, but outside code and links. By the time this runs a code span
+        is `<code>` or `<pre>` HTML rather than backticks, which is why its
+        pattern is this adapter's own."""
+        return defuse_mass_mention_words_in_prose(text, keep=_TELEGRAM_KEEP)
 
     def _render_mention(self, match: re.Match[str]) -> str:
         """An `@name` we can resolve becomes a real mention; anything else is
