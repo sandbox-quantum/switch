@@ -9,8 +9,7 @@ import { reconnectSdkRoom } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
-import { hostJournals, transcriptSource } from './host-journal';
-import { syncSdkSessionActivity } from './session-activity';
+import { transcriptSource } from './host-journal';
 import {
   reconcileSessionCommand,
   sessionCommandStatus,
@@ -18,6 +17,7 @@ import {
 } from './session-commands';
 import { manageAgentSidecar } from './sidecar-management';
 import { stopSharedSession } from './stop-shared-session';
+import { closeTranscript, openTranscript } from './transcripts';
 async function sharedServer(serverId: string) {
   const server = await getServer(serverId);
   if (!server) throw new Error('Switch server not found.');
@@ -54,17 +54,8 @@ export const sdkHostController = createRPCController({
     return agent.serverId;
   },
   transcriptSource,
-  journalSnapshot: async (agentId: string, sessionId: string) => {
-    const snapshot = (await hostJournals.tail(agentId, sessionId)).snapshot();
-    await syncSdkSessionActivity(snapshot.session);
-    return snapshot;
-  },
-  journalEvents: async (agentId: string, sessionId: string, after: number) => {
-    const batch = (await hostJournals.tail(agentId, sessionId)).after(after);
-    const latest = batch.filter((event) => event.body.type === 'session.upsert').at(-1);
-    if (latest?.body.type === 'session.upsert') await syncSdkSessionActivity(latest.body.session);
-    return batch;
-  },
+  transcriptOpen: (agentId: string, sessionId: string) => openTranscript(agentId, sessionId),
+  transcriptClose: (sessionId: string) => closeTranscript(sessionId),
   sessionSubmit: (agentId: string, command: ClientCommand) =>
     submitSessionCommand(agentId, command),
   sessionReconcile: (agentId: string, command: ClientCommand) =>

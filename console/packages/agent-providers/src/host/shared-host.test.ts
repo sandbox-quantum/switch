@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import type { ProviderAdapter, TurnAttachment } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { handOff, relayCommand } from './handoff';
+import type { ParentPort } from './session-channel';
 import { sessionSelectorPath } from './shared-config';
 import { runSharedHost } from './shared-host';
 
@@ -51,7 +53,9 @@ type Harness = {
 };
 
 /** A host run against a scripted provider and a Switch that answers `/agent-sessions` and media. */
-async function start(opts: { rooms?: boolean; openApproval?: boolean } = {}): Promise<Harness> {
+async function start(
+  opts: { rooms?: boolean; openApproval?: boolean; parent?: ParentPort } = {}
+): Promise<Harness> {
   const base = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
   roots.push(base);
   const root = join(base, 'session');
@@ -140,6 +144,7 @@ async function start(opts: { rooms?: boolean; openApproval?: boolean } = {}): Pr
         mcpServers: {},
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
+      parent: opts.parent ?? null,
     },
     adapter,
     stop.signal
@@ -367,6 +372,95 @@ it('fills in its own generation for a command that names the current one', async
       })
     );
     await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 3000 });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+/** The host's parent as the host sees it: requests in, replies and events out. */
+function fakeParent() {
+  type Sent = {
+    kind: string;
+    id?: number;
+    ok?: boolean;
+    value?: unknown;
+    error?: string;
+    event?: { sequence: number };
+  };
+  const sent: Sent[] = [];
+  const port = Object.assign(new EventEmitter(), {
+    connected: true,
+    send: (message: unknown) => {
+      sent.push(message as Sent);
+      return true;
+    },
+  });
+  let nextId = 0;
+  const ask = async (request: unknown): Promise<Sent> => {
+    const id = nextId++;
+    port.emit('message', { kind: 'request', id, request });
+    let reply: Sent | undefined;
+    await vi.waitFor(
+      () => {
+        reply = sent.find((message) => message.kind === 'reply' && message.id === id);
+        expect(reply).toBeDefined();
+      },
+      { timeout: 5000 }
+    );
+    return reply!;
+  };
+  return { port, sent, ask };
+}
+
+it('takes commands and room messages from its parent, and pushes what it records', async () => {
+  const parent = fakeParent();
+  const host = await start({ rooms: true, parent: parent.port });
+  try {
+    await vi.waitFor(() => expect(parent.sent.some((m) => m.kind === 'ready')).toBe(true));
+    const snapshot = await parent.ask({ type: 'snapshot' });
+    expect(snapshot.ok).toBe(true);
+    const epoch = (snapshot.value as { session: { epoch: string } }).session.epoch;
+
+    const sent = await parent.ask({
+      type: 'command',
+      command: relayed(epoch, 'turn', {
+        type: 'message.send',
+        delivery: 'queue',
+        text: 'Hello',
+        attachments: [],
+      }),
+    });
+    expect(sent).toMatchObject({ ok: true, value: { commandId: 'turn' } });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1));
+
+    const stale = await parent.ask({
+      type: 'command',
+      command: relayed('stale', 'other', { type: 'session.stop' }),
+    });
+    expect(stale.ok).toBe(false);
+    expect(stale.error).toContain('STALE_EPOCH');
+
+    expect(
+      await parent.ask({ type: 'room', handoff: roomMessage(1, 'From the room') })
+    ).toMatchObject({ ok: true });
+    // Queued behind the turn still running, and recorded as the next one.
+    await vi.waitFor(
+      () =>
+        expect(
+          parent.sent.some(
+            (m) =>
+              m.kind === 'event' &&
+              JSON.stringify(m.event).includes('From the room') &&
+              JSON.stringify(m.event).includes('user-message')
+          )
+        ).toBe(true),
+      { timeout: 3000 }
+    );
+
+    // Every event it recorded went up the pipe as it happened, in order.
+    const pushed = parent.sent.filter((m) => m.kind === 'event').map((m) => m.event!.sequence);
+    expect(pushed.length).toBeGreaterThan(0);
+    expect(pushed).toEqual([...pushed].sort((a, b) => a - b));
   } finally {
     expect(await host.stop()).toBeNull();
   }

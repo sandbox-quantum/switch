@@ -200,6 +200,18 @@ export class HandoffInbox {
     return pending;
   }
 
+  /** Wake the loop as though something had been handed over, for a parent that sent it directly. */
+  nudge(): void {
+    this.appended = true;
+    this.wake?.();
+  }
+
+  /** Mark an approval answer as waiting, for a parent that said so directly. */
+  approvalsWaiting(): void {
+    this.approvals = true;
+    this.wake?.();
+  }
+
   takeApprovalWake(): boolean {
     const pending = this.approvals;
     this.approvals = false;

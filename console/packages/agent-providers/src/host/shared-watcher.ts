@@ -19,6 +19,7 @@ import {
 } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { roomInputId } from './room-inbox';
+import { SessionUnavailableError } from './session-channel';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
@@ -104,6 +105,9 @@ const delivery = (event: { roomId: string; messageId: string }): string =>
 
 /** How often a room with no session to take its messages is looked at again. */
 const OWNERSHIP_RETRY_MS = 5000;
+
+/** How long a message waits for its session's host to start and take it. */
+const HOST_START_MS = 120000;
 
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
@@ -546,26 +550,87 @@ export async function runSharedWatcher(
      * force when it is finally admitted: a room that was promised a session
      * when it was addressed should still get one.
      */
-    const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
+    const links = supervision.links;
+    /**
+     * Per session, the messages handed to it and not yet acknowledged, sent
+     * down the IPC pipe one at a time and in order. Each is parked in the
+     * journal first and released on the host's acknowledgement, so one this
+     * controller dies holding is routed again when it restarts.
+     */
+    const pumps = new Map<string, { queue: Handoff[]; running: boolean }>();
+    const pump = (config: SharedHostConfig) => {
+      const sessionId = config.session.sessionId;
+      const entry = pumps.get(sessionId)!;
+      if (entry.running) return;
+      entry.running = true;
+      void (async () => {
+        const sessionRoot = sharedSessionRoot(sessionId);
+        while (entry.queue.length && !stop.signal.aborted) {
+          const event = entry.queue[0]!;
+          try {
+            await links!.request(
+              sessionRoot,
+              { type: 'room', handoff: { ...event, event: event.event ?? null } },
+              HOST_START_MS
+            );
+            entry.queue.shift();
+            pending = pending.then(() => assignments.released(event));
+            await pending;
+          } catch (error) {
+            if (!(error instanceof SessionUnavailableError)) throw error;
+            // Not running, or it stopped before it answered: start it again
+            // and hand the message over once it is back.
+            console.warn(
+              `Session ${sessionId} did not take message ${event.messageId} (${error.message}); starting it again.`
+            );
+            await launch(config);
+            await new Promise((resolve) => setTimeout(resolve, OWNERSHIP_RETRY_MS));
+          }
+        }
+        entry.running = false;
+      })().catch((error: Error) => fail(error));
+    };
+    /**
+     * Hands the event to the session: over the IPC pipe where this process is
+     * its parent, otherwise through its handoff file. Starts the session if
+     * nothing is running it, since the room is still its own.
+     */
+    const deliver = async (
+      config: SharedHostConfig,
+      event: Handoff,
+      waiting: boolean
+    ): Promise<boolean> => {
+      const sessionId = config.session.sessionId;
+      const sessionRoot = sharedSessionRoot(sessionId);
+      if (links) {
+        if (!waiting) await assignments.park(event, false);
+        const entry = pumps.get(sessionId) ?? { queue: [], running: false };
+        pumps.set(sessionId, entry);
+        if (!entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId))
+          entry.queue.push(event);
+        if (!links.ready(sessionRoot)) await launch(config);
+        pump(config);
+        return true;
+      }
       const settle = async () => {
         if (waiting) await assignments.released(event);
         else await assignments.handled(event.sequence);
       };
+      if (!(await route(sessionId, event))) {
+        console.error(
+          `Session ${sessionId} serves room ${event.roomId} but does not read what this controller routes to it; message ${event.messageId} was not delivered.`
+        );
+        await settle();
+        return false;
+      }
+      await settle();
+      if (!(await liveSupervisor(sessionRoot))) await launch(config);
+      return true;
+    };
+    const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
       const owner = assignments.ownerOf(event.roomId);
       if (owner && !(await stopped(owner.session.sessionId))) {
-        if (!(await route(owner.session.sessionId, event))) {
-          console.error(
-            `Room ${event.roomId} is served by session ${owner.session.sessionId}, which does not read what this controller routes to it; message ${event.messageId} was not delivered.`
-          );
-          await settle();
-          return true;
-        }
-        await settle();
-        // A session whose host has gone is still the room's: start it again
-        // rather than answer the room from a second session that knows none
-        // of the conversation.
-        if (!(await liveSupervisor(sharedSessionRoot(owner.session.sessionId))))
-          await launch(owner);
+        await deliver(owner, event, waiting);
         return true;
       }
       if (!spawning) return false;
@@ -573,12 +638,7 @@ export async function runSharedWatcher(
         sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
         event
       );
-      if (!(await route(config.session.sessionId, event)))
-        console.error(
-          `Session ${config.session.sessionId} was started for room ${event.roomId} but does not read what this controller routes to it; message ${event.messageId} was not delivered.`
-        );
-      await settle();
-      await launch(config);
+      await deliver(config, event, waiting);
       return true;
     };
     /**
@@ -587,19 +647,18 @@ export async function runSharedWatcher(
      * Console started, so this is the fresher answer than the journal's.
      */
     const routePlaced = async (sessionId: string, event: Handoff): Promise<boolean> => {
-      const sessionRoot = sharedSessionRoot(sessionId);
+      let saved: SharedHostConfig;
       try {
-        const saved = sharedConfigSchema.parse(
-          JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+        saved = sharedConfigSchema.parse(
+          JSON.parse(await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8'))
         );
-        if (saved.session.agentId !== template.session.agentId) return false;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
         throw error;
       }
-      if ((await stopped(sessionId)) || !(await route(sessionId, event))) return false;
-      await assignments.handled(event.sequence);
-      return true;
+      if (saved.session.agentId !== template.session.agentId || (await stopped(sessionId)))
+        return false;
+      return deliver(saved, event, false);
     };
     const queued = (roomId: string, messageId: string): boolean =>
       held.get(roomId)?.events.some((entry) => entry.messageId === messageId) === true;

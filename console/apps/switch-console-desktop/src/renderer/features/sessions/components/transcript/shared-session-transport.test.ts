@@ -2,25 +2,60 @@ import { expect, it, vi } from 'vitest';
 import { hostJournalTransport } from './shared-session-transport';
 
 const ipc = vi.hoisted(() => ({
-  journalSnapshot: vi.fn(),
-  journalEvents: vi.fn(),
+  transcriptOpen: vi.fn(),
+  transcriptClose: vi.fn(),
   sessionSubmit: vi.fn(),
 }));
-vi.mock('@renderer/lib/ipc', () => ({ rpc: { sdkHost: ipc } }));
+const bus = vi.hoisted(() => ({
+  listeners: new Map<string, (payload: { event: unknown }) => void>(),
+}));
+vi.mock('@renderer/lib/ipc', () => ({
+  rpc: { sdkHost: ipc },
+  events: {
+    on: (_channel: unknown, listener: (payload: { event: unknown }) => void, topic: string) => {
+      bus.listeners.set(topic, listener);
+      return () => bus.listeners.delete(topic);
+    },
+  },
+}));
 
-it('reads the host journal and sends commands through the relay', async () => {
+const event = (sequence: number) => ({
+  contractVersion: 1,
+  eventId: `event-${sequence}`,
+  sessionId: 'session',
+  sequence,
+  occurredAt: '2026-09-24T12:00:00.000Z',
+  body: { type: 'notice', level: 'info', code: 'X', message: 'hi' },
+});
+
+it('opens the transcript, hears pushed events after its cursor, and closes it', async () => {
   const transport = hostJournalTransport('agent');
-  ipc.journalSnapshot.mockResolvedValueOnce('snapshot');
+  ipc.transcriptOpen.mockResolvedValueOnce('snapshot');
   expect(await transport.snapshot('session', null)).toBe('snapshot');
-  expect(ipc.journalSnapshot).toHaveBeenCalledWith('agent', 'session');
+  expect(ipc.transcriptOpen).toHaveBeenCalledWith('agent', 'session');
 
-  ipc.journalEvents.mockResolvedValue([]);
+  const heard: number[] = [];
   const cursor = vi.fn();
-  const stop = transport.subscribe('session', 7, vi.fn(), vi.fn(), cursor);
-  await vi.waitFor(() => expect(cursor).toHaveBeenCalledWith(7));
-  stop();
-  expect(ipc.journalEvents).toHaveBeenCalledWith('agent', 'session', 7);
+  const stop = transport.subscribe(
+    'session',
+    7,
+    (e) => heard.push((e as { sequence: number }).sequence),
+    vi.fn(),
+    cursor
+  );
+  const push = bus.listeners.get('session')!;
+  push({ event: event(7) });
+  push({ event: event(8) });
+  push({ event: event(9) });
+  expect(heard).toEqual([8, 9]);
+  expect(cursor).toHaveBeenLastCalledWith(9);
 
+  stop();
+  expect(bus.listeners.has('session')).toBe(false);
+  expect(ipc.transcriptClose).toHaveBeenCalledWith('session');
+});
+
+it('sends commands to the session through main', async () => {
   ipc.sessionSubmit.mockResolvedValueOnce({
     type: 'command.status',
     commandId: 'c',
@@ -28,7 +63,7 @@ it('reads the host journal and sends commands through the relay', async () => {
     code: null,
     message: null,
   });
-  await transport.submit({
+  await hostJournalTransport('agent').submit({
     contractVersion: 1,
     commandId: 'c',
     sessionId: 'session',

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
-import type { Command, Session } from '@switch-console/shared/session-v1';
+import type { Command, CommandStatus, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
@@ -14,6 +14,7 @@ import {
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
+import { serveParent, type ParentPort } from './session-channel';
 import { HostedSession } from './session-host';
 import { writeSessionSelector } from './shared-config';
 import { SharedState } from './shared-state';
@@ -41,6 +42,8 @@ export type SharedHostOptions = {
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
+  /** The IPC channel to the process that started this host, or null if none did. */
+  parent: ParentPort | null;
 };
 
 class TransportError extends Error {}
@@ -338,22 +341,24 @@ export async function runSharedHost(
       if (!running) return null;
       return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
     };
-    const run = async (value: unknown): Promise<void> => {
+    /** Runs a command, answering with what the host recorded for it, or why it did not run. */
+    const run = async (value: unknown): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       const parsed = commandSchema.safeParse(value);
       if (!parsed.success) {
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
-        return;
+        return `The command is not readable: ${parsed.error.message}`;
       }
       const command = current(parsed.data);
-      if (!command) return;
+      if (!command) return 'There is no turn running to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
         console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
-        return;
+        return 'The command is for another session.';
       }
       // A command built against an earlier generation of the session was
       // about a conversation a reset or a restart has since replaced.
-      if (command.epoch !== host!.snapshot().session.epoch) return;
+      if (command.epoch !== host!.snapshot().session.epoch)
+        return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
       try {
         if (command.body.type === 'session.compact') {
           let finished = false;
@@ -371,6 +376,10 @@ export async function runSharedHost(
         await host!.reject(command, error);
       }
       await report();
+      return (
+        host!.snapshot().commandStatuses.find((status) => status.commandId === command.commandId) ??
+        'The host did not record the command.'
+      );
     };
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
@@ -418,6 +427,33 @@ export async function runSharedHost(
       }
     };
 
+    // A parent that started this host talks to it over IPC: commands and room
+    // messages come down the pipe, and every recorded event goes up it.
+    const parent = serveParent(
+      {
+        command: async ({ command }) => {
+          const outcome = await run(command);
+          if (typeof outcome === 'string') throw new Error(outcome);
+          return outcome;
+        },
+        room: async ({ handoff }) => {
+          if (!rooms) throw new Error('This session serves no rooms.');
+          await rooms.accept(handoff);
+          handoffs.nudge();
+          return { accepted: true };
+        },
+        snapshot: async () => host!.snapshot(),
+        approvals: async () => {
+          handoffs.approvalsWaiting();
+          return null;
+        },
+      },
+      options.parent ?? { connected: false, on: () => null, off: () => null }
+    );
+    if (parent) {
+      host.onPublished((event) => parent.push(event));
+      parent.ready();
+    }
     await report();
     await applyOutcomes(true);
     let heldForDecision = false;

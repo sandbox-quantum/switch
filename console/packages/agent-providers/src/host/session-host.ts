@@ -65,6 +65,7 @@ export class HostedSession {
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
+  private readonly listeners = new Set<(event: ServerEvent) => void>();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -379,6 +380,12 @@ export class HostedSession {
       events: structuredClone(this.events.records.filter((event) => event.sequence > after)),
       throughSequence: this.replica.snapshot().throughSequence,
     };
+  }
+
+  /** Hear every event as it is recorded, after it is on disk. Returns the unsubscribe. */
+  onPublished(listener: (event: ServerEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   /** Where the command that started `turnId` came from, if a command started it. */
@@ -1041,6 +1048,7 @@ export class HostedSession {
       serverEventSchema.parse(event);
       await this.events.append(event);
       this.replica.apply(event);
+      for (const listener of this.listeners) listener(event);
     });
     this.publishing = pending.catch(() => {});
     return pending;

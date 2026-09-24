@@ -1,4 +1,7 @@
+import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +16,7 @@ import {
   RELAYED_COMMANDS_FILE,
 } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { SessionLinks } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 import {
   replaceSupersededSessions,
@@ -22,7 +26,12 @@ import {
 } from './shared-watcher';
 import { clearTakenOver, recordTakenOver } from './taken-over';
 
-const supervision: Supervision = { build: 'build', start: async () => {}, stop: async () => {} };
+const supervision: Supervision = {
+  build: 'build',
+  start: async () => {},
+  stop: async () => {},
+  links: null,
+};
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
@@ -660,6 +669,7 @@ it('restarts only the live sessions of this agent left on a superseded build', a
     build: '/host/shared-host-new.mjs',
     start: vi.fn(),
     stop: vi.fn(),
+    links: null,
   };
   await replaceSupersededSessions(
     await supersededSessions(agentId, newer),
@@ -711,7 +721,7 @@ it('steps over a neighbour whose saved config no longer parses', async () => {
   await writeFile(join(root, 'mine', 'config.json'), JSON.stringify(mine));
   supervisors.set(join(root, 'mine'), { build: '/host/shared-host-old.mjs' });
 
-  const newer = { build: '/host/shared-host-new.mjs', start: vi.fn(), stop: vi.fn() };
+  const newer = { build: '/host/shared-host-new.mjs', start: vi.fn(), stop: vi.fn(), links: null };
   await expect(
     replaceSupersededSessions(await supersededSessions(agentId, newer), 'agent-controller', newer)
   ).resolves.toBeUndefined();
@@ -969,4 +979,71 @@ it('hands a relayed command to the session it names, and only if it runs here', 
     abort.abort();
     await run;
   }
+});
+
+/** A session host child as its parent sees it, answering every request it is sent. */
+function answeringChild(requests: unknown[]) {
+  const child = new EventEmitter() as EventEmitter & {
+    send: (message: unknown, callback: (error: Error | null) => void) => boolean;
+  };
+  child.send = (message, callback) => {
+    callback(null);
+    const { id, request } = message as { id: number; request: unknown };
+    requests.push(request);
+    setImmediate(() => child.emit('message', { kind: 'reply', id, ok: true, value: null }));
+    return true;
+  };
+  return child;
+}
+
+it('hands a message to its session over the IPC pipe and releases it once taken', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-ipc-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const links = new SessionLinks();
+  const requests: unknown[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) => {
+    // What the supervisor does on starting the host: attach it to its link.
+    const child = answeringChild(requests);
+    links.attach(sessionRoot, child as unknown as ChildProcess);
+    setImmediate(() => child.emit('message', { kind: 'ready' }));
+    return { created: true };
+  });
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, { ...supervision, links });
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => requests.length === 1);
+    await eventually(() =>
+      readFileSync(join(root, 'assignments.jsonl'), 'utf8').includes('released')
+    );
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(requests).toMatchObject([
+    {
+      type: 'room',
+      handoff: {
+        sequence: 1,
+        roomId: 'room',
+        messageId: 'message-1',
+        event: { type: 'message', payload: { body: 'Run the check' } },
+      },
+    },
+  ]);
+  const journal = await SharedWatchAssignments.open(root);
+  // Released on the host's acknowledgement, so nothing is left to route again.
+  expect(journal.pending()).toEqual([]);
+  expect(journal.cursor).toBe(1);
+  const [assigned] = journal.sessions();
+  await expect(
+    readFile(join(root, assigned!.session.sessionId, HANDOFF_FILE))
+  ).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
 });

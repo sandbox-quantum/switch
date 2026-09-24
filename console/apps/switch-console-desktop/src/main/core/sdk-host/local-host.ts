@@ -10,6 +10,7 @@ import {
   sharedConfigSchema,
   type SharedHostConfig,
   sharedSessionRoot,
+  SessionLinks,
   superviseSharedHost,
   type Supervision,
   WATCH_FLAGS_FILE,
@@ -166,11 +167,19 @@ async function halt(
 }
 
 /**
+ * Console's end of the IPC pipe to each local session host it supervises:
+ * commands and room messages go down it, and every event the host records
+ * comes back up it.
+ */
+export const localSessionLinks = new SessionLinks();
+
+/**
  * Supervises a local host from inside Console. The worker keeps its own process
  * group so a misbehaving provider can still be fenced, but Console owns the
  * supervisor rather than detaching one, so the worker stops when Console does.
  */
 export const consoleSupervision: Supervision = {
+  links: localSessionLinks,
   get build() {
     return resolveSharedHostBundlePath();
   },
@@ -187,6 +196,7 @@ export const consoleSupervision: Supervision = {
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           signal,
           build: bundle,
+          links: localSessionLinks,
         }),
       'Local SDK host supervisor stopped',
       // The supervisor records a worker's own failure under this root already.
@@ -251,6 +261,7 @@ export async function startLocalWatcher(
     watcher: true,
     restart: false,
     supervision: {
+      links: null,
       build: consoleSupervision.build,
       start: async ({ root: prepared, configPath }) => {
         // The configuration that was written, not the one that was asked for.

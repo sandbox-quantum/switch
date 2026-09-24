@@ -44,7 +44,8 @@ import { log } from '@main/lib/logger';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { hostJournals, JournalUnavailableError } from './host-journal';
+import { JournalUnavailableError } from './host-journal';
+import { currentSnapshot } from './transcripts';
 
 /** A host that stopped on an interrupted reset is online and waits for the user's explicit reset. */
 function awaitingResetDecision(snapshot: Snapshot): boolean {
@@ -201,7 +202,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         nextFailureCheck = Date.now() + 2000;
       }
       try {
-        snapshot = (await hostJournals.tail(session.agentId, session.id)).snapshot();
+        snapshot = await currentSnapshot(session.agentId, session.id);
         if (
           snapshot.session.epoch !== previousEpoch &&
           snapshot.session.connectivity === 'online' &&
@@ -498,7 +499,7 @@ export async function buildSharedHostConfig(
 /** The generation a session's host last recorded, or null if it has recorded none. */
 async function journalEpoch(agentId: string, sessionId: string): Promise<string | null> {
   try {
-    return (await hostJournals.tail(agentId, sessionId)).snapshot().session.epoch;
+    return (await currentSnapshot(agentId, sessionId)).session.epoch;
   } catch (error) {
     if (error instanceof JournalUnavailableError) return null;
     throw error;

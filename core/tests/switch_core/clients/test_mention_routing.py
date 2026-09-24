@@ -42,6 +42,8 @@ def _no_connections(
         claimant_of=lambda _agent_id, _room_id: None,
         can_spawn_for=lambda _agent_id, _room_id: spawns,
         for_agent=lambda _agent_id: [],
+        placed_rooms=lambda _agent_id: set(),
+        session_in_room=lambda _agent_id, _room_id: None,
     )
 
 

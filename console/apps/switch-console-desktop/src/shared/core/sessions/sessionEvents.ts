@@ -84,3 +84,12 @@ export const sessionProvisionedChannel = defineEvent<{
   locationId: string;
   sshConnectionId?: string;
 }>('session:provisioned');
+
+/**
+ * One event a shared session's host recorded, pushed to the windows showing
+ * that session. Published with the session id as its topic.
+ */
+export const sessionTranscriptEventChannel = defineEvent<{
+  sessionId: string;
+  event: unknown;
+}>('session:transcript-event');

@@ -103,6 +103,7 @@ async function main(): Promise<void> {
       env: process.env,
       signal: stop.signal,
       build: process.argv[1]!,
+      links: null,
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -139,6 +140,8 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
+    // Started by a parent that talks to it: it goes when the parent goes.
+    if (process.send) process.on('disconnect', () => stop.abort());
     try {
       await runSharedHost(
         {
@@ -151,6 +154,7 @@ async function main(): Promise<void> {
           input,
           roomConnection: config.roomConnection,
           grant: config.grant,
+          parent: process.send ? process : null,
         },
         adapterFor(config.start.provider, config.execution?.binaryPath),
         stop.signal

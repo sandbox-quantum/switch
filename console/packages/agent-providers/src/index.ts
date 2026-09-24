@@ -58,6 +58,7 @@ export {
   watchFlagsSchema,
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
+export { SessionLinks, SessionUnavailableError, type SessionRequest } from './host/session-channel';
 
 export { prepareCodexSessionHome } from './codex/home';
 export { sharedConfigSchema } from './host/shared-config';

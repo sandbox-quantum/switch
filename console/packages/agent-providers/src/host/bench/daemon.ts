@@ -67,6 +67,7 @@ async function main(): Promise<void> {
       env: process.env,
       signal: stop.signal,
       build: process.argv[1]!,
+      links: null,
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
           input,
           roomConnection: config.roomConnection,
           grant: config.grant,
+          parent: process.send ? process : null,
         },
         createBenchAdapter(),
         stop.signal

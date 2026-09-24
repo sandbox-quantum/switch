@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import type { SessionLinks } from './session-channel';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 export function sharedSessionsBase(): string {
@@ -32,6 +33,12 @@ export type Supervision = {
   start: (input: { root: string; configPath: string; watcher: boolean }) => Promise<void>;
   /** Stops whatever currently owns this root, so a replacement can take it. */
   stop: (root: string) => Promise<void>;
+  /**
+   * The channels to the hosts this supervision starts, where they are
+   * children of this process and talk to it over IPC. Null for hosts started
+   * detached, which nothing here can talk to directly.
+   */
+  links: SessionLinks | null;
 };
 
 type LaunchInput = {
@@ -46,6 +53,7 @@ type LaunchInput = {
 export function detachedSupervision(entrypoint: string): Supervision {
   return {
     build: entrypoint,
+    links: null,
     start: async ({ root, configPath, watcher }) => {
       const log = await open(join(root, 'supervisor.log'), 'a', 0o600);
       try {

@@ -314,6 +314,9 @@ export async function transcriptSource(
   agentId: string,
   sessionId: string
 ): Promise<TranscriptSource> {
+  // A local session is Console's own child, or its journal is on this disk.
+  const agent = await getAgentById(agentId);
+  if (agent && !(await getAgentLocation(agent)).sshHost) return { kind: 'journal' };
   try {
     await hostJournals.tail(agentId, sessionId);
     return { kind: 'journal' };

@@ -1,12 +1,13 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { GatewayError } from '@main/core/switch-servers/gateway-client';
 import { log } from '@main/lib/logger';
-import { hostJournals, JournalUnavailableError } from './host-journal';
+import { JournalUnavailableError } from './host-journal';
 import {
   CommandNotRecordedError,
   sessionCommandStatus,
   submitSessionCommand,
 } from './session-commands';
+import { currentSnapshot } from './transcripts';
 
 /**
  * Ask a session's host to stop, and wait until it says it has.
@@ -19,7 +20,7 @@ import {
 export async function stopSharedSession(agentId: string, sessionId: string): Promise<void> {
   let snapshot;
   try {
-    snapshot = (await hostJournals.tail(agentId, sessionId)).snapshot();
+    snapshot = await currentSnapshot(agentId, sessionId);
   } catch (error) {
     if (error instanceof JournalUnavailableError) return;
     throw error;
