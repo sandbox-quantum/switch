@@ -6,15 +6,11 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   snapshot: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  GatewayError: class extends Error {},
-}));
 vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
-vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 vi.mock('@main/core/sdk-host/host-journal', () => ({
   JournalUnavailableError: class extends Error {},
-  hostJournals: { tail: async () => ({ snapshot: () => mocks.snapshot() }) },
 }));
+vi.mock('@main/core/sdk-host/transcripts', () => ({ currentSnapshot: mocks.snapshot }));
 vi.mock('@main/core/sdk-host/session-commands', () => ({
   CommandNotRecordedError: class extends Error {},
   submitSessionCommand: mocks.submit,
@@ -57,7 +53,7 @@ beforeEach(() => {
   mocks.list.mockResolvedValue([session]);
   mocks.submit.mockResolvedValue(receipt);
   mocks.status.mockResolvedValue(receipt);
-  mocks.snapshot.mockReturnValue({
+  mocks.snapshot.mockResolvedValue({
     contractVersion: 1,
     throughSequence: 0,
     session,

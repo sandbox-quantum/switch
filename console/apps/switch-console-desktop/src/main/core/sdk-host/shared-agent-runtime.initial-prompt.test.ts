@@ -17,16 +17,9 @@ const mocks = vi.hoisted(() => ({
   specialization: vi.fn(),
 }));
 
-class FakeGatewayError extends Error {
-  constructor(
-    readonly kind: string,
-    message: string,
-    readonly status?: number
-  ) {
-    super(message);
-  }
-}
-
+vi.mock('./transcripts', () => ({ currentSnapshot: mocks.snapshot }));
+vi.mock('./host-journal', () => ({ JournalUnavailableError: class extends Error {} }));
+vi.mock('./sidecar-control', () => ({ withSidecar: vi.fn() }));
 vi.mock('@switch-console/shared/session-v1', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   snapshotSchema: { parse: (value: unknown) => value },
@@ -37,10 +30,6 @@ vi.mock('@main/core/switch-rooms/session-room-store', () => ({
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  GatewayError: FakeGatewayError,
-  fetchSdkSnapshot: mocks.snapshot,
-}));
 class FakeNotRecorded extends Error {}
 vi.mock('./session-commands', () => ({
   CommandNotRecordedError: FakeNotRecorded,
