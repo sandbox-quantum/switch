@@ -12,6 +12,7 @@ import {
   useRemoteHostReadiness,
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
+import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { ManagedProviderConnectionStep } from '@renderer/features/switch-servers/managed-provider-connection-step';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
@@ -80,6 +81,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   initialRunLocation,
 }: NewAgentFormProps) {
   const queryClient = useQueryClient();
+  const [connectingGitHub, setConnectingGitHub] = useState(false);
   const [connectingProvider, setConnectingProvider] = useState(false);
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const [cloudRepository, setCloudRepository] = useState<CloudRepositorySelection | null>(null);
@@ -250,7 +252,8 @@ export const NewAgentForm = observer(function NewAgentForm({
     runHostReachable &&
     runHostReady &&
     submitState === 'idle' &&
-    !connectingProvider;
+    !connectingProvider &&
+    !connectingGitHub;
 
   // Why "Add agent" is greyed out, in one line, shown on hover over the button.
   const disabledReason: string | null =
@@ -352,6 +355,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     if (!canSubmit || !pickState.serverId || !pickState.providerId) return;
     setSubmitState('creating');
     setCloseGuard(true);
+    let registered = false;
     try {
       if (isCloudRun && cloudRepository) {
         await rpc.switchServers.createCloudLaunch(pickState.serverId, {
@@ -364,7 +368,8 @@ export const NewAgentForm = observer(function NewAgentForm({
           instructions: form.instructions,
           installation_id: cloudRepository.installationId,
           repository_id: cloudRepository.repositoryId,
-          definition_attributes: advancedAttributesRef.current,
+          definition_attributes:
+            pickState.providerId === 'claude' ? advancedAttributesRef.current : {},
           auto_session: form.autoSession,
           auto_approve: form.autoApprove,
           addressing_policy: form.addressingPolicy,
@@ -401,6 +406,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         setSubmitState('idle');
         return;
       }
+      registered = true;
       if (form.addressingPolicy !== null && result.agent.switchAgentId) {
         await rpc.switchServers.updateAddressingPolicy({
           serverId: pickState.serverId,
@@ -414,6 +420,34 @@ export const NewAgentForm = observer(function NewAgentForm({
       log.error(error);
       setCloseGuard(false);
       setSubmitState('idle');
+      if (isCloudRun) {
+        try {
+          const launches = await rpc.switchServers.listCloudLaunches(pickState.serverId);
+          const existing = launches.find((launch) => launch.request_id === cloudRequestId.current);
+          if (existing) {
+            onClose();
+            navigate('serverAgents', { serverId: pickState.serverId });
+            toast({
+              title: 'Cloud agent already created',
+              description: `Check ${existing.name} in Your Agents for its current state.`,
+            });
+            return;
+          }
+        } catch (lookupError) {
+          log.warn('Could not check the cloud creation request', lookupError);
+        }
+      }
+      if (registered) {
+        onClose();
+        navigate('serverAgents', { serverId: pickState.serverId });
+        toast({
+          title: 'Agent created, but setup is incomplete',
+          description:
+            'Open the agent in Your Agents and check its addressing policy before using it. Do not create it again.',
+          variant: 'destructive',
+        });
+        return;
+      }
       const { headline, detail } = describeFailure(
         error,
         isCloudRun
@@ -430,7 +464,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     void queryClient.invalidateQueries({
       queryKey: ['cloud-agent-connections', pickState.serverId],
     });
+    void queryClient.invalidateQueries({ queryKey: ['cloud-agent-github', pickState.serverId] });
     setConnectingProvider(false);
+    setConnectingGitHub(false);
   };
 
   return (
@@ -444,7 +480,15 @@ export const NewAgentForm = observer(function NewAgentForm({
           onDone={finishConnection}
         />
       )}
-      <div hidden={connectingProvider}>
+      {connectingGitHub && pickState.serverId && (
+        <ManagedGitHubStep
+          serverId={pickState.serverId}
+          onBack={finishConnection}
+          onSkip={finishConnection}
+          onContinue={finishConnection}
+        />
+      )}
+      <div hidden={connectingProvider || connectingGitHub}>
         <ModalLayout
           header={
             <DialogHeader showCloseButton={submitState === 'idle'}>
@@ -621,23 +665,29 @@ export const NewAgentForm = observer(function NewAgentForm({
                 onProviderChange={setProviderId}
                 onSelection={setCloudRepository}
                 onConnectProvider={() => setConnectingProvider(true)}
+                onConnectGitHub={() => setConnectingGitHub(true)}
               />
             )}
 
             {canConfigureAgent && !!pickState.providerId && (
               <>
-                <AgentAdvancedConfig
-                  providerId={pickState.providerId}
-                  sshHost={isRemoteRun ? runHost : null}
-                  dir={dir}
-                  onChange={onAdvancedChange}
-                />
-                <LaunchProfileConfig
-                  providerId={pickState.providerId}
-                  sshHost={isRemoteRun ? runHost : null}
-                  dir={dir}
-                  onChange={onLaunchProfileConfigChange}
-                />
+                {(!isCloudRun || pickState.providerId === 'claude') && (
+                  <AgentAdvancedConfig
+                    cloud={isCloudRun}
+                    providerId={pickState.providerId}
+                    sshHost={isRemoteRun ? runHost : null}
+                    dir={dir}
+                    onChange={onAdvancedChange}
+                  />
+                )}
+                {!isCloudRun && (
+                  <LaunchProfileConfig
+                    providerId={pickState.providerId}
+                    sshHost={isRemoteRun ? runHost : null}
+                    dir={dir}
+                    onChange={onLaunchProfileConfigChange}
+                  />
+                )}
               </>
             )}
 

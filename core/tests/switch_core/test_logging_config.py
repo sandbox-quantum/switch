@@ -313,3 +313,28 @@ class TestTheLogAgreesWithTheDatabase:
         """Naming tenant zero here would file every unattributed line under a
         real customer's id, which is worse than saying nothing at all."""
         assert SwitchConfig.model_fields["tenant_id"].default != TENANT_ZERO_ID
+
+
+@pytest.mark.parametrize("format", ["text", "json"])
+def test_access_logs_remove_authorization_query_parameters(monkeypatch, format):
+    config = _config(monkeypatch, LOG_FORMAT=format)
+    capture = _Capture(build_handler(config, None))
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        (
+            "127.0.0.1",
+            "GET",
+            "/gateway/provider-connections/github/callback?code=SYNTHETIC-CODE&state=SYNTHETIC-STATE",
+            "1.1",
+            200,
+        ),
+        None,
+    )
+    capture.handle(record)
+    assert len(capture.lines) == 1
+    assert "/gateway/provider-connections/github/callback" in capture.lines[0]
+    assert "SYNTHETIC" not in capture.lines[0]

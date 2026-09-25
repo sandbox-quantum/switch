@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { migrateCodexRollout } from '../codex/home';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { hostedRequest, runHostedControl } from './hosted-control';
 import { fetchHostedProvider, materializeHostedProvider } from './hosted-provider';
@@ -11,7 +12,7 @@ import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
-import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
+import { runSharedHost, SharedHostFencedError, SharedHostLeaseExpiredError } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
 
@@ -143,7 +144,7 @@ async function main(): Promise<void> {
     });
   } else {
     const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
-    const authenticate = async () => {
+    const authenticate = async (nativeSessionId: string | undefined) => {
       if (config.start.provider !== 'claude' && process.env.SWITCH_HOSTED_CONTROL !== '1') return;
       const cloudCredential =
         process.env.SWITCH_HOSTED_CONTROL === '1' ? await fetchHostedProvider(config) : null;
@@ -154,6 +155,13 @@ async function main(): Promise<void> {
           cloudCredential,
           config.execution?.binaryPath ?? 'claude'
         );
+      if (cloudCredential && config.start.provider === 'codex' && nativeSessionId)
+        await migrateCodexRollout({
+          home: input.env.CODEX_HOME!,
+          sourceHome: join(root, 'provider-home'),
+          nativeSessionId,
+          sessionId: config.session.sessionId,
+        });
       const readiness = await checkProviderReadiness({
         provider: config.start.provider,
         binaryPath: config.execution?.binaryPath ?? 'claude',
@@ -161,11 +169,15 @@ async function main(): Promise<void> {
         env: input.env,
       });
       if (cloudCredential?.status === 'connected') {
+        if (readiness.status === 'unknown') throw new Error(readiness.message);
         await hostedRequest(config, '/provider-status', {
           authenticated: readiness.status === 'authenticated',
           revision: cloudCredential.revision,
         });
-        if (readiness.status !== 'authenticated') throw new Error(readiness.message);
+        if (readiness.status !== 'authenticated')
+          throw new Error(
+            'The provider rejected the saved sign-in. Sign in again and reconnect the provider in Switch Console.'
+          );
       }
       if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
       if (readiness.status === 'unknown') console.warn(readiness.message);
@@ -210,13 +222,14 @@ try {
   ) {
     await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
     const message =
-      process.env.SWITCH_HOSTED_BOOTSTRAP === '1'
+      process.env.SWITCH_HOSTED_BOOTSTRAP === '1' && !(error instanceof SharedHostFencedError)
         ? 'Hosted SDK worker failed. Inspect the redacted worker log.'
         : error instanceof Error
           ? error.message
           : String(error);
     await replaceOwner(join(root, 'supervisor', 'failure.json'), {
       message,
+      ...(error instanceof SharedHostFencedError ? { pendingMessages: error.pendingMessages } : {}),
     });
   }
   console.error(error);

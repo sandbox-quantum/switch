@@ -16,6 +16,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionBusy,
     ProviderConnectionStore,
@@ -78,7 +79,7 @@ async def connect_claude(
             raise HTTPException(413, "The credential is too long.")
     try:
         payload = json.loads(body)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise HTTPException(400, "Provide a credential and its type.") from None
     if not isinstance(payload, dict) or set(payload) != {"kind", "credential"}:
         raise HTTPException(400, "Provide a credential and its type.")
@@ -115,7 +116,7 @@ async def connect_claude(
 async def mark_disconnected_workers(
     session: AsyncSession, user_id: str, provider: str
 ) -> None:
-    await session.execute(
+    changed = await session.execute(
         update(HostedLaunch)
         .where(
             HostedLaunch.tenant_id == require_tenant_id(),
@@ -129,7 +130,10 @@ async def mark_disconnected_workers(
             revision=HostedLaunch.revision + 1,
             updated_at=datetime.now(UTC),
         )
+        .returning(HostedLaunch.id, HostedLaunch.revision)
     )
+    for launch_id, revision in changed:
+        await HostedLaunchStore().fail_stale_operations(session, launch_id, revision)
 
 
 @router.delete("/claude", status_code=204)
@@ -203,7 +207,7 @@ async def connect_other_provider(
         credential = validate_provider_credential(
             provider, payload["kind"], payload["credential"]
         )
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise HTTPException(
             400, "Provide a valid credential and supported type."
         ) from None

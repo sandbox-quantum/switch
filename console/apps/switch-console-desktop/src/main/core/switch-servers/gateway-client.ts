@@ -1486,7 +1486,7 @@ export async function cloudLifecycle(
   action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
   revision: number
 ) {
-  return cloudLaunchSchema.parse(
+  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
     await (
       await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
         authenticated: true,
@@ -1567,7 +1567,10 @@ export async function getGitHubConnection(server: SwitchServer) {
     ).json()
   );
 }
-export async function startGitHubConnection(server: SwitchServer) {
+export async function startGitHubConnection(
+  server: SwitchServer,
+  input: { port: number; state: string; completion_secret: string }
+) {
   if (new URL(server.gatewayUrl).protocol !== 'https:')
     throw new Error('GitHub connections require HTTPS.');
   const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
@@ -1575,6 +1578,7 @@ export async function startGitHubConnection(server: SwitchServer) {
       await gatewayFetch(server, '/provider-connections/github/flows', {
         authenticated: true,
         method: 'POST',
+        body: input,
       })
     ).json()
   );
@@ -1598,11 +1602,37 @@ export async function getGitHubFlow(server: SwitchServer, id: string) {
     ).json()
   );
 }
-export async function confirmGitHubConnection(server: SwitchServer, id: string) {
-  await gatewayFetch(
+export async function confirmGitHubConnection(
+  server: SwitchServer,
+  id: string,
+  completionSecret: string
+) {
+  const response = await gatewayFetch(
     server,
     `/provider-connections/github/flows/${encodeURIComponent(id)}/confirm`,
-    { authenticated: true, method: 'POST' }
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { completion_secret: completionSecret },
+    }
+  );
+  if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+export async function completeGitHubConnection(
+  server: SwitchServer,
+  id: string,
+  code: string,
+  completionSecret: string
+) {
+  await gatewayFetch(
+    server,
+    `/provider-connections/github/flows/${encodeURIComponent(id)}/complete`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { code, completion_secret: completionSecret },
+    }
   );
 }
 export async function cancelGitHubConnection(server: SwitchServer, id: string) {
@@ -1612,10 +1642,12 @@ export async function cancelGitHubConnection(server: SwitchServer, id: string) {
   });
 }
 export async function disconnectGitHub(server: SwitchServer) {
-  await gatewayFetch(server, '/provider-connections/github', {
+  const response = await gatewayFetch(server, '/provider-connections/github', {
     authenticated: true,
     method: 'DELETE',
   });
+  if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 
 export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {

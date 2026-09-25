@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getOpenCodeLoginCommand } from './local-opencode-sign-in';
 import {
   getLocalProviderSignIn,
   localProviderAuthPath,
@@ -11,10 +13,10 @@ import {
 vi.mock('./local-opencode-sign-in', () => ({
   localOpenCodeDatabasePath: () => '/fixture/opencode.db',
   readOpenCodeConsole: () => null,
-  getOpenCodeLoginCommand: async () => ({
+  getOpenCodeLoginCommand: vi.fn(async () => ({
     version: '2.0.0',
     command: 'opencode auth login opencode',
-  }),
+  })),
 }));
 
 let home: string;
@@ -81,7 +83,11 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
     );
     expect(await getLocalProviderSignIn(provider)).toMatchObject({ path, status: 'missing' });
     await mkdir(dirname(path), { recursive: true });
-    const credential = JSON.stringify({ placeholder: 'fixture-only' });
+    const credential = JSON.stringify(
+      provider === 'opencode'
+        ? { opencode: { type: 'api', key: 'fixture-only' } }
+        : { placeholder: 'fixture-only' }
+    );
     await writeFile(path, credential);
     expect(await getLocalProviderSignIn(provider)).toMatchObject({ path, status: 'ready' });
     expect(await readLocalProviderSignIn(provider, path)).toBe(credential);
@@ -100,8 +106,51 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
       } catch (error) {
         expect(String(error)).not.toContain(value);
       }
-      await writeFile(path, JSON.stringify({ placeholder: 'fixture-only' }));
+      await writeFile(
+        path,
+        JSON.stringify(
+          provider === 'opencode'
+            ? { opencode: { type: 'api', key: 'fixture-only' } }
+            : { placeholder: 'fixture-only' }
+        )
+      );
       expect((await getLocalProviderSignIn(provider)).status).toBe('ready');
     }
   );
+});
+
+it('uploads only the OpenCode entry from a shared auth file', async () => {
+  const path = join(home, 'auth.json');
+  await writeFile(
+    path,
+    JSON.stringify({
+      opencode: { type: 'api', key: 'fixture-only' },
+      unrelated: { type: 'api', key: 'must-stay-local' },
+    })
+  );
+  expect(JSON.parse((await readLocalProviderSignIn('opencode', path))!)).toEqual({
+    opencode: { type: 'api', key: 'fixture-only' },
+  });
+});
+
+it('retries a sign-in file that is still being written', async () => {
+  const path = join(home, 'auth.json');
+  await writeFile(path, '{');
+  const reading = readLocalProviderSignIn('codex', path);
+  await delay(30);
+  await writeFile(path, JSON.stringify(subscription));
+  expect(await reading).toBe(JSON.stringify(subscription));
+});
+
+it('still detects an OpenCode login when CLI detection fails, with a visible warning', async () => {
+  vi.stubEnv('XDG_DATA_HOME', home);
+  const path = localProviderAuthPath('opencode');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify({ opencode: { type: 'api', key: 'fixture-only' } }));
+  vi.mocked(getOpenCodeLoginCommand).mockRejectedValueOnce(new Error('CLI detection unavailable'));
+  expect(await getLocalProviderSignIn('opencode')).toMatchObject({
+    status: 'ready',
+    path,
+    detectionWarning: expect.stringContaining('CLI detection unavailable'),
+  });
 });

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { detachedSupervision, ensureSharedProcess } from './launch';
+import { detachedSupervision, ensureSharedProcess, liveSupervisor } from './launch';
 import type { SharedHostConfig } from './shared-config';
 
 const roots: string[] = [];
@@ -67,7 +67,7 @@ it.skipIf(process.platform === 'win32')(
     await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
     await writeFile(
       input.entrypoint,
-      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+      `const fs=require('node:fs');const root=process.argv[2];fs.mkdirSync(root+'/supervisor',{recursive:true});fs.writeFileSync(root+'/supervisor/owner.json',JSON.stringify({pid:process.pid}));fs.appendFileSync(root+'/trace','new\\n');setTimeout(()=>{},200);`
     );
     const old = spawn(
       process.execPath,
@@ -102,9 +102,10 @@ it('refreshes renamed agent configuration without changing the saved session or 
   input.config.roomConnection = { connectionId: 'connection', rooms: ['room'] };
   await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
   await mkdir(join(input.root, 'supervisor'));
+  const owner = spawn(process.execPath, ['-e', 'setTimeout(()=>{},2000)', input.root]);
   await writeFile(
     join(input.root, 'supervisor', 'owner.json'),
-    JSON.stringify({ pid: process.pid, build: input.supervision.build })
+    JSON.stringify({ pid: owner.pid, build: input.supervision.build })
   );
   input.config = structuredClone(input.config);
   input.config.start.input.agentName = 'new-name';
@@ -113,6 +114,7 @@ it('refreshes renamed agent configuration without changing the saved session or 
   expect(await ensureSharedProcess(input)).toEqual({ created: false });
   const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
   expect(saved.start.input.agentName).toBe('new-name');
+  owner.kill('SIGTERM');
   expect(saved.session.hostId).toBe('host');
   expect(saved.roomConnection).toEqual({
     connectionId: 'connection',
@@ -128,7 +130,7 @@ it.skipIf(process.platform === 'win32')(
     await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
     await writeFile(
       input.entrypoint,
-      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+      `const fs=require('node:fs');const root=process.argv[2];fs.mkdirSync(root+'/supervisor',{recursive:true});fs.writeFileSync(root+'/supervisor/owner.json',JSON.stringify({pid:process.pid}));fs.appendFileSync(root+'/trace','new\\n');setTimeout(()=>{},200);`
     );
     await mkdir(join(input.root, 'supervisor'));
     const old = spawn(
@@ -163,7 +165,7 @@ it.skipIf(process.platform === 'win32')(
     await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
     await writeFile(
       input.entrypoint,
-      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+      `const fs=require('node:fs');const root=process.argv[2];fs.mkdirSync(root+'/supervisor',{recursive:true});fs.writeFileSync(root+'/supervisor/owner.json',JSON.stringify({pid:process.pid}));fs.appendFileSync(root+'/trace','new\\n');setTimeout(()=>{},200);`
     );
     await mkdir(join(input.root, 'supervisor'));
     const running = spawn(
@@ -187,3 +189,47 @@ it.skipIf(process.platform === 'win32')(
     }
   }
 );
+
+it('rejects a reused PID that is not this supervisor', async () => {
+  const input = await fixture();
+  await mkdir(join(input.root, 'supervisor'));
+  await writeFile(
+    join(input.root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: process.pid })
+  );
+  await expect(liveSupervisor(input.root)).rejects.toThrow('saved PID no longer identifies');
+});
+
+it('rejects an owner from a different machine boot', async () => {
+  const input = await fixture();
+  await mkdir(join(input.root, 'supervisor'));
+  await writeFile(
+    join(input.root, 'supervisor', 'owner.json'),
+    JSON.stringify({
+      pid: process.pid,
+      machine: {
+        instanceId: 'i-0123456789abcdef0',
+        bootId: '11111111-1111-4111-8111-111111111111',
+        assignmentGeneration: 1,
+      },
+    })
+  );
+  await expect(liveSupervisor(input.root)).rejects.toThrow('another machine boot');
+});
+
+it('holds the launch lock until the new supervisor registers', async () => {
+  const input = await fixture();
+  input.restart = false;
+  input.resuming = false;
+  await writeFile(
+    input.entrypoint,
+    `const fs=require('node:fs');const root=process.argv[2];fs.appendFileSync(root+'/trace','spawn\\n');setTimeout(()=>{fs.mkdirSync(root+'/supervisor',{recursive:true});fs.writeFileSync(root+'/supervisor/owner.json',JSON.stringify({pid:process.pid,build:process.argv[1]}))},200);setTimeout(()=>{},2000);`
+  );
+  await Promise.all([ensureSharedProcess(input), ensureSharedProcess(input)]);
+  const owner = JSON.parse(await readFile(join(input.root, 'supervisor', 'owner.json'), 'utf8'));
+  try {
+    expect(await readFile(join(input.root, 'trace'), 'utf8')).toBe('spawn\n');
+  } finally {
+    process.kill(owner.pid, 'SIGTERM');
+  }
+});

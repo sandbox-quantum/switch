@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
@@ -28,6 +29,7 @@ export interface OpencodeSkill {
 }
 
 export interface StartServerInput {
+  signal?: AbortSignal;
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
@@ -56,6 +58,7 @@ async function findFreePort(): Promise<number> {
 }
 
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
+  input.signal?.throwIfAborted();
   const password = randomBytes(24).toString('base64url');
   const port = await findFreePort();
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
@@ -68,6 +71,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
       OPENCODE_SERVER_PASSWORD: password,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+    signal: input.signal,
   });
 
   try {
@@ -123,10 +127,20 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
     });
 
     const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
-    await waitForHealth(url, authorization, input.startupTimeoutMs);
+    await waitForHealth(url, authorization, input.startupTimeoutMs, input.signal);
     return { url, authorization, process: child, configHome };
   } catch (error) {
-    await stopOpencodeServer({ process: child, configHome });
+    try {
+      await stopOpencodeServer({ process: child, configHome });
+    } catch (cleanupError) {
+      console.error('OpenCode startup and cleanup failed:', error, cleanupError);
+      throw new Error(
+        'OpenCode startup and cleanup failed. Stop and start the agent before retrying.',
+        {
+          cause: new AggregateError([error, cleanupError]),
+        }
+      );
+    }
     throw error;
   }
 }
@@ -158,14 +172,23 @@ export async function stopOpencodeServer(
   await rm(server.configHome, { recursive: true, force: true });
 }
 
-async function waitForHealth(url: string, authorization: string, timeoutMs: number): Promise<void> {
+async function waitForHealth(
+  url: string,
+  authorization: string,
+  timeoutMs: number,
+  signal: AbortSignal | undefined
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = 'no attempt made';
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     try {
       const response = await fetch(`${url}/global/health`, {
         headers: { authorization },
-        signal: AbortSignal.timeout(Math.min(5000, Math.max(1, deadline - Date.now()))),
+        signal: AbortSignal.any([
+          ...(signal ? [signal] : []),
+          AbortSignal.timeout(Math.min(5000, Math.max(1, deadline - Date.now()))),
+        ]),
       });
       if (response.ok) {
         const body = (await response.json()) as { healthy?: boolean };
@@ -177,7 +200,7 @@ async function waitForHealth(url: string, authorization: string, timeoutMs: numb
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await delay(100, undefined, { signal });
   }
   throw new ProviderUnavailableError('opencode', `server never became healthy: ${lastError}`);
 }

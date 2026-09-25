@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { buildSharedHostConfig } from './build-shared-config';
-import { executeHostedOperation } from './hosted-control';
+import { executeHostedOperation, runHostedControl } from './hosted-control';
 import { applyHostedProvider } from './hosted-provider';
 import { ensureSharedProcess } from './launch';
+import { HostedSession } from './session-host';
 
 const root = await mkdtemp(join(tmpdir(), 'hosted-control-test-'));
 vi.mock('./launch', () => ({
@@ -16,6 +17,7 @@ vi.mock('./launch', () => ({
 }));
 afterEach(async () => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   await rm(root, { recursive: true, force: true });
 });
 const supervision = { build: 'fixture', start: vi.fn(), stop: vi.fn() };
@@ -79,4 +81,52 @@ it('switches credential types without retaining old secrets and fails closed on 
   expect(env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'new-token' });
   expect(() => applyHostedProvider(env, { status: 'revoked' })).toThrow('disconnected');
   expect(env).toEqual({});
+});
+
+it('does not automatically recover a fenced session reported ready by the server', async () => {
+  const template = config();
+  await mkdir(root, { recursive: true });
+  template.execution!.credentialsPath = join(root, 'credentials.json');
+  await writeFile(
+    template.execution!.credentialsPath,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.test/agent',
+        SWITCH_API_TOKEN: 'SYNTHETIC',
+        SWITCH_AGENT_ID: 'agent-one',
+      },
+    })
+  );
+  const saved = structuredClone(template);
+  saved.session.sessionId = 'session-one';
+  const sessionRoot = join(root, 'session-one');
+  await mkdir(sessionRoot);
+  await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(saved));
+  await HostedSession.markFenced(sessionRoot);
+  const stop = new AbortController();
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.endsWith('/provider-credential'))
+      return Response.json({
+        status: 'connected',
+        revision: 'revision',
+        provider: 'claude',
+        kind: 'api-key',
+        credential: 'SYNTHETIC',
+        sessions: [{ id: 'session-one', status: 'ready' }],
+      });
+    stop.abort();
+    return Response.json(null);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  await runHostedControl(template, stop.signal, supervision);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(ensureSharedProcess).not.toHaveBeenCalled();
+  await executeHostedOperation(
+    template,
+    { id: crypto.randomUUID(), session_id: 'session-one', action: 'restart' },
+    supervision
+  );
+  expect(ensureSharedProcess).toHaveBeenCalledWith(
+    expect.objectContaining({ restart: true, resuming: true })
+  );
 });

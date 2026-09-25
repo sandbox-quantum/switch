@@ -1,4 +1,4 @@
-import { type IpcMain } from 'electron';
+import { type IpcMain, type IpcMainInvokeEvent } from 'electron';
 import { isSerializedRpcError, RpcError, serializeRpcError } from './rpc-error';
 
 // oxlint-disable-next-line typescript/no-explicit-any
@@ -40,6 +40,7 @@ function registerHandlers(
   ipcMain: IpcMain,
   prefix: string,
   value: unknown,
+  trusted: (event: IpcMainInvokeEvent) => boolean,
   wrap: RPCInvocationWrapper | undefined
 ): void {
   if (typeof value === 'function') {
@@ -47,8 +48,9 @@ function registerHandlers(
     // Resolved, never rejected: a failure is returned as a serialized error so
     // Electron does not rewrite the message around the channel name or discard
     // the error's own fields. `createRPCClient` turns it back into a throw.
-    ipcMain.handle(prefix, async (_event, ...args: unknown[]) => {
+    ipcMain.handle(prefix, async (event, ...args: unknown[]) => {
       try {
+        if (!trusted(event)) throw new Error('IPC request is not from the trusted app frame.');
         return await (wrap ? wrap(prefix, args, () => handler(...args)) : handler(...args));
       } catch (error) {
         return serializeRpcError(error);
@@ -56,7 +58,7 @@ function registerHandlers(
     });
   } else if (value !== null && typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) {
-      registerHandlers(ipcMain, `${prefix}.${key}`, child, wrap);
+      registerHandlers(ipcMain, `${prefix}.${key}`, child, trusted, wrap);
     }
   }
 }
@@ -64,10 +66,11 @@ function registerHandlers(
 export function registerRPCRouter(
   router: RouterMap,
   ipcMain: IpcMain,
+  trusted: (event: IpcMainInvokeEvent) => boolean,
   wrap?: RPCInvocationWrapper
 ): void {
   for (const [ns, handlers] of Object.entries(router)) {
-    registerHandlers(ipcMain, ns, handlers, wrap);
+    registerHandlers(ipcMain, ns, handlers, trusted, wrap);
   }
 }
 

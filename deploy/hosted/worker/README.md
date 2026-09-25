@@ -192,7 +192,8 @@ changes fail closed unless the controller supplies the exact terminated
 data disk. Replacement has a limit of three automatic attempts.
 
 An operator can upgrade an image after stopping the assignment, terminating its
-old VM, and confirming the retained disk is detached. Set the configured image,
+old VM, and confirming the retained disk is detached. Update the approved image
+in the controller IAM policy and its configured image before starting a replacement,
 then run `switch-hosted-controller --config <config> upgrade <agent-id>
 --confirm-instance-id <old-instance-id> --previous-runtime-fingerprint <sha256>`.
 Read the SHA256 from the trusted root-owned disk marker. This command preserves
@@ -200,6 +201,12 @@ the stopped state; start the worker through Console after it succeeds. The
 launcher accepts a runtime change only when both the predecessor instance and
 its previous runtime fingerprint match. It preserves the existing session
 journals and never retries uncertain commands.
+
+Codex resumes from its prepared session home. At startup, an older rollout in
+the parent provider directory is moved into that home only when its native
+thread ID matches the saved session and no matching rollout is already there.
+The move is logged. A missing rollout remains a visible recovery error; startup
+does not replace the conversation or use the parent directory as a fallback.
 
 The systemd unit uses `Restart=always`, so an unexpected clean runtime exit is
 repaired; explicit unit stops and instance shutdown do not restart it.

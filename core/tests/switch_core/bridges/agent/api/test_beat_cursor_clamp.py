@@ -33,7 +33,7 @@ ROOM_ID = "room-1"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.connections = ConnectionRegistry()
 
 
@@ -127,3 +127,13 @@ async def test_the_clamped_value_is_what_gets_confirmed() -> None:
     await _beat(protocol, cursor=9)
 
     assert confirmed == [0]
+
+
+async def test_a_heartbeat_from_the_old_boot_cannot_undo_the_gap_position():
+    protocol = _Protocol()
+    protocol.event_buffer = EventBuffer(sequence_base=2 << 32)
+    sequence = protocol.event_buffer.enqueue(AGENT_ID, ROOM_ID, _message())
+    conn = _connect(protocol, cursor=2 << 32)
+    await _beat(protocol, cursor=(1 << 32) + 2)
+    assert conn.cursor == 2 << 32
+    assert protocol.event_buffer.read_from(AGENT_ID, conn.cursor)[0].seq == sequence

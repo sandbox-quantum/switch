@@ -63,3 +63,15 @@ it('reports Antigravity sign-in failures', async () => {
     'unauthenticated'
   );
 });
+
+it('makes a rejected refresh token actionable without exposing provider output', async () => {
+  mock.request
+    .mockResolvedValueOnce({})
+    .mockRejectedValueOnce(
+      new JsonRpcError(-32000, 'refresh_token_reused: private-provider-detail')
+    );
+  const result = await checkProviderReadiness({ ...input, provider: 'codex' });
+  expect(result.status).toBe('unauthenticated');
+  expect(result.message).toContain('Sign in again');
+  expect(result.message).not.toContain('private-provider-detail');
+});

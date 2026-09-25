@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -23,8 +24,9 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class GatewayError(RuntimeError):
-    def __init__(self, status: int):
+    def __init__(self, status: int, detail: str | None = None):
         self.status = status
+        self.detail = detail
         super().__init__(f"Cloud gateway request failed with status {status}.")
 
 
@@ -77,6 +79,7 @@ class Gateway:
         self.config = config
         self.store = store
         self.secrets = secrets_client
+        self.prepare_failures: dict[str, float] = {}
         for agent in store.list():
             assignment = config.assignment(agent.agent_id)
             if (
@@ -103,76 +106,118 @@ class Gateway:
             with build_opener(NoRedirect()).open(request, timeout=120) as response:
                 return json.load(response)
         except HTTPError as error:
-            raise GatewayError(error.code) from None
+            detail = None
+            if error.code == 422:
+                try:
+                    value = json.loads(error.read(4096)).get("detail")
+                    if isinstance(value, str):
+                        detail = value[:512]
+                except (ValueError, AttributeError):
+                    logger.warning("Gateway returned an invalid validation response.")
+            raise GatewayError(error.code, detail) from None
         except (URLError, TimeoutError):
             raise GatewayError(503) from None
 
     def accept_launches(self) -> None:
-        for job in self.request(""):
-            request_id = str(UUID(job["request_id"]))
-            agent_id = job["agent_id"]
-            assignment = self.config.assignment(agent_id)
+        jobs = self.request("")
+        active_ids = {job["request_id"] for job in jobs}
+        self.prepare_failures = {
+            key: started for key, started in self.prepare_failures.items() if key in active_ids
+        }
+        for job in jobs:
             try:
-                agent = self.store.get(agent_id)
-            except AgentNotFoundError:
-                if job["state"] == "error":
-                    continue
-                agent = self.store.reserve_create(
-                    agent_id=agent_id,
-                    instance_type=self.settings.instance_type,
-                    image_id=self.config.image_id,
-                    assignment_secret_arn=assignment.assignment_secret_arn,
-                    instance_profile_arn=assignment.instance_profile_arn,
-                    max_agents=self.config.max_agents,
-                )
-            desired = job["desired_state"]
-            if desired in {"stopped", "restart", "deleted"}:
-                if (
-                    desired == "deleted"
-                    and agent.desired_state == DesiredState.STOPPED
-                    and agent.observed_state == ObservedState.STOPPED
-                ):
-                    self.store.set_desired(agent_id, DesiredState.DELETED)
-                elif agent.desired_state != DesiredState.DELETED:
-                    self.store.set_desired(agent_id, DesiredState.STOPPED)
-                continue
-            if job["state"] == "error":
-                self.store.set_desired(agent_id, DesiredState.STOPPED)
-                continue
-            if agent.desired_state == DesiredState.STOPPED:
-                agent = self.store.set_desired(agent_id, DesiredState.RUNNING)
-            if agent.volume_id is None or agent.instance_launch_issued:
-                continue
-            try:
-                versions = self.secrets.describe_secret(
-                    SecretId=assignment.assignment_secret_arn
-                ).get("VersionIdsToStages", {})
-                if request_id not in versions:
-                    prepared = self.request(f"/{request_id}/prepare", {})
-                    if prepared["agent_id"] != agent_id:
-                        raise ConfigError("Cloud gateway returned a different worker identity.")
-                    bundle = self.bundle(prepared, agent.volume_id)
-                    self.secrets.put_secret_value(
-                        SecretId=assignment.assignment_secret_arn,
-                        ClientRequestToken=request_id,
-                        SecretString=json.dumps(bundle, separators=(",", ":")),
-                    )
-            except GatewayError as error:
+                self.accept_launch(job)
+                self.prepare_failures.pop(job["request_id"], None)
+            except Exception as error:
                 logger.error(
-                    "Cloud preparation failed for request %s: HTTP %s", request_id, error.status
+                    "Cloud launch preparation failed for %s: %s",
+                    job.get("request_id"),
+                    type(error).__name__,
                 )
-                if error.status == 422:
-                    self.store.set_desired(agent_id, DesiredState.STOPPED)
+                if job["desired_state"] != "running":
+                    continue
+                terminal = isinstance(error, ConfigError) or (
+                    isinstance(error, GatewayError) and error.status == 422
+                )
+                first_failure = self.prepare_failures.setdefault(job["request_id"], monotonic())
+                if not terminal and monotonic() - first_failure < 300:
+                    continue
+                try:
+                    self.store.set_desired(job["agent_id"], DesiredState.STOPPED)
+                except Exception as stop_error:
+                    logger.error(
+                        "Could not stop failed launch %s: %s",
+                        job.get("request_id"),
+                        type(stop_error).__name__,
+                    )
+                try:
                     self.request(
-                        f"/{request_id}/observation",
+                        f"/{UUID(job['request_id'])}/observation",
                         {
                             "state": "error",
                             "revision": job["revision"],
-                            "error": "Provider or repository access could not be verified. Reconnect your accounts and retry.",
+                            "error": error.detail
+                            if isinstance(error, GatewayError)
+                            and error.status == 422
+                            and error.detail
+                            else "Cloud agent setup failed. Check the agent name, provider connection and repository write access, then retry. If it still fails, contact your administrator.",
                         },
                     )
-                else:
-                    raise
+                except Exception as report_error:
+                    logger.error(
+                        "Could not report failed launch %s: %s",
+                        job.get("request_id"),
+                        type(report_error).__name__,
+                    )
+
+    def accept_launch(self, job: dict) -> None:
+        request_id = str(UUID(job["request_id"]))
+        agent_id = job["agent_id"]
+        assignment = self.config.assignment(agent_id)
+        try:
+            agent = self.store.get(agent_id)
+        except AgentNotFoundError:
+            if job["state"] == "error":
+                return
+            agent = self.store.reserve_create(
+                agent_id=agent_id,
+                instance_type=self.settings.instance_type,
+                image_id=self.config.image_id,
+                assignment_secret_arn=assignment.assignment_secret_arn,
+                instance_profile_arn=assignment.instance_profile_arn,
+                max_agents=self.config.max_agents,
+            )
+        desired = job["desired_state"]
+        if desired in {"stopped", "restart", "deleted"}:
+            if (
+                desired == "deleted"
+                and agent.desired_state == DesiredState.STOPPED
+                and agent.observed_state == ObservedState.STOPPED
+            ):
+                self.store.set_desired(agent_id, DesiredState.DELETED)
+            elif agent.desired_state != DesiredState.DELETED:
+                self.store.set_desired(agent_id, DesiredState.STOPPED)
+            return
+        if job["state"] == "error":
+            self.store.set_desired(agent_id, DesiredState.STOPPED)
+            return
+        if agent.desired_state == DesiredState.STOPPED:
+            agent = self.store.set_desired(agent_id, DesiredState.RUNNING)
+        if agent.volume_id is None or agent.instance_launch_issued:
+            return
+        versions = self.secrets.describe_secret(SecretId=assignment.assignment_secret_arn).get(
+            "VersionIdsToStages", {}
+        )
+        if request_id not in versions:
+            prepared = self.request(f"/{request_id}/prepare", {})
+            if prepared["agent_id"] != agent_id:
+                raise ConfigError("Cloud gateway returned a different worker identity.")
+            bundle = self.bundle(prepared, agent.volume_id)
+            self.secrets.put_secret_value(
+                SecretId=assignment.assignment_secret_arn,
+                ClientRequestToken=request_id,
+                SecretString=json.dumps(bundle, separators=(",", ":")),
+            )
 
     def report_observations(self) -> None:
         for job in self.request(""):
@@ -194,10 +239,26 @@ class Gateway:
                 ObservedState.DELETED,
             }:
                 state = agent.observed_state.value
-            self.request(
-                f"/{UUID(job['request_id'])}/observation",
-                {"state": state, "revision": job["revision"], "error": agent.last_error},
-            )
+            if state == "error":
+                logger.error(
+                    "Cloud worker %s needs repair: %s", job["request_id"], agent.last_error
+                )
+            try:
+                self.request(
+                    f"/{UUID(job['request_id'])}/observation",
+                    {
+                        "state": state,
+                        "revision": job["revision"],
+                        "error": "The cloud worker needs repair. Contact your server administrator."
+                        if state == "error"
+                        else None,
+                        "error_code": "worker_needs_attention" if state == "error" else None,
+                    },
+                )
+            except Exception as error:
+                logger.error(
+                    "Could not report launch %s: %s", job["request_id"], type(error).__name__
+                )
 
     def bundle(self, prepared: dict, volume_id: str) -> dict:
         spec = prepared["spec"]
@@ -254,7 +315,6 @@ class Gateway:
                 "dataVolumeId": volume_id,
             },
             "deployment": deployment,
-            "providerCredential": prepared["provider_credential"],
             "switchCredentials": prepared["switch_credentials"],
             "githubCredential": prepared["github_credential"],
         }

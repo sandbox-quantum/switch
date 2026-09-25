@@ -2,17 +2,19 @@ import { SessionChatClient } from '@switch-console/shared/session-v1';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useCloudLaunches } from '@renderer/features/switch-servers/use-cloud-launches';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
+import { Button } from '@renderer/lib/ui/button';
 import {
   Combobox,
   ComboboxContent,
@@ -45,7 +47,11 @@ import type { Agent } from '@shared/core/agents/agents';
 import type { CloudLaunch } from '@shared/core/switch-servers/cloud-launch';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
-import { runCloudSessionOperation } from '../cloud-session-operation';
+import {
+  CloudSessionOperationFailed,
+  CloudSessionOperationUnknown,
+  runCloudSessionOperation,
+} from '../cloud-session-operation';
 import { sharedSessionTransport } from '../components/transcript/shared-session-transport';
 import { buildConnectPrompt } from './build-connect-prompt';
 
@@ -188,6 +194,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   ];
   const [pending, setPending] = useState(false);
   const [spawnError, setSpawnError] = useState<string | null>(null);
+  const cloudAttempts = useRef(new Map<string, string>());
   const [createdCloud, setCreatedCloud] = useState<{
     sessionId: string;
     requestId: string;
@@ -213,6 +220,10 @@ export const CreateSessionModal = observer(function CreateSessionModal({
     pickedAgent ?? presetAgent ?? (roomAgents.length === 1 ? roomAgents[0] : null);
   const cloudAgent = agentFirstNeedsPick ? (pickedAgent ?? presetAgent) : effectiveAgent;
   const selectedCloud = cloudAgent && 'cloud' in cloudAgent ? cloudAgent.cloud : null;
+  useEffect(() => {
+    setCreatedCloud(null);
+    setSpawnError(null);
+  }, [cloudRequestId, cloudServerId, pickedAgent?.id]);
   const selectedLocationId = roomFirst
     ? effectiveAgent?.locationId
     : agentFirstNeedsPick
@@ -257,7 +268,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
 
   useEffect(() => {
     if (!roomFirst && serverId && switchAgentId) {
-      void switchRoomsStore.fetchAgentRooms(serverId, switchAgentId);
+      void switchRoomsStore.fetchAgentRooms(serverId, switchAgentId, { force: true });
     }
   }, [roomFirst, serverId, switchAgentId]);
 
@@ -267,6 +278,8 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       : [];
   const roomsLoading =
     !!serverId && !!switchAgentId && switchRoomsStore.isLoading(serverId, switchAgentId);
+  const roomsError =
+    serverId && switchAgentId ? switchRoomsStore.errorFor(serverId, switchAgentId) : null;
   const canConnectRoom = !roomFirst && !!serverId && !!switchAgentId;
 
   // In room-first mode the room is given, not chosen; everything downstream
@@ -304,18 +317,22 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       return;
     }
     if (selectedCloud && cloudServerId) {
-      const sessionId = crypto.randomUUID();
+      const attemptKey = JSON.stringify([cloudServerId, selectedCloud.request_id]);
+      const sessionId = cloudAttempts.current.get(attemptKey) ?? crypto.randomUUID();
+      cloudAttempts.current.set(attemptKey, sessionId);
       const params = {
         sessionId,
         requestId: selectedCloud.request_id,
         name: name.trim() || selectedCloud.name,
       };
       if (name.trim()) sidebarStore.setCloudSessionName(cloudServerId, sessionId, name.trim());
-      setCreatedCloud(params);
       setPending(true);
       setSpawnError(null);
+      let started = false;
       void (async () => {
         await runCloudSessionOperation(cloudServerId, selectedCloud.request_id, sessionId, 'start');
+        started = true;
+        setCreatedCloud(params);
         const initialPrompt = buildConnectPrompt(
           activeRoom?.roomName ?? null,
           roleName !== NO_ROLE ? roleName : null,
@@ -348,11 +365,26 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         navigate('cloudSession', { serverId: cloudServerId, ...params });
         onClose();
       })()
-        .catch((error) =>
-          setSpawnError(
-            `${String(error)} Open the session to check its state and initial prompt before retrying.`
-          )
-        )
+        .catch((error) => {
+          if (error instanceof CloudSessionOperationFailed) {
+            cloudAttempts.current.delete(attemptKey);
+            setSpawnError(
+              failureText(error, 'The session did not start. Retry to start a new request.')
+            );
+          } else if (error instanceof CloudSessionOperationUnknown) {
+            setCreatedCloud(params);
+            setSpawnError(error.message);
+          } else {
+            setSpawnError(
+              failureText(
+                error,
+                started
+                  ? 'Session started; its first prompt was not delivered. Open it and send again.'
+                  : 'Could not confirm session creation. Retry to check the same request.'
+              )
+            );
+          }
+        })
         .finally(() => setPending(false));
       return;
     }
@@ -424,6 +456,17 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         </DialogTitle>
       </DialogHeader>
       <DialogContentArea>
+        {(cloudLaunches.data ?? []).some(
+          (launch) =>
+            launch.state === 'stopped' &&
+            launch.sleeping &&
+            (!roomFirst || (!!launch.agent_id && roomMembers.memberIds.has(launch.agent_id)))
+        ) && (
+          <p className="mb-3 text-xs text-foreground-muted">
+            Some cloud agents are sleeping. Start their worker in Your Agents, then return here when
+            it is ready.
+          </p>
+        )}
         <div className="flex w-full flex-col gap-5">
           {agentFirstNeedsPick && (
             <Field>
@@ -439,7 +482,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                 autoHighlight
               >
                 <ComboboxTrigger
-                  disabled={pickableAgents.loading || pickableAgents.agents.length === 0}
+                  disabled={pending || pickableAgents.loading || pickableAgents.agents.length === 0}
                   className={cn(
                     'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
                     (pickableAgents.loading || pickableAgents.agents.length === 0) &&
@@ -493,7 +536,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                 autoHighlight
               >
                 <ComboboxTrigger
-                  disabled={roomMembers.loading || roomAgents.length === 0}
+                  disabled={pending || roomMembers.loading || roomAgents.length === 0}
                   className={cn(
                     'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
                     (roomMembers.loading || roomAgents.length === 0) &&
@@ -590,7 +633,25 @@ export const CreateSessionModal = observer(function CreateSessionModal({
                   <ComboboxEmpty>No rooms found</ComboboxEmpty>
                 </ComboboxContent>
               </Combobox>
-              {!roomsLoading && rooms.length === 0 && (
+              {roomsError && (
+                <div role="alert" className="mt-1 text-xs text-foreground-destructive">
+                  <p>{roomsError}</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={roomsLoading}
+                    onClick={() => {
+                      if (serverId && switchAgentId)
+                        void switchRoomsStore.fetchAgentRooms(serverId, switchAgentId, {
+                          force: true,
+                        });
+                    }}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+              {!roomsError && !roomsLoading && rooms.length === 0 && (
                 <p className="mt-1 text-xs text-foreground-muted">
                   This agent isn't a member of any rooms yet.
                 </p>

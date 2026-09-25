@@ -124,7 +124,7 @@ async def test_a_text_file_relayed_from_a_bridge_reaches_the_session(session_fac
             msgtype="m.file",
         )
     ]
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     sequence = buffer.enqueue("agent-demo", "room-demo", message)
     await service.submit_room_message(
         "agent-demo",
@@ -137,6 +137,7 @@ async def test_a_text_file_relayed_from_a_bridge_reaches_the_session(session_fac
         0,
         None,
         buffer,
+        live_agent_ids=set,
     )
     command = (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[
         0

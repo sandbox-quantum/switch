@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   SessionReplica,
@@ -17,7 +18,7 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, ProviderUnavailableError } from '../adapter';
 import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
 import type { UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
@@ -40,9 +41,10 @@ type RecordEntry = z.infer<typeof recordSchema>;
 export type HostSessionStart = {
   session: Session;
   resumeOperationId?: string;
-  authenticate?: () => Promise<void>;
+  authenticate?: (nativeSessionId: string | undefined) => Promise<void>;
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
+  signal?: AbortSignal;
   resetEpoch?: () => Promise<string>;
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
 };
@@ -150,11 +152,26 @@ export class HostedSession {
       recordSchema.parse(input)
     );
     const host = new HostedSession(config, adapter, events, inbox);
+    const abort = () => {
+      void adapter.stopAll().catch((error: unknown) => host.fail(error));
+    };
+    config.signal?.addEventListener('abort', abort, { once: true });
     try {
+      config.signal?.throwIfAborted();
       if (config.resumeOperationId && !host.resumeOperations.has(config.resumeOperationId)) {
         await inbox.append({ type: 'resumed', operationId: config.resumeOperationId });
         host.resumeOperations.add(config.resumeOperationId);
         host.stopped = false;
+      }
+      if (host.stopped) {
+        host.config.session = { ...config.session, status: 'stopped' };
+        const stoppedSnapshot = host.replica.snapshot();
+        stoppedSnapshot.session = host.config.session;
+        host.replica = new SessionReplica(stoppedSnapshot);
+        await host.publish({ type: 'session.upsert', session: host.config.session });
+        clearInterval(host.timer);
+        host.unsubscribe();
+        return host;
       }
       const recovered = events.records.length > 0;
       if (recovered) {
@@ -194,16 +211,6 @@ export class HostedSession {
                 : 'A queued turn was interrupted by the host restart and was not sent to the provider.',
             });
         }
-        if (host.stopped) {
-          host.config.session = { ...config.session, status: 'stopped' };
-          const stoppedSnapshot = host.replica.snapshot();
-          stoppedSnapshot.session = host.config.session;
-          host.replica = new SessionReplica(stoppedSnapshot);
-          await host.publish({ type: 'session.upsert', session: host.config.session });
-          clearInterval(host.timer);
-          host.unsubscribe();
-          return host;
-        }
         if (host.resetPending) {
           await host.awaitResetDecision(
             'RESET_OUTCOME_UNKNOWN',
@@ -211,7 +218,10 @@ export class HostedSession {
           );
           return host;
         }
-        if (!host.nativeId)
+        if (
+          !host.nativeId &&
+          inbox.records.some((record) => record.type !== 'resumed' && record.type !== 'stopped')
+        )
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
@@ -249,17 +259,71 @@ export class HostedSession {
       await host.fail(error);
       await host.shutdown();
       throw error;
+    } finally {
+      config.signal?.removeEventListener('abort', abort);
     }
   }
 
+  static async isStopped(root: string): Promise<boolean> {
+    const records = await Journal.read(join(root, 'inbox.jsonl'), (value) =>
+      recordSchema.parse(value)
+    );
+    return (
+      records.filter((record) => record.type === 'stopped' || record.type === 'resumed').at(-1)
+        ?.type === 'stopped'
+    );
+  }
+
+  static async markFenced(root: string): Promise<void> {
+    const inbox = await Journal.load(join(root, 'inbox.jsonl'), (value) =>
+      recordSchema.parse(value)
+    );
+    await inbox.append({ type: 'stopped' });
+  }
+
   private async startProvider(input: ProviderSessionStartInput) {
-    const [authentication, provider] = await Promise.allSettled([
-      Promise.resolve().then(() => this.config.authenticate?.()),
-      this.adapter.startSession(input),
-    ]);
-    if (authentication.status === 'rejected') throw authentication.reason;
-    if (provider.status === 'rejected') throw provider.reason;
-    return provider.value;
+    const startedAt = performance.now();
+    const signal = this.config.signal;
+    signal?.throwIfAborted();
+    await this.config.authenticate?.(input.resume?.nativeSessionId);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        signal?.throwIfAborted();
+        const session = await this.adapter.startSession({
+          ...input,
+          ...(signal ? { signal } : {}),
+        });
+        signal?.throwIfAborted();
+        return session;
+      } catch (error) {
+        try {
+          await this.adapter.stopAll();
+        } catch (cleanupError) {
+          console.error('Provider startup and cleanup failed:', error, cleanupError);
+          throw new Error(
+            `Provider startup failed: ${error instanceof Error ? error.message : 'unknown error'}. Cleanup also failed. Stop and start the agent before retrying.`,
+            {
+              cause: new AggregateError([error, cleanupError]),
+            }
+          );
+        }
+        if (
+          !(error instanceof ProviderUnavailableError) ||
+          attempt >= 2 ||
+          performance.now() - startedAt > 30000 ||
+          signal?.aborted
+        )
+          throw error;
+        if (this.shuttingDown) throw error;
+        await this.publish({
+          type: 'notice',
+          code: 'PROVIDER_START_RETRY',
+          level: 'warning',
+          message: `Provider startup failed temporarily. Retrying (${attempt + 1}/2).`,
+        });
+        await delay(1000 * 2 ** attempt, undefined, { signal });
+      }
+    }
   }
 
   private async awaitResetDecision(code: string, message: string): Promise<void> {

@@ -20,6 +20,7 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.hosted_launch_store import is_waking
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.sessions.service import SessionAuthority, SessionError
@@ -308,9 +309,20 @@ async def _dispatch_control_command(
             client._connections,
         )
     except SessionError as exc:
+        if exc.code == "HOST_OFFLINE" and command == "reset":
+            launch = await client._note_hosted_addressed(agent)
+            if launch is not None and is_waking(launch):
+                await _reply(
+                    client,
+                    room,
+                    event,
+                    f"The cloud worker is waking up. The reset was not queued. Wait until the agent is back (usually about a minute), then send !reset @{agent.name} again to start a fresh conversation.",
+                )
+                return
         await _reply(client, room, event, f"Could not queue {command}: {exc}")
         return
     if receipt is not None:
+        await client._note_hosted_addressed(agent)
         await _reply(
             client,
             room,

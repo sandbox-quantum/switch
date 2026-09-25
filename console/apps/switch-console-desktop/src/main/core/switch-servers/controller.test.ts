@@ -40,6 +40,11 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock('./local-provider-sign-in', () => ({
+  getLocalProviderSignIn: vi.fn(),
+  localProviderAuthPath: vi.fn(),
+  readLocalProviderSignIn: vi.fn(),
+}));
 vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));

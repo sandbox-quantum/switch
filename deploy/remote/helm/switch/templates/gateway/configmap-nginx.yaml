@@ -12,6 +12,13 @@ data:
         root /usr/share/nginx/html;
         index index.html;
 
+        location = /gateway/provider-connections/github/callback {
+            access_log off;
+            proxy_pass http://{{ include "switch.switchCoreHost" . }}:{{ .Values.switchCore.service.port }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
         location /gateway {
             proxy_pass http://{{ include "switch.switchCoreHost" . }}:{{ .Values.switchCore.service.port }};
             proxy_set_header Host $host;

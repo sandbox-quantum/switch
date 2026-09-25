@@ -35,7 +35,7 @@ resource "aws_iam_role_policy" "worker_secret" {
   for_each = var.assignments
   role     = aws_iam_role.worker[each.key].id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = each.value.secret_arn },
+    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = each.value.secret_arn, Condition = { StringEquals = { "secretsmanager:VersionStage" = "AWSCURRENT" } } },
     { Effect = "Allow", Action = ["kms:Decrypt"], Resource = each.value.kms_key_arn,
       Condition = { StringEquals = {
         "kms:ViaService"                  = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"
@@ -61,17 +61,40 @@ resource "aws_iam_role" "controller" {
   }] })
   tags = local.tags
 }
-resource "aws_iam_role_policy" "controller" {
-  role = aws_iam_role.controller.id
+resource "aws_iam_policy" "controller_assignments" {
+  lifecycle {
+    postcondition {
+      condition     = length(self.policy) <= 6144
+      error_message = "Assignment permissions exceed the managed IAM policy limit; reduce the assignment pool."
+    }
+  }
+  name = "${local.prefix}-assignments"
+  tags = local.tags
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Sid = "Observe", Effect = "Allow", Action = ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeImages", "ec2:DescribeSubnets", "ec2:DescribeInstanceTypes"], Resource = "*" },
     { Sid = "PopulateWorkerAssignments", Effect = "Allow", Action = ["secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue"], Resource = [for assignment in values(var.assignments) : assignment.secret_arn] },
-    { Sid = "EncryptWorkerAssignments", Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt"], Resource = [for assignment in values(var.assignments) : assignment.kms_key_arn],
+    { Sid = "EncryptWorkerAssignments", Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt"], Resource = distinct([for assignment in values(var.assignments) : assignment.kms_key_arn]),
       Condition = { StringEquals = {
         "kms:ViaService"                  = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}"
         "kms:EncryptionContext:SecretARN" = [for assignment in values(var.assignments) : assignment.secret_arn]
       } }
-    },
+    }
+  ] })
+}
+resource "aws_iam_role_policy_attachment" "controller_assignments" {
+  role       = aws_iam_role.controller.name
+  policy_arn = aws_iam_policy.controller_assignments.arn
+}
+resource "aws_iam_role_policy" "controller" {
+  depends_on = [aws_iam_role_policy_attachment.controller_assignments]
+  lifecycle {
+    postcondition {
+      condition     = length(self.policy) <= 10240
+      error_message = "Controller permissions exceed the inline IAM policy limit; reduce the assignment pool."
+    }
+  }
+  role = aws_iam_role.controller.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = [
+    { Sid = "Observe", Effect = "Allow", Action = ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeImages", "ec2:DescribeSubnets", "ec2:DescribeInstanceTypes"], Resource = "*" },
     { Sid = "ApprovedLaunchInputs", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = [
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::image/${var.worker_image_id}",
       "${local.ec2_arn_base}:subnet/${aws_subnet.worker.id}",

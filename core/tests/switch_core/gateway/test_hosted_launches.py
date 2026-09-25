@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import HostedLaunch, User, require_tenant_id
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
@@ -64,7 +65,16 @@ async def launch_app(session_factory, monkeypatch):
     access = AsyncMock(
         return_value={
             "installations": [
-                {"id": 123, "repositories": [{"id": 456, "name": "example/project"}]}
+                {
+                    "id": 123,
+                    "repositories": [
+                        {
+                            "id": 456,
+                            "name": "example/project",
+                            "permissions": {"push": True},
+                        }
+                    ],
+                }
             ]
         }
     )
@@ -195,6 +205,27 @@ async def test_lifecycle_owner_revision_and_removal_guards(launch_app):
     ).status_code == 409
 
 
+async def test_lifecycle_action_ends_an_idle_sleep(launch_app):
+    client, _, _, _, _, factory = launch_app
+    request = body()
+    await client.post("/hosted-launches", json=request)
+    async with factory() as session:
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), request["request_id"])
+        )
+        launch.desired_state = "stopped"
+        launch.state = "stopped"
+        launch.sleeping = True
+        await session.commit()
+    url = f"/hosted-launches/{request['request_id']}"
+    assert (await client.get(url)).json()["sleeping"] is True
+    started = await client.post(
+        url + "/lifecycle", json={"action": "start", "revision": 1}
+    )
+    assert started.json()["desired_state"] == "running"
+    assert started.json()["sleeping"] is False
+
+
 async def test_session_operations_are_owner_scoped_and_idempotent(launch_app):
     client, _, _, _, identity, factory = launch_app
     request = body()
@@ -221,3 +252,42 @@ async def test_session_operations_are_owner_scoped_and_idempotent(launch_app):
     identity["user"] = SimpleNamespace(id="someone-else")
     assert (await client.get(url + "/" + operation["id"])).status_code == 404
     assert (await client.post(url, json=operation)).status_code == 404
+
+
+@pytest.mark.parametrize("stale", [False, True])
+async def test_stop_sleeping_worker_prevents_mention_wake(launch_app, stale):
+    client, _, _, _, _, factory = launch_app
+    request = body()
+    await client.post("/hosted-launches", json=request)
+    async with factory() as session:
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), request["request_id"])
+        )
+        launch.desired_state = "stopped"
+        launch.state = "stopped"
+        launch.sleeping = True
+        launch.revision = 2
+        await session.commit()
+    stopped = await client.post(
+        f"/hosted-launches/{request['request_id']}/lifecycle",
+        json={"action": "stop", "revision": 1 if stale else 2},
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["sleeping"] is False
+    assert stopped.json()["state"] == "stopped"
+    async with factory() as session:
+        launch = await HostedLaunchStore().note_addressed(
+            session, request["request_id"]
+        )
+        assert launch.desired_state == "stopped"
+        assert launch.revision == 3
+
+
+async def test_read_only_repository_cannot_create_cloud_agent(launch_app):
+    client, _, access, _, _, _ = launch_app
+    access.return_value["installations"][0]["repositories"][0]["permissions"] = {
+        "pull": True
+    }
+    result = await client.post("/hosted-launches", json=body())
+    assert result.status_code == 422
+    assert "needs write access" in result.json()["detail"]

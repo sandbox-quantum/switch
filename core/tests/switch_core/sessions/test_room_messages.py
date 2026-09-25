@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
@@ -19,13 +20,19 @@ from switch_core.bridges.agent.protocol.types import (
     RoomJoinPayload,
 )
 from switch_core.db.models import (
+    Agent,
     ClientRoom,
     MediaBlob,
+    Message,
+    MessageAttachment,
     RoleLease,
     Room,
     RoomRole,
     SdkSessionCommand,
+    room_agents,
 )
+from switch_core.db.stores.message_store import MessageStore
+from switch_core.delivery.replay import replay_room_event
 from switch_core.sessions.service import SessionError
 from tests.switch_core.sessions.test_authority import host_event, setup
 
@@ -51,7 +58,7 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
     session_factory,
 ):
     service, epoch = await setup(session_factory)
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     sequence = buffer.enqueue("agent-demo", "room-demo", event())
     args = (
         "agent-demo",
@@ -64,7 +71,7 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         0,
         None,
     )
-    receipt = await service.submit_room_message(*args, buffer)
+    receipt = await service.submit_room_message(*args, buffer, live_agent_ids=set)
     assert receipt.status == "accepted"
     pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
     assert len(pending) == 1
@@ -72,26 +79,28 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
     assert pending[0].origin.surface == "slack"
     assert pending[0].body.text.endswith("Run the check")
     assert (
-        await service.submit_room_message(*args, EventBuffer())
+        await service.submit_room_message(
+            *args, EventBuffer(sequence_base=0), live_agent_ids=set
+        )
     ).command_id == receipt.command_id
     with pytest.raises(SessionError, match="verified addressed"):
         await service.submit_room_message(
-            *args[:5], "forged", sequence, 0, None, buffer
+            *args[:5], "forged", sequence, 0, None, buffer, live_agent_ids=set
         )
     with pytest.raises(SessionError, match="does not own"):
         await service.submit_room_message(
-            "agent-demo", "session-demo", "other", *args[3:], buffer
+            "agent-demo", "session-demo", "other", *args[3:], buffer, live_agent_ids=set
         )
     async with session_factory() as db, db.begin():
         await db.delete(await db.get(ClientRoom, ("agent-client", "room-demo")))
     with pytest.raises(SessionError, match="not a member"):
-        await service.submit_room_message(*args, buffer)
+        await service.submit_room_message(*args, buffer, live_agent_ids=set)
 
 
 @pytest.mark.asyncio
 async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_factory):
     service, epoch = await setup(session_factory)
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
 
     async def deliver(message_id, missed_count, gap_reason):
         message = event()
@@ -108,6 +117,7 @@ async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_fac
             missed_count,
             gap_reason,
             buffer,
+            live_agent_ids=set,
         )
         pending = await service.pending(
             "agent-demo", "session-demo", "host-demo", epoch
@@ -135,7 +145,7 @@ async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factor
     other = await service.acquire(
         "agent-demo", current.session.model_copy(update={"session_id": "other-session"})
     )
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     sequence = buffer.enqueue("agent-demo", "room-demo", event())
     results = await asyncio.gather(
         *(
@@ -150,6 +160,7 @@ async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factor
                 0,
                 None,
                 buffer,
+                live_agent_ids=set,
             )
             for session_id, generation in (
                 ("session-demo", epoch),
@@ -171,7 +182,7 @@ async def test_internal_room_admission_preserves_thread_context(session_factory)
         room.bridge_id = None
     message = event().model_copy(update={"bridge_id": None})
     message.payload.thread_id = "thread-demo"
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     sequence = buffer.enqueue("agent-demo", "room-demo", message)
     result = await service.submit_room_message(
         "agent-demo",
@@ -184,6 +195,7 @@ async def test_internal_room_admission_preserves_thread_context(session_factory)
         0,
         None,
         buffer,
+        live_agent_ids=set,
     )
     assert result.status == "accepted"
     pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
@@ -232,7 +244,7 @@ async def test_room_attachment_is_copied_durably_with_caption_and_missing_file_n
             msgtype="m.file",
         ),
     ]
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     sequence = buffer.enqueue("agent-demo", "room-demo", message)
     await service.submit_room_message(
         "agent-demo",
@@ -245,6 +257,7 @@ async def test_room_attachment_is_copied_durably_with_caption_and_missing_file_n
         0,
         None,
         buffer,
+        live_agent_ids=set,
     )
     command = (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[
         0
@@ -262,8 +275,10 @@ async def test_room_attachment_is_copied_durably_with_caption_and_missing_file_n
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("session_status", ["ready", "error"])
 async def test_room_binding_is_authorized_and_control_delivery_is_durable(
     session_factory,
+    session_status,
 ):
     service, epoch = await setup(session_factory)
     connections = ConnectionRegistry()
@@ -284,7 +299,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
     assert snapshot.session.room_ids == ["room-demo"]
     ready = snapshot.session.model_copy(
         update={
-            "status": "ready",
+            "status": session_status,
             "capabilities": snapshot.session.capabilities.model_copy(
                 update={"reset": True, "compact": True}
             ),
@@ -369,7 +384,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
 @pytest.mark.parametrize("listening", [True, False])
 async def test_room_join_requires_opt_in_and_deduplicates(session_factory, listening):
     service, epoch = await setup(session_factory)
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     payload = RoomJoinPayload(
         member="@visitor:example.test",
         member_name="Visitor 🌍",
@@ -404,10 +419,10 @@ async def test_room_join_requires_opt_in_and_deduplicates(session_factory, liste
     )
     if not listening:
         with pytest.raises(SessionError, match="subscribed"):
-            await service.submit_room_message(*args)
+            await service.submit_room_message(*args, live_agent_ids=set)
         return
-    receipt = await service.submit_room_message(*args)
-    assert await service.submit_room_message(*args) == receipt
+    receipt = await service.submit_room_message(*args, live_agent_ids=set)
+    assert await service.submit_room_message(*args, live_agent_ids=set) == receipt
     assert (
         len(await service.pending("agent-demo", "session-demo", "host-demo", epoch))
         == 1
@@ -664,3 +679,308 @@ async def test_control_followup_waits_for_recovery_and_uses_fresh_epoch(
     assert (
         await service.command_status("session-demo", receipt.command_id, "owner")
     ).status == "applied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "valid",
+        "old",
+        "self",
+        "unaddressed",
+        "denied",
+        "historical",
+        "group",
+        "other_room",
+        "future",
+        "before_join",
+        "archived",
+    ],
+)
+async def test_room_replay_checks_durable_message_authority(session_factory, case):
+    service, epoch = await setup(session_factory)
+    body = "@agent-demo Run the check" if case != "unaddressed" else "Hello everyone"
+    sender = {"self": "@agent:example.test", "denied": "@outsider:example.test"}.get(
+        case, "@owner:example.test"
+    )
+    content = {"body": body, "msgtype": "m.text"}
+    if case == "group":
+        content["com.switch.attachment_group"] = {"id": "group", "index": 0, "total": 2}
+    async with session_factory() as db, db.begin():
+        membership = await db.get(ClientRoom, ("agent-client", "room-demo"))
+        if case != "before_join":
+            membership.joined_at = datetime.now(UTC) - timedelta(days=1)
+        if case == "archived":
+            room = await db.get(Room, "room-demo")
+            room.archived_at = datetime.now(UTC)
+        room_id = "room-demo"
+        if case == "other_room":
+            room_id = "other-room"
+            db.add(
+                Room(
+                    id=room_id,
+                    matrix_room_id="!other:example.test",
+                    name="Other",
+                    description="",
+                )
+            )
+            await db.flush()
+        row = Message(
+            room_id=room_id,
+            transport_event_id="saved-message",
+            sender_id=sender,
+            sender_name="Owner",
+            event_type="m.room.message",
+            msgtype="m.text",
+            body=body,
+            content=content,
+            sent_at=datetime.now(UTC)
+            - timedelta(minutes=20 if case == "old" else -1 if case == "future" else 1),
+        )
+        store = MessageStore()
+        await (store.create_historical if case == "historical" else store.create)(
+            db, row, []
+        )
+    args = (
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        epoch,
+        "room-demo",
+        "saved-message",
+        1,
+        0,
+        None,
+        EventBuffer(sequence_base=1 << 32),
+    )
+    if case == "valid":
+        receipt = await service.submit_room_message(*args, live_agent_ids=set)
+        assert receipt.status == "accepted"
+        pending = await service.pending(
+            "agent-demo", "session-demo", "host-demo", epoch
+        )
+        assert pending[0].body.text.endswith(body)
+        assert pending[0].origin.actor_id == sender
+        assert (
+            await service.submit_room_message(*args, live_agent_ids=set)
+        ).command_id == receipt.command_id
+    else:
+        reasons = {
+            "old": "retention window",
+            "self": "own message",
+            "unaddressed": "does not address",
+            "denied": "not permitted",
+            "historical": "Historical",
+            "group": "multi-file",
+            "other_room": "another room",
+            "future": "future timestamp",
+            "before_join": "predates",
+            "archived": "archived",
+        }
+        with pytest.raises(SessionError, match=reasons[case]):
+            await service.submit_room_message(*args, live_agent_ids=set)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media", [False, True])
+async def test_replay_preserves_platform_sender_thread_and_sparse_media(
+    session_factory, media
+):
+    service, _ = await setup(session_factory)
+    async with session_factory() as db, db.begin():
+        now = await service._now(db)
+        membership = await db.get(ClientRoom, ("agent-client", "room-demo"))
+        membership.joined_at = now - timedelta(minutes=1)
+        room = await db.get(Room, "room-demo")
+        room.bridge_id = None
+        row = Message(
+            room_id=room.id,
+            transport_event_id="platform-message",
+            sender_id="@owner:example.test",
+            sender_name="Platform",
+            event_type="m.room.message",
+            msgtype="m.file" if media else "m.text",
+            body="@agent-demo Inspect this",
+            content={
+                "com.switch.platform": {
+                    "on_behalf_of": {"user_id": "owner", "name": "Owner"},
+                    "reply_in_channel": True,
+                }
+            },
+            sent_at=now,
+            thread_root_event_id="thread",
+        )
+        files = (
+            [
+                MessageAttachment(
+                    uri="switch-media://fixture",
+                    filename=None,
+                    mimetype=None,
+                    size=None,
+                )
+            ]
+            if media
+            else []
+        )
+        await MessageStore().create(db, row, files)
+        result = await replay_room_event(
+            db,
+            await db.get(Agent, "agent-demo"),
+            room,
+            row.transport_event_id,
+            1,
+            now,
+            set,
+        )
+        payload = result.event.payload
+        assert result.event.bridge_id is None
+        assert payload.sender_kind == "platform"
+        assert payload.on_behalf_of == "Owner"
+        assert payload.sender_name == "Owner"
+        assert payload.thread_id == ("thread" if media else None)
+        if media:
+            assert payload.attachments[0].filename == row.body
+            assert payload.attachments[0].mimetype == ""
+            assert payload.attachments[0].size == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_addresses_a_live_push_role_without_a_fresh_lease(session_factory):
+    service, epoch = await setup(session_factory)
+    async with session_factory() as db, db.begin():
+        now = await service._now(db)
+        membership = await db.get(ClientRoom, ("agent-client", "room-demo"))
+        membership.joined_at = now - timedelta(minutes=1)
+        role = RoomRole(
+            id="review-role",
+            room_id="room-demo",
+            name="reviewer",
+            instructions="Review changes",
+        )
+        db.add(role)
+        await db.flush()
+        db.add(
+            RoleLease(
+                role_id=role.id,
+                room_id="room-demo",
+                agent_id="agent-demo",
+                transport_session_id="push",
+                last_seen_at=now - timedelta(days=1),
+            )
+        )
+        await MessageStore().create(
+            db,
+            Message(
+                room_id="room-demo",
+                transport_event_id="role-message",
+                sender_id="@owner:example.test",
+                sender_name="Owner",
+                event_type="m.room.message",
+                msgtype="m.text",
+                body="@reviewer Please review",
+                content={},
+                sent_at=now,
+            ),
+            [],
+        )
+    receipt = await service.submit_room_message(
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        epoch,
+        "room-demo",
+        "role-message",
+        1,
+        0,
+        None,
+        EventBuffer(sequence_base=1 << 32),
+        lambda: {"agent-demo"},
+    )
+    assert receipt.status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_retained_sequence_from_another_room_is_not_replayed(session_factory):
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer(sequence_base=0)
+    sequence = buffer.enqueue("agent-demo", "different-room", event())
+    with pytest.raises(SessionError, match="belongs to another room") as failure:
+        await service.submit_room_message(
+            "agent-demo",
+            "session-demo",
+            "host-demo",
+            epoch,
+            "room-demo",
+            "message",
+            sequence,
+            0,
+            None,
+            buffer,
+            set,
+        )
+    assert failure.value.code == "NOT_AUTHORIZED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_room", [True, False])
+async def test_replay_addresses_a_room_alias(session_factory, same_room):
+    service, epoch = await setup(session_factory)
+    async with session_factory() as db, db.begin():
+        now = await service._now(db)
+        membership = await db.get(ClientRoom, ("agent-client", "room-demo"))
+        membership.joined_at = now - timedelta(minutes=1)
+        if not same_room:
+            db.add(
+                Room(
+                    id="alias-room",
+                    matrix_room_id="!alias:example.test",
+                    name="Alias",
+                    description="",
+                )
+            )
+            await db.flush()
+        await db.execute(
+            insert(room_agents).values(
+                agent_id="agent-demo",
+                room_id="room-demo" if same_room else "alias-room",
+                alias="review-helper",
+            )
+        )
+        await MessageStore().create(
+            db,
+            Message(
+                room_id="room-demo",
+                transport_event_id="alias-message",
+                sender_id="@owner:example.test",
+                sender_name="Owner",
+                event_type="m.room.message",
+                msgtype="m.text",
+                body="@review-helper Please review",
+                content={},
+                sent_at=now,
+            ),
+            [],
+        )
+
+    async def submit():
+        return await service.submit_room_message(
+            "agent-demo",
+            "session-demo",
+            "host-demo",
+            epoch,
+            "room-demo",
+            "alias-message",
+            1,
+            0,
+            None,
+            EventBuffer(sequence_base=1 << 32),
+            set,
+        )
+
+    if same_room:
+        assert (await submit()).status == "accepted"
+    else:
+        with pytest.raises(SessionError, match="does not address") as refused:
+            await submit()
+        assert refused.value.code == "ROOM_REPLAY_REFUSED"

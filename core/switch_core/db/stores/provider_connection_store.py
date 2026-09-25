@@ -12,6 +12,12 @@ class ProviderConnectionBusy(Exception):
 
 
 class ProviderConnectionStore:
+    async def wait_user(self, session: AsyncSession, user_id: str) -> None:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"provider-connection:{require_tenant_id()}:{user_id}"},
+        )
+
     async def lock_user(self, session: AsyncSession, user_id: str) -> None:
         acquired = await session.scalar(
             text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),

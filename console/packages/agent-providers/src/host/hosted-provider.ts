@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { refreshCodexAuthentication } from '../codex/home';
 import { importOpenCodeConsole } from './opencode-console';
 import { readSharedCredentials, type SharedHostConfig } from './shared-config';
 
@@ -141,12 +142,14 @@ export async function materializeHostedProvider(
     }
   }
   if (credential.provider === 'codex') {
-    env.CODEX_HOME = join(root, 'provider-home');
+    const sourceHome = join(root, 'provider-home');
+    env.CODEX_HOME ||= sourceHome;
     const content =
       credential.kind === 'api-key'
         ? JSON.stringify({ OPENAI_API_KEY: credential.credential })
         : credential.credential;
-    await writeAuthentication(env.CODEX_HOME, 'auth.json', content);
+    await writeAuthentication(sourceHome, 'auth.json', content);
+    if (env.CODEX_HOME !== sourceHome) await refreshCodexAuthentication(env.CODEX_HOME, sourceHome);
   } else if (credential.provider === 'opencode') {
     env.XDG_DATA_HOME = join(root, 'provider-data');
     if (JSON.parse(credential.credential).format === 'switch-opencode-console-v1') {

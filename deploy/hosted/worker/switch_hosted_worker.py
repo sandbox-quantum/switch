@@ -134,7 +134,7 @@ class MachineIdentity:
 @dataclass(frozen=True)
 class SecretBundle:
     deployment: dict[str, Any]
-    provider_credential: str
+    provider_credential: str | None
     switch_credentials: dict[str, Any]
     github_credential: str | None = None
 
@@ -325,10 +325,9 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
             "version",
             "assignment",
             "deployment",
-            "providerCredential",
             "switchCredentials",
         },
-        {"githubCredential"},
+        {"githubCredential", "providerCredential"},
         "assignment secret",
     )
     if value["version"] != 1:
@@ -346,12 +345,14 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
         or assignment["dataVolumeId"] != config.volume_id
     ):
         raise WorkerError("Assignment secret does not match the worker assignment.")
-    credential = _text(
-        value["providerCredential"], "provider credential", maximum=16 * 1024
-    ).strip()
-    if not credential or any(character in credential for character in "\x00\r\n"):
-        raise WorkerError("Provider credential is invalid.")
     deployment = _validate_deployment(value["deployment"], config)
+    credential = None
+    if not deployment["provider"]["credential"].get("refresh"):
+        credential = _text(
+            value.get("providerCredential"), "provider credential", maximum=16 * 1024
+        ).strip()
+        if not credential or any(character in credential for character in "\x00\r\n"):
+            raise WorkerError("Provider credential is invalid.")
     switch_credentials = _validate_switch_credentials(
         value["switchCredentials"], config.agent_id
     )
@@ -588,7 +589,9 @@ class SecretsManager:
 
     def read(self, secret_id: str) -> str:
         try:
-            response = self._client.get_secret_value(SecretId=secret_id)
+            response = self._client.get_secret_value(
+                SecretId=secret_id, VersionStage="AWSCURRENT"
+            )
             value = response.get("SecretString")
         except Exception:
             raise WorkerError("The assignment secret could not be read.") from None
@@ -975,11 +978,29 @@ def _ownership_paths(state_path: Path) -> list[Path]:
         if directory.exists() or directory.is_symlink():
             _validated_directory(directory, root=state_path)
             paths.extend(sorted(directory.iterdir()))
+    sessions = state_path
+    for component in ("home", ".local", "state", "switch", "sdk-sessions"):
+        sessions = sessions / component
+        if not sessions.exists() and not sessions.is_symlink():
+            break
+        _validated_directory(sessions, root=state_path)
+    else:
+        for root in sorted(sessions.iterdir()):
+            if not re.fullmatch(r"[0-9a-f]{64}", root.name):
+                raise WorkerError("Saved SDK session directory is invalid.")
+            _validated_directory(root, root=state_path)
+            paths.extend(_ownership_paths(root))
     return [path for path in paths if path.exists() or path.is_symlink()]
 
 
 def _known_owner_relative(relative: Path) -> bool:
     parts = relative.parts
+    if (
+        len(parts) > 6
+        and parts[:5] == ("home", ".local", "state", "switch", "sdk-sessions")
+        and re.fullmatch(r"[0-9a-f]{64}", parts[5])
+    ):
+        return _known_owner_relative(Path(*parts[6:]))
     if parts in {("shared-owner.lock",), ("supervisor", "owner.json")}:
         return True
     return (
@@ -1208,12 +1229,13 @@ def materialize_secrets(
             os.fchown(directory_fd, 0, gid)
             os.fchmod(directory_fd, 0o750)
             files = {
-                "provider": bundle.provider_credential + "\n",
                 "switch.json": json.dumps(
                     bundle.switch_credentials, separators=(",", ":")
                 ),
                 "deployment.json": json.dumps(bundle.deployment, separators=(",", ":")),
             }
+            if bundle.provider_credential is not None:
+                files["provider"] = bundle.provider_credential + "\n"
             if bundle.github_credential is not None:
                 files["github"] = bundle.github_credential + "\n"
             for name, value in files.items():

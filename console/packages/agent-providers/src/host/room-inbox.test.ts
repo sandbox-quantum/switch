@@ -233,3 +233,17 @@ it('still fails visibly on a non-recoverable eviction', async () => {
     'Room connection was evicted: credentials revoked',
   ]);
 });
+
+it('remembers failure notices per message without acknowledging undelivered input', async () => {
+  const { root, inbox, stream } = await connected();
+  await stream.onEvent(message(1, true));
+  const pending = inbox.pending()[0];
+  expect(inbox.unreportedFailures('startup')).toEqual([pending]);
+  await inbox.markFailureNotified(pending, 'startup');
+  const reopened = await SharedRoomInbox.open(root);
+  expect(reopened.unreportedFailures('startup')).toEqual([]);
+  expect(reopened.unreportedFailures('conversation')).toEqual([pending]);
+  expect(reopened.pending()).toEqual([pending]);
+  await stream.onEvent(message(2, true));
+  expect(inbox.unreportedFailures('startup')).toHaveLength(1);
+});

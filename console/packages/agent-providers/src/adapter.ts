@@ -35,6 +35,7 @@ export interface ModelSelection {
 }
 
 export interface ProviderSessionStartInput {
+  signal?: AbortSignal;
   /** Switch's own session id; the adapter keys everything by it. */
   sessionId: string;
   cwd: string;

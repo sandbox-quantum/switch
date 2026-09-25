@@ -153,6 +153,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     );
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
+      input.signal?.throwIfAborted();
       const initialized = await initializeAntigravity(client);
       const mcpServers = Object.entries(input.mcpServers).map(([name, server]) =>
         server.transport === 'stdio'

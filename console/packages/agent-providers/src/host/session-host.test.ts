@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderUnavailableError,
+  type ProviderAdapter,
+} from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { HostedSession } from './session-host';
 
@@ -810,15 +814,20 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
   }
 );
 
-it('overlaps authentication with startup but waits for authentication before returning', async () => {
+it('waits for authentication to prepare the environment before starting the provider', async () => {
   const root = await mkdtemp(join(tmpdir(), 'startup-auth-'));
   roots.push(root);
-  const fixture = setup('claude');
+  const fixture = setup('opencode');
+  const env: Record<string, string> = {};
+  fixture.config.input.env = env;
   let authenticated!: () => void;
   const authenticate = vi.fn(
     () =>
       new Promise<void>((resolve) => {
-        authenticated = resolve;
+        authenticated = () => {
+          env.XDG_DATA_HOME = join(root, 'provider-data');
+          resolve();
+        };
       })
   );
   let returned = false;
@@ -831,14 +840,21 @@ it('overlaps authentication with startup but waits for authentication before ret
     hosts.push(host);
     return host;
   });
-  await vi.waitFor(() => expect(fixture.adapter.startSession).toHaveBeenCalledOnce());
-  expect(authenticate).toHaveBeenCalledOnce();
-  expect(returned).toBe(false);
-  authenticated();
+  await vi.waitFor(() => expect(authenticate).toHaveBeenCalledOnce());
+  try {
+    expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+    expect(returned).toBe(false);
+  } finally {
+    authenticated();
+    await starting;
+  }
   expect((await starting).snapshot().session.status).toBe('ready');
+  expect(fixture.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ env: { XDG_DATA_HOME: join(root, 'provider-data') } })
+  );
 });
 
-it('cleans up the started provider when authentication fails', async () => {
+it('does not start the provider when authentication fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'startup-auth-failed-'));
   roots.push(root);
   const fixture = setup('claude');
@@ -854,7 +870,8 @@ it('cleans up the started provider when authentication fails', async () => {
       fixture.adapter
     )
   ).rejects.toThrow('Sign in required');
-  expect(fixture.adapter.stopSession).toHaveBeenCalledOnce();
+  expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+  expect(fixture.adapter.stopSession).not.toHaveBeenCalled();
   expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
 });
 
@@ -877,4 +894,113 @@ it('reports model discovery failures without losing the usable session', async (
     ).toBe(true)
   );
   expect(host.snapshot().session.status).toBe('ready');
+});
+
+it('stops a partial provider before retrying and authenticates only once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-retry-'));
+  roots.push(root);
+  const f = setup('opencode');
+  const authenticate = vi.fn(async () => {});
+  let stopped!: () => void;
+  vi.mocked(f.adapter.stopAll).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        stopped = resolve;
+      })
+  );
+  vi.mocked(f.adapter.startSession).mockRejectedValueOnce(
+    new ProviderUnavailableError('opencode', 'Temporarily unavailable')
+  );
+  const starting = HostedSession.start(root, { ...f.config, authenticate }, f.adapter);
+  await vi.waitFor(() => expect(f.adapter.stopAll).toHaveBeenCalledOnce());
+  expect(f.adapter.startSession).toHaveBeenCalledOnce();
+  stopped();
+  const host = await starting;
+  hosts.push(host);
+  expect(f.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(authenticate).toHaveBeenCalledOnce();
+  await host.command(message('after-retry'));
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledOnce());
+});
+
+it('bounds startup retries and can retry an initial failure without losing a conversation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-permanent-'));
+  roots.push(root);
+  const f = setup('opencode');
+  const start = vi.mocked(f.adapter.startSession).getMockImplementation()!;
+  vi.mocked(f.adapter.startSession).mockRejectedValue(
+    new ProviderUnavailableError('opencode', 'Unavailable')
+  );
+  await expect(HostedSession.start(root, f.config, f.adapter)).rejects.toThrow('Unavailable');
+  expect(f.adapter.startSession).toHaveBeenCalledTimes(3);
+  expect(f.adapter.stopAll).toHaveBeenCalledTimes(3);
+  expect(f.adapter.sendTurn).not.toHaveBeenCalled();
+  vi.mocked(f.adapter.startSession).mockImplementation(start);
+  const host = await HostedSession.start(root, f.config, f.adapter);
+  hosts.push(host);
+  expect(host.snapshot().session.status).toBe('ready');
+  expect(f.adapter.startSession).toHaveBeenLastCalledWith(
+    expect.not.objectContaining({ resume: expect.anything() })
+  );
+});
+
+it('cancels retry backoff without starting another provider', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-abort-'));
+  roots.push(root);
+  const f = setup('opencode');
+  const controller = new AbortController();
+  vi.mocked(f.adapter.startSession).mockRejectedValue(
+    new ProviderUnavailableError('opencode', 'Transient failure')
+  );
+  const result = HostedSession.start(
+    root,
+    { ...f.config, signal: controller.signal },
+    f.adapter
+  ).catch((error: unknown) => error);
+  await vi.waitFor(() => expect(f.adapter.stopAll).toHaveBeenCalledOnce());
+  controller.abort();
+  expect(await result).toBeInstanceOf(Error);
+  expect(f.adapter.startSession).toHaveBeenCalledOnce();
+});
+
+it('keeps a fenced session stopped before its first event and permits an explicit resume', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'fenced-first-start-'));
+  roots.push(root);
+  const fixture = setup('codex');
+  await HostedSession.markFenced(root);
+  const stopped = await HostedSession.start(root, fixture.config, fixture.adapter);
+  expect(stopped.snapshot().session.status).toBe('stopped');
+  expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+  await stopped.shutdown();
+  const resumed = await HostedSession.start(
+    root,
+    { ...fixture.config, resumeOperationId: randomUUID() },
+    fixture.adapter
+  );
+  hosts.push(resumed);
+  expect(fixture.adapter.startSession).toHaveBeenCalledOnce();
+  expect(await HostedSession.isStopped(root)).toBe(false);
+});
+
+it('passes the saved native thread to authentication before resuming', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-native-auth-'));
+  roots.push(root);
+  const fixture = setup('codex');
+  const first = await HostedSession.start(root, fixture.config, fixture.adapter);
+  await first.shutdown();
+  const authenticate = vi.fn(async (nativeSessionId: string | undefined) => {
+    expect(nativeSessionId).toBe('native');
+  });
+  fixture.adapter.startSession = vi.fn(async (input) => {
+    expect(authenticate).toHaveBeenCalledWith('native');
+    expect(input.resume).toEqual({ nativeSessionId: 'native' });
+    return { provider: 'codex', sessionId: 'session', nativeSessionId: 'native' };
+  });
+  const host = await HostedSession.start(
+    root,
+    { ...fixture.config, authenticate },
+    fixture.adapter
+  );
+  hosts.push(host);
+  expect(fixture.adapter.startSession).toHaveBeenCalledOnce();
 });

@@ -60,7 +60,7 @@ def _task_delegate() -> AgentEvent:
 
 
 async def test_addressed_message_fans_out_without_draining_room_queue() -> None:
-    q = EventBuffer()
+    q = EventBuffer(sequence_base=0)
     q.enqueue(AGENT, ROOM, _message(addressed=True))
 
     # The notification stream sees it...
@@ -74,7 +74,7 @@ async def test_addressed_message_fans_out_without_draining_room_queue() -> None:
 
 
 async def test_unaddressed_message_does_not_fan_out() -> None:
-    q = EventBuffer()
+    q = EventBuffer(sequence_base=0)
     q.enqueue(AGENT, ROOM, _message(addressed=False))
 
     assert await q.poll_notifications(AGENT, timeout=0) == []
@@ -84,7 +84,7 @@ async def test_unaddressed_message_does_not_fan_out() -> None:
 
 
 async def test_task_event_fans_out() -> None:
-    q = EventBuffer()
+    q = EventBuffer(sequence_base=0)
     q.enqueue(AGENT, ROOM, _task_delegate())
     notifs = await q.poll_notifications(AGENT, timeout=0)
     assert len(notifs) == 1
@@ -92,7 +92,7 @@ async def test_task_event_fans_out() -> None:
 
 
 async def test_room_join_fans_out_only_when_listening() -> None:
-    q = EventBuffer()
+    q = EventBuffer(sequence_base=0)
     q.enqueue(AGENT, ROOM, _room_join(listening=False))
     assert await q.poll_notifications(AGENT, timeout=0) == []
 
@@ -103,7 +103,16 @@ async def test_room_join_fans_out_only_when_listening() -> None:
 
 
 async def test_remove_clears_notification_queue() -> None:
-    q = EventBuffer()
+    q = EventBuffer(sequence_base=0)
     q.enqueue(AGENT, ROOM, _message(addressed=True))
     q.remove(AGENT)
     assert await q.poll_notifications(AGENT, timeout=0) == []
+
+
+def test_removing_agent_does_not_reuse_event_sequences():
+    buffer = EventBuffer(sequence_base=1 << 32)
+    first = buffer.enqueue(AGENT, ROOM, _message(True))
+    buffer.remove(AGENT)
+    second = buffer.enqueue(AGENT, ROOM, _message(True))
+    assert second > first
+    assert second < 2**53

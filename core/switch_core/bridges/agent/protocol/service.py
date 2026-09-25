@@ -66,6 +66,7 @@ from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
+    HostedLaunch,
     Message,
     MessageAttachment,
     Model,
@@ -381,6 +382,17 @@ class ProtocolService:
         encrypted_key = encrypt_token(api_key, self.config.jwt_secret_key)
 
         async with self.session_factory() as session:
+            await self.agent_store.lock_name(session, name)
+            reservation = await session.scalar(
+                select(HostedLaunch).where(
+                    HostedLaunch.tenant_id == tenant_id,
+                    HostedLaunch.name == name,
+                )
+            )
+            if reservation is not None and reservation.agent_id != reserved_agent_id:
+                raise AgentExistsError(
+                    "A cloud launch already reserves this agent name."
+                )
             existing = await self.agent_store.get_by_name(session, name)
             if reserved_agent_id is not None and existing is not None:
                 raise AgentExistsError(
@@ -1109,6 +1121,8 @@ class ProtocolService:
         room_id: str,
         content: str,
         thread_id: str | None = None,
+        *,
+        extra_content: dict[str, object] | None = None,
     ) -> str:
         """Send a message to a room. Returns event_id.
 
@@ -1131,7 +1145,10 @@ class ProtocolService:
                 client, room.matrix_room_id, thread_id
             )
         event_id = await client.send_message(
-            room.matrix_room_id, content, thread_root_id=thread_root_id
+            room.matrix_room_id,
+            content,
+            thread_root_id=thread_root_id,
+            extra_content=extra_content,
         )
         if event_id is None:
             raise ValueError("Failed to send message")

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -14,6 +15,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_config,
@@ -216,7 +218,10 @@ async def test_checks_are_bounded_and_job_tokens_are_scoped(verification_app):
     ).status_code == 403
     response = await client.put(
         "/provider-connections/opencode",
-        json={"kind": "auth-json", "credential": '{"example":{"key":"placeholder"}}'},
+        json={
+            "kind": "auth-json",
+            "credential": '{"opencode":{"type":"api","key":"placeholder"}}',
+        },
     )
     assert response.status_code == 429
     assert (await client.get("/provider-verifications")).status_code == 401
@@ -322,3 +327,29 @@ async def test_repeated_result_cannot_replace_verified_credential(verification_a
         assert (
             decrypt_token(saved.encrypted_credential, KEY) == "placeholder-credential"
         )
+
+
+@pytest.mark.parametrize("action", ["observe", "result"])
+async def test_worker_callback_waits_for_credential_write_lock(
+    verification_app, action
+):
+    client, factory, owner = verification_app
+    job_id, worker = await start(client)
+    async with factory() as writer:
+        await ProviderConnectionStore().lock_user(writer, owner)
+        request = asyncio.create_task(
+            client.post(
+                f"/provider-verifications/{job_id}/{action}",
+                headers=HEADERS if action == "observe" else worker,
+                json={"instance_id": "i-0123456789abcdef0", "terminated": False}
+                if action == "observe"
+                else {"succeeded": True},
+            )
+        )
+        try:
+            await asyncio.sleep(0.05)
+            assert not request.done()
+        finally:
+            await writer.commit()
+        response = await asyncio.wait_for(request, timeout=5)
+        assert response.status_code == 200

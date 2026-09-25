@@ -1,6 +1,6 @@
 import { createOpencodeClient, type Event, type OpencodeClient } from '@opencode-ai/sdk/v2';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
-import { ProviderSessionError, ProviderUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile, OpencodePermissionRule } from './config';
 import { type OpencodeSkill, startOpencodeServer, stopOpencodeServer } from './server';
 
@@ -32,6 +32,7 @@ export interface OpencodeSessionTransport {
 }
 
 export interface OpencodeTransportInput {
+  signal?: AbortSignal;
   sessionId: string;
   cwd: string;
   env: Record<string, string>;
@@ -68,6 +69,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         config: input.config,
         startupTimeoutMs: options.startupTimeoutMs,
         skills: options.skills,
+        signal: input.signal,
       });
 
       const client = createOpencodeClient({
@@ -78,15 +80,25 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
       });
 
       const abortController = new AbortController();
+      const signal = input.signal
+        ? AbortSignal.any([input.signal, abortController.signal])
+        : abortController.signal;
       let subscription: AsyncIterable<OpencodeEvent>;
       try {
-        const result = await client.event.subscribe(
-          { directory: input.cwd },
-          { signal: abortController.signal }
-        );
+        const result = await client.event.subscribe({ directory: input.cwd }, { signal });
         subscription = result.stream;
       } catch (error) {
-        await stopOpencodeServer(server);
+        try {
+          await stopOpencodeServer(server);
+        } catch (cleanupError) {
+          console.error('OpenCode startup and cleanup failed:', error, cleanupError);
+          throw new Error(
+            error instanceof ProviderConversationUnavailableError
+              ? 'The saved conversation is unavailable and provider cleanup failed. A reset is blocked while the previous process may still be running. Stop and start the agent, then request a fresh conversation.'
+              : 'OpenCode startup cleanup failed. Stop and start the agent before retrying.',
+            { cause: new AggregateError([error, cleanupError]) }
+          );
+        }
         throw new ProviderUnavailableError('opencode', 'could not open the event stream', {
           cause: error,
         });
@@ -96,7 +108,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
       try {
         const { data: providers } = await client.provider.list<true>(
           { directory: input.cwd },
-          { signal: AbortSignal.timeout(15000) }
+          { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) }
         );
         if (!providers.connected.length)
           console.warn(
@@ -105,7 +117,28 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         nativeSessionId = await resolveSession(client, input);
       } catch (error) {
         abortController.abort();
-        await stopOpencodeServer(server);
+        try {
+          await stopOpencodeServer(server);
+        } catch (cleanupError) {
+          console.error('OpenCode startup and cleanup failed:', error, cleanupError);
+          throw new Error(
+            error instanceof ProviderConversationUnavailableError
+              ? 'The saved conversation is unavailable and provider cleanup failed. A reset is blocked while the previous process may still be running. Stop and start the agent, then request a fresh conversation.'
+              : 'OpenCode startup cleanup failed. Stop and start the agent before retrying.',
+            { cause: new AggregateError([error, cleanupError]) }
+          );
+        }
+        const status = responseStatus(error);
+        if (
+          (status !== undefined && (status >= 500 || status === 429)) ||
+          error instanceof TypeError ||
+          (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))
+        )
+          throw new ProviderUnavailableError(
+            'opencode',
+            'OpenCode startup is temporarily unavailable.',
+            { cause: error }
+          );
         throw error;
       }
 
@@ -144,7 +177,10 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
             throw new Error('OpenCode did not confirm native compaction.');
         },
         async listModels() {
-          const { data } = await client.provider.list<true>({ directory: input.cwd });
+          const { data } = await client.provider.list<true>(
+            { directory: input.cwd },
+            { signal: input.signal }
+          );
           return data.all
             .filter((provider) => data.connected.includes(provider.id))
             .flatMap((provider) =>
@@ -179,11 +215,17 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
           });
         },
         async abort() {
-          await client.session.abort<true>({ sessionID: nativeSessionId, directory: input.cwd });
+          await client.session.abort<true>(
+            { sessionID: nativeSessionId, directory: input.cwd },
+            { signal: input.signal }
+          );
         },
         async sessionStatus() {
           try {
-            const response = await client.session.status<true>({ directory: input.cwd });
+            const response = await client.session.status<true>(
+              { directory: input.cwd },
+              { signal: input.signal }
+            );
             const entry = response.data[nativeSessionId];
             if (entry === undefined) return 'idle';
             return entry.type === 'idle' ? 'idle' : 'busy';
@@ -206,7 +248,10 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
           });
         },
         async rejectQuestion(requestId) {
-          await client.question.reject<true>({ requestID: requestId, directory: input.cwd });
+          await client.question.reject<true>(
+            { requestID: requestId, directory: input.cwd },
+            { signal: input.signal }
+          );
         },
         onExit(listener) {
           exitListeners.add(listener);
@@ -227,29 +272,48 @@ async function resolveSession(
 ): Promise<string> {
   if (input.resumeNativeSessionId !== undefined) {
     const existing = await client.session
-      .get<true>({ sessionID: input.resumeNativeSessionId, directory: input.cwd })
-      .catch(() => null);
+      .get<true>(
+        { sessionID: input.resumeNativeSessionId, directory: input.cwd },
+        { signal: input.signal }
+      )
+      .catch((error: unknown) => {
+        if (responseStatus(error) === 404) return null;
+        throw error;
+      });
     if (existing === null) {
-      throw new ProviderSessionError(
+      throw new ProviderConversationUnavailableError(
         'opencode',
         input.sessionId,
         `cannot resume: OpenCode has no session '${input.resumeNativeSessionId}'`
       );
     }
-    await client.session.update<true>({
-      sessionID: existing.data.id,
-      directory: input.cwd,
-      permission: input.permission,
-    });
+    await client.session.update<true>(
+      {
+        sessionID: existing.data.id,
+        directory: input.cwd,
+        permission: input.permission,
+      },
+      { signal: input.signal }
+    );
     return existing.data.id;
   }
 
-  const created = await client.session.create<true>({
-    directory: input.cwd,
-    permission: input.permission,
-    ...(input.model
-      ? { model: { providerID: input.model.providerID, id: input.model.modelID } }
-      : {}),
-  });
+  const created = await client.session.create<true>(
+    {
+      directory: input.cwd,
+      permission: input.permission,
+      ...(input.model
+        ? { model: { providerID: input.model.providerID, id: input.model.modelID } }
+        : {}),
+    },
+    { signal: input.signal }
+  );
   return created.data.id;
+}
+
+function responseStatus(error: unknown): number | undefined {
+  if (!(error instanceof Error) || !error.cause || typeof error.cause !== 'object')
+    return undefined;
+  const status = 'status' in error.cause ? error.cause.status : undefined;
+  return typeof status === 'number' ? status : undefined;
 }

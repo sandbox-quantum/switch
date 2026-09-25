@@ -30,6 +30,8 @@ vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 const {
   getGitHubConnection,
   startGitHubConnection,
+  completeGitHubConnection,
+  confirmGitHubConnection,
   getClaudeConnection,
   connectClaude,
   disconnectClaude,
@@ -838,6 +840,31 @@ describe('GitHub connection transport', () => {
     getSessionCookie.mockResolvedValue(makeJwt(7200));
   });
   afterEach(() => vi.unstubAllGlobals());
+  it('sends objects, encoded once, for start, complete and confirm', async () => {
+    const state = 'a'.repeat(43);
+    const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: state,
+          url: `https://switch.example.com/gateway/provider-connections/github/authorize?state=${state}`,
+        })
+      )
+    );
+    await startGitHubConnection(SERVER, input);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await confirmGitHubConnection(SERVER, state, input.completion_secret);
+    const bodies = (fetchMock.mock.calls as unknown[][]).map((call) =>
+      JSON.parse((call[1] as RequestInit).body as string)
+    );
+    expect(bodies).toEqual([
+      input,
+      { code: 'SYNTHETIC-CODE', completion_secret: input.completion_secret },
+      { completion_secret: input.completion_secret },
+    ]);
+  });
   it('only accepts authorization URLs on the authenticated server', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -849,7 +876,13 @@ describe('GitHub connection transport', () => {
         })
       )
     );
-    await expect(startGitHubConnection(SERVER)).rejects.toThrow('invalid GitHub authorization URL');
+    await expect(
+      startGitHubConnection(SERVER, {
+        port: 12345,
+        state: 'a'.repeat(43),
+        completion_secret: 'b'.repeat(43),
+      })
+    ).rejects.toThrow('invalid GitHub authorization URL');
   });
   it('checks state matches the returned authorization id', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -860,7 +893,13 @@ describe('GitHub connection transport', () => {
         })
       )
     );
-    await expect(startGitHubConnection(SERVER)).rejects.toThrow('invalid GitHub authorization URL');
+    await expect(
+      startGitHubConnection(SERVER, {
+        port: 12345,
+        state: 'a'.repeat(43),
+        completion_secret: 'b'.repeat(43),
+      })
+    ).rejects.toThrow('invalid GitHub authorization URL');
   });
   it('validates repository status and strips unexpected secrets', async () => {
     fetchMock.mockResolvedValueOnce(

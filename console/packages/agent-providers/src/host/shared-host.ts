@@ -20,7 +20,7 @@ import { SharedState } from './shared-state';
 export type SharedHostOptions = {
   root: string;
   resumeOperationId?: string;
-  authenticate?: () => Promise<void>;
+  authenticate?: (nativeSessionId: string | undefined) => Promise<void>;
   agentApiUrl: string;
   token: string;
   session: Session;
@@ -41,6 +41,21 @@ export class SharedHostLeaseExpiredError extends Error {
   constructor() {
     super('HOST_OFFLINE: lease renewal deadline passed.');
     this.name = 'SharedHostLeaseExpiredError';
+  }
+}
+
+export class SharedHostFencedError extends Error {
+  constructor(
+    readonly pendingMessages: { roomId: string; messageId: string }[],
+    cause: unknown,
+    cleanupFailed: boolean
+  ) {
+    super(
+      'HOST_NOT_OWNER: This host no longer owns the session. Automatic local relaunch is disabled. ' +
+        (cleanupFailed ? 'Provider cleanup also failed. ' : '') +
+        'Stop and start the agent to recover. Pending messages remain in the local inbox.',
+      { cause }
+    );
   }
 }
 
@@ -67,6 +82,7 @@ export async function runSharedHost(
   let delivery: SharedDelivery | null = null;
   let failure: unknown = null;
   let starting = false;
+  let rooms: SharedRoomInbox | null = null;
   let deadline = performance.now() + 30000;
   let lease = state.latest('lease');
   let heartbeat: Promise<void> = Promise.resolve();
@@ -131,6 +147,49 @@ export async function runSharedHost(
         await delay(500, undefined, { signal: executionSignal });
       }
     }
+  };
+  const noticeAttempts = new Map<string, number>();
+  const localDeliveryNotices = new Set<string>();
+  const reportRoomFailures = async (reason: 'startup' | 'conversation') => {
+    if (!options.roomConnection || !lease || !rooms) return;
+    const inbox = rooms;
+    const activeLease = lease;
+    const connectionId = options.roomConnection.connectionId;
+    const targets = inbox
+      .unreportedFailures(reason)
+      .filter((event) => {
+        const attempted = noticeAttempts.get(
+          JSON.stringify([event.roomId, event.messageId, reason])
+        );
+        return attempted === undefined || performance.now() - attempted >= 30000;
+      })
+      .slice(0, 3);
+    await Promise.all(
+      targets.map(async (event) => {
+        const key = JSON.stringify([event.roomId, event.messageId, reason]);
+        const attempted = noticeAttempts.get(key);
+        if (attempted !== undefined && performance.now() - attempted < 30000) return;
+        noticeAttempts.set(key, performance.now());
+        try {
+          await requestOnce(
+            `${sessionPath}/room-failure`,
+            {
+              host_id: activeLease.snapshot.session.hostId,
+              epoch: activeLease.snapshot.session.epoch,
+              connection_id: connectionId,
+              room_id: event.roomId,
+              message_id: event.messageId,
+              reason,
+            },
+            AbortSignal.timeout(5000)
+          );
+          await inbox.markFailureNotified(event, reason);
+        } catch (noticeError) {
+          console.error('Could not report provider failure to the room:', String(noticeError));
+          if (noticeError instanceof RequestError) noticeAttempts.set(key, Infinity);
+        }
+      })
+    );
   };
   const stopExecution = async () => {
     if (host) {
@@ -283,7 +342,6 @@ export async function runSharedHost(
       }
     })();
     await state.journal.append({ type: 'running' });
-    let rooms: SharedRoomInbox | null = null;
     if (options.roomConnection) {
       rooms = await SharedRoomInbox.open(options.root);
       await rooms.connect(
@@ -303,6 +361,7 @@ export async function runSharedHost(
         session,
         input: options.input,
         epochAuthority: 'server',
+        signal: executionSignal,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         stageAttachments: (attachments) =>
@@ -405,8 +464,10 @@ export async function runSharedHost(
         throw new Error(
           'HOST_FAULTED: Provider execution failed. The room connection is closing; inspect the transcript before recovery.'
         );
-      if (host.resetDecisionPending) heldForDecision = true;
-      else if (heldForDecision) {
+      if (host.resetDecisionPending) {
+        heldForDecision = true;
+        await reportRoomFailures('conversation');
+      } else if (heldForDecision) {
         heldForDecision = false;
         const held = rooms?.pending().length ?? 0;
         if (held) {
@@ -437,12 +498,63 @@ export async function runSharedHost(
           } catch (error) {
             if (
               !(error instanceof RequestError) ||
-              !['UNSUPPORTED_CAPABILITY', 'ROOM_MESSAGE_RESERVED'].includes(error.code)
+              ![
+                'UNSUPPORTED_CAPABILITY',
+                'ROOM_MESSAGE_RESERVED',
+                'ROOM_EVENT_UNAVAILABLE',
+                'ROOM_REPLAY_REFUSED',
+                'NOT_AUTHORIZED',
+              ].includes(error.code)
             )
               throw error;
-            await host.notice(
-              `Room message ${event.messageId} was not submitted: ${error.message}`
-            );
+            const noticeKey = JSON.stringify([event.roomId, event.messageId, 'delivery']);
+            const lastNotice = noticeAttempts.get(noticeKey);
+            if (
+              error.code === 'ROOM_EVENT_UNAVAILABLE' &&
+              lastNotice !== undefined &&
+              performance.now() - lastNotice < 1000
+            )
+              continue;
+            if (!localDeliveryNotices.has(noticeKey)) {
+              await host.notice(
+                `Room message ${event.messageId} was not submitted: ${error.message}. Read the room context before continuing.`
+              );
+              localDeliveryNotices.add(noticeKey);
+            }
+            if (
+              error.code === 'ROOM_EVENT_UNAVAILABLE' &&
+              options.roomConnection &&
+              rooms!
+                .unreportedFailures('delivery')
+                .some(
+                  (pending) =>
+                    pending.roomId === event.roomId && pending.messageId === event.messageId
+                )
+            ) {
+              noticeAttempts.set(noticeKey, performance.now());
+              try {
+                await requestOnce(
+                  `${sessionPath}/room-failure`,
+                  {
+                    ...hostLease,
+                    connection_id: options.roomConnection.connectionId,
+                    room_id: event.roomId,
+                    message_id: event.messageId,
+                    reason: 'delivery',
+                  },
+                  AbortSignal.timeout(5000)
+                );
+                await rooms!.markFailureNotified(event, 'delivery');
+              } catch (noticeError) {
+                console.error(
+                  'Could not report the unverified message to the room:',
+                  String(noticeError)
+                );
+                if (noticeError instanceof RequestError && noticeError.code === 'HOST_NOT_OWNER')
+                  throw noticeError;
+                if (!(noticeError instanceof RequestError)) continue;
+              }
+            }
           }
           await rooms!.acknowledge(event);
         }
@@ -481,8 +593,42 @@ export async function runSharedHost(
       }
       await delay(250, undefined, { signal: executionSignal });
     }
+    if (failure) throw failure;
   } catch (error) {
-    if (!signal.aborted) failure ??= error;
+    const reason = failure ?? stopped.signal.reason ?? error;
+    if (reason instanceof Error && 'code' in reason && reason.code === 'HOST_NOT_OWNER') {
+      const pending = (rooms?.pending() ?? []).map(({ roomId, messageId }) => ({
+        roomId,
+        messageId,
+      }));
+      let cause: unknown = reason;
+      let cleanupFailed = false;
+      try {
+        await stopExecution();
+      } catch (cleanupError) {
+        cleanupFailed = true;
+        cause = new AggregateError(
+          [reason, cleanupError],
+          'Ownership was lost and provider cleanup failed.'
+        );
+      }
+      failure = new SharedHostFencedError(pending, cause, cleanupFailed);
+      console.error(failure);
+      await HostedSession.markFenced(options.root);
+    } else if (!signal.aborted) failure ??= reason;
+    if (starting && !executionSignal.aborted && delivery) {
+      try {
+        const events = await Journal.read(join(options.root, 'events.jsonl'), (value) =>
+          serverEventSchema.parse(value)
+        );
+        for (const event of events.filter((event) => event.sequence > delivery!.cursor))
+          await delivery.capture(event);
+        await upload(false);
+      } catch (reportError) {
+        console.error('Could not report provider startup failure to Switch:', String(reportError));
+      }
+    }
+    if (starting && !executionSignal.aborted) await reportRoomFailures('startup');
   } finally {
     stopped.abort();
     await heartbeat;

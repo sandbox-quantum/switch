@@ -546,6 +546,7 @@ it('enables managed controls for a retained watcher from an older worker image',
 it('does not invalidate credentials when provider readiness is inconclusive', async () => {
   const input = await fixture();
   input.spec.provider.credential.refresh = true;
+  await rm(input.providerCredential);
   await writeFile(input.specPath, JSON.stringify(input.spec));
   const request = vi.fn(
     async () =>

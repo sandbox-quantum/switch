@@ -8,7 +8,7 @@ import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
-import { registerAppScheme, setupAppProtocol } from './app/protocol';
+import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
 import { agentHookService } from './core/agent-hooks/agent-hook-service';
 import { reapOrphanedAgentRuntimes } from './core/agent-runtime/reap-orphaned-runtimes';
@@ -171,7 +171,21 @@ void app.whenReady().then(async () => {
     log.error('Failed to start control API service:', e);
   });
 
-  registerRPCRouter(rpcRouter, ipcMain, withRPCLogContext);
+  const rendererURL = new URL(
+    import.meta.env.DEV ? process.env.ELECTRON_RENDERER_URL! : APP_ORIGIN
+  );
+  registerRPCRouter(
+    rpcRouter,
+    ipcMain,
+    (event) => {
+      const contents = getMainWindow()?.webContents;
+      if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame)
+        return false;
+      const senderURL = new URL(event.senderFrame.url);
+      return senderURL.protocol === rendererURL.protocol && senderURL.host === rendererURL.host;
+    },
+    withRPCLogContext
+  );
 
   void reconcileResourceSampler();
 

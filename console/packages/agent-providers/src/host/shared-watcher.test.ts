@@ -2,10 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type * as Runtime from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ensureSharedProcess } from './launch';
 import { sharedConfigSchema } from './shared-config';
-import { replaceSupersededSessions, SharedWatchAssignments } from './shared-watcher';
+import {
+  replaceSupersededSessions,
+  runSharedWatcher,
+  SharedWatchAssignments,
+} from './shared-watcher';
 
 const paths = vi.hoisted(() => ({ root: '' }));
 const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
@@ -14,6 +19,20 @@ vi.mock('./launch', () => ({
   sharedSessionsBase: () => paths.root,
   liveSupervisor: (root: string) => Promise.resolve(supervisors.get(root) ?? null),
   ensureSharedProcess: vi.fn(),
+}));
+type StreamDeps = Pick<
+  Runtime.SwitchEventStreamDeps,
+  'startCursor' | 'signal' | 'onEvent' | 'onGap'
+>;
+const streams = vi.hoisted(() => [] as StreamDeps[]);
+vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof Runtime>()),
+  SwitchEventStream: class {
+    constructor(deps: StreamDeps) {
+      streams.push(deps);
+    }
+    start() {}
+  },
 }));
 const roots: string[] = [];
 afterEach(async () => {
@@ -97,8 +116,8 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
     await writeFile(join(returnedRoot, 'room-inbox.jsonl'), '{');
     await expect(
       restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
-    ).rejects.toThrow('incomplete record');
-    expect(restarted.cursor).toBe(10);
+    ).resolves.toEqual(returned);
+    expect(restarted.cursor).toBe(11);
   }
 );
 
@@ -138,7 +157,7 @@ function template(root: string) {
   });
 }
 
-it('resumes at the server head after its numbering restarts, keeping room sessions', async () => {
+it('forgets its saved position after the server numbering restarts, keeping room sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-'));
   roots.push(root);
   paths.root = root;
@@ -172,6 +191,116 @@ it('resumes at the server head after its numbering restarts, keeping room sessio
     before.session.sessionId,
     after.session.sessionId,
   ]);
+});
+
+async function watcherRoot(prefix: string) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  roots.push(root);
+  paths.root = join(root, 'sessions');
+  streams.length = 0;
+  vi.mocked(ensureSharedProcess).mockClear();
+  const config = template(root);
+  config.execution = {
+    credentialsPath: join(root, 'credentials.json'),
+    inheritEnv: [],
+    mcpRuntime: 'runtime',
+    codexConfig: '',
+    skill: '',
+    context: '',
+  };
+  await writeFile(
+    config.execution.credentialsPath,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.test',
+        SWITCH_API_TOKEN: 'placeholder',
+        SWITCH_AGENT_ID: config.session.agentId,
+      },
+    })
+  );
+  await writeFile(join(root, 'watch.json'), JSON.stringify({ enabled: true }));
+  await writeFile(join(root, 'config.json'), JSON.stringify(config));
+  return { root, config };
+}
+
+async function startWatcher(root: string, config: ReturnType<typeof template>) {
+  const stop = new AbortController();
+  const watching = runSharedWatcher(root, config, stop.signal, {
+    build: 'build',
+    start: vi.fn(),
+    stop: vi.fn(),
+  });
+  await vi.waitFor(() => expect(streams).toHaveLength(1));
+  return async () => {
+    stop.abort();
+    await watching;
+  };
+}
+
+it('opens the stream at the oldest retained event when its journal is empty', async () => {
+  const { root, config } = await watcherRoot('shared-watch-empty-');
+  const stopWatcher = await startWatcher(root, config);
+  await stopWatcher();
+
+  expect(streams[0]!.startCursor).toBe(0);
+});
+
+it('restart gap re-reads the retained backlog once from 0, without starting an assigned message twice', async () => {
+  const { root, config } = await watcherRoot('shared-watch-replay-');
+  const original = await (
+    await SharedWatchAssignments.open(root)
+  ).assign(config, { sequence: 9, roomId: 'room', messageId: 'wake' });
+  const stopWatcher = await startWatcher(root, config);
+  expect(streams[0]!.startCursor).toBe(9);
+
+  await streams[0]!.onGap({
+    fromSequence: 2,
+    resumedAt: 2,
+    reason: 'the server restarted since your last connection',
+    cursorReset: true,
+  });
+  expect(streams).toHaveLength(2);
+  expect(streams[1]!.startCursor).toBe(0);
+  expect(streams[0]!.signal.aborted).toBe(true);
+  expect(streams[1]!.signal.aborted).toBe(false);
+
+  await streams[1]!.onEvent({
+    type: 'message',
+    room_id: 'room',
+    sequence: 1,
+    payload: {
+      addressed: true,
+      sender: '@user:example.test',
+      sender_name: 'User',
+      message_id: 'wake',
+      body: 'wake up',
+      timestamp: 0,
+    },
+  });
+  await stopWatcher();
+
+  const calls = vi.mocked(ensureSharedProcess).mock.calls;
+  expect(calls).toHaveLength(2);
+  expect(new Set(calls.map((call) => call[0].config.session.sessionId))).toEqual(
+    new Set([original.session.sessionId])
+  );
+  expect((await SharedWatchAssignments.open(root)).sessions()).toHaveLength(1);
+});
+
+it('other gaps do not replay', async () => {
+  const { root, config } = await watcherRoot('shared-watch-gap-');
+  const stopWatcher = await startWatcher(root, config);
+
+  await streams[0]!.onGap({
+    fromSequence: 2,
+    resumedAt: 4,
+    reason: 'events expired',
+    cursorReset: false,
+  });
+  await streams[0]!.onGap({ fromSequence: 2, reason: 'events were missed' });
+  await stopWatcher();
+
+  expect(streams).toHaveLength(1);
 });
 
 it('restarts only the live sessions of this agent left on a superseded build', async () => {

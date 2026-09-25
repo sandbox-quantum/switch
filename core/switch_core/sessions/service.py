@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import get_args
 
@@ -28,6 +29,7 @@ from switch_core.db.models import (
     ExternalUserClaim,
     HostedLaunch,
     MediaBlob,
+    Message,
     RoleLease,
     Room,
     RoomRole,
@@ -39,6 +41,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.delivery.replay import RoomReplayUnavailable, replay_room_event
 from switch_core.sessions.attachments import (
     MAX_ATTACHMENTS,
     attachment_metadata,
@@ -379,7 +382,7 @@ class SessionAuthority:
                 )
             if row.agent_id != agent_id or row.host_id != host_id:
                 raise SessionError(
-                    "NOT_AUTHORIZED", "Recovery belongs to another host."
+                    "HOST_NOT_OWNER", "Recovery belongs to another host."
                 )
             if row.recovery.get("operation_id") == operation_id:
                 if (
@@ -644,6 +647,7 @@ class SessionAuthority:
         missed_count: int,
         gap_reason: str | None,
         buffer: EventBuffer,
+        live_agent_ids: Callable[[], set[str]],
     ) -> CommandStatus:
         command_id = str(
             uuid.uuid5(
@@ -689,13 +693,27 @@ class SessionAuthority:
                 return CommandStatus.model_validate(previous.status)
             try:
                 candidates = buffer.read_from(agent_id, sequence - 1, limit=1)
-            except CursorExpiredError as error:
-                raise SessionError(
-                    "ROOM_EVENT_UNAVAILABLE",
-                    "The room event is no longer retained; it was not submitted.",
-                ) from error
+            except CursorExpiredError:
+                candidates = []
             entry = candidates[0] if candidates else None
-            if entry is None or entry.seq != sequence or entry.room_id != room_id:
+            if entry is not None and entry.seq == sequence and entry.room_id != room_id:
+                raise SessionError(
+                    "NOT_AUTHORIZED", "The retained sequence belongs to another room."
+                )
+            if entry is None or entry.seq != sequence:
+                try:
+                    entry = await replay_room_event(
+                        db,
+                        agent,
+                        room,
+                        message_id,
+                        sequence,
+                        await self._now(db),
+                        live_agent_ids,
+                    )
+                except RoomReplayUnavailable as error:
+                    raise SessionError(error.code, str(error)) from error
+            if entry is None:
                 raise SessionError(
                     "ROOM_EVENT_UNAVAILABLE", "The verified room event is unavailable."
                 )
@@ -1354,6 +1372,51 @@ class SessionAuthority:
             )
             record.room_control_followup = None
 
+    async def failure_notice_thread(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        connection_id: str,
+        room_id: str,
+        message_id: str,
+        connections: ConnectionRegistry,
+    ) -> str | None:
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            await self._host(db, agent_id, session_id, host_id, epoch)
+            agent = await db.get(Agent, agent_id)
+            connection = connections.get(connection_id)
+            if (
+                agent is None
+                or connection is None
+                or connection.agent_id != agent_id
+                or connection.scope != "single"
+                or not connection.is_alive(time.monotonic())
+                or room_id not in connection.rooms
+                or await db.get(ClientRoom, (agent.client_id, room_id)) is None
+            ):
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "The failure notice room is not on this agent's live connection.",
+                )
+            room = await db.get(Room, room_id)
+            if room is None or room.archived_at is not None:
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "The failure notice room is archived or unavailable.",
+                )
+            message = await db.scalar(
+                select(Message).where(
+                    Message.transport_event_id == message_id, Message.room_id == room_id
+                )
+            )
+            if message is None:
+                raise SessionError(
+                    "NOT_AUTHORIZED", "The failure notice message is not in this room."
+                )
+            return message.thread_root_event_id
+
     async def bind_connection(
         self,
         agent_id: str,
@@ -1654,7 +1717,7 @@ class SessionAuthority:
     ) -> SdkSession:
         row = await self._locked(db, session_id)
         if row.agent_id != agent_id or row.host_id != host_id:
-            raise SessionError("NOT_AUTHORIZED", "This host does not own the session.")
+            raise SessionError("HOST_NOT_OWNER", "This host does not own the session.")
         if row.epoch != epoch:
             raise SessionError("STALE_EPOCH", "Session generation changed.")
         return row
