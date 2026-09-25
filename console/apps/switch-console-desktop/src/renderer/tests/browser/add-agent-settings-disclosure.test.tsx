@@ -31,12 +31,12 @@ vi.hoisted(() => {
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
   rpc: {
-    workspaces: {
-      listRooms: () => Promise.resolve([]),
-      listRoomGroups: () => Promise.resolve([]),
-      listExternalUsers: () => Promise.resolve([]),
-      listAgents: () => Promise.resolve([]),
-      listBridges: () => Promise.resolve(remote.bridges),
+    switchServers: {
+      listRemoteRooms: () => Promise.resolve([]),
+      listRemoteRoomGroups: () => Promise.resolve([]),
+      listRemoteExternalUsers: () => Promise.resolve([]),
+      listRemoteAgents: () => Promise.resolve([]),
+      listRemoteBridges: () => Promise.resolve(remote.bridges),
       listMyIdentities: () => Promise.resolve(remote.identities),
     },
   },
@@ -72,7 +72,7 @@ function Panel() {
   return (
     <AgentSettingsSection
       form={form}
-      workspaceId="ws-1"
+      serverId="srv-1"
       onAddServer={() => {}}
       onOpenMessagingApps={() => {}}
     />

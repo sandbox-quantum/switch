@@ -68,7 +68,7 @@ export async function searchDirectoryOnServer(
  */
 export async function claimIdentityOnServer(
   server: SwitchServer,
-  params: Omit<ClaimIdentityParams, 'workspaceId'>
+  params: Omit<ClaimIdentityParams, 'serverId'>
 ): Promise<ClaimIdentityResult> {
   try {
     const claimed = await claimBridgeIdentity(server, params.bridgeId, {

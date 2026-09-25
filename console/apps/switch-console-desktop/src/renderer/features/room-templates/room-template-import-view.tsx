@@ -12,7 +12,6 @@ import {
   type TemplateAccess,
   visibilityOf,
 } from '@renderer/features/templates/template-visibility';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -289,8 +288,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       const kind = yamlText !== initialYaml ? await rpc.agentTemplates.kind({ yamlText }) : null;
       // Each field is sent only when changed, so saving one cannot put back
       // another that someone else changed meanwhile.
-      const saved = await rpc.workspaces.updateTemplate({
-        workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+      const saved = await rpc.switchServers.updateTemplate({
+        serverId,
         templateId: editingTemplate.id,
         ...(name.trim() !== editingTemplate.name.trim() ? { name: name.trim() } : {}),
         ...(description.trim() !== editingTemplate.description.trim()

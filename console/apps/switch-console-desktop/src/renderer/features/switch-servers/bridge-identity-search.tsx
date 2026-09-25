@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { rpc } from '@renderer/lib/ipc';
@@ -39,7 +38,7 @@ const MIN_QUERY_LENGTH = 2;
  * written first.
  */
 export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
-  workspaceId,
+  serverId,
   bridgeId,
   bridgeDisplayName,
   platform,
@@ -47,9 +46,9 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   autoFocus,
   onClaimed,
 }: {
-  workspaceId: string;
+  serverId: string;
   bridgeId: string;
-  /** The bridge being searched — two connections on the same platform can
+  /** The workspace being searched — two connections on the same platform can
    * exist, and only the name tells them apart. */
   bridgeDisplayName: string;
   /** The platform as a person names it, for prose about what is searchable. */
@@ -60,24 +59,21 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
 }) {
   const { setCloseGuard } = useModalContext();
   const queryClient = useQueryClient();
-  const serverId = workspacesStore.serverIdFor(workspaceId);
-  const currentUserId = serverId
-    ? (switchServersStore.statusFor(serverId)?.user?.id ?? null)
-    : null;
+  const currentUserId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
 
   const [search, setSearch] = useState('');
   const [claiming, setClaiming] = useState<string | null>(null);
   const [releasing, setReleasing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { refresh: refreshIdentities } = useMyIdentities(workspaceId || null);
+  const { refresh: refreshIdentities } = useMyIdentities(serverId || null);
 
   const debouncedQuery = useDebounce(search.trim(), SEARCH_DEBOUNCE_MS);
-  const searchable = !!workspaceId && debouncedQuery.length >= MIN_QUERY_LENGTH;
+  const searchable = !!serverId && debouncedQuery.length >= MIN_QUERY_LENGTH;
   const directoryQuery = useQuery({
-    queryKey: ['bridge-directory', workspaceId, bridgeId, debouncedQuery],
+    queryKey: ['bridge-directory', serverId, bridgeId, debouncedQuery],
     queryFn: () =>
-      rpc.workspaces.searchBridgeDirectory({ workspaceId, bridgeId, query: debouncedQuery }),
+      rpc.switchServers.searchBridgeDirectory({ serverId, bridgeId, query: debouncedQuery }),
     enabled: searchable,
   });
 
@@ -86,8 +82,8 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
     setCloseGuard(true);
     setError(null);
     try {
-      const result = await rpc.workspaces.claimBridgeIdentity({
-        workspaceId,
+      const result = await rpc.switchServers.claimBridgeIdentity({
+        serverId,
         bridgeId,
         externalUserId: person.externalUserId,
         username: person.username,
@@ -115,16 +111,14 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
     setCloseGuard(true);
     setError(null);
     try {
-      await rpc.workspaces.releaseBridgeIdentity({
-        workspaceId,
+      await rpc.switchServers.releaseBridgeIdentity({
+        serverId,
         bridgeId,
         identityId: person.knownExternalUserId,
         userId: currentUserId,
       });
       refreshIdentities();
-      await queryClient.invalidateQueries({
-        queryKey: ['bridge-directory', workspaceId, bridgeId],
-      });
+      await queryClient.invalidateQueries({ queryKey: ['bridge-directory', serverId, bridgeId] });
     } catch (cause) {
       setError(failureText(cause, 'Could not unlink this account.'));
     } finally {

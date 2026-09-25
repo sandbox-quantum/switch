@@ -1,6 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -141,7 +140,6 @@ export class SwitchServersStore {
       const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.switchServers.getActiveServerId(),
-        workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
@@ -333,7 +331,6 @@ export class SwitchServersStore {
       const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.switchServers.getActiveServerId(),
-        workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
@@ -419,7 +416,6 @@ export class SwitchServersStore {
       const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.switchServers.getActiveServerId(),
-        workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
@@ -444,7 +440,6 @@ export class SwitchServersStore {
     this.clearError();
     try {
       await rpc.switchServers.setActiveServer(serverId);
-      await workspacesStore.refresh();
       runInAction(() => {
         this.activeServerId = serverId;
       });

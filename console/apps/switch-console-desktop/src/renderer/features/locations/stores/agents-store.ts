@@ -97,25 +97,6 @@ export class AgentsStore {
     return matching.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /**
-   * This install's agents in a given workspace — the ones the room views may
-   * list and offer.
-   *
-   * The workspace-addressed counterpart of {@link agentsOnServer}, and what a
-   * view scoped to a workspace asks for: its rooms and their members are that
-   * workspace's, and a server hosting several would otherwise offer agents from
-   * all of them.
-   */
-  agentsInWorkspace(workspaceId: string): Agent[] {
-    const matching: Agent[] = [];
-    for (const agents of this.byLocation.values()) {
-      for (const agent of agents) {
-        if (agent.workspaceId === workspaceId && agent.switchAgentId) matching.push(agent);
-      }
-    }
-    return matching.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
   /** A location's agents that belong to one server — what the sidebar renders
    *  under that server. Agents in the same directory registered elsewhere are not
    *  this server's to show. */

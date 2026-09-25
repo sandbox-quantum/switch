@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { Check, Link2, MessageSquare, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -44,15 +43,13 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
   // to and give the user two Backs meaning different things.
   const [linking, setLinking] = useState<RemoteBridge | null>(null);
 
-  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', workspaceId],
-    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-bridges', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
   });
-  const { identities } = useMyIdentities(workspaceId);
+  const { identities } = useMyIdentities(serverId);
 
-  if (linking && workspaceId !== null) {
+  if (linking) {
     return (
       <>
         <WizardStepHeader
@@ -66,7 +63,7 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
               Find yourself in {linking.displayName} and tell Switch that account is you.
             </p>
             <BridgeIdentitySearch
-              workspaceId={workspaceId}
+              serverId={serverId}
               bridgeId={linking.id}
               bridgeDisplayName={linking.displayName}
               platform={bridgePlatformLabel(linking.type)}

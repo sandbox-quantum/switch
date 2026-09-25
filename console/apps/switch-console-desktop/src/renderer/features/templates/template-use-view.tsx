@@ -28,17 +28,13 @@ import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
-import {
-  useWorkspaceAgents,
-  workspaceAgentsQueryKey,
-} from '@renderer/lib/stores/use-workspace-agents';
+import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -123,7 +119,7 @@ type UsePageTemplate = {
   warnings: string[];
 };
 
-async function loadUsePageTemplate(workspaceId: string, params: Params): Promise<UsePageTemplate> {
+async function loadUsePageTemplate(serverId: string, params: Params): Promise<UsePageTemplate> {
   let name: string;
   let yamlText: string;
   let instructions: string | null = null;
@@ -136,19 +132,13 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
       instructions = bundled.instructions;
       origin = { id: bundled.id, name: bundled.name, source: 'bundled' };
     } else {
-      const detail = await rpc.workspaces.getTemplateDetail({
-        workspaceId,
+      const detail = await rpc.switchServers.getTemplateDetail({
+        serverId,
         templateId: params.templateId,
       });
       name = detail.name;
       yamlText = detail.definition;
-      const serverId = workspacesStore.serverIdFor(workspaceId);
-      origin = {
-        id: detail.id,
-        name: detail.name,
-        source: 'server',
-        ...(serverId ? { serverId } : {}),
-      };
+      origin = { id: detail.id, name: detail.name, source: 'server', serverId };
     }
   } else if (params.yamlText) {
     name = params.sourceName?.replace(/(\.template)?\.ya?ml$/i, '') ?? 'Pasted template';
@@ -168,7 +158,7 @@ async function loadUsePageTemplate(workspaceId: string, params: Params): Promise
   // Without the schema the form is built from the Console's own parse and
   // the server validates on create, so an older server without the schema
   // endpoint still gets a working page.
-  const schema = await rpc.workspaces.fetchTemplateSchema(workspaceId).catch(() => null);
+  const schema = await rpc.switchServers.fetchTemplateSchema(serverId).catch(() => null);
   const parsed = forForm
     ? await rpc.roomTemplates.parse({ yamlText: forForm, schema: schema ?? undefined })
     : null;
@@ -247,7 +237,6 @@ type SlotSetup = {
 const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
-  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
@@ -266,7 +255,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // What the server returned for the room, kept so that a step failing after
   // it does not make Retry create the room a second time.
   const createdRoom = useRef<Awaited<
-    ReturnType<typeof rpc.workspaces.createRoomFromTemplate>
+    ReturnType<typeof rpc.switchServers.createRoomFromTemplate>
   > | null>(null);
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
   const [createError, setCreateError] = useState<string | null>(null);
@@ -287,18 +276,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // render would reset the form.
   const { templateId, yamlText: givenYaml, sourceName } = params;
   useEffect(() => {
-    // No workspace is an answer, not a wait. Returning with neither a template
-    // nor an error leaves the page spinning forever, and Deploy reading
-    // "Loading…" for something nobody is fetching.
-    if (workspaceId === null) {
-      setLoaded(null);
-      setLoadError('This server has no workspace yet, so this template cannot be read.');
-      return;
-    }
     let cancelled = false;
     setLoaded(null);
     setLoadError(null);
-    loadUsePageTemplate(workspaceId, { serverId, templateId, yamlText: givenYaml, sourceName })
+    loadUsePageTemplate(serverId, { serverId, templateId, yamlText: givenYaml, sourceName })
       .then((result) => {
         if (cancelled) return;
         setLoaded(result);
@@ -324,7 +305,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     return () => {
       cancelled = true;
     };
-  }, [serverId, workspaceId, templateId, givenYaml, sourceName]);
+  }, [serverId, templateId, givenYaml, sourceName]);
 
   const parsed = loaded?.parsed ?? null;
   // In the singular `agent:` form the room refers to the agent as `{agent}`.
@@ -383,23 +364,20 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const directoryParam = unboundOfType('directory');
 
   // ── Server lists (pickers, identities, bridges) ─────────────────────────
-  const agents = useWorkspaceAgents(workspaceId);
+  const agents = useRemoteAgents(serverId);
   const roomsQuery = useQuery({
-    queryKey: ['remote-rooms', workspaceId],
-    queryFn: () => rpc.workspaces.listRooms(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-rooms', serverId],
+    queryFn: () => rpc.switchServers.listRemoteRooms(serverId),
   });
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', workspaceId],
-    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-bridges', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
   });
   const knownUsersQuery = useQuery({
-    queryKey: ['remote-external-users', workspaceId],
-    queryFn: () => rpc.workspaces.listExternalUsers(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-external-users', serverId],
+    queryFn: () => rpc.switchServers.listRemoteExternalUsers(serverId),
   });
-  const { identities, refresh: refreshIdentities } = useMyIdentities(workspaceId);
+  const { identities, refresh: refreshIdentities } = useMyIdentities(serverId);
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
   const allowedHosts = useAllowedHosts(serverId);
   const hostLabel = useCallback(
@@ -430,20 +408,19 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     templateBridge !== null &&
     identities !== null &&
     creatorIdentity === null;
-  const linkAccount =
-    templateBridge && workspaceId !== null
-      ? () =>
-          showModal('claimIdentityModal', {
-            workspaceId,
-            bridgeId: templateBridge.id,
-            onSuccess: () => refreshIdentities(),
-          })
-      : null;
+  const linkAccount = templateBridge
+    ? () =>
+        showModal('claimIdentityModal', {
+          serverId,
+          bridgeId: templateBridge.id,
+          onSuccess: () => refreshIdentities(),
+        })
+    : null;
   const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
 
   const lists = useMemo(
     (): EntityLists => ({
-      workspaceId,
+      serverId,
       agents: agents.data ?? [],
       agentsLoading: agents.isLoading,
       rooms: roomsQuery.data ?? [],
@@ -454,7 +431,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       bridgeId: templateBridge?.id ?? null,
     }),
     [
-      workspaceId,
+      serverId,
       agents.data,
       agents.isLoading,
       roomsQuery.data,
@@ -763,19 +740,19 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           }
           return next;
         });
-        await rpc.workspaces.updateAddressingPolicy({
-          workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+        await rpc.switchServers.updateAddressingPolicy({
+          serverId,
           agentId: target.id,
           policy: { rules },
         });
       }
-      await queryClient.invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) });
+      await queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
     } catch (e) {
       toast({ title: failureText(e, 'Could not update the agents.'), variant: 'destructive' });
     } finally {
       setAllowingHandoffs(false);
     }
-  }, [agents.data, handoffBlocked, serverId, workspaceId, queryClient]);
+  }, [agents.data, handoffBlocked, serverId, queryClient]);
 
   // ── Create ──────────────────────────────────────────────────────────────
   const setSlot = (i: number, patch: Partial<AgentSlot>) =>
@@ -854,8 +831,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         // must be written as the open policy; leaving the default would keep it closed.
         if (switchAgentId && slot.entry.addressing) {
           setSlot(i, { step: 'policy' });
-          await rpc.workspaces.updateAddressingPolicy({
-            workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+          await rpc.switchServers.updateAddressingPolicy({
+            serverId,
             agentId: switchAgentId,
             policy:
               slot.entry.addressing === 'owner-agents'
@@ -878,7 +855,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       // fails must not fail the run.
       await agentsStore.load().catch(() => {});
       await queryClient
-        .invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) })
+        .invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) })
         .catch(() => {});
     }
     // A recent is used again from its own text, so a bundled template whose
@@ -934,8 +911,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       setRoomStatus('creating');
       try {
         for (const [roomId, ids] of joinsByRoom) {
-          await rpc.workspaces.addRoomAgents({
-            workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+          await rpc.switchServers.addRoomAgents({
+            serverId,
             roomId,
             agentIds: [...new Set(ids)],
             direction: 'agents_to_room',
@@ -1018,11 +995,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       }
       const result =
         createdRoom.current ??
-        (await rpc.workspaces.createRoomFromTemplate(
-          workspacesStore.requireSoleIdOnServer(serverId),
-          coreYaml,
-          inputs
-        ));
+        (await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs));
       createdRoom.current = result;
       setRoomStatus('created');
       // The room exists whether or not the sidebar refreshes.

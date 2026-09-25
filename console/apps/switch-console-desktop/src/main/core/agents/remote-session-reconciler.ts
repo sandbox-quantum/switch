@@ -6,7 +6,7 @@ import { sessionWasDeleted } from '@main/core/sessions/deleted-sessions';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
-import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -73,8 +73,9 @@ class RemoteSessionReconciler {
         this.stop(agentId);
         return;
       }
-      if (!agent.workspaceId) throw new Error('This linked agent has no workspace configured.');
-      const workspaceId = agent.workspaceId;
+      if (!agent.serverId) throw new Error('This linked agent has no Switch server configured.');
+      const server = await getServer(agent.serverId);
+      if (!server) throw new Error('The session discovery server is missing.');
       const remote: unknown[] = await listHostSessions(agentId);
       const failures: string[] = [];
       const local = new Map(
@@ -144,7 +145,7 @@ class RemoteSessionReconciler {
             id: session.sessionId,
             agentId,
             title: roomId
-              ? `Session for ${(await withWorkspaceSession(workspaceId, (server) => fetchRoomDetail(server, roomId))).name}`
+              ? `Session for ${(await fetchRoomDetail(server, roomId)).name}`
               : 'Shared session',
             attach: false,
             startSource: 'adopted',

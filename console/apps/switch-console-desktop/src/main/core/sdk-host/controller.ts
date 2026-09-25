@@ -29,10 +29,10 @@ export const sdkHostController = createRPCController({
   agentLogs: sharedAgentLogs,
   manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>
     manageAgentSidecar(agentId, z.enum(['update', 'restart', 'stop', 'start']).parse(action)),
-  workspaceForAgent: async (agentId: string) => {
+  serverForAgent: async (agentId: string) => {
     const agent = await getAgentById(agentId);
-    if (!agent?.workspaceId) throw new Error('This agent has no Switch workspace.');
-    return agent.workspaceId;
+    if (!agent?.serverId) throw new Error('This agent has no Switch server.');
+    return agent.serverId;
   },
   transcriptSource,
   transcriptOpen: (agentId: string, sessionId: string) => openTranscript(agentId, sessionId),

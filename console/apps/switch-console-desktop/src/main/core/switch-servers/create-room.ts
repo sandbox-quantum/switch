@@ -33,7 +33,7 @@ function isBridgeFailure(detail: string): boolean {
  */
 export async function createRoomOnServer(
   server: SwitchServer,
-  params: Omit<CreateRoomParams, 'workspaceId'>
+  params: Omit<CreateRoomParams, 'serverId'>
 ): Promise<CreateRoomResult> {
   try {
     const room = await createRoom(server, {

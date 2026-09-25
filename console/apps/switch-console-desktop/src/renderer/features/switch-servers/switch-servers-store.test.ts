@@ -25,9 +25,6 @@ vi.mock('@renderer/lib/ipc', () => ({
     },
   },
 }));
-vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { refresh: vi.fn().mockResolvedValue(undefined) },
-}));
 vi.mock('@renderer/features/remote-hosts/host-reachability-store', () => ({
   hostReachabilityStore: { isBlocked: (sshHost: string) => blockedHosts.has(sshHost) },
 }));
