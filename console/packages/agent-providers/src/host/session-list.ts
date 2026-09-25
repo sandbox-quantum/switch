@@ -72,7 +72,8 @@ export function readHostSessions(
     try {
       config = readJson(nodePath.join(root, 'config.json')) as HostRecord;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
       throw error;
     }
     if (!config || !config.session || config.session.agentId !== agentId) continue;

@@ -295,7 +295,8 @@ export async function startLocalWatcher(
               written,
               signal,
               consoleSupervision,
-              localWatcherControl(written.session.agentId)
+              localWatcherControl(written.session.agentId),
+              null
             ),
           'Local room watcher stopped',
           true

@@ -106,7 +106,7 @@ async function main(): Promise<void> {
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+        runSharedWatcher(root, config, stop.signal, supervision, control, null).finally(() =>
           stop.abort()
         ),
         serveControl(

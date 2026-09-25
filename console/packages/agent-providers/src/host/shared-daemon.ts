@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AttachmentTransfers } from './attachment-transfers';
-import { type EnsureSession, serveControl } from './control';
+import { type ControlContext, type EnsureSession, serveControl } from './control';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { fetchHostedProvider, materializeHostedProvider } from './hosted-provider';
+import { type HostedCredentials, HostedWorker } from './hosted-worker';
 import {
   detachedSupervision,
   ensureSharedProcess,
@@ -15,11 +18,68 @@ import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { SessionLinks } from './session-channel';
-import { sharedConfigSchema } from './shared-config';
+import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { hostSessionProcess } from './shared-host';
 import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
 import { WatcherControl } from './watcher-tools';
+import { readWorkerCapability } from './worker-capability';
+
+/**
+ * The provider credential Switch holds for a hosted worker's owner, applied to
+ * this process's environment, which every session host it starts inherits.
+ */
+function hostedCredentials(config: SharedHostConfig, stateRoot: string): HostedCredentials {
+  return {
+    fetch: async () => {
+      const credential = await fetchHostedProvider(config);
+      if (credential.status === 'revoked')
+        return { revoked: true, revision: null, apply: async () => {} };
+      return {
+        revoked: false,
+        revision: credential.revision,
+        apply: async () => {
+          const env = Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined
+            )
+          );
+          await materializeHostedProvider(
+            stateRoot,
+            env,
+            credential,
+            config.execution?.binaryPath ?? config.start.provider
+          );
+          for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+          Object.assign(process.env, env);
+        },
+      };
+    },
+  };
+}
+
+/** The hosted worker a bootstrapped watcher attaches as; null for any other watcher. */
+async function hostedWorker(
+  config: SharedHostConfig,
+  stateRoot: string,
+  context: ControlContext
+): Promise<HostedWorker | null> {
+  if (process.env.SWITCH_HOSTED_BOOTSTRAP !== '1') return null;
+  const bootId = process.env.SWITCH_HOST_BOOT_ID;
+  const instanceId = process.env.SWITCH_HOST_INSTANCE_ID;
+  if (!bootId || !instanceId)
+    throw new Error(
+      'A hosted watcher requires SWITCH_HOST_BOOT_ID and SWITCH_HOST_INSTANCE_ID from its bootstrap.'
+    );
+  const worker = new HostedWorker(
+    stateRoot,
+    { capability: await readWorkerCapability(stateRoot), bootId, instanceId },
+    context,
+    hostedCredentials(config, stateRoot)
+  );
+  await worker.open();
+  return worker;
+}
 
 const [root, configPath, mode] = process.argv.slice(2);
 if (!root || !configPath)
@@ -137,26 +197,24 @@ async function main(): Promise<void> {
     const control = new WatcherControl();
     const transfers = new AttachmentTransfers(resolve(root));
     await transfers.clear();
+    const context: ControlContext = {
+      agentId: config.session.agentId,
+      links,
+      ensure,
+      watcher: control,
+      transfers,
+    };
+    const hosted = await hostedWorker(config, resolve(root), context);
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
+        runSharedWatcher(root, config, stop.signal, supervision, control, hosted).finally(() =>
           stop.abort()
         ),
-        serveControl(
-          resolve(root),
-          {
-            agentId: config.session.agentId,
-            links,
-            ensure,
-            watcher: control,
-            transfers,
-          },
-          stop.signal
-        ),
+        serveControl(resolve(root), context, stop.signal),
       ]);
     } finally {
       await supervision.close();
@@ -221,17 +279,23 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (
-    root !== '--probe' &&
-    root !== '--models' &&
-    mode !== '--supervise' &&
-    mode !== '--watch-supervise'
-  ) {
-    await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
-    await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-      message: error instanceof Error ? error.message : String(error),
-    });
+  if (error instanceof WorkerObsoleteError) {
+    // Not a failure of this bundle's to record: the worker service waits for a current one.
+    console.error(error.message);
+    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
+  } else {
+    if (
+      root !== '--probe' &&
+      root !== '--models' &&
+      mode !== '--supervise' &&
+      mode !== '--watch-supervise'
+    ) {
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    console.error(error);
+    process.exitCode = 1;
   }
-  console.error(error);
-  process.exitCode = 1;
 }
