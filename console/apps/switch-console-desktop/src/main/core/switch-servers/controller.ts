@@ -99,10 +99,6 @@ import {
   getCloudProviderConnection,
   connectCloudProvider,
   disconnectCloudProvider,
-  startGitHubConnection,
-  getGitHubFlow,
-  confirmGitHubConnection,
-  cancelGitHubConnection,
   disconnectGitHub,
 } from './gateway-client';
 import {
@@ -140,6 +136,12 @@ import {
   updateRoom,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
+import {
+  startGitHubBrowserFlow,
+  getGitHubBrowserFlow,
+  confirmGitHubBrowserFlow,
+  cancelGitHubBrowserFlow,
+} from './github-browser-flow';
 import { claimIdentityOnServer, searchDirectoryOnServer } from './identities';
 import {
   getLocalProviderSignIn,
@@ -418,23 +420,16 @@ export const switchServersController = createRPCController({
 
   getGitHubConnection: async (serverId: string) =>
     getGitHubConnection(await requireReachableServer(serverId)),
-  startGitHubConnection: async (serverId: string) => {
-    const server = await requireReachableServer(serverId);
-    const flow = await startGitHubConnection(server);
-    try {
-      await appService.openExternal(flow.url);
-    } catch {
-      await cancelGitHubConnection(server, flow.id);
-      throw new Error('Could not open GitHub in your browser.');
-    }
-    return flow.id;
-  },
+  startGitHubConnection: async (serverId: string) =>
+    startGitHubBrowserFlow(await requireReachableServer(serverId), (url) =>
+      appService.openExternal(url)
+    ),
   getGitHubFlow: async (serverId: string, id: string) =>
-    getGitHubFlow(await requireReachableServer(serverId), id),
+    getGitHubBrowserFlow(await requireReachableServer(serverId), id),
   confirmGitHubConnection: async (serverId: string, id: string) =>
-    confirmGitHubConnection(await requireReachableServer(serverId), id),
+    confirmGitHubBrowserFlow(await requireReachableServer(serverId), id),
   cancelGitHubConnection: async (serverId: string, id: string) =>
-    cancelGitHubConnection(await requireReachableServer(serverId), id),
+    cancelGitHubBrowserFlow(await requireReachableServer(serverId), id),
   disconnectGitHub: async (serverId: string) =>
     disconnectGitHub(await requireReachableServer(serverId)),
   openGitHubInstallation: async (serverId: string) => {

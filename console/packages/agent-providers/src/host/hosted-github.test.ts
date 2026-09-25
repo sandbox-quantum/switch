@@ -197,3 +197,38 @@ it.each([
   await expect(validateGitHubCredential(token, repository)).rejects.toThrow('repository');
   expect(request).not.toHaveBeenCalled();
 });
+
+it.each([409, 503, 422])('retries a token renewal only for retryable status %s', async (status) => {
+  const root = await mkdtemp(join(tmpdir(), 'hosted-github-retry-'));
+  roots.push(root);
+  const path = join(root, 'switch.json');
+  await writeFile(
+    path,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.com/api/agent',
+        SWITCH_API_TOKEN: 'synthetic-switch-credential',
+      },
+    })
+  );
+  const request = vi
+    .fn()
+    .mockResolvedValueOnce(new Response('unavailable', { status }))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          token,
+          repository: 'example/project',
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        })
+      )
+    );
+  vi.stubGlobal('fetch', request);
+  if (status === 422) {
+    await expect(renewGitHubCredential(path, 'example/project')).rejects.toThrow('Could not renew');
+    expect(request).toHaveBeenCalledTimes(1);
+  } else {
+    expect(await renewGitHubCredential(path, 'example/project')).toBe(token);
+    expect(request).toHaveBeenCalledTimes(2);
+  }
+});

@@ -26,30 +26,32 @@ export function CloudAgentRepository({
   onProviderChange,
   onSelection,
   onConnectProvider,
+  onConnectGitHub,
 }: {
   serverId: string;
   providerId: AgentProviderId;
   onProviderChange: (provider: AgentProviderId) => void;
   onSelection: (value: CloudRepositorySelection | null) => void;
   onConnectProvider: () => void;
+  onConnectGitHub: () => void;
 }) {
   const [repository, setRepository] = useState<string | null>(null);
-  const { data, error, isPending, refetch } = useQuery({
+  const provider = useQuery({
     queryKey: ['cloud-agent-connections', serverId, providerId],
-    queryFn: async () => {
-      const [claude, github] = await Promise.all([
-        rpc.switchServers.getCloudProviderConnection(serverId, providerId),
-        rpc.switchServers.getGitHubConnection(serverId),
-      ]);
-      return { claude, github };
-    },
+    queryFn: () => rpc.switchServers.getCloudProviderConnection(serverId, providerId),
     staleTime: 0,
     retry: false,
-    refetchInterval: (query) => (query.state.data?.claude.status === 'verifying' ? 2000 : false),
+    refetchInterval: (query) => (query.state.data?.status === 'verifying' ? 2000 : false),
+  });
+  const github = useQuery({
+    queryKey: ['cloud-agent-github', serverId],
+    queryFn: () => rpc.switchServers.getGitHubConnection(serverId),
+    staleTime: 0,
+    retry: false,
   });
   const repositories =
-    data?.github.status === 'connected'
-      ? data.github.installations.flatMap((installation) =>
+    github.data?.status === 'connected'
+      ? github.data.installations.flatMap((installation) =>
           installation.repositories.map((repo) => ({
             value: `${installation.id}:${repo.id}`,
             label: repo.name,
@@ -61,7 +63,7 @@ export function CloudAgentRepository({
     : repositories.length === 1
       ? repositories[0].value
       : null;
-  const connected = data?.claude.status === 'connected' || data?.claude.status === 'configured';
+  const connected = provider.data?.status === 'connected' || provider.data?.status === 'configured';
   useEffect(() => {
     const ids = selected?.split(':').map(Number);
     onSelection(connected && ids ? { installationId: ids[0], repositoryId: ids[1] } : null);
@@ -91,48 +93,67 @@ export function CloudAgentRepository({
             </SelectContent>
           </Select>
           <span className="ml-auto text-xs text-foreground-muted">
-            {data
-              ? data.claude.status === 'connected'
+            {provider.data
+              ? provider.data.status === 'connected'
                 ? 'Verified'
-                : data.claude.status === 'configured'
+                : provider.data.status === 'configured'
                   ? 'Credential saved'
-                  : data.claude.status === 'verifying'
+                  : provider.data.status === 'verifying'
                     ? 'Checking connection…'
-                    : data.claude.status === 'failed'
+                    : provider.data.status === 'failed'
                       ? 'Connection failed'
                       : 'Not connected'
               : 'Checking connection'}
           </span>
-          {data && ['not_connected', 'failed', 'verifying'].includes(data.claude.status) && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label={`Connect ${providerDisplayName(providerId)}`}
-              onClick={onConnectProvider}
-            >
-              {data.claude.status === 'verifying'
-                ? 'View'
-                : data.claude.status === 'failed'
-                  ? 'Retry'
-                  : 'Connect'}
+          {provider.error && (
+            <Button variant="outline" size="sm" onClick={onConnectProvider}>
+              Retry connection
             </Button>
           )}
+          {provider.data &&
+            ['not_connected', 'failed', 'verifying'].includes(provider.data.status) && (
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={`Connect ${providerDisplayName(providerId)}`}
+                onClick={onConnectProvider}
+              >
+                {provider.data.status === 'verifying'
+                  ? 'View'
+                  : provider.data.status === 'failed'
+                    ? 'Retry'
+                    : 'Connect'}
+              </Button>
+            )}
         </div>
       </Field>
-      {isPending && (
+      {(provider.isPending || github.isPending) && (
         <p role="status" className="flex items-center gap-2 text-sm">
           <Spinner /> Loading cloud connections…
         </p>
       )}
-      {error && (
+      {(provider.error || github.error) && (
         <div role="alert" className="space-y-2 text-sm text-destructive">
-          <p>{failureText(error, 'Could not load cloud connections.')}</p>
-          <Button variant="outline" onClick={() => void refetch()}>
+          <p>{failureText(provider.error || github.error, 'Could not load cloud connections.')}</p>
+          <Button
+            variant="outline"
+            onClick={() => {
+              void provider.refetch();
+              void github.refetch();
+            }}
+          >
             Retry
           </Button>
         </div>
       )}
-      {data && (
+      <Button variant="outline" onClick={onConnectGitHub}>
+        {github.data?.status === 'connected'
+          ? 'Manage GitHub access'
+          : github.error
+            ? 'Reconnect GitHub'
+            : 'Connect GitHub'}
+      </Button>
+      {github.data && (
         <Field>
           <FieldLabel htmlFor="cloud-agent-repository">Repository</FieldLabel>
           <Select
@@ -153,8 +174,8 @@ export function CloudAgentRepository({
             </SelectContent>
           </Select>
           <FieldDescription>
-            {data.github.status !== 'connected'
-              ? 'Connect GitHub in Switch-managed server setup to choose a repository.'
+            {github.data.status !== 'connected'
+              ? 'Connect GitHub to choose a repository.'
               : !repositories.length
                 ? 'Grant Switch access to a repository in GitHub to continue.'
                 : 'Only repositories shared with Switch on GitHub appear here.'}

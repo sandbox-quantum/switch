@@ -981,3 +981,26 @@ it('keeps a fenced session stopped before its first event and permits an explici
   expect(fixture.adapter.startSession).toHaveBeenCalledOnce();
   expect(await HostedSession.isStopped(root)).toBe(false);
 });
+
+it('passes the saved native thread to authentication before resuming', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-native-auth-'));
+  roots.push(root);
+  const fixture = setup('codex');
+  const first = await HostedSession.start(root, fixture.config, fixture.adapter);
+  await first.shutdown();
+  const authenticate = vi.fn(async (nativeSessionId: string | undefined) => {
+    expect(nativeSessionId).toBe('native');
+  });
+  fixture.adapter.startSession = vi.fn(async (input) => {
+    expect(authenticate).toHaveBeenCalledWith('native');
+    expect(input.resume).toEqual({ nativeSessionId: 'native' });
+    return { provider: 'codex', sessionId: 'session', nativeSessionId: 'native' };
+  });
+  const host = await HostedSession.start(
+    root,
+    { ...fixture.config, authenticate },
+    fixture.adapter
+  );
+  hosts.push(host);
+  expect(fixture.adapter.startSession).toHaveBeenCalledOnce();
+});

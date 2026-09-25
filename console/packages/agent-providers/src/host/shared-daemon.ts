@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { migrateCodexRollout } from '../codex/home';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { hostedRequest, runHostedControl } from './hosted-control';
 import { fetchHostedProvider, materializeHostedProvider } from './hosted-provider';
@@ -143,7 +144,7 @@ async function main(): Promise<void> {
     });
   } else {
     const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
-    const authenticate = async () => {
+    const authenticate = async (nativeSessionId: string | undefined) => {
       if (config.start.provider !== 'claude' && process.env.SWITCH_HOSTED_CONTROL !== '1') return;
       const cloudCredential =
         process.env.SWITCH_HOSTED_CONTROL === '1' ? await fetchHostedProvider(config) : null;
@@ -154,6 +155,13 @@ async function main(): Promise<void> {
           cloudCredential,
           config.execution?.binaryPath ?? 'claude'
         );
+      if (cloudCredential && config.start.provider === 'codex' && nativeSessionId)
+        await migrateCodexRollout({
+          home: input.env.CODEX_HOME!,
+          sourceHome: join(root, 'provider-home'),
+          nativeSessionId,
+          sessionId: config.session.sessionId,
+        });
       const readiness = await checkProviderReadiness({
         provider: config.start.provider,
         binaryPath: config.execution?.binaryPath ?? 'claude',

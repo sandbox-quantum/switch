@@ -20,7 +20,7 @@ import { SharedState } from './shared-state';
 export type SharedHostOptions = {
   root: string;
   resumeOperationId?: string;
-  authenticate?: () => Promise<void>;
+  authenticate?: (nativeSessionId: string | undefined) => Promise<void>;
   agentApiUrl: string;
   token: string;
   session: Session;

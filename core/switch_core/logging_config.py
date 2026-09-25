@@ -109,6 +109,25 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+class AccessQueryRedaction(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name == "uvicorn.access"
+            and isinstance(record.args, tuple)
+            and len(record.args) == 5
+        ):
+            client, method, target, version, status = record.args
+            if isinstance(target, str):
+                record.args = (
+                    client,
+                    method,
+                    target.partition("?")[0],
+                    version,
+                    status,
+                )
+        return True
+
+
 def build_handler(config: SwitchConfig, version: str | None) -> logging.Handler:
     """The single stderr handler: format per config, context on every record."""
     handler = logging.StreamHandler(sys.stderr)
@@ -122,6 +141,7 @@ def build_handler(config: SwitchConfig, version: str | None) -> logging.Handler:
         )
     else:
         handler.setFormatter(TextFormatter())
+    handler.addFilter(AccessQueryRedaction())
     handler.addFilter(LogContextFilter(config.tenant_id))
     return handler
 

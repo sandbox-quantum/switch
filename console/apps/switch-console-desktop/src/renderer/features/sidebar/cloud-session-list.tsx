@@ -155,7 +155,13 @@ export const CloudSessionGroups = observer(function CloudSessionGroups({
                       <MessageSquare className="size-3.5 shrink-0" />
                       <span className="truncate">{name}</span>
                       <span className="ml-auto text-xs text-foreground-muted">
-                        {session.connectivity === 'offline' ? 'Offline' : session.status}
+                        {launch.sleeping && launch.state === 'stopped'
+                          ? 'Sleeping'
+                          : launch.sleeping && ['queued', 'provisioning'].includes(launch.state)
+                            ? 'Waking…'
+                            : session.connectivity === 'offline'
+                              ? 'Offline'
+                              : session.status}
                       </span>
                     </SidebarMenuButton>
                   );

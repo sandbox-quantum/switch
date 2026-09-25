@@ -9,12 +9,15 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from switch_core.providers.github import GitHubError
+from switch_core.providers.github import GitHubError, GitHubUnavailableError
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
 
 @pytest.fixture
-def signing(tmp_path):
+def signing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        httpx.AsyncClient, "delete", AsyncMock(return_value=httpx.Response(204))
+    )
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     path = tmp_path / "app.pem"
     path.write_bytes(
@@ -45,7 +48,16 @@ def user_access():
     return AsyncMock(
         repositories=AsyncMock(
             return_value=[
-                {"id": 456, "repositories": [{"id": 789, "name": "example/project"}]}
+                {
+                    "id": 456,
+                    "repositories": [
+                        {
+                            "id": 789,
+                            "name": "example/project",
+                            "permissions": {"push": True},
+                        }
+                    ],
+                }
             ]
         )
     )
@@ -142,3 +154,73 @@ def test_invalid_key_fails_without_key_material(tmp_path):
     path.write_text("SYNTHETIC-INVALID-KEY")
     with pytest.raises(ValueError, match="could not be loaded"):
         GitHubInstallationCredentials("example-client", str(path))
+
+
+@pytest.mark.parametrize(
+    "permissions", [{"pull": True}, {"triage": True}, {}, {"push": "true"}]
+)
+async def test_read_only_repository_cannot_mint_write_token(
+    signing, monkeypatch, permissions
+):
+    github = user_access()
+    github.repositories.return_value[0]["repositories"][0]["permissions"] = permissions
+    post = AsyncMock()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    with pytest.raises(GitHubError, match="needs write access"):
+        await signing[0].issue(github, "SYNTHETIC", 456, 789)
+    post.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [204, 401, 404, 422])
+async def test_repository_revocation_is_idempotent(monkeypatch, status):
+    request = AsyncMock(return_value=httpx.Response(status))
+    monkeypatch.setattr(httpx.AsyncClient, "delete", request)
+    await GitHubInstallationCredentials.revoke("SYNTHETIC-REPOSITORY")
+    assert request.call_args.args == ("https://api.github.com/installation/token",)
+
+
+@pytest.mark.parametrize("status", [429, 500])
+async def test_transient_token_issue_is_retryable(signing, monkeypatch, status):
+    from_error = httpx.Response(status)
+    monkeypatch.setattr(httpx.AsyncClient, "post", AsyncMock(return_value=from_error))
+    with pytest.raises(GitHubUnavailableError):
+        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
+
+
+async def test_rejected_minted_scope_is_revoked(signing, monkeypatch):
+    body = response_body()
+    body["permissions"]["contents"] = "read"
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "post",
+        AsyncMock(return_value=httpx.Response(201, json=body)),
+    )
+    with pytest.raises(GitHubError):
+        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
+    httpx.AsyncClient.delete.assert_awaited_once()
+    assert (
+        httpx.AsyncClient.delete.call_args.kwargs["headers"]["Authorization"]
+        == "Bearer SYNTHETIC-INSTALLATION-TOKEN"
+    )
+
+
+@pytest.mark.parametrize(
+    "headers,body,retryable",
+    [
+        ({}, {"message": "Organization access refused"}, False),
+        ({"x-ratelimit-remaining": "0"}, {}, True),
+        ({"Retry-After": "30"}, {}, True),
+        ({}, {"message": "You have exceeded a secondary rate limit"}, True),
+    ],
+)
+async def test_only_rate_limited_403_is_retryable(
+    signing, monkeypatch, headers, body, retryable
+):
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "post",
+        AsyncMock(return_value=httpx.Response(403, headers=headers, json=body)),
+    )
+    with pytest.raises(GitHubError) as raised:
+        await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
+    assert isinstance(raised.value, GitHubUnavailableError) == retryable

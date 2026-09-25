@@ -21,6 +21,7 @@ export const cloudLaunchSchema = z.object({
   revision: z.number().int().positive(),
   agent_id: z.string().nullable(),
   error: z.string().nullable(),
+  error_code: z.string().nullable().default(null),
   sleeping: z.boolean().default(false),
 });
 

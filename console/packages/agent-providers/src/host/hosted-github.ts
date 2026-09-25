@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, open, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { z } from 'zod';
@@ -147,12 +148,19 @@ export async function renewGitHubCredential(
       !validToken(env.SWITCH_API_TOKEN)
     )
       throw new Error();
-    const response = await fetch(endpoint.href.replace(/\/$/, '') + '/hosted/github-credential', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.SWITCH_API_TOKEN}` },
-      redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
-    });
+    const request = () =>
+      fetch(endpoint.href.replace(/\/$/, '') + '/hosted/github-credential', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.SWITCH_API_TOKEN}` },
+        redirect: 'error',
+        signal: AbortSignal.timeout(180_000),
+      });
+    let response = await request();
+    if (response.status === 409 || response.status === 503) {
+      await response.body?.cancel();
+      await delay(1_000);
+      response = await request();
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error();

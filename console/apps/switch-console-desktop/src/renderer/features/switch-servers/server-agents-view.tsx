@@ -10,7 +10,7 @@ import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
-import { useToast } from '@renderer/lib/hooks/use-toast';
+import { toast, useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -97,6 +97,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: string }) {
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => setActionError(null), [launch.revision, launch.state]);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const queryClient = useQueryClient();
   const createSession = useShowModal('sessionModal');
@@ -104,11 +105,19 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
     setPending(true);
     setActionError(null);
     try {
-      await rpc.switchServers.cloudLifecycle(serverId, launch.request_id, action, launch.revision);
+      const result = await rpc.switchServers.cloudLifecycle(
+        serverId,
+        launch.request_id,
+        action,
+        launch.revision
+      );
+      if (result.access_warning)
+        toast({ title: 'GitHub access cleanup is pending', description: result.access_warning });
       await queryClient.invalidateQueries({ queryKey: ['cloud-launches', serverId] });
       setConfirmRemove(false);
     } catch (error) {
       setActionError(failureText(error, 'Cloud operation failed.'));
+      void queryClient.invalidateQueries({ queryKey: ['cloud-launches', serverId] });
     } finally {
       setPending(false);
     }
@@ -121,16 +130,18 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
       ? 'Sleeping'
       : launch.sleeping && launch.state === 'stopping'
         ? 'Going to sleep…'
-        : {
-            queued: 'Queued',
-            provisioning: 'Starting…',
-            ready: 'Ready',
-            error: 'Needs attention',
-            stopping: 'Stopping…',
-            stopped: 'Stopped',
-            deleting: 'Removing…',
-            deleted: 'Removed',
-          }[launch.state];
+        : launch.sleeping && ['queued', 'provisioning'].includes(launch.state)
+          ? 'Waking…'
+          : {
+              queued: 'Queued',
+              provisioning: 'Starting…',
+              ready: 'Ready',
+              error: 'Needs attention',
+              stopping: 'Stopping…',
+              stopped: 'Stopped',
+              deleting: 'Removing…',
+              deleted: 'Removed',
+            }[launch.state];
   const add = () => {
     if (!launch.agent_id) return;
     const agentId = launch.agent_id;
@@ -157,7 +168,9 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
       </div>
       {launch.error && (
         <p role="alert" className="mt-2 text-xs text-destructive">
-          {launch.error}
+          {launch.error_code === 'worker_needs_attention'
+            ? 'The cloud worker needs attention. Contact your server administrator.'
+            : 'The cloud worker could not start. Check your provider and GitHub connections, then retry. If it still fails, contact your server administrator.'}
         </p>
       )}
       {actionError && (
@@ -188,13 +201,18 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
             </Button>
           </>
         )}
+        {launch.sleeping && launch.state === 'stopped' && (
+          <p className="text-xs text-foreground-muted">
+            Stop worker prevents mentions from waking it. You can start it again here.
+          </p>
+        )}
         {(launch.sleeping ||
           ['ready', 'provisioning', 'queued', 'error'].includes(launch.state)) && (
           <Button variant="ghost" size="sm" disabled={pending} onClick={() => void run('stop')}>
             Stop worker
           </Button>
         )}
-        {launch.state === 'error' && (
+        {launch.state === 'error' && launch.error_code !== 'worker_needs_attention' && (
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void run('retry')}>
             Retry
           </Button>
@@ -222,7 +240,10 @@ function CloudAgentCard({ launch, serverId }: { launch: CloudLaunch; serverId: s
       </div>
       {confirmRemove && (
         <div className="mt-2 text-xs">
-          <p>Remove this worker? Its data disk and conversation history will be retained.</p>
+          <p>
+            Remove this agent and its sessions from Switch? Its data disk will be retained for
+            administrator recovery.
+          </p>
           <Button size="sm" disabled={pending} onClick={() => void run('remove')}>
             Remove worker
           </Button>

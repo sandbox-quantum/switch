@@ -262,8 +262,8 @@ previous connection intact. Back up and rotate the server encryption key with th
 same care as other encrypted credentials. Removal deletes the database record;
 revocation at Anthropic and database-backup retention are separate concerns.
 
-Worker assignment bundles carry the initial credential through private tmpfs
-files. Managed runtimes fetch current credentials from the authenticated worker
+Worker assignment bundles contain no provider credential. Managed runtimes fetch
+current credentials from the authenticated worker
 API. Revocation denies further credential and control requests and stops the
 affected workers. Reconnect the provider, then use Retry to start them again.
 
@@ -307,4 +307,59 @@ Stored credentials are encrypted and scoped to the current user and tenant.
 The backend refreshes expiring user tokens and asks GitHub for current repository
 access. Disconnect deletes local connection storage, not the installation on
 GitHub. Authorization attempts expire after ten minutes and on backend restart.
-Worker installation tokens and webhook handling are not part of this increment.
+Workers receive repository-scoped installation tokens. GitHub uninstall and suspend
+webhooks are not implemented; access is checked again when tokens are issued.
+
+### Removed worker retention
+
+Removing a stopped worker revokes its Switch API key, removes its agent and room
+memberships, and frees the agent name. Server-side sessions are removed with the
+agent. The worker data disk remains available for administrator recovery.
+
+A removed worker keeps its pool identity reserved. Do not assign that identity or
+its retained disk to a new owner. To add capacity, create a new worker assignment
+with a new identity and fresh disk. Automatic identity recycling is not supported.
+
+### GitHub sign-in availability
+
+Run the Switch API (`switchCore`) with one replica. The shipped Helm chart pins
+`switchCore.replicaCount` to `1` and rejects other values. GitHub sign-in flows
+live in that process alongside the live agent state. A restart interrupts an
+unconfirmed sign-in; start it again from Switch Console. Multiple API replicas
+require shared flow storage before they can be supported.
+
+### GitHub credential revocation
+
+Repository tokens are encrypted and bound to the workspace, owner, worker, and
+worker revision. Stop, removal, disconnect, relink, and owner removal queue their
+revocation after the access change commits. A bounded batch retries failed
+revocations on each controller poll; expired records are deleted. Disconnect and
+relink revoke only the old OAuth token, not the user's entire GitHub App grant.
+A failed revoke shows a warning and does not undo the access change.
+
+Tokens minted before token tracking was deployed, or minted just before a lost
+response or request cancellation, can remain valid until expiry (up to one hour for repository
+tokens). Stored tokens use the same encryption key as other provider credentials;
+separate encryption keys and key rotation remain a follow-up.
+
+Keep query strings out of access logs on every proxy in front of the GitHub
+callback. Its URL carries a single-use OAuth code in the query on
+`/gateway/provider-connections/github/callback`. Exclude this path if you later
+enable ALB access logs or WAF request logging.
+The API strips query strings from access logs, and the shipped nginx gateway
+disables access logging for that path. An external ingress, load balancer, WAF,
+or CDN needs the same protection before GitHub sign-in is enabled.
+
+Worker cards show general provider and GitHub recovery guidance for setup failures.
+They do not yet distinguish each GitHub access failure, such as missing write
+permission or a missing App installation.
+
+The controller uses an attached managed policy for assignment secret access.
+The deploy identity needs IAM policy create, version, attach, detach, and delete
+permissions for that policy. The pool is limited by AWS policy size: 6,144
+characters for assignment access and 10,240 for inline controller permissions.
+Terraform checks these limits during planning. The supported assignment count
+depends on ARN lengths; use a smaller pool if a size check fails.
+
+The loopback callback URL can remain in browser history. Its authorization code
+is single-use, consumed during sign-in, and bound to the flow's PKCE verifier.

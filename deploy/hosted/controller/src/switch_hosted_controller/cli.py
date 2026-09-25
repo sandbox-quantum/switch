@@ -17,7 +17,7 @@ import boto3
 
 from .cloud import Ec2Cloud
 from .config import ConfigError, ControllerConfig, validate_agent_id
-from .gateway import Gateway, GatewayConfig, GatewayError
+from .gateway import Gateway, GatewayConfig
 from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import Agent, DesiredState
@@ -202,16 +202,23 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                         logging.error(
                             "Provider verification reconciliation failed: %s", type(error).__name__
                         )
-                try:
-                    if gateway:
+                if gateway:
+                    try:
                         gateway.accept_launches()
+                    except Exception as error:
+                        logging.error("Cloud launch polling failed: %s", type(error).__name__)
+                try:
                     reconciler.reconcile_all()
-                    if gateway:
+                except Exception as error:
+                    logging.error("Cloud worker reconciliation failed: %s", type(error).__name__)
+                if gateway:
+                    try:
                         gateway.report_observations()
-                except GatewayError as error:
-                    logging.error("Cloud gateway is unavailable: HTTP %s", error.status)
-                finally:
-                    _touch_health()
+                    except Exception as error:
+                        logging.error(
+                            "Cloud observation reporting failed: %s", type(error).__name__
+                        )
+                _touch_health()
                 stop.wait(config.poll_interval_seconds)
             return 0
         finally:

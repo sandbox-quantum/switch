@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,7 +12,15 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-from switch_core.providers.github import GitHubConnections, GitHubError
+from switch_core.providers.github import (
+    GitHubConnections,
+    GitHubError,
+    GitHubUnavailableError,
+    rate_limited,
+    repository_writable,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,24 @@ class GitHubInstallationCredentials:
             )
         self._key = key
         self._client_id = client_id
+
+    @staticmethod
+    async def revoke(token: str) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+                response = await client.delete(
+                    "https://api.github.com/installation/token",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+            if response.status_code not in (204, 401, 404, 422):
+                raise GitHubError("Could not revoke the GitHub repository credential.")
+        except httpx.HTTPError:
+            raise GitHubError(
+                "Could not reach GitHub to revoke the repository credential."
+            ) from None
 
     async def issue(
         self,
@@ -69,12 +97,17 @@ class GitHubInstallationCredentials:
             raise GitHubError(
                 "Your GitHub account no longer has access to the selected repository."
             )
+        if not repository_writable(repository):
+            raise GitHubError(
+                "Your GitHub account needs write access to this repository to run a cloud agent."
+            )
         now = int(time.time())
         assertion = jwt.encode(
             {"iat": now - 60, "exp": now + 540, "iss": self._client_id},
             self._key,
             algorithm="RS256",
         )
+        token = None
         try:
             async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
                 response = await client.post(
@@ -88,6 +121,10 @@ class GitHubInstallationCredentials:
                         "repository_ids": [repository_id],
                         "permissions": {"contents": "write", "pull_requests": "write"},
                     },
+                )
+            if rate_limited(response) or response.status_code >= 500:
+                raise GitHubUnavailableError(
+                    "GitHub is temporarily unavailable or rate limited. Please retry."
                 )
             if response.status_code != 201:
                 raise GitHubError(
@@ -119,7 +156,25 @@ class GitHubInstallationCredentials:
             return RepositoryCredential(
                 token, expires_at, repository_id, repository["name"]
             )
-        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+        except (
+            GitHubError,
+            httpx.HTTPError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ) as error:
+            if isinstance(token, str) and token:
+                try:
+                    async with asyncio.timeout(8):
+                        await self.revoke(token)
+                except Exception as cleanup_error:
+                    logger.error(
+                        "Rejected GitHub token could not be revoked: error_type=%s",
+                        type(cleanup_error).__name__,
+                    )
+            if isinstance(error, GitHubError):
+                raise
             raise GitHubError(
                 "Could not obtain a scoped GitHub repository credential. Please retry."
             ) from None

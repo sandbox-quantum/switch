@@ -298,9 +298,9 @@ switchCore:
     # for it, so this must match switch-core's own COLLABORATION_CALLBACK_PORT
     # default.
     port: 8081
-  # switch-core MUST run as a single replica. Four things live in the process
-  # rather than the database: the per-agent event buffer, the invite bus, the
-  # ephemeral (presence) bus, and the message listener's subscriber registry. A
+  # switch-core MUST run as a single replica. Live state stays in the process
+  # rather than the database: GitHub sign-in flows, the per-agent event buffer,
+  # the invite and presence buses, and the message listener's subscriber registry. A
   # second replica would hold its own copy of each, so a signal raised in one
   # would never reach a client attached to the other. This is enforced at
   # render time; do not raise it.

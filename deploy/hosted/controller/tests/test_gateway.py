@@ -1,11 +1,12 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
+import pytest
 from test_controller import config
 
-from switch_hosted_controller.gateway import Gateway, GatewayConfig
+from switch_hosted_controller.gateway import Gateway, GatewayConfig, GatewayError
 from switch_hosted_controller.store import AgentStore
 
 
@@ -77,4 +78,42 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
     assert "room" not in deployment
     assert deployment["github"]["refresh"] is True
     assert deployment["provider"]["definition"]["name"] == "helper"
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "failure", [GatewayError(409), GatewayError(500), RuntimeError("Secret write failed")]
+)
+def test_one_failed_launch_does_not_block_other_launches(tmp_path, failure):
+    cfg = config(tmp_path, max_agents=2)
+    store = AgentStore(cfg.state_db_path, cfg.fingerprint())
+    gateway = Gateway(
+        GatewayConfig("https://switch.example.test", "SYNTHETIC", "m6i.large", "runtime"),
+        cfg,
+        store,
+        Mock(),
+    )
+    jobs = [
+        {
+            "request_id": str(uuid4()),
+            "agent_id": f"agent-{n}",
+            "revision": 1,
+            "desired_state": "running",
+        }
+        for n in [1, 2]
+    ]
+    gateway.request = Mock(side_effect=lambda path, body=None: jobs if path == "" else {})
+    gateway.accept_launch = Mock(side_effect=[failure, None])
+    gateway.accept_launches()
+    assert gateway.accept_launch.call_count == 2
+    assert gateway.request.call_count == 1
+    gateway.accept_launch.side_effect = [failure, None]
+    with patch(
+        "switch_hosted_controller.gateway.monotonic",
+        return_value=gateway.prepare_failures[jobs[0]["request_id"]] + 301,
+    ):
+        gateway.accept_launches()
+    reported = gateway.request.call_args_list[-1]
+    assert reported.args[0] == f"/{jobs[0]['request_id']}/observation"
+    assert reported.args[1]["state"] == "error"
     store.close()

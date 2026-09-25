@@ -1,4 +1,3 @@
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
@@ -23,10 +22,20 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
-from switch_core.gateway.github_connections import conditions, connection_status
+from switch_core.gateway.github_connections import (
+    conditions,
+    discard_github_credential,
+    github_credentials,
+)
+from switch_core.gateway.github_connections import lock as github_lock
 from switch_core.gateway.hosted_launches import operation_summary
-from switch_core.providers.github import GitHubConnections, GitHubError
+from switch_core.providers.github import (
+    GitHubConnections,
+    GitHubError,
+    GitHubUnavailableError,
+)
 from switch_core.providers.github_installation import GitHubInstallationCredentials
+from switch_core.providers.github_revocations import remember_repository_token
 from switch_core.providers.hosted import HostedControllerSettings
 
 router = APIRouter(prefix="/hosted")
@@ -94,6 +103,16 @@ async def worker_launch(session: AsyncSession, agent: Agent) -> HostedLaunch:
     return launch
 
 
+async def operation_launch(session: AsyncSession, agent: Agent) -> HostedLaunch:
+    launch = await worker_launch(session, agent)
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"hosted-launch:{require_tenant_id()}:{launch.id}"},
+    )
+    session.expire(launch)
+    return await worker_launch(session, agent)
+
+
 class ProviderStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
     authenticated: bool
@@ -145,7 +164,7 @@ async def claim_operation(
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict | None:
-    launch = await worker_launch(session, agent)
+    launch = await operation_launch(session, agent)
     rows = list(
         await session.scalars(
             select(HostedOperation)
@@ -160,6 +179,13 @@ async def claim_operation(
     )
     now = datetime.now(UTC)
     for operation in rows:
+        if operation.launch_revision != launch.revision:
+            operation.state = "unknown" if operation.state == "claimed" else "failed"
+            operation.error = (
+                "The worker changed. Inspect the session if the outcome is unknown."
+            )
+            operation.updated_at = now
+            continue
         if operation.state == "claimed" and operation.updated_at < now - timedelta(
             minutes=5
         ):
@@ -187,7 +213,7 @@ async def operation_result(
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
-    launch = await worker_launch(session, agent)
+    launch = await operation_launch(session, agent)
     operation = await session.scalar(
         select(HostedOperation)
         .where(
@@ -199,6 +225,10 @@ async def operation_result(
     )
     if operation is None:
         raise HTTPException(404, "Cloud operation not found.")
+    if operation.launch_revision != launch.revision:
+        raise HTTPException(
+            409, "The operation belongs to an earlier worker generation."
+        )
     if operation.state not in ("claimed", body.state):
         raise HTTPException(409, "This operation is no longer awaiting a result.")
     operation.state = body.state
@@ -238,20 +268,17 @@ async def repository_credential(
         raise HTTPException(
             403, "The cloud agent owner is no longer a workspace member."
         )
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"hosted-launch:{require_tenant_id()}:{launch.id}"},
-    )
+    revision = launch.revision
+    launch_id = launch.id
+    owner_id = launch.owner_id
+    installation_id = launch.spec["installation_id"]
+    repository_id = launch.spec["repository_id"]
     github = GitHubConnections(config.hosted_github_config_path)
-    await connection_status(launch.owner_id, session, config, github)
-    row = await session.scalar(
-        select(ProviderConnection).where(*conditions(launch.owner_id))
-    )
-    if row is None:
+    await session.commit()
+    saved_github = await github_credentials(owner_id, session, config, github)
+    if saved_github is None:
         raise HTTPException(422, "The owner must reconnect GitHub.")
-    credentials = json.loads(
-        decrypt_token(row.encrypted_credential, config.jwt_secret_key)
-    )
+    credentials, github_revision = saved_github
     signer = GitHubInstallationCredentials(
         github.client_id, str(settings.github_private_key_path)
     )
@@ -259,13 +286,51 @@ async def repository_credential(
         credential = await signer.issue(
             github,
             credentials["access_token"],
-            launch.spec["installation_id"],
-            launch.spec["repository_id"],
+            installation_id,
+            repository_id,
         )
+    except GitHubUnavailableError as error:
+        raise HTTPException(503, str(error)) from None
     except GitHubError as error:
         raise HTTPException(422, str(error)) from None
-    return {
-        "token": credential.token,
-        "expires_at": credential.expires_at.isoformat(),
-        "repository": credential.repository_name,
-    }
+    try:
+        await github_lock(session, owner_id)
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"hosted-launch:{require_tenant_id()}:{launch_id}"},
+        )
+        launch = await session.get(
+            HostedLaunch, (require_tenant_id(), launch_id), populate_existing=True
+        )
+        row = await session.scalar(
+            select(ProviderConnection)
+            .where(*conditions(owner_id))
+            .execution_options(populate_existing=True)
+        )
+        if (
+            launch is None
+            or launch.revision != revision
+            or launch.desired_state != "running"
+            or launch.state == "error"
+            or row is None
+            or row.verified_at != github_revision
+            or await session.get(
+                TenantMember, (require_tenant_id(), owner_id), populate_existing=True
+            )
+            is None
+        ):
+            raise HTTPException(
+                409, "Cloud launch or GitHub connection changed. Please retry."
+            )
+        remember_repository_token(session, launch, credential, config)
+        await session.commit()
+        return {
+            "token": credential.token,
+            "expires_at": credential.expires_at.isoformat(),
+            "repository": credential.repository_name,
+        }
+    except BaseException as error:
+        await discard_github_credential(
+            session, signer, credential, config, launch_id, error
+        )
+        raise

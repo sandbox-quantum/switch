@@ -41,7 +41,7 @@ type RecordEntry = z.infer<typeof recordSchema>;
 export type HostSessionStart = {
   session: Session;
   resumeOperationId?: string;
-  authenticate?: () => Promise<void>;
+  authenticate?: (nativeSessionId: string | undefined) => Promise<void>;
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
   signal?: AbortSignal;
@@ -285,7 +285,7 @@ export class HostedSession {
     const startedAt = performance.now();
     const signal = this.config.signal;
     signal?.throwIfAborted();
-    await this.config.authenticate?.();
+    await this.config.authenticate?.(input.resume?.nativeSessionId);
     for (let attempt = 0; ; attempt++) {
       try {
         signal?.throwIfAborted();

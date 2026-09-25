@@ -289,7 +289,9 @@ class ProviderConnection(TenantScoped, Base):
     verification_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="verified"
     )
-    verified_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class ProviderVerification(TenantScoped, Base):
@@ -346,6 +348,8 @@ class HostedLaunch(TenantScoped, Base):
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deletion_cleanup: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -358,6 +362,29 @@ class HostedLaunch(TenantScoped, Base):
     active_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class GitHubIssuedToken(TenantScoped, Base):
+    __tablename__ = "github_issued_tokens"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+        ),
+        Index("ix_github_issued_tokens_owner", "tenant_id", "owner_id"),
+    )
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    encrypted_token: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoke_requested: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    claim_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class HostedOperation(TenantScoped, Base):
@@ -376,6 +403,7 @@ class HostedOperation(TenantScoped, Base):
     )
     id: Mapped[str] = mapped_column(Text, nullable=False)
     launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")

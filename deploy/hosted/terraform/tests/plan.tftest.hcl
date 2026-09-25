@@ -1,4 +1,7 @@
 mock_provider "aws" {
+  mock_resource "aws_iam_policy" {
+    defaults = { arn = "arn:aws:iam::000000000000:policy/example-assignments" }
+  }
   mock_data "aws_caller_identity" {
     defaults = { account_id = "000000000000" }
   }
@@ -56,6 +59,14 @@ run "isolated_plan" {
 
 run "rendered_permissions" {
   command = apply
+  assert {
+    condition     = jsondecode(aws_iam_policy.controller_assignments.policy).Statement[0].Resource == [var.assignments["example-agent"].secret_arn]
+    error_message = "Controller secret writes must remain scoped to assigned secrets."
+  }
+  assert {
+    condition     = aws_iam_role_policy_attachment.controller_assignments.role == aws_iam_role.controller.name && aws_iam_role_policy_attachment.controller_assignments.policy_arn == aws_iam_policy.controller_assignments.arn
+    error_message = "Controller assignment policy must be attached to the controller role."
+  }
   assert {
     condition = alltrue([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement :
       statement.Condition.StringEquals["ec2:ResourceTag/switch:managed-by"] == "switch-hosted-controller"

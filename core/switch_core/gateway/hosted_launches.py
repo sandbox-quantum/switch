@@ -14,6 +14,7 @@ from switch_core.agent_icon import normalise_icon_url
 from switch_core.config import SwitchConfig
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
+    GitHubIssuedToken,
     HostedLaunch,
     HostedOperation,
     ProviderConnection,
@@ -38,7 +39,12 @@ from switch_core.providers.claude_verifier import (
     ClaudeVerificationError,
     ClaudeVerifier,
 )
-from switch_core.providers.github import GitHubConnections
+from switch_core.providers.github import GitHubConnections, repository_writable
+from switch_core.providers.github_revocations import (
+    ACCESS_WARNING,
+    queue_revocation,
+    revoke_pending,
+)
 from switch_core.providers.hosted import HostedControllerSettings
 
 router = APIRouter(prefix="/hosted-launches")
@@ -83,6 +89,7 @@ def summary(launch: HostedLaunch) -> dict:
         "state": launch.state,
         "agent_id": launch.agent_id,
         "error": launch.error,
+        "error_code": launch.error_code,
         "desired_state": launch.desired_state,
         "revision": launch.revision,
         "sleeping": launch.sleeping,
@@ -127,6 +134,7 @@ class LifecycleRequest(BaseModel):
 async def lifecycle(
     request_id: UUID,
     body: LifecycleRequest,
+    config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
@@ -171,11 +179,18 @@ async def lifecycle(
     if body.action == "stop" and already_stopped:
         launch.state = "stopped"
     launch.error = None
+    launch.error_code = None
     launch.sleeping = False
     launch.revision += 1
+    await HostedLaunchStore().fail_stale_operations(session, launch.id, launch.revision)
     launch.updated_at = datetime.now(UTC)
+    await queue_revocation(session, (GitHubIssuedToken.launch_id == launch.id,))
     await session.commit()
-    return summary(launch)
+    response = summary(launch)
+    remaining = await revoke_pending(
+        session, config, (GitHubIssuedToken.launch_id == launch.id,)
+    )
+    return {**response, "access_warning": ACCESS_WARNING if remaining else None}
 
 
 def operation_summary(operation: HostedOperation) -> dict:
@@ -265,6 +280,7 @@ async def session_operation(
     operation = HostedOperation(
         id=str(body.id),
         launch_id=launch.id,
+        launch_revision=launch.revision,
         session_id=str(body.session_id),
         action=body.action,
     )
@@ -343,13 +359,6 @@ async def create(
             )
         except ClaudeVerificationError as error:
             raise HTTPException(422, str(error)) from None
-        await connections.save(
-            session,
-            user.id,
-            connection.kind,
-            connection.encrypted_credential,
-            datetime.now(UTC),
-        )
     await session.commit()
     access = await connection_status(user.id, session, config, github)
     repository = next(
@@ -365,6 +374,11 @@ async def create(
     if repository is None:
         raise HTTPException(
             422, "Your GitHub account no longer has access to the selected repository."
+        )
+    if not repository_writable(repository):
+        raise HTTPException(
+            422,
+            "Your GitHub account needs write access to this repository to run a cloud agent.",
         )
     try:
         launch = await store.reserve(

@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
-import { afterEach, expect, it } from 'vitest';
-import { prepareCodexSessionHome } from './home';
+import { afterEach, expect, it, vi } from 'vitest';
+import { migrateCodexRollout, prepareCodexSessionHome } from './home';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -73,3 +73,44 @@ it('allows native environment or keychain authentication when no login file exis
     })
   ).resolves.toEqual(expect.any(String));
 });
+
+it.each(['nested', 'parent', 'missing'] as const)(
+  'preserves the saved thread in the %s layout',
+  async (layout) => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-migration-test-'));
+    roots.push(root);
+    const sourceHome = join(root, 'provider-home');
+    const home = await prepareCodexSessionHome({
+      root: sourceHome,
+      sessionId: 'session',
+      sourceHome,
+      config: '',
+      skill: '',
+    });
+    const nativeSessionId = '11111111-1111-4111-8111-111111111111';
+    const relative = `sessions/2026/01/01/rollout-2026-01-01T00-00-00-${nativeSessionId}.jsonl`;
+    for (const base of [sourceHome, home])
+      await mkdir(join(base, 'sessions/2026/01/01'), { recursive: true });
+    const unrelated = join(sourceHome, 'sessions/2026/01/01/rollout-other-thread.jsonl');
+    await writeFile(unrelated, 'another conversation');
+    if (layout !== 'missing')
+      await writeFile(
+        join(layout === 'nested' ? home : sourceHome, relative),
+        'saved conversation'
+      );
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await migrateCodexRollout({ home, sourceHome, nativeSessionId, sessionId: 'session' });
+      if (layout === 'missing')
+        await expect(readFile(join(home, relative))).rejects.toMatchObject({ code: 'ENOENT' });
+      else expect(await readFile(join(home, relative), 'utf8')).toBe('saved conversation');
+      expect(await readFile(unrelated, 'utf8')).toBe('another conversation');
+      expect(warning).toHaveBeenCalledTimes(layout === 'parent' ? 1 : 0);
+      await expect(readFile(join(sourceHome, relative))).rejects.toMatchObject({ code: 'ENOENT' });
+      await migrateCodexRollout({ home, sourceHome, nativeSessionId, sessionId: 'session' });
+      expect(warning).toHaveBeenCalledTimes(layout === 'parent' ? 1 : 0);
+    } finally {
+      warning.mockRestore();
+    }
+  }
+);

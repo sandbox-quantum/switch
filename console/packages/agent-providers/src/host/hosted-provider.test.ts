@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
+import { prepareCodexSessionHome } from '../codex/home';
 import { materializeHostedProvider, type HostedCredential } from './hosted-provider';
 
 let root: string;
@@ -77,4 +78,33 @@ it('keeps the different providers in their native authentication locations', asy
       fixture: true,
     });
   }
+});
+
+it('keeps the prepared Codex home and refreshes its auth before provider startup', async () => {
+  const env: Record<string, string> = {};
+  const original = credential('{"fixture":"original"}');
+  await materializeHostedProvider(root, env, original, 'fixture-cli');
+  const sourceHome = env.CODEX_HOME!;
+  const home = await prepareCodexSessionHome({
+    root: sourceHome,
+    sessionId: 'session',
+    sourceHome,
+    config: 'model = "fixture-model"',
+    skill: 'fixture workflow',
+  });
+  env.CODEX_HOME = home;
+  await writeFile(join(home, 'auth.json'), '{"fixture":"native-refresh"}');
+  await materializeHostedProvider(root, env, original, 'fixture-cli');
+  expect(env.CODEX_HOME).toBe(home);
+  expect(await readFile(join(home, 'auth.json'), 'utf8')).toContain('native-refresh');
+  await materializeHostedProvider(
+    root,
+    env,
+    credential('{"fixture":"replacement"}'),
+    'fixture-cli'
+  );
+  expect(env.CODEX_HOME).toBe(home);
+  expect(await readFile(join(home, 'auth.json'), 'utf8')).toContain('replacement');
+  expect(await readFile(join(home, 'config.toml'), 'utf8')).toContain('fixture-model');
+  expect(await readFile(join(home, 'skills/switch/SKILL.md'), 'utf8')).toBe('fixture workflow');
 });

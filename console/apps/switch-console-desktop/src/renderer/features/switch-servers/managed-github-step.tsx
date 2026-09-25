@@ -28,6 +28,7 @@ export function ManagedGitHubStep({
   const [flowId, setFlowId] = useState<string | null>(null);
   const [flow, setFlow] = useState<GitHubFlow | null>(null);
   const [busy, setBusy] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [watching, setWatching] = useState<{ baseline: string; expiresAt: number } | null>(null);
   useCloseGuard(busy || flowId !== null);
@@ -252,6 +253,11 @@ export function ManagedGitHubStep({
             <Spinner /> Checking GitHub…
           </p>
         )}
+        {warning && (
+          <p role="status" className="rounded-md border p-3 text-sm text-foreground-muted">
+            {warning}
+          </p>
+        )}
         {error && (
           <p role="alert" className="text-sm text-destructive">
             {error}
@@ -284,9 +290,13 @@ export function ManagedGitHubStep({
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
-                    await rpc.switchServers.confirmGitHubConnection(serverId, flowId);
+                    const result = await rpc.switchServers.confirmGitHubConnection(
+                      serverId,
+                      flowId
+                    );
                     setFlowId(null);
                     setFlow(null);
+                    setWarning(result.warning ?? null);
                     await load();
                   })
                 }
@@ -306,7 +316,8 @@ export function ManagedGitHubStep({
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
-                    await rpc.switchServers.disconnectGitHub(serverId);
+                    const result = await rpc.switchServers.disconnectGitHub(serverId);
+                    setWarning(result.warning ?? null);
                     await load();
                   })
                 }
