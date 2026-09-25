@@ -314,17 +314,34 @@ export async function runSharedHost(
           null
         );
     };
+    // A server that predates usage refuses a row that carries it. The row is
+    // what platforms draw, so it goes again without, and the spend is not counted.
+    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
+      const { usage: _usage, ...row } = item.row;
+      console.warn(
+        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+      );
+      await send({ kind: 'activity', row });
+      return true;
+    };
     const report = async () => {
       if (reportingUnsupported) return;
       const { events } = host!.replay(reporter.cursor);
       if (!events.length) return;
       for (const event of events) {
-        for (const item of reporter.reports(event, (turnId) => host!.originOf(turnId))) {
+        const reports = reporter.reports(
+          event,
+          (turnId) => host!.originOf(turnId),
+          (turnId) => host!.usageOf(turnId)
+        );
+        for (const item of reports) {
           try {
             await send(item);
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
+            if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;

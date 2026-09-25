@@ -21,7 +21,7 @@ import type {
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
 import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
-import type { UserInputAnswers } from '../events';
+import type { TokenUsage, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
@@ -30,7 +30,22 @@ import { Journal } from './journal';
 const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
-  z.object({ type: z.literal('finished'), commandId: z.string() }),
+  z.object({
+    type: z.literal('finished'),
+    commandId: z.string(),
+    // What the turn spent; absent from a host that predates it, or when the provider said nothing.
+    usage: z
+      .array(
+        z.object({
+          model: z.string(),
+          inputTokens: z.number().int().nonnegative(),
+          outputTokens: z.number().int().nonnegative(),
+          cacheReadTokens: z.number().int().nonnegative(),
+          cacheWriteTokens: z.number().int().nonnegative(),
+        })
+      )
+      .optional(),
+  }),
   z.object({ type: z.literal('native'), nativeSessionId: z.string() }),
   z.object({ type: z.literal('stopped') }),
   z.object({ type: z.literal('resumed'), operationId: z.string() }),
@@ -70,6 +85,7 @@ export class HostedSession {
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
@@ -125,7 +141,10 @@ export class HostedSession {
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
-      if (record.type === 'finished') this.finished.add(record.commandId);
+      if (record.type === 'finished') {
+        this.finished.add(record.commandId);
+        if (record.usage) this.usage.set(record.commandId, record.usage);
+      }
       if (record.type === 'native') this.nativeId = record.nativeSessionId;
       if (record.type === 'stopped') this.stopped = true;
       if (record.type === 'resumed') {
@@ -394,6 +413,11 @@ export class HostedSession {
   onPublished(listener: (event: ServerEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** What `turnId` spent, as its provider reported when it ended. */
+  usageOf(turnId: string): TokenUsage[] {
+    return this.usage.get(turnId) ?? [];
   }
 
   /** Where the command that started `turnId` came from, if a command started it. */
@@ -942,10 +966,19 @@ export class HostedSession {
       event.item.type === 'user_message'
     )
       return;
+    // A turn is finished, with what it spent, before anyone can read that it
+    // ended: its report to Switch is the one chance to count the spend.
+    if (event.type === 'turn.completed') {
+      await this.inbox.append({
+        type: 'finished',
+        commandId: event.turnId,
+        ...(event.usage.length > 0 ? { usage: event.usage } : {}),
+      });
+      this.finished.add(event.turnId);
+      if (event.usage.length > 0) this.usage.set(event.turnId, event.usage);
+    }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
-      await this.inbox.append({ type: 'finished', commandId: event.turnId });
-      this.finished.add(event.turnId);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }

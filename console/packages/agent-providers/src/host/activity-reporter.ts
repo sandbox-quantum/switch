@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { Origin, ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import type { TokenUsage } from '../events';
 import { Journal } from './journal';
 
 /**
@@ -30,6 +31,19 @@ export type ActivityRow = {
   thread_id: string | null;
   message_id: string | null;
   occurred_at: string;
+  /**
+   * What the turn spent, on its own row once it has ended. Left out when
+   * there is nothing to say, so a server that predates it takes the row.
+   */
+  usage?: UsageRow[];
+};
+
+export type UsageRow = {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
 };
 
 export type RequestOpening = {
@@ -58,6 +72,8 @@ export type Report =
   | { kind: 'approval.close'; requestId: string };
 
 type Placement = Pick<ActivityRow, 'room_id' | 'thread_id' | 'message_id'>;
+
+const ENDED = new Set(['completed', 'interrupted', 'error']);
 
 const cursorSchema = z.strictObject({ through: z.number().int().nonnegative() });
 
@@ -97,7 +113,11 @@ export class ActivityReporter {
     for (const event of events) this.track(event);
   }
 
-  reports(event: ServerEvent, originOf: (turnId: string) => Origin | null): Report[] {
+  reports(
+    event: ServerEvent,
+    originOf: (turnId: string) => Origin | null,
+    usageOf: (turnId: string) => TokenUsage[]
+  ): Report[] {
     const body = event.body;
     const place = (turnId: string): Placement => {
       const origin = originOf(turnId);
@@ -110,7 +130,8 @@ export class ActivityReporter {
     const noticeTurn = body.type === 'notice' ? this.noticeTurn(event.sequence) : null;
     this.track(event);
     switch (body.type) {
-      case 'turn.upsert':
+      case 'turn.upsert': {
+        const usage = ENDED.has(body.status) ? usageOf(body.turnId) : [];
         return [
           {
             kind: 'activity',
@@ -125,9 +146,11 @@ export class ActivityReporter {
               command_id: body.commandId,
               ...place(body.turnId),
               occurred_at: event.occurredAt,
+              ...(usage.length > 0 ? { usage: usage.map(usageRow) } : {}),
             },
           },
         ];
+      }
       case 'item.upsert': {
         const { item } = body;
         return [
@@ -245,6 +268,16 @@ export class ActivityReporter {
     if (this.runningTurn === body.turnId) this.runningTurn = null;
     this.endedTurn = { turnId: body.turnId, sequence: event.sequence };
   }
+}
+
+function usageRow(usage: TokenUsage): UsageRow {
+  return {
+    model: usage.model,
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    cache_read_tokens: usage.cacheReadTokens,
+    cache_write_tokens: usage.cacheWriteTokens,
+  };
 }
 
 function truncate(text: string, limit: number): string {

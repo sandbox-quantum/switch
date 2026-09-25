@@ -177,6 +177,7 @@ async def _step(
         thread_id=ASKED,
         message_id=ASKED,
         occurred_at=datetime.now(UTC),
+        usage=[],
     )
 
 
