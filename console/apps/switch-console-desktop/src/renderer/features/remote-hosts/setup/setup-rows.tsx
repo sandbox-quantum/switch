@@ -55,6 +55,7 @@ function Row({
   icon,
   name,
   subtitle,
+  status,
   progress,
   badge,
   highlighted,
@@ -64,6 +65,8 @@ function Row({
   icon: React.ReactNode;
   name: string;
   subtitle?: string | null;
+  /** A status line beside the subtitle, such as the CLI's sign-in state. */
+  status?: React.ReactNode;
   /** What the running command last printed. Takes the subtitle's place while it runs. */
   progress?: string | null;
   badge: BadgeSpec;
@@ -92,7 +95,14 @@ function Row({
           {progress ? (
             <span className="truncate font-mono text-[11px] text-foreground-muted">{progress}</span>
           ) : (
-            subtitle && <span className="truncate text-xs text-foreground-muted">{subtitle}</span>
+            (subtitle || status) && (
+              <span className="flex min-w-0 items-center gap-2">
+                {subtitle && (
+                  <span className="truncate text-xs text-foreground-muted">{subtitle}</span>
+                )}
+                {status}
+              </span>
+            )
           )}
         </span>
       </button>
@@ -325,6 +335,7 @@ export function AgentTypeRowItem({
   onUpdate,
   onRecheck,
   onOpen,
+  signIn,
 }: {
   row: AgentTypeRow;
   /** The step the plan says is in flight. */
@@ -342,12 +353,15 @@ export function AgentTypeRowItem({
   onUpdate: (stepId: string) => void;
   onRecheck: (stepId: string) => void;
   onOpen: () => void;
+  /** Whether the CLI is signed in on this host, when that can be asked. */
+  signIn?: React.ReactNode;
 }) {
   return (
     <Row
       icon={<AgentIcon id={row.agentId} size={16} />}
       name={row.name}
       subtitle={versionSubtitle(row.cli)}
+      status={signIn}
       progress={activityFor(row.cli.id)}
       badge={stepBadge(row.cli)}
       highlighted={currentStepId === row.cli.id}

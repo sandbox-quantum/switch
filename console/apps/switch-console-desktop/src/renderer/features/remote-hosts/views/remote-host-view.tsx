@@ -292,21 +292,20 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                           onUpdate={(stepId) => updateStep.mutate(stepId)}
                           onRecheck={(stepId) => recheckStep.mutate(stepId)}
                           onOpen={() => setSheetTarget({ kind: 'agent-type', row })}
-                        />
-                        {/* Installed is not usable: a session also needs the
-                            CLI signed in on this host. */}
-                        {!blocked &&
-                          row.cli.state === 'satisfied' &&
-                          (AGENT_PROVIDER_IDS as readonly string[]).includes(row.agentId) && (
-                            <div className="pb-1 pl-12">
+                          signIn={
+                            // Installed is not usable: a session also needs
+                            // the CLI signed in on this host.
+                            !blocked &&
+                            (AGENT_PROVIDER_IDS as readonly string[]).includes(row.agentId) ? (
                               <ProviderConnectionStatus
                                 providerId={asAgentProviderId(row.agentId)}
                                 sshHost={sshHost}
                                 dir=""
                                 compact
                               />
-                            </div>
-                          )}
+                            ) : null
+                          }
+                        />
                       </div>
                     ))}
                   </section>
