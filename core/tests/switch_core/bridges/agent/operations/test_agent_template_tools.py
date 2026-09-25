@@ -610,3 +610,27 @@ def test_an_undeclared_input_is_still_an_error():
         room_document(
             SLOTTED_ROOM.format(default="ok", size=2), {"worker": "b"}, {"nope": 1}
         )
+
+
+def test_entity_inputs_are_left_for_the_server_to_check():
+    template = """\
+params:
+  target: { type: room }
+  helper: { type: agent, default: worker }
+agents:
+  - name: worker
+    instructions: Work.
+room:
+  name: shop
+  description: "Work in {target}"
+  agents: ["{helper}"]
+"""
+    document, inputs = room_document(
+        template, {"worker": "claude-code.bob"}, {"target": "nowhere"}
+    )
+
+    doc = yaml.safe_load(document)
+    # Still params, so the server checks the room and the agent exist.
+    assert set(doc["params"]) == {"target", "helper"}
+    assert doc["room"]["description"] == "Work in {target}"
+    assert inputs == {"target": "nowhere", "helper": "claude-code.bob"}

@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from switch_core.agent_refusals import AgentRefused
 from switch_core.rooms_yaml import (
     CONSOLE_PARAM_TYPES,
+    ENTITY_PARAM_TYPES,
     PLACEHOLDER_RE,
     ParamSpec,
     coerce_param,
@@ -97,6 +98,10 @@ def _known_values(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any
         raise ValueError(f"Undeclared input(s): {', '.join(sorted(undeclared))}")
     values: dict[str, Any] = {}
     for name, spec in declared.items():
+        # An agent, room, bridge or user is left for the server, which checks
+        # that it exists; only a slot it names is swapped (see room_document).
+        if spec.type in ENTITY_PARAM_TYPES:
+            continue
         if inputs.get(name) is not None:
             values[name] = coerce_param(inputs[name], spec, name)
         elif spec.default is not None and not isinstance(spec.default, list):
@@ -199,6 +204,14 @@ def room_document(
     still_used = _placeholders(room_part, set())
     params = {name: spec for name, spec in declared.items() if name in still_used}
     run_inputs = {k: v for k, v in inputs.items() if k in params}
+    for name, spec in params.items():
+        # An entity param whose value is a slot now names the agent filling it.
+        given = inputs.get(name)
+        if given is None and not isinstance(spec, dict):
+            continue
+        value = given if given is not None else spec.get("default")
+        if isinstance(value, str) and value in replacements:
+            run_inputs[name] = replacements[value]
 
     pattern = _name_pattern(list(replacements))
 
