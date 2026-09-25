@@ -22,6 +22,7 @@ import type {
  */
 export class SwitchServersStore {
   servers: SwitchServer[] = [];
+  activeServerId: string | null = null;
 
   /** Connection status per server id, refreshed on focus / select / manually. */
   readonly statuses = new Map<string, ServerConnectionStatus>();
@@ -82,24 +83,8 @@ export class SwitchServersStore {
     return hostReachabilityStore.isBlocked(server.sshHost);
   }
 
-  /**
-   * The server the window is scoped to.
-   *
-   * Read off the active workspace rather than held here, so the two cannot
-   * disagree. What the user selects is a workspace; the server is whichever one
-   * hosts it, and the main process resolves it the same way.
-   */
-  get activeServerId(): string | null {
-    return workspacesStore.activeServerId;
-  }
-
   get activeServer(): SwitchServer | null {
-    return this.serverById(this.activeServerId);
-  }
-
-  serverById(serverId: string | null): SwitchServer | null {
-    if (!serverId) return null;
-    return this.servers.find((s) => s.id === serverId) ?? null;
+    return this.servers.find((s) => s.id === this.activeServerId) ?? null;
   }
 
   statusFor(serverId: string): ServerConnectionStatus | null {
@@ -153,12 +138,14 @@ export class SwitchServersStore {
       this.errorDetail = null;
     });
     try {
-      const [servers] = await Promise.all([
+      const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
+        rpc.switchServers.getActiveServerId(),
         workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
+        this.activeServerId = activeServerId;
         this.loaded = true;
       });
       // A page restored onto a server that has since been deleted can only be
@@ -177,22 +164,18 @@ export class SwitchServersStore {
   }
 
   /**
-   * The switcher, the sidebar and the sessions under it all read the active
-   * workspace, so one must be selected whenever any exists. Nothing on the main
-   * side picks it — adding the first server leaves the selection empty — so
-   * every path that changes the list ends here.
+   * A server is a workspace: the switcher, the sidebar and the sessions under
+   * it all read the active one, so one must be selected whenever any server
+   * exists. Nothing on the main side picks it — adding the first server leaves
+   * the active id null — so every path that changes the list ends here.
    *
-   * A stored selection that no longer names a workspace counts as none. It is
-   * not hypothetical: removing the active server and adding another leaves the
-   * id pointing at the removed one, and treating that as a selection left the
-   * app with no workspace at all — no switcher, no sidebar tree, no way back.
-   *
-   * Which one it lands on is expressed over servers rather than workspaces,
-   * because a server is what the user just added or removed, and its own
-   * workspaces are then the main process's to choose between.
+   * A stored id that no longer names a server counts as no selection. It is not
+   * hypothetical: removing the active server and adding another leaves the id
+   * pointing at the removed one, and treating that as a selection left the app
+   * with no workspace at all — no switcher, no sidebar tree, no way back.
    */
   private async ensureActiveServer(): Promise<void> {
-    if (workspacesStore.active) return;
+    if (this.activeServerId && this.servers.some((s) => s.id === this.activeServerId)) return;
     const first = this.servers[0];
     if (first) await this.setActive(first.id);
   }
@@ -347,12 +330,14 @@ export class SwitchServersStore {
     this.clearError();
     try {
       const created = await rpc.switchServers.addServer({ name, gatewayUrl, apiUrl });
-      const [servers] = await Promise.all([
+      const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
+        rpc.switchServers.getActiveServerId(),
         workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
+        this.activeServerId = activeServerId;
       });
       await this.ensureActiveServer();
       await this.refreshStatus(created.id);
@@ -431,12 +416,14 @@ export class SwitchServersStore {
     this.clearError();
     try {
       await rpc.switchServers.removeServer(serverId);
-      const [servers] = await Promise.all([
+      const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
+        rpc.switchServers.getActiveServerId(),
         workspacesStore.refresh(),
       ]);
       runInAction(() => {
         this.servers = servers;
+        this.activeServerId = activeServerId;
         this.statuses.delete(serverId);
         this.authConfigs.delete(serverId);
         this.authConfigWanted.delete(serverId);
@@ -453,20 +440,14 @@ export class SwitchServersStore {
     }
   }
 
-  /**
-   * Scope the window to a server, for the callers that know only one — adding
-   * a server, and following a navigation onto another server's room or agent.
-   *
-   * Which of its workspaces that lands on is the main process's to decide: it
-   * keeps the current selection if it is already on this server, and otherwise
-   * picks one. Picking here instead would make this store the second place that
-   * answers the same question.
-   */
   async setActive(serverId: string): Promise<void> {
     this.clearError();
     try {
       await rpc.switchServers.setActiveServer(serverId);
       await workspacesStore.refresh();
+      runInAction(() => {
+        this.activeServerId = serverId;
+      });
     } catch (cause) {
       this.setError(cause, 'Could not switch to that server.');
     }
@@ -482,9 +463,7 @@ export class SwitchServersStore {
       });
       return false;
     }
-    // Signing in is when the server first says which workspaces the account
-    // belongs to, so the list this app holds is stale the moment it returns.
-    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+    await this.refreshStatus(serverId);
     return true;
   }
 
@@ -501,7 +480,7 @@ export class SwitchServersStore {
       }
       return false;
     }
-    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+    await this.refreshStatus(serverId);
     return true;
   }
 

@@ -91,7 +91,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const isAdmin = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
   // Only a stack Switch Console runs has a chat whose credentials it generated and
   // can therefore show; anyone else's Mattermost is their own to hand out.

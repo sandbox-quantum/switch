@@ -289,10 +289,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       const kind = yamlText !== initialYaml ? await rpc.agentTemplates.kind({ yamlText }) : null;
       // Each field is sent only when changed, so saving one cannot put back
       // another that someone else changed meanwhile.
-      const workspaceId = workspacesStore.idOnServerInScope(serverId);
-      if (workspaceId === null) throw new Error('This server’s workspace is not known yet.');
       const saved = await rpc.workspaces.updateTemplate({
-        workspaceId,
+        workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
         templateId: editingTemplate.id,
         ...(name.trim() !== editingTemplate.name.trim() ? { name: name.trim() } : {}),
         ...(description.trim() !== editingTemplate.description.trim()

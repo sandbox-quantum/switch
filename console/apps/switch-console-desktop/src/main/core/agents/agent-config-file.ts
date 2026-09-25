@@ -62,28 +62,14 @@ export type AgentTemplateOrigin = {
   name: string;
   source: 'bundled' | 'server';
   serverId?: string;
-  /**
-   * The workspace the template was read from.
-   *
-   * A template registry belongs to a workspace, not to the server hosting it,
-   * so the server alone does not say where to look again once an account holds
-   * several on one. Absent on an origin written before this was recorded.
-   */
-  workspaceId?: string;
 };
 
 function parseTemplateOrigin(value: unknown): AgentTemplateOrigin | undefined {
   if (!isPlainObject(value)) return undefined;
-  const { id, name, source, serverId, workspaceId } = value;
+  const { id, name, source, serverId } = value;
   if (typeof id !== 'string' || typeof name !== 'string') return undefined;
   if (source !== 'bundled' && source !== 'server') return undefined;
-  return {
-    id,
-    name,
-    source,
-    ...(typeof serverId === 'string' ? { serverId } : {}),
-    ...(typeof workspaceId === 'string' ? { workspaceId } : {}),
-  };
+  return { id, name, source, ...(typeof serverId === 'string' ? { serverId } : {}) };
 }
 
 /**

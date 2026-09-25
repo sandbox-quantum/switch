@@ -74,16 +74,7 @@ vi.mock('./getAgents', () => ({
   ),
 }));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
-}));
-
-const mockServer = vi.hoisted(() => ({
-  id: 'srv-1',
-  name: 'Switch',
-  apiUrl: 'https://switch.example.com',
-}));
-vi.mock('@main/core/workspaces/workspace-session', () => ({
-  withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(mockServer),
+  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
 }));
 vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({
@@ -100,7 +91,11 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: h.GatewayError,
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: vi.fn(async () => mockServer),
+  getServer: vi.fn(async () => ({
+    id: 'srv-1',
+    name: 'Switch',
+    apiUrl: 'https://switch.example.com',
+  })),
 }));
 vi.mock('./createAgent', () => ({ createAgent: h.createAgent }));
 vi.mock('@main/core/locations/path-utils', () => ({ checkIsValidDirectory: () => true }));

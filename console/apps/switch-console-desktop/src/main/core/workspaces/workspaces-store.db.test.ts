@@ -21,7 +21,7 @@ const {
   getActiveWorkspaceId,
   listWorkspacesForServer,
   renameServerWorkspaces,
-  requireWorkspaceForServer,
+  requireSoleWorkspaceForServer,
   requireWorkspace,
   serverIdForWorkspace,
   setActiveWorkspaceId,
@@ -91,46 +91,30 @@ describe('workspaces-store', () => {
     });
   });
 
-  describe('requireWorkspaceForServer', () => {
+  describe('requireSoleWorkspaceForServer', () => {
     it('returns the one workspace a server has', async () => {
       await seedServer('srv-1', 'Local dev');
       const created = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
 
-      expect((await requireWorkspaceForServer('srv-1')).id).toBe(created.id);
+      expect((await requireSoleWorkspaceForServer('srv-1')).id).toBe(created.id);
     });
 
     it('raises for a server whose registration left it with none', async () => {
       await seedServer('srv-1', 'Local dev');
 
-      await expect(requireWorkspaceForServer('srv-1')).rejects.toThrow('has no workspace');
-    });
-
-    // These callers run from screens showing the active workspace, so acting
-    // anywhere else would act somewhere the user is not looking.
-    it('takes the active one when a server has several', async () => {
-      await seedServer('srv-1', 'Cloud');
-      await fixture.db.insert(workspaces).values([
-        { id: 'ws-a', serverId: 'srv-1', name: 'A', tenantId: 'tenant-a' },
-        { id: 'ws-b', serverId: 'srv-1', name: 'B', tenantId: 'tenant-b' },
-      ]);
-      await setActiveWorkspaceId('ws-b');
-
-      expect((await requireWorkspaceForServer('srv-1')).id).toBe('ws-b');
+      await expect(requireSoleWorkspaceForServer('srv-1')).rejects.toThrow('has no workspace');
     });
 
     // Picking one would attach the agent to a workspace the user never chose,
     // and nothing would show them until it had already happened.
-    it('raises when a server has several and the active one is elsewhere', async () => {
+    it('raises rather than picking when a server has several', async () => {
       await seedServer('srv-1', 'Cloud');
-      await seedServer('srv-2', 'Local dev');
       await fixture.db.insert(workspaces).values([
         { id: 'ws-a', serverId: 'srv-1', name: 'A', tenantId: 'tenant-a' },
         { id: 'ws-b', serverId: 'srv-1', name: 'B', tenantId: 'tenant-b' },
-        { id: 'ws-c', serverId: 'srv-2', name: 'C', tenantId: 'tenant-c' },
       ]);
-      await setActiveWorkspaceId('ws-c');
 
-      await expect(requireWorkspaceForServer('srv-1')).rejects.toThrow('must name one');
+      await expect(requireSoleWorkspaceForServer('srv-1')).rejects.toThrow('must name one');
     });
   });
 

@@ -181,7 +181,7 @@ export class SwitchRoomsStore {
    * precisely because you do not know where a thing is, and a result set
    * silently limited to the one you happen to be looking at cannot answer that.
    * Navigating to one of these switches the active workspace (see
-   * `scopeToRoomWorkspace`), so the sidebar follows you there rather than
+   * `scopeToRoomServer`), so the sidebar follows you there rather than
    * filtering the room back out.
    */
   get listedRoomsInAllWorkspaces(): RemoteRoomSummary[] {

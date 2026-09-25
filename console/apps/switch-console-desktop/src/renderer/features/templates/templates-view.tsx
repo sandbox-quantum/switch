@@ -408,7 +408,7 @@ function RecentsSection({
 
 const TemplatesPanel = observer(function TemplatesPanel() {
   const serverId = useServerId();
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const meId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
   const { navigate } = useNavigate();

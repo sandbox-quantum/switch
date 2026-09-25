@@ -33,7 +33,7 @@ vi.mock('@renderer/features/locations/stores/agents-store', () => ({
   agentsStore: {
     load: vi.fn().mockResolvedValue(undefined),
     byLocation: new Map([[LOCATION.id, [AGENT]]]),
-    agentsInWorkspaceAtLocation: () => [AGENT],
+    agentsOnServerAtLocation: () => [AGENT],
   },
 }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -42,8 +42,8 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     loadRoomNames: vi.fn().mockResolvedValue(undefined),
   },
 }));
-vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { activeId: 'workspace-1' },
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { activeServerId: 'server-1' },
 }));
 vi.mock('@renderer/lib/stores/app-state', () => ({
   sidebarStore: {

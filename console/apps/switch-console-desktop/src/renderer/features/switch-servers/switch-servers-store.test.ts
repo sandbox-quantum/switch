@@ -4,9 +4,8 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 const getAuthConfig = vi.hoisted(() => vi.fn());
 const getConnectionStatus = vi.hoisted(() => vi.fn());
 const listServers = vi.hoisted(() => vi.fn());
+const getActiveServerId = vi.hoisted(() => vi.fn());
 const setActiveServer = vi.hoisted(() => vi.fn());
-/** The workspace selection as the main process holds it, by the server it is on. */
-const selection = vi.hoisted(() => ({ serverId: null as string | null }));
 const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
@@ -19,40 +18,15 @@ vi.mock('@renderer/lib/ipc', () => ({
       getAuthConfig,
       getConnectionStatus,
       listServers,
+      getActiveServerId,
       setActiveServer,
       removeServer,
       addServer,
     },
   },
 }));
-/**
- * Stands in for the workspace selection this store now reads its active server
- * off, faithfully enough that the selection logic is still being tested rather
- * than asserted against a constant.
- *
- * Each server gets one workspace, which is the state every install is in, so
- * `listServers` and {@link selectServer} stay the knobs a test turns. A
- * selection naming a server that is no longer listed resolves to no workspace —
- * which is exactly what happens for real once the removed server takes its
- * workspace row with it.
- */
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: {
-    workspaces: [] as { id: string; serverId: string }[],
-    activeId: null as string | null,
-    get active(): { id: string; serverId: string } | null {
-      return this.workspaces.find((w) => w.id === this.activeId) ?? null;
-    },
-    get activeServerId(): string | null {
-      return this.active?.serverId ?? null;
-    },
-    async refresh(): Promise<void> {
-      const servers: SwitchServer[] = await listServers();
-      const activeServerId = selection.serverId;
-      this.workspaces = servers.map((s) => ({ id: `ws-${s.id}`, serverId: s.id }));
-      this.activeId = activeServerId === null ? null : `ws-${activeServerId}`;
-    },
-  },
+  workspacesStore: { refresh: vi.fn().mockResolvedValue(undefined) },
 }));
 vi.mock('@renderer/features/remote-hosts/host-reachability-store', () => ({
   hostReachabilityStore: { isBlocked: (sshHost: string) => blockedHosts.has(sshHost) },
@@ -63,11 +37,6 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
 }));
 
 const { SwitchServersStore } = await import('./switch-servers-store');
-
-/** Scope the window to a server, the way choosing one of its workspaces does. */
-function selectServer(serverId: string | null): void {
-  selection.serverId = serverId;
-}
 
 const authConfig = { passwordLoginEnabled: true, oidcEnabled: false, oidcProviderLabel: null };
 
@@ -125,9 +94,6 @@ beforeEach(() => {
     user: null,
   }));
   getAuthConfig.mockResolvedValue(authConfig);
-  listServers.mockResolvedValue([]);
-  selectServer(null);
-  setActiveServer.mockImplementation(async (serverId: string) => selectServer(serverId));
 });
 
 describe('fetching sign-in options', () => {
@@ -233,7 +199,7 @@ describe('recovering when connectivity returns', () => {
     getAuthConfig.mockRejectedValueOnce(new Error('offline'));
     await store.ensureAuthConfig('srv-a');
     listServers.mockResolvedValue([]);
-    selectServer(null);
+    getActiveServerId.mockResolvedValue(null);
     removeServer.mockResolvedValue(undefined);
 
     await store.removeServer('srv-a');
@@ -248,7 +214,7 @@ describe('a page left on a server that is gone', () => {
   it('is revalidated when the server is removed', async () => {
     const store = newStore([server('srv-a')]);
     listServers.mockResolvedValue([]);
-    selectServer(null);
+    getActiveServerId.mockResolvedValue(null);
     removeServer.mockResolvedValue(undefined);
 
     await store.removeServer('srv-a');
@@ -261,7 +227,7 @@ describe('a page left on a server that is gone', () => {
     expect(store.loaded).toBe(false);
 
     listServers.mockResolvedValue([server('srv-a')]);
-    selectServer('srv-a');
+    getActiveServerId.mockResolvedValue('srv-a');
     await store.init();
 
     expect(store.loaded).toBe(true);
@@ -480,14 +446,14 @@ describe('a server that cannot be reached', () => {
 });
 
 /**
- * The switcher, the sidebar and the sessions under it all read the active
- * workspace, so "servers exist but none is active" is a state the UI cannot
- * render. Nothing on the main side picks one, so the store must.
+ * A server is a workspace: the switcher, the sidebar and the sessions under it
+ * all read the active one, so "servers exist but none is active" is a state the
+ * UI cannot render. Nothing on the main side picks one, so the store must.
  */
 describe('keeping a server active', () => {
   it('selects the first server when nothing was active', async () => {
     listServers.mockResolvedValue([server('srv-a'), server('srv-b')]);
-    selectServer(null);
+    getActiveServerId.mockResolvedValue(null);
     const store = new SwitchServersStore();
 
     await store.init();
@@ -497,7 +463,7 @@ describe('keeping a server active', () => {
 
   it('keeps the server the user last chose', async () => {
     listServers.mockResolvedValue([server('srv-a'), server('srv-b')]);
-    selectServer('srv-b');
+    getActiveServerId.mockResolvedValue('srv-b');
     const store = new SwitchServersStore();
 
     await store.init();
@@ -511,7 +477,7 @@ describe('keeping a server active', () => {
     // workspace at all — no switcher, no destinations, no sidebar tree — while
     // a perfectly good server sat in the list.
     listServers.mockResolvedValue([server('srv-b')]);
-    selectServer('srv-gone');
+    getActiveServerId.mockResolvedValue('srv-gone');
     const store = new SwitchServersStore();
 
     await store.init();
@@ -525,7 +491,7 @@ describe('keeping a server active', () => {
     // the very first one left the app with no workspace to show — the sidebar
     // stayed on "Add a server" until the next launch.
     listServers.mockResolvedValue([]);
-    selectServer(null);
+    getActiveServerId.mockResolvedValue(null);
     const store = new SwitchServersStore();
     await store.init();
 
@@ -540,7 +506,7 @@ describe('keeping a server active', () => {
 
   it('does not move the workspace when a second server is added', async () => {
     listServers.mockResolvedValue([server('srv-a')]);
-    selectServer('srv-a');
+    getActiveServerId.mockResolvedValue('srv-a');
     const store = new SwitchServersStore();
     await store.init();
 
@@ -555,7 +521,7 @@ describe('keeping a server active', () => {
 
   it('leaves nothing active when there are no servers at all', async () => {
     listServers.mockResolvedValue([]);
-    selectServer(null);
+    getActiveServerId.mockResolvedValue(null);
     const store = new SwitchServersStore();
 
     await store.init();

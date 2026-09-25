@@ -122,7 +122,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
     setRefreshingPage(true);
     // The three caches below are keyed by workspace, so a server id would
     // invalidate nothing and the button would spin over stale cards.
-    const workspaceId = workspacesStore.idOnServerInScope(serverId);
+    const workspaceId = workspacesStore.soleIdOnServer(serverId);
     try {
       await Promise.all([
         store.refreshServer(serverId),

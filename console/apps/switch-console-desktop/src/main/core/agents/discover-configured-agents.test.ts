@@ -73,7 +73,7 @@ vi.mock('./getAgents', () => ({
   ),
 }));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
+  requireSoleWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
 }));
 vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({

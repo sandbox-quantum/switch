@@ -19,7 +19,7 @@ export const ServerStatTiles = observer(function ServerStatTiles({
 }: {
   serverId: string;
 }) {
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
 
   // Shares the key every other bridge reader uses, so the list is already in
   // cache by the time this renders and the tile never fetches on its own.

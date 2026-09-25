@@ -4,7 +4,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { events } from '@renderer/lib/ipc';
-import { scopeToLocationWorkspace } from '@renderer/lib/layout/scope-to-workspace';
+import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
 import { appState } from '@renderer/lib/stores/app-state';
 import { report } from '@renderer/lib/telemetry/report';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
@@ -95,7 +95,7 @@ export function SessionDeeplinkListener(): null {
           // is filtered out of the server-scoped tree and there is no row to
           // reveal. Navigating is all the sidebar needs — it expands and scrolls
           // to whatever the open view selects, from any origin.
-          await scopeToLocationWorkspace(match.locationId);
+          await scopeToLocationServer(match.locationId);
           appState.navigation.navigate('session', match);
         })();
       }

@@ -156,7 +156,7 @@ const KIND_LABEL: Record<LoadedTemplate['kind'], string> = {
 
 const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const { serverId, templateId } = useViewParams();
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const { navigate } = useNavigate();
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const me = switchServersStore.statusFor(serverId)?.user ?? null;
@@ -242,11 +242,11 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const use = () => navigate('templateUse', { serverId, templateId });
 
   const saveToServer = async () => {
-    if (!loaded.bundled || workspaceId === null) return;
+    if (!loaded.bundled) return;
     setBusy('save');
     try {
       const saved = await rpc.workspaces.saveTemplate({
-        workspaceId,
+        workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
         name: loaded.bundled.name,
         description: loaded.bundled.description,
         kind: loaded.bundled.kind,
@@ -266,10 +266,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   };
 
   const remove = async () => {
-    if (!loaded.server || workspaceId === null) return;
+    if (!loaded.server) return;
     setBusy('delete');
     try {
-      await rpc.workspaces.deleteTemplate({ workspaceId, templateId: loaded.server.id });
+      await rpc.workspaces.deleteTemplate({
+        workspaceId: workspacesStore.requireSoleIdOnServer(serverId),
+        templateId: loaded.server.id,
+      });
       toast({ title: `"${loaded.name}" removed from ${server?.name ?? 'the workspace'}` });
       navigate('templates', { serverId });
     } catch (e) {

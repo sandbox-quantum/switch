@@ -2,7 +2,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import type { LocationStore } from '@renderer/features/locations/stores/location';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -20,26 +20,22 @@ import type { AgentIconBackfill } from '@shared/core/switch-servers/switch-serve
 export type AgentEntry = { agent: Agent; location: LocationStore };
 
 /**
- * A location's agents that the active workspace's tree should draw.
+ * A location's agents that the active server's tree should draw.
  *
- * A location is in scope when *some* of its agents are in the active workspace,
- * but a directory can hold agents for several at once — so scope has to be
+ * A location is in scope when *some* of its agents are on the active server, but a
+ * directory can hold agents for several servers at once — so scope has to be
  * re-applied per agent here. Taking the location's whole list instead drew agents
- * belonging to another workspace under this one, which read as "onboarding brought
+ * belonging to another server under this one, which read as "onboarding brought
  * them across" when nothing had been onboarded at all (CHOO-2044).
- *
- * The workspace and not its server: two workspaces on one server are two separate
- * trees, and scoping on the server would draw both of them under whichever name
- * the sidebar is showing.
  */
 function agentsAtLocationInScope(location: LocationStore): Agent[] {
-  const activeWorkspaceId = workspacesStore.activeId;
-  if (!activeWorkspaceId) return agentsStore.byLocation.get(location.id) ?? [];
-  return agentsStore.agentsInWorkspaceAtLocation(location.id, activeWorkspaceId);
+  const activeServerId = switchServersStore.activeServerId;
+  if (!activeServerId) return agentsStore.byLocation.get(location.id) ?? [];
+  return agentsStore.agentsOnServerAtLocation(location.id, activeServerId);
 }
 
 /**
- * The flat list of agents in the active-workspace scope. Switch Console shows agents
+ * The flat list of agents in the active-server scope. Switch Console shows agents
  * as a flat list — not grouped by directory (CHOO-1440).
  *
  * Newest first, then overlaid with the user's manual drag order: an agent they
@@ -61,7 +57,7 @@ export function scopedAgents(): AgentEntry[] {
 }
 
 /**
- * Every agent in the active workspace, ignoring the agent filters.
+ * Every agent on the active server, ignoring the agent filters.
  *
  * Room membership is a fact about a room, so the agents a room lists — and the
  * agents whose membership is fetched at all — must not depend on which filters
@@ -155,7 +151,7 @@ export async function refreshSidebarRoomStateAfterOnboarding(): Promise<void> {
 
 /**
  * Fill in the avatar of any of this user's agents registered before icons
- * existed (CHOO-2171). The main process does it once per workspace per run, so
+ * existed (CHOO-2171). The main process does it once per server per run, so
  * calling it on every refresh costs nothing after the first.
  *
  * Not awaited by the caller and never allowed to throw: the sidebar must paint

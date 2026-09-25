@@ -51,7 +51,7 @@ export const AgentServerPicker = observer(function AgentServerPicker({
 
   const servers = switchServersStore.servers;
 
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const verifyQuery = useQuery({
     queryKey: ['verifyAgent', workspaceId, switchAgentId],
     queryFn: () =>

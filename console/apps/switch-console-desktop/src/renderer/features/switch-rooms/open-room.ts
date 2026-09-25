@@ -1,4 +1,4 @@
-import { scopeToRoomWorkspace } from '@renderer/lib/layout/scope-to-workspace';
+import { scopeToRoomServer } from '@renderer/lib/layout/scope-to-server';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 
 /**
@@ -12,7 +12,7 @@ import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
  * findable in the tree it belongs to.
  */
 export async function openRoom(roomId: string): Promise<void> {
-  await scopeToRoomWorkspace(roomId);
+  await scopeToRoomServer(roomId);
   sidebarStore.setGrouping('room');
   sidebarStore.ensureRoomExpanded(roomId);
   appState.navigation.navigate('room', { roomId });

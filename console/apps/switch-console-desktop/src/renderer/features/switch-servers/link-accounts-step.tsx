@@ -44,7 +44,7 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
   // to and give the user two Backs meaning different things.
   const [linking, setLinking] = useState<RemoteBridge | null>(null);
 
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const workspaceId = workspacesStore.soleIdOnServer(serverId);
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],
     queryFn: () => rpc.workspaces.listBridges(workspaceId as string),

@@ -16,7 +16,7 @@ import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { scopeToLocationWorkspace } from '@renderer/lib/layout/scope-to-workspace';
+import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import { report } from '@renderer/lib/telemetry/report';
@@ -325,7 +325,7 @@ export function CommandPaletteModal({
     if (!item.locationId) return;
     const locationId = item.locationId;
     handleClose();
-    void scopeToLocationWorkspace(locationId).then(() =>
+    void scopeToLocationServer(locationId).then(() =>
       navigate('session', { locationId, sessionId: item.id })
     );
   };
@@ -342,7 +342,7 @@ export function CommandPaletteModal({
     if (!item.locationId) return;
     const locationId = item.locationId;
     handleClose();
-    void scopeToLocationWorkspace(locationId).then(() => {
+    void scopeToLocationServer(locationId).then(() => {
       sidebarStore.ensureGroupExpanded(agentExpandKey(item.id));
       navigate('location', { locationId, agentName: item.title });
     });
