@@ -633,10 +633,14 @@ advances nothing until the gap below it resolves.
 
 **Gateway request cancellation.** Console can drop the request (closed
 window, network, its own timeout) at any await in the route. Once the
-sequence number is about to be committed, the rest of the route (commit, then
-putting the frame in its reserved slot, then registering the pending relay)
-runs as one task under `asyncio.shield`. Cancelling the request cancels only
-the wait for the reply, never the send. A healthy worker stream therefore
+sequence number is about to be committed, the rest of the route runs as one
+task under `asyncio.shield`, in D1's order: register the pending relay, commit,
+then put the frame in its reserved slot. Registration comes first so that an
+immediate worker reply always finds its relay. The task opens and closes its
+own database session (`tenant_session`), never the request's: `asyncio.shield`
+does not stop the request middleware from closing the request's session when
+the request is torn down. Cancelling the request cancels only the wait for the
+reply, never the send. A healthy worker stream therefore
 gets the frame, and neither side reconnects because Console left. The reply
 is discarded when it arrives, and the watermark advances as usual. If the
 shielded step itself fails after the commit (Core crash, the connection
@@ -735,6 +739,12 @@ addressed event wakes it and lands in the mailbox, and a relay is refused
   cancelled right after the commit. The frame still reaches the worker on the
   same stream generation (no reconnect), the watermark advances, and
   `relay_seq` has no hole.
+- `test_gateway_cancel_with_teardown_and_immediate_reply`: through the real
+  ASGI app and middleware, the client disconnects during the shielded step so
+  the request's session is closed, and the fake worker replies the moment the
+  frame arrives. The shielded task's commit and send succeed on its own
+  session, the reply finds its registered relay (no 404), and no
+  closed-session error is raised or logged.
 - `test_relay_worker_restart`: the watcher restarts with N received but not
   resolved. N resolves `interrupted` and the watermark advances; the host's
   recovered state decides `busy`.
@@ -1375,8 +1385,11 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
   bounded per-connection queues. Gateway relay route and relay stream
   (owner-only, 2 MiB requests, paged replies, resync reasons); agent relay
   reply and push routes. Mutating relays reserve a queue slot, then stamp
-  `relay_seq` and `active_at` under the launch lock, with commit and send
-  shielded from request cancellation; `relay_fence` in
+  `relay_seq` and `active_at` under the launch lock; register the pending
+  relay, commit, then send, as one task shielded from request cancellation
+  that owns its own database session (the request's session is closed by
+  middleware at teardown, shield or not), tested by
+  `test_gateway_cancel_with_teardown_and_immediate_reply`; `relay_fence` in
   `worker_attached`; pending-relay busy, idle report storage, `idle_evidence`
   with the contiguous watermark and without `held` rows or tombstones. Operation doorbell with re-ring, fenced claim, result re-post.
   Credential doorbell and idle-report catch-up.
