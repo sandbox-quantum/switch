@@ -413,27 +413,36 @@ export class SwitchServersStore {
     this.clearError();
     try {
       await rpc.switchServers.removeServer(serverId);
-      const [servers, activeServerId] = await Promise.all([
-        rpc.switchServers.listServers(),
-        rpc.switchServers.getActiveServerId(),
-      ]);
-      runInAction(() => {
-        this.servers = servers;
-        this.activeServerId = activeServerId;
-        this.statuses.delete(serverId);
-        this.authConfigs.delete(serverId);
-        this.authConfigWanted.delete(serverId);
-        this.statusUnreachable.delete(serverId);
-        this.authConfigUnreachable.delete(serverId);
-      });
-      // The removed id also sits in the server view's saved params, where it
-      // outlives the record and would be read back — as a page for a server
-      // that is gone, and as gateway calls for an id nothing can resolve.
-      appState.navigation.revalidate();
-      await this.ensureActiveServer();
+      await this.forgetRemovedServer(serverId);
     } catch (cause) {
       this.setError(cause, 'Could not remove the server.');
     }
+  }
+
+  /**
+   * Re-read what a server's removal leaves behind in this store. Public for the
+   * other way a record goes: disconnecting from a shared remote server, which
+   * the remote store drives.
+   */
+  async forgetRemovedServer(serverId: string): Promise<void> {
+    const [servers, activeServerId] = await Promise.all([
+      rpc.switchServers.listServers(),
+      rpc.switchServers.getActiveServerId(),
+    ]);
+    runInAction(() => {
+      this.servers = servers;
+      this.activeServerId = activeServerId;
+      this.statuses.delete(serverId);
+      this.authConfigs.delete(serverId);
+      this.authConfigWanted.delete(serverId);
+      this.statusUnreachable.delete(serverId);
+      this.authConfigUnreachable.delete(serverId);
+    });
+    // The removed id also sits in the server view's saved params, where it
+    // outlives the record and would be read back — as a page for a server
+    // that is gone, and as gateway calls for an id nothing can resolve.
+    appState.navigation.revalidate();
+    await this.ensureActiveServer();
   }
 
   async setActive(serverId: string): Promise<void> {

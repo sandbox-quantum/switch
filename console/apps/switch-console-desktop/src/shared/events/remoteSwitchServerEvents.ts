@@ -3,7 +3,26 @@ import { defineEvent } from '@shared/lib/ipc/events';
 
 /** Status of a remote-managed stack, tagged with the SSH host it runs on (the
  * renderer keeps one entry per host). Reuses the local status shape. */
-export type RemoteServerStatus = LocalServerStatus & { sshHost: string };
+export type RemoteServerStatus = LocalServerStatus & {
+  sshHost: string;
+  /**
+   * Something about the stack this Console did not do and the user should
+   * know, or null (CHOO-2893). A remote stack is shared, so it can be stopped,
+   * reset or restarted from another Console or on the host itself; this is
+   * where that is said, rather than leaving the next call to fail with a
+   * transport error naming a local port.
+   */
+  notice: string | null;
+  /**
+   * Why this Console could not record what it did on the stack's host, or
+   * null (CHOO-2893). The operation itself went ahead — a stack is still
+   * started or stopped when its record cannot be written — but the other
+   * Consoles sharing it will not see it in the server's users or activity,
+   * which is what they rely on before stopping or resetting it. Cleared by
+   * the next record that succeeds.
+   */
+  recordWarning: string | null;
+};
 
 export const remoteServerStatusChannel = defineEvent<RemoteServerStatus>(
   'remote-switch-server:status'

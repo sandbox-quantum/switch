@@ -1,4 +1,4 @@
-import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Globe, Info, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -20,6 +20,7 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import { othersRecentlySeen } from '@shared/core/managed-switch-server/managed-switch-server';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -32,7 +33,9 @@ import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
+import { type RemoteSetupAction, remoteSetupAction } from './remote-setup-action';
 import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import { affectedSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
 
 /**
@@ -289,8 +292,8 @@ function ChooseStep({
           />
           <ChoiceCard
             icon={<Server className="size-5" />}
-            title="Run a server on a remote host"
-            description="Switch Console sets it up over SSH on a host you've onboarded. Stays running when Switch Console is closed."
+            title="Run or join a server on a remote host"
+            description="Switch Console sets one up over SSH on a host you've onboarded, or joins the one already running there. Stays running when Switch Console is closed."
             onClick={onRemoteHost}
           />
           <ChoiceCard
@@ -537,9 +540,15 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
     });
   }, [store]);
 
+  // A host is shared by everyone with access to it (CHOO-2893), so what is
+  // offered depends on what is already there: look before offering anything —
+  // and again when a host that was out of reach comes back.
+  const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
   useEffect(() => {
-    if (sshHost) void store.checkDocker(sshHost);
-  }, [store, sshHost]);
+    if (!sshHost || hostBlocked) return;
+    void store.checkDocker(sshHost);
+    void store.probe(sshHost);
+  }, [store, sshHost, hostBlocked]);
 
   const running = sshHost ? store.isRunning(sshHost) : false;
   const starting = sshHost ? store.isTransitioning(sshHost) : false;
@@ -548,19 +557,45 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const status = sshHost ? store.statusFor(sshHost) : null;
   const logs = sshHost ? store.logsFor(sshHost) : [];
+  const action = sshHost
+    ? remoteSetupAction(sshHost, store.probeFor(sshHost), store.isProbing(sshHost))
+    : null;
+  const joining = action?.kind === 'connect';
 
-  const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
-  const canStart = !!sshHost && name.trim().length > 0 && dockerReady && !starting && !hostBlocked;
-  const primaryLabel = running ? 'Done' : status?.phase === 'error' ? 'Retry' : 'Start';
+  const canAct =
+    !!sshHost &&
+    name.trim().length > 0 &&
+    dockerReady &&
+    !starting &&
+    !hostBlocked &&
+    (action?.kind === 'connect' || action?.kind === 'start');
+  const updating = action?.kind === 'connect' && action.updatesTo !== null;
+  // Joining an older server updates it for everyone using it, so the step
+  // names who that is (CHOO-2893).
+  useEffect(() => {
+    if (sshHost && updating) void store.loadRegister(sshHost);
+  }, [store, sshHost, updating]);
+  const affected =
+    sshHost && updating
+      ? affectedSentence(othersRecentlySeen(store.registerFor(sshHost), new Date()), new Date())
+      : null;
+  const primaryLabel = running
+    ? 'Done'
+    : joining
+      ? updating
+        ? 'Update and connect'
+        : 'Connect'
+      : 'Start';
   const onPrimary = () => {
     if (running) onDone(sshHost ? (store.statusFor(sshHost).serverId ?? null) : null);
+    else if (sshHost && joining) void store.connect(sshHost, name.trim());
     else if (sshHost) void store.start(sshHost, name.trim());
   };
 
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>Set up a server on a remote host</DialogTitle>
+        <DialogTitle>Run or join a server on a remote host</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         {hosts === null ? (
@@ -623,7 +658,16 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
               </Field>
             )}
 
-            {sshHost && !running && (
+            {sshHost && action && !running && (
+              <RemoteStackNotice
+                sshHost={sshHost}
+                action={action}
+                affected={affected}
+                onCheckAgain={() => void store.probe(sshHost)}
+              />
+            )}
+
+            {sshHost && action?.kind === 'start' && !action.existing && !running && (
               <div className="bg-card space-y-2 rounded-lg border border-border p-3">
                 <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
                 <ul className="space-y-1.5 text-xs text-foreground-muted">
@@ -654,7 +698,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
                 <AlertTitle>Server is running on {sshHost}</AlertTitle>
                 <AlertDescription>
                   It's in your servers list, reachable from this computer while Switch Console is
-                  open.
+                  open. Anyone else with access to {sshHost} can connect to it from their own Switch
+                  Console.
                 </AlertDescription>
               </Alert>
             )}
@@ -693,13 +738,94 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
             Cancel
           </Button>
         )}
-        <ConfirmButton onClick={onPrimary} disabled={!running && !canStart}>
-          {starting ? 'Starting…' : primaryLabel}
+        <ConfirmButton onClick={onPrimary} disabled={!running && !canAct}>
+          {starting
+            ? updating
+              ? 'Updating…'
+              : joining
+                ? 'Connecting…'
+                : 'Starting…'
+            : primaryLabel}
         </ConfirmButton>
       </DialogFooter>
     </>
   );
 });
+
+/**
+ * What the chosen host already has, and so what the primary button will do
+ * (CHOO-2893). Silent for an empty host, where Start does what it always did.
+ */
+function RemoteStackNotice({
+  sshHost,
+  action,
+  affected,
+  onCheckAgain,
+}: {
+  sshHost: string;
+  action: RemoteSetupAction;
+  /** Who else an update on joining reaches, when anyone does. */
+  affected: string | null;
+  onCheckAgain: () => void;
+}) {
+  switch (action.kind) {
+    case 'checking':
+      return (
+        <div className="flex items-center gap-2 text-sm text-foreground-muted">
+          <Spinner className="size-3.5" />
+          <span>Looking for a Switch server on {sshHost}…</span>
+        </div>
+      );
+    case 'connect':
+      return (
+        <Alert>
+          <Info className="size-4" />
+          <AlertTitle>
+            A Switch server is already running on {sshHost}
+            {action.deployedVersion ? ` (switch-core ${action.deployedVersion})` : ''}
+          </AlertTitle>
+          <AlertDescription>
+            {action.updatesTo === null
+              ? 'Connecting adds it to this Console without restarting it, so anyone already using it carries on undisturbed.'
+              : `This Console needs switch-core ${action.updatesTo}, so connecting updates it — for everyone who uses it. Its database is backed up first, and it restarts once, keeping its rooms, agents and data.`}
+            {action.updatesTo !== null && affected && ` ${affected}`}
+            {!action.shared &&
+              ' It was set up before servers could be shared; connecting shares it, so others with access to the host can connect too.'}
+          </AlertDescription>
+        </Alert>
+      );
+    case 'start':
+      if (!action.existing) return null;
+      return (
+        <Alert>
+          <Info className="size-4" />
+          <AlertTitle>A Switch server is set up on {sshHost}, but stopped</AlertTitle>
+          <AlertDescription>
+            Starting it keeps its rooms, agents and data — and starts it for everyone who uses it.
+          </AlertDescription>
+        </Alert>
+      );
+    case 'blocked':
+      return (
+        <Alert variant="destructive">
+          <TriangleAlert className="size-4" />
+          <AlertTitle>{action.title}</AlertTitle>
+          <AlertDescription>
+            <span>{action.detail}</span>{' '}
+            <button
+              type="button"
+              onClick={onCheckAgain}
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Check again
+            </button>
+          </AlertDescription>
+        </Alert>
+      );
+    case 'docker':
+      return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Step 2c — external server form (connect by URL; also the edit form)

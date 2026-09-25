@@ -49,8 +49,16 @@ export function readPersistedPorts(host: HostStateDir): Promise<LocalServerPorts
   return loadPersisted(host);
 }
 
-/** Drop the persisted choice so the next start picks fresh ports (reset path). */
-export async function clearPorts(host: ServerHost): Promise<void> {
+/** Keep `ports` as this desktop's record of the ports a host's stack publishes
+ * — the numbers read off the host itself when a remote stack's settings are
+ * adopted from there (CHOO-2893). */
+export async function rememberPorts(host: ServerHost, ports: LocalServerPorts): Promise<void> {
+  await persist(host, ports);
+}
+
+/** Drop the persisted choice so the next start picks fresh ports (reset path),
+ * or so a Console that disconnects keeps nothing of a stack it no longer uses. */
+export async function clearPorts(host: HostStateDir): Promise<void> {
   try {
     await writeFile(portsFilePath(host), JSON.stringify({}), 'utf8');
   } catch {

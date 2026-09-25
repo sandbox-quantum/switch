@@ -14,11 +14,13 @@ function render(props: {
   upgrade: ManagedServerUpgrade | null;
   progress?: string | null;
   disabled?: boolean;
+  affected?: string | null;
 }): string {
   return renderToStaticMarkup(
     createElement(VersionDriftNotice, {
       progress: null,
       disabled: false,
+      affected: null,
       onRestart: vi.fn(),
       ...props,
     })
@@ -34,6 +36,21 @@ function text(html: string): string {
 }
 
 describe('VersionDriftNotice for a server behind the pin', () => {
+  it('asks before updating a server others use, saying who it reaches', () => {
+    const html = text(
+      render({
+        drift: behind,
+        upgrade: { state: 'held', from: '0.10.0', to: '0.11.0' },
+        affected: 'Also used recently by bob@desk (as bob), 2 hours ago.',
+      })
+    );
+
+    expect(html).toMatch(/runs switch-core 0\.10\.0/);
+    expect(html).toMatch(/updating restarts it for everyone/);
+    expect(html).toMatch(/bob@desk \(as bob\), 2 hours ago/);
+    expect(html).toMatch(/Update for everyone/);
+  });
+
   it('shows the update in progress, with its current step, and no action', () => {
     const html = render({
       drift: behind,

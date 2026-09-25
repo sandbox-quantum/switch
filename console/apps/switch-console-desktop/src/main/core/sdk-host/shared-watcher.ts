@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import type { SharedHostConfig } from '@switch-console/agent-providers';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { updateAgent } from '@main/core/agents/updateAgent';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
@@ -13,6 +15,7 @@ import {
 } from '@main/core/switch-rooms/auto-session-store';
 import { controllerConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { log } from '@main/lib/logger';
 import { adoptSubagent } from './adopt-subagent';
 import { stopLegacySidecar } from './legacy-sidecar';
 import {
@@ -44,6 +47,88 @@ async function readSubagentSwitchId(
 }
 
 /**
+ * Where a remote watcher's auto-approve is taken from when it is written
+ * (CHOO-2893). Several Consoles under one account on a shared host each hold
+ * a row for the same agent, and each writes the one watcher on the host from
+ * its own row — so a Console that only restarted, or changed something else,
+ * would put back an auto-approve another Console had since changed.
+ *
+ * - `host`: the watcher's saved launch spec on the host, when there is one,
+ *   and this Console's row is brought in line with it. Everything but a change
+ *   to auto-approve itself.
+ * - `this-console`: this Console's row, because the person using it has just
+ *   changed it.
+ */
+export type AutoApproveSource = 'host' | 'this-console';
+
+type ConsoleRuntimeMode = 'full-access' | 'approval-required';
+
+/** Prints the saved spec's runtime mode, or nothing when there is no spec. */
+const READ_SAVED_RUNTIME_MODE =
+  "const fs=require('node:fs');try{const c=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));console.log(c?.start?.input?.runtimeMode??'')}catch(e){if(e.code!=='ENOENT')throw e}";
+
+/** Sets the saved spec's runtime mode, atomically, when there is a spec. */
+const WRITE_SAVED_RUNTIME_MODE =
+  "const fs=require('node:fs');const [file,mode]=process.argv.slice(1);let c;try{c=JSON.parse(fs.readFileSync(file,'utf8'))}catch(e){if(e.code==='ENOENT')process.exit(0);throw e}c.start.input.runtimeMode=mode;const tmp=file+'.'+require('node:crypto').randomUUID();fs.writeFileSync(tmp,JSON.stringify(c),{mode:0o600});fs.renameSync(tmp,file)";
+
+function runtimeModeFor(autoApprove: boolean): ConsoleRuntimeMode {
+  return autoApprove ? 'full-access' : 'approval-required';
+}
+
+async function readSavedRuntimeMode(
+  ctx: Awaited<ReturnType<typeof deploySharedHost>>['ctx'],
+  root: string
+): Promise<ConsoleRuntimeMode | null> {
+  const { stdout } = await ctx.exec('node', ['-e', READ_SAVED_RUNTIME_MODE, `${root}/config.json`]);
+  const mode = stdout.trim();
+  return mode === 'full-access' || mode === 'approval-required' ? mode : null;
+}
+
+/**
+ * Take the host's auto-approve for a watcher about to be written, and bring
+ * this Console's row in line so its toggle shows what the agent runs with.
+ */
+async function adoptHostAutoApprove(
+  agentId: string,
+  ctx: Awaited<ReturnType<typeof deploySharedHost>>['ctx'],
+  root: string,
+  config: SharedHostConfig
+): Promise<void> {
+  const saved = await readSavedRuntimeMode(ctx, root);
+  if (saved === null || saved === config.start.input.runtimeMode) return;
+  log.info('shared-watcher: taking auto-approve from the host, where another Console set it', {
+    agentId,
+    runtimeMode: saved,
+  });
+  config.start.input.runtimeMode = saved;
+  await updateAgent({ agentId, autoApprove: saved === 'full-access' });
+}
+
+/**
+ * Write an agent's auto-approve into its watcher's saved spec on the host when
+ * the watcher is not starting sessions — stopped, or connected with automatic
+ * sessions off — so the next time it does, from this Console or another, it
+ * starts with the value just chosen rather than the one saved before. Nothing
+ * to do when the agent has no saved spec: the first watcher is written from
+ * the row.
+ */
+export async function recordAutoApproveOnHost(agentId: string): Promise<void> {
+  const agent = await getAgentById(agentId);
+  if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
+  if (!agent.switchAgentId) return;
+  const location = await getAgentLocation(agent);
+  const transport = locationTransport(location);
+  if (transport.kind !== 'ssh') return;
+  const { ctx, root } = await deploySharedHost(transport, location.dir, agent.switchAgentId, true);
+  await ctx.exec('node', [
+    '-e',
+    WRITE_SAVED_RUNTIME_MODE,
+    `${root}/config.json`,
+    runtimeModeFor(agent.autoApprove),
+  ]);
+}
+
+/**
  * What an agent's controller should be doing.
  *
  * `connected` is whether it holds this agent's one inbound connection.
@@ -60,7 +145,11 @@ export type ControllerState = { connected: boolean; spawning: boolean };
  * This is the read of those two settings — callers that are not themselves
  * deciding one of them should come through here rather than assemble a state.
  */
-export async function applyControllerState(agentId: string, intent: WatcherIntent): Promise<void> {
+export async function applyControllerState(
+  agentId: string,
+  intent: WatcherIntent,
+  autoApprove: AutoApproveSource = 'host'
+): Promise<void> {
   const [stopped, spawning] = await Promise.all([
     listStoppedControllerAgentIds(),
     listAutoSessionAgentIds(),
@@ -69,7 +158,9 @@ export async function applyControllerState(agentId: string, intent: WatcherInten
   await configureSharedWatcher(
     agentId,
     { connected, spawning: connected && spawning.includes(agentId) },
-    intent
+    intent,
+    undefined,
+    autoApprove
   );
 }
 
@@ -98,7 +189,8 @@ export async function configureSharedWatcher(
   agentId: string,
   state: ControllerState,
   intent: WatcherIntent,
-  name?: string
+  name?: string,
+  autoApprove: AutoApproveSource = 'host'
 ): Promise<void> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error(`Agent ${agentId} does not exist.`);
@@ -177,6 +269,12 @@ export async function configureSharedWatcher(
   if (!state.connected) {
     await ctx.exec('node', ['-e', waitForWatcherStop, root]);
     return;
+  }
+  // A subagent's watcher runs with its parent's setting, which the parent's
+  // own watcher has already taken from the host.
+  const ownWatcher = !name || name === agent.name;
+  if (autoApprove === 'host' && ownWatcher) {
+    await adoptHostAutoApprove(agentId, ctx, root, config);
   }
   await runSharedHostCommand(transport, { ctx, root, entrypoint }, config, '--ensure-watch', false);
 }

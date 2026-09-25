@@ -107,12 +107,46 @@ export async function listManagedServers(): Promise<SwitchServer[]> {
   return rows.map(mapRow);
 }
 
+/** Where a managed server's stack runs, in the words the UI uses. */
+function managedPlace(server: SwitchServer): string {
+  return server.managementKind === 'remote' && server.sshHost
+    ? `on ${server.sshHost}`
+    : 'on this computer';
+}
+
+/**
+ * Two server records cannot share a gateway URL, and a managed stack's URL is
+ * `http://localhost:<port>` — on a remote stack, a port mirrored onto this
+ * computer. A stack someone else set up on a shared host brings the port
+ * numbers it was started with (CHOO-2893), which can be ones this Console
+ * already gave another server.
+ */
+export class ManagedServerUrlConflictError extends Error {
+  constructor(gatewayUrl: string, holder: SwitchServer, target: string) {
+    super(
+      `${gatewayUrl} is already the address of “${holder.name}”` +
+        (holder.managed ? ` (the server Switch Console runs ${managedPlace(holder)})` : '') +
+        `, and the server ${target} uses the same port. Switch Console reaches a remote ` +
+        `server through the same port number on this computer, so both cannot be registered. ` +
+        `Remove or disconnect “${holder.name}”, then try again.`
+    );
+    this.name = 'ManagedServerUrlConflictError';
+  }
+}
+
 /**
  * Upsert a managed server record for the given target (the single local stack,
  * or the stack on a specific remote host). Reuses the existing row for that
  * target if there is one (updating its URLs, which change when ports are
- * repicked), else adopts a row already at this gateway URL, else inserts. Keeps
- * exactly one row per managed target rather than duplicating on URL changes.
+ * repicked), else adopts an external row already at this gateway URL, else
+ * inserts. Keeps exactly one row per managed target rather than duplicating on
+ * URL changes.
+ *
+ * Another managed target's row is never adopted by URL: the two share a port
+ * number, not a server, and taking the row over would silently repoint that
+ * server and its agents at a different stack. A clash of any kind is refused
+ * with {@link ManagedServerUrlConflictError}, rather than left to the unique
+ * index to reject in words nobody can act on.
  */
 export async function ensureManagedServer(
   params: AddServerParams,
@@ -124,7 +158,15 @@ export async function ensureManagedServer(
   const sshHost = ref.kind === 'remote' ? ref.sshHost : null;
   const existingForTarget =
     ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
-  const existing = existingForTarget ?? (await getServerByGatewayUrl(gatewayUrl));
+  const atUrl = await getServerByGatewayUrl(gatewayUrl);
+  if (atUrl && atUrl.id !== existingForTarget?.id && (existingForTarget || atUrl.managed)) {
+    throw new ManagedServerUrlConflictError(
+      gatewayUrl,
+      atUrl,
+      ref.kind === 'remote' ? `on ${ref.sshHost}` : 'on this computer'
+    );
+  }
+  const existing = existingForTarget ?? atUrl;
   if (existing) {
     // Preserve the stored name on restart: the name is set once at creation and
     // then owned by the user (rename). Only the URLs/kind refresh when a managed

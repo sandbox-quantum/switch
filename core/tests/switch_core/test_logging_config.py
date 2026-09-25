@@ -252,13 +252,35 @@ def test_filter_stamps_every_field(monkeypatch: pytest.MonkeyPatch) -> None:
         "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
     )
 
-    with log_context(request_id="r", agent_id="a", user_id="u"):
+    with log_context(
+        request_id="r",
+        agent_id="a",
+        user_id="u",
+        console_id="c",
+        console_name="alice@laptop",
+    ):
         LogContextFilter("acme").filter(record)
 
     assert record.tenant_id == "acme"
     assert record.request_id == "r"
     assert record.agent_id == "a"
     assert record.user_id == "u"
+    assert record.console_id == "c"
+    assert record.console_name == "alice@laptop"
+
+
+def test_the_console_rides_alongside_the_user_in_json(json_lines) -> None:
+    """Several people can share one sign-in on a server a Console runs, so the
+    Console is what tells their actions apart in a shipped line."""
+    logger, lines = json_lines
+
+    with log_context(user_id="admin", console_id="c-1", console_name="bob@vm"):
+        logger.info("stopped the stack")
+
+    entry = _one(lines)
+    assert entry["user_id"] == "admin"
+    assert entry["console_id"] == "c-1"
+    assert entry["console_name"] == "bob@vm"
 
 
 def test_bound_tenant_beats_the_deployment_default() -> None:

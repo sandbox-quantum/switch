@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const reauthenticateManagedServer = vi.hoisted(() => vi.fn());
 const cookiesSet = vi.hoisted(() => vi.fn(async () => {}));
-const fromPartition = vi.hoisted(() => vi.fn(() => ({ cookies: { set: cookiesSet } })));
+const onBeforeSendHeaders = vi.hoisted(() => vi.fn());
+const fromPartition = vi.hoisted(() =>
+  vi.fn(() => ({ cookies: { set: cookiesSet }, webRequest: { onBeforeSendHeaders } }))
+);
 const loadURL = vi.hoisted(() => vi.fn(async () => {}));
 const BrowserWindow = vi.hoisted(() =>
   vi.fn(function () {
@@ -14,6 +17,12 @@ const BrowserWindow = vi.hoisted(() =>
 vi.mock('electron', () => ({ BrowserWindow, session: { fromPartition } }));
 vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ reauthenticateManagedServer }));
+vi.mock('./console-identity', () => ({
+  consoleIdentityHeaders: async (server: { managed: boolean }) =>
+    server.managed
+      ? { 'X-Switch-Console-Id': 'console-1', 'X-Switch-Console-Name': 'alice@laptop' }
+      : {},
+}));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
 const { openAuthenticatedGatewayPage } = await import('./gateway-web');
@@ -86,5 +95,39 @@ describe('openAuthenticatedGatewayPage', () => {
     // Non-managed with no stored session: no cookie injected, page still opens.
     expect(cookiesSet).not.toHaveBeenCalled();
     expect(loadURL).toHaveBeenCalledWith('http://127.0.0.1:8080/');
+  });
+
+  it('marks the dashboard’s requests to a managed gateway with this Console', async () => {
+    getSessionCookie.mockResolvedValue('stored-jwt');
+
+    await openAuthenticatedGatewayPage(MANAGED, 'http://127.0.0.1:8080/');
+
+    expect(onBeforeSendHeaders).toHaveBeenCalledOnce();
+    const [filter, listener] = onBeforeSendHeaders.mock.calls[0] as [
+      { urls: string[] },
+      (
+        details: { requestHeaders: Record<string, string> },
+        callback: (response: { requestHeaders: Record<string, string> }) => void
+      ) => void,
+    ];
+    // Only the gateway's own origin, for the reason the cookie is confined there.
+    expect(filter.urls).toEqual(['http://127.0.0.1:8080/*']);
+    const callback = vi.fn();
+    listener({ requestHeaders: { Accept: 'text/html' } }, callback);
+    expect(callback).toHaveBeenCalledWith({
+      requestHeaders: {
+        Accept: 'text/html',
+        'X-Switch-Console-Id': 'console-1',
+        'X-Switch-Console-Name': 'alice@laptop',
+      },
+    });
+  });
+
+  it('adds nothing to the requests of a server someone else runs', async () => {
+    getSessionCookie.mockResolvedValue('stored-jwt');
+
+    await openAuthenticatedGatewayPage(SERVER, 'http://127.0.0.1:8080/');
+
+    expect(onBeforeSendHeaders).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import type { StackConsole } from '@shared/core/managed-switch-server/managed-switch-server';
+import { affectedSentence } from './shared-consoles';
 
 /**
  * Throwing away a managed stack, at the very bottom of its server's page.
@@ -21,11 +23,18 @@ import {
  */
 export function ServerResetSection({
   dialogTitle,
+  shared,
+  others,
   disabled,
   onConfirm,
 }: {
   /** Names the stack being destroyed — the confirmation has to say which. */
   dialogTitle: string;
+  /** Whether other people can be using the stack: true for a remote one, which
+   * everyone with access to its host can connect to (CHOO-2893). */
+  shared: boolean;
+  /** The other Consoles seen on it recently, whom the confirmation names. */
+  others: StackConsole[];
   disabled: boolean;
   onConfirm: () => void;
 }) {
@@ -64,6 +73,12 @@ export function ServerResetSection({
               <strong className="text-foreground">every agent you've configured against it</strong>.
               This can't be undone. A fresh Start rebuilds an empty stack from scratch.
             </DialogDescription>
+            {shared && (
+              <DialogDescription className="mt-2">
+                It is deleted for <strong className="text-foreground">everyone who uses it</strong>,
+                not only for this Console. {affectedSentence(others, new Date())}
+              </DialogDescription>
+            )}
           </DialogContentArea>
           <DialogFooter>
             <DialogClose render={<Button variant="outline" size="sm" />}>Cancel</DialogClose>

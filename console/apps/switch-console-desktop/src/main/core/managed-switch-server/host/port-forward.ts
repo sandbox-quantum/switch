@@ -45,8 +45,19 @@ export class PortForwarder {
     const server = createServer((socket) => this.bridge(socket, port));
     this.servers.push(server);
     return new Promise((resolve, reject) => {
-      const onError = (err: Error) =>
-        reject(new Error(`cannot bind local port ${port} for ${this.label}: ${err.message}`));
+      const onError = (err: NodeJS.ErrnoException) =>
+        reject(
+          new Error(
+            err.code === 'EADDRINUSE'
+              ? // Most likely on a shared host (CHOO-2893): the stack was set up
+                // from another computer, whose free ports this one's need not be.
+                `Port ${port} is already in use on this computer, so the Switch server on ` +
+                  `${this.label} cannot be reached from here. Switch Console reaches a remote ` +
+                  `server through the same port number on this computer as on the host, so ` +
+                  `whatever is using port ${port} here has to stop first.`
+              : `cannot bind local port ${port} for ${this.label}: ${err.message}`
+          )
+        );
       server.once('error', onError);
       server.listen(port, '127.0.0.1', () => {
         server.removeListener('error', onError);

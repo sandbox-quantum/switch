@@ -149,7 +149,11 @@ handler — so records from libraries carry them too. A room id is a log field
 and deliberately not a metric attribute: it is unbounded and belongs to one
 tenant, which rules it out of a dashboard label for the reasons under "Why
 there is a catalogue" — and following one room through a failure is the single
-most common thing anyone asks these logs for. Set `LOG_FORMAT=json` to get them as
+most common thing anyone asks these logs for. A request from Switch Console also
+carries `console_id` and `console_name`: on a server a Console runs for its
+user, everyone with access to the host signs in as the one seeded account, so
+`user_id` cannot tell them apart and these can. They are attribution the caller
+supplies, not authentication. Set `LOG_FORMAT=json` to get them as
 fields rather than inside the message text; the default is `text`, which is for
 reading in a terminal, so anywhere the logs are actually collected wants the
 JSON form. With `OTLP_LOGS_ENABLED` the same records are *also* posted to the

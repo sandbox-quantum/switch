@@ -77,6 +77,8 @@ function options(checkoutRoot: string | null = null) {
   );
   const host = {
     label: 'this computer',
+    // The local stack: nobody else shares it, so there is no host state to read.
+    sharedState: null,
     writeFile,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
     establishNetworking: vi.fn(() => Promise.resolve()),

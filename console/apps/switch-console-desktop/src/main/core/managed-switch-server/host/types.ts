@@ -1,6 +1,7 @@
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { LocalServerPorts } from '../free-port';
+import type { StackStateHost } from '../stack-state';
 
 /**
  * A host that runs a Switch Console-managed Switch stack via `docker compose`.
@@ -51,6 +52,12 @@ export interface ServerHost {
   /** Human-readable label for the host, used in log lines ("this computer" /
    * the SSH alias). */
   readonly label: string;
+
+  /** The host's handle on the stack state every Console sharing the stack
+   * reads (see `stack-state.ts`), or null for a host whose stack is nobody
+   * else's. A remote host is shared by everyone with access to it; the local
+   * stack belongs to this desktop alone, so it has nothing to agree with. */
+  readonly sharedState: StackStateHost | null;
 
   /** Write `content` to `relPath` under {@link workingDir}, creating parent
    * directories. `mode` (e.g. 0o600 for the secret-bearing `.env`) is enforced

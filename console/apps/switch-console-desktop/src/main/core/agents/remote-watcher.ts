@@ -37,6 +37,13 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   await applyControllerState(agentId, 'restore');
   remoteSessionReconciler.start(agentId);
 }
+/** {@link ensureRemoteWatcher} after this Console's person changed the agent's
+ * auto-approve: that value is written to the host rather than the host's
+ * adopted (CHOO-2893). */
+export async function pushRemoteAutoApprove(agentId: string): Promise<void> {
+  await applyControllerState(agentId, 'restore', 'this-console');
+  remoteSessionReconciler.start(agentId);
+}
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
   await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
 }
