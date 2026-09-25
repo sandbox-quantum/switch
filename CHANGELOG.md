@@ -1339,6 +1339,24 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.37.0] - 2026-09-25
+
+#### Added
+- **Codex sessions get the Switch skill (and the agent's own instructions) as
+  developer instructions**, like Claude/Cursor/Antigravity — no skill file is
+  written, so a session no longer needs shell approval to read it, and a failed
+  turn now shows its reason (#547).
+- **Providers report per-turn token usage** — prompt/completion plus cache reads
+  and writes — on the session activity stream, feeding server-side usage
+  metering.
+
+#### Changed
+- Sidecar session handling refined: shared-agent-runtime initial prompt,
+  session-command and stop-shared-session paths, and transcript handling.
+
+_Supersedes the never-tagged 0.36.0; that release's changes (below) ship to
+users for the first time here._
+
 ### [0.36.0] - 2026-09-25
 
 #### Added
@@ -3043,6 +3061,13 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+### [1.9.10] - 2026-09-25
+
+#### Changed
+- Session handling refined: shared-agent-runtime initial prompt,
+  session-command and stop-shared-session paths, and transcript handling. Ships
+  with Switch Console 0.37.0.
 
 ### [1.9.9] - 2026-09-25
 
