@@ -42,7 +42,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.hosted_mailbox_store import HostedMailboxStore, MailboxEntry
-from switch_core.transport.postgres import to_inbound
+from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import InboundMedia, InboundMessage
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ _HOST_RANK: dict[str | None, int] = {
     "finished": 3,
 }
 
-MANIFEST_ITEM_LIMIT = 10_000
+MANIFEST_ITEM_LIMIT = 100_000
 
 
 class RoomMessageRecord(BaseModel):
