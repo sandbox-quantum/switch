@@ -1,5 +1,6 @@
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
+import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
@@ -12,6 +13,7 @@ import { memo, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
+import { useCurrentTenant } from "../data/hooks";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
 
@@ -28,6 +30,10 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Agents", path: "/agents", icon: SmartToyOutlined },
   { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
   { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
+];
+
+const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
+  { label: "Usage", path: "/usage", icon: DataUsageOutlined },
 ];
 
 const ADMIN_ITEMS: NavItem[] = [{ label: "Users", path: "/users", icon: PeopleOutlined }];
@@ -91,7 +97,13 @@ export default memo(function NavRail() {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
 
-  const items = user?.role === "admin" ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
+  const { data: tenant } = useCurrentTenant();
+
+  const items = [
+    ...NAV_ITEMS,
+    ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
+    ...(user?.role === "admin" ? ADMIN_ITEMS : []),
+  ];
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
 
   return (
