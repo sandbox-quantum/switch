@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     DDL,
@@ -31,6 +32,12 @@ from switch_core.db.notify_ddl import (
     DROP_NOTIFY_TRIGGER,
 )
 from switch_core.db.rls_ddl import attach_row_level_security
+from switch_core.db.session_activity_notify_ddl import (
+    CREATE_ACTIVITY_TRIGGER,
+    CREATE_APPROVAL_INSERT_TRIGGER,
+    CREATE_APPROVAL_STATE_TRIGGER,
+    CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION,
+)
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
 
@@ -177,6 +184,13 @@ class User(Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Workspaces this person has created through self-service, which is what
+    # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
+    # than of current ownership, so handing a workspace to someone else does
+    # not free an allowance to create another.
+    workspaces_created: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
     )
 
 
@@ -1609,12 +1623,18 @@ class RoleLease(TenantScoped, Base):
     `RoomRoleStore.LEASE_TTL`); a stale lease is logically free, so the next
     agent can assume the role without a background reaper.
 
-    Liveness is keyed to the agent's session (room-agnostic): the long-running
-    channel process renews the lease on a fast cadence while the session is
-    alive, so hopping to another room keeps the seat. One lease per agent is
-    enforced by the unique index on `agent_id`; `release_role` (or session death
-    + TTL) frees it. `transport_session_id` records which MCP transport assumed
-    the role.
+    Liveness belongs to the holder, not the agent (room-agnostic, so hopping
+    rooms keeps the seat). A holder that owns its inbound connection renews the
+    lease on a fast cadence and is live by `last_seen_at`; an SDK session
+    supervised by something else renews nothing, and is live for as long as
+    `session_id` names a session whose host lease is current. An agent's
+    permanent controller connection is neither, and so keeps no role alive.
+
+    One lease per agent is enforced by the unique index on `agent_id`;
+    `release_role` (or holder death + TTL) frees it, and release stays open to
+    any of the agent's sessions. `transport_session_id` records the connection
+    or MCP transport that assumed the role, and identifies the holder when
+    there is no `session_id`.
     """
 
     __tablename__ = "role_leases"
@@ -1646,6 +1666,7 @@ class RoleLease(TenantScoped, Base):
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     acquired_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1686,151 +1707,6 @@ class BridgeMessageMap(TenantScoped, Base):
     external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-# ── Session requests on an external surface ─────────────────────────────────
-
-
-class SessionActivityPost(TenantScoped, Base):
-    """Durable publication journal for one command's activity on one bridge."""
-
-    __tablename__ = "session_activity_posts"
-    __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "bridge_id", "session_id", "command_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "bridge_id"],
-            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "session_id"],
-            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
-            ondelete="CASCADE",
-        ),
-    )
-    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
-    session_id: Mapped[str] = mapped_column(Text, nullable=False)
-    command_id: Mapped[str] = mapped_column(Text, nullable=False)
-    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-
-
-Index(
-    "ix_session_activity_reaction",
-    SessionActivityPost.data,
-    postgresql_using="gin",
-    postgresql_ops={"data": "jsonb_path_ops"},
-)
-
-
-class SessionRequestPost(TenantScoped, Base):
-    """A session's request for a decision, as it was posted onto a platform.
-
-    One row per request per bridge. It is what a pressed button resolves
-    against: the callback a platform sends back carries the opaque token and
-    nothing else worth having, so which session, which epoch and which revision
-    the answer stands against are read from here rather than from anything the
-    platform returned. `bridge_id` is the workspace fence — a token is only ever
-    looked up within the bridge it was minted for.
-
-    Distinct from `bridge_message_map`, which correlates one bridged message
-    with one external post. This is per *request*, it outlives any single post,
-    and it carries state that changes as the request does.
-    """
-
-    __tablename__ = "session_request_posts"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["tenant_id", "bridge_id"],
-            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
-            name="fk_session_request_posts_bridge",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "room_id"],
-            ["rooms.tenant_id", "rooms.id"],
-            name="fk_session_request_posts_room",
-            ondelete="CASCADE",
-        ),
-        UniqueConstraint("token", name="uq_session_request_posts_token"),
-        UniqueConstraint(
-            "bridge_id",
-            "session_id",
-            "request_id",
-            name="uq_session_request_posts_request",
-        ),
-        # A handle is matched without regard to case, so it has to be unique
-        # without regard to case: the lookup reads one row or none, and "R42"
-        # beside "r42" in one channel would make it raise instead — into the
-        # relay, where the cost is the message never reaching the room.
-        Index(
-            "uq_session_request_posts_handle",
-            "bridge_id",
-            "external_channel_id",
-            text("lower(handle)"),
-            unique=True,
-        ),
-        # One posted card stands for one request, and the bare form reads a
-        # request back off the card it replies to. Same lookup, same reason.
-        UniqueConstraint(
-            "bridge_id",
-            "external_post_id",
-            name="uq_session_request_posts_post",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
-    # What a control's callback payload carries, and what a person types
-    # instead. Both name the row and neither names the session.
-    token: Mapped[str] = mapped_column(Text, nullable=False)
-    handle: Mapped[str] = mapped_column(Text, nullable=False)
-    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
-    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
-    room_id: Mapped[str] = mapped_column(Text, nullable=False)
-    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    session_id: Mapped[str] = mapped_column(Text, nullable=False)
-    epoch: Mapped[str] = mapped_column(Text, nullable=False)
-    request_id: Mapped[str] = mapped_column(Text, nullable=False)
-    # The revision an answer is submitted against. The session rejects an answer
-    # that names a revision it has moved past.
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    # What the card offered, in the order it offered it, and which sort of
-    # answer it takes: an approval's options, or a question's options per
-    # question. A typed "1" names a position on the card the person can see and
-    # this is what that resolves against; `kind` is what says whether the answer
-    # it builds is one option or one per question, and it is read rather than
-    # inferred. `session/form.py` is both ends of the shape.
-    form: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    # When the channel was told that this card's delivery was never confirmed
-    # and the request has to be answered in Console instead. Set only on a
-    # platform whose history cannot be searched, where `external_post_id` stuck
-    # at `token` is permanent rather than a state a later lookup resolves. It is
-    # what makes that notice happen once: a second one says nothing new, and the
-    # publisher retries this row on every cycle for as long as the request is
-    # open.
-    unconfirmed_notice_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    # When the card was taken off the platform, once the question it asked had
-    # been answered. The row outlives the card on purpose: it is what an answer
-    # typed against the handle still resolves to, and it is what stops a
-    # restart from treating a deleted card as one that merely needs redrawing
-    # and posting the settled question a second time. Written only after the
-    # platform has confirmed the message is gone, so a crash mid-removal leaves
-    # a card that is asked about again rather than one recorded as removed and
-    # never looked at.
-    removed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 
@@ -2105,12 +1981,6 @@ class MediaBlob(TenantScoped, Base):
     __tablename__ = "media_blobs"
     __table_args__ = (
         UniqueConstraint("tenant_id", "uri", name="uq_media_blobs_tenant_uri"),
-        ForeignKeyConstraint(
-            ["tenant_id", "sdk_session_id"],
-            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
-            name="fk_media_blobs_sdk_session",
-            ondelete="CASCADE",
-        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -2118,11 +1988,6 @@ class MediaBlob(TenantScoped, Base):
     content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
     sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sdk_session_id: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-        index=True,
-    )
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[str] = mapped_column(
@@ -2150,85 +2015,420 @@ event.listen(
 )
 
 
-class SdkSession(TenantScoped, Base):
-    __tablename__ = "sdk_sessions"
+# ── Session activity ──────────────────────────────────────────────────────────
+#
+# What an agent's session reports about itself so messaging platforms can show
+# it. The session and its transcript belong to the agent's host (Switch Console
+# or a remote sidecar); these tables hold only what a platform renders and what
+# the server must check when a person answers. Every write is one small row.
+
+APPROVAL_REQUEST_STATES = ("open", "answered", "expired", "closed")
+APPROVAL_REQUEST_KINDS = ("approval", "questions")
+SESSION_ACTIVITY_KINDS = (
+    "turn",
+    "user-message",
+    "assistant-message",
+    "tool-activity",
+    "notice",
+)
+TURN_STATUS_MARKS = ("queued", "working")
+
+
+class ApprovalRequest(TenantScoped, Base):
+    """A request a session is waiting on a person for, and the answer it gets.
+
+    Either an approval (pick one of `options`) or a set of `questions`, each
+    answered with options, words, or both. The host opens it; a person answers
+    it from any platform; the server checks the answer against this row (still
+    open, fits what was asked, not expired) and owes it to the agent until
+    `delivered_at` is set. `request_id` is the host's, unique within its
+    session, so a host that retries an open reaches the same row.
+    """
+
+    __tablename__ = "approval_requests"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "id"),
-        UniqueConstraint("id", "tenant_id", name="uq_sdk_sessions_id_tenant"),
-        UniqueConstraint(
-            "tenant_id", "connection_id", name="uq_sdk_sessions_connection_id"
+        PrimaryKeyConstraint("tenant_id", "agent_id", "session_id", "request_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_approval_requests_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_approval_requests_room",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('open', 'answered', 'expired', 'closed')",
+            name="ck_approval_requests_state",
+        ),
+        CheckConstraint(
+            "kind IN ('approval', 'questions')",
+            name="ck_approval_requests_kind",
+        ),
+        Index(
+            "ix_approval_requests_open_expiry",
+            "expires_at",
+            postgresql_where=text("state = 'open' AND expires_at IS NOT NULL"),
+        ),
+        Index(
+            "ix_approval_requests_undelivered",
+            "tenant_id",
+            "agent_id",
+            postgresql_where=text(
+                "state IN ('answered', 'expired') AND delivered_at IS NULL"
+            ),
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Approval: [{"id", "label", "decision"}, ...] in the order offered.
+    options: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Questions: [{"id", "title", "prompt", "options": [{"id", "label",
+    # "description"}], "multi_select", "allow_custom_answer"}, ...].
+    questions: Mapped[list] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="open")
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Approval: the chosen option's id.
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Questions: [{"question_id", "selected_option_ids", "custom_text"}, ...].
+    answers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    answered_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SessionActivityItem(TenantScoped, Base):
+    """One step of a turn as a platform draws it: the turn itself, a message,
+    a tool call, or a notice.
+
+    Upserted by `revision`, so a step is one row however often it changes and
+    a replayed report cannot move it backwards. The primary key leads with the
+    turn, so reading every step of one turn is an index range.
+    """
+
+    __tablename__ = "session_activity_items"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "agent_id", "session_id", "turn_id", "item_id"
         ),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
-            name="fk_sdk_sessions_agent",
+            name="fk_session_activity_items_agent",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_session_activity_items_room",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('turn', 'user-message', 'assistant-message', "
+            "'tool-activity', 'notice')",
+            name="ck_session_activity_items_kind",
+        ),
+        Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
-    id: Mapped[str] = mapped_column(Text, nullable=False)
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    host_id: Mapped[str] = mapped_column(Text, nullable=False)
-    epoch: Mapped[str] = mapped_column(Text, nullable=False)
-    lease_expires_at: Mapped[datetime] = mapped_column(
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    item_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    command_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The Switch message the turn answers, so a platform threads it there.
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The Switch message that asked, where a platform puts its work marker.
+    message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-
-    recovery: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
-class SdkSessionEvent(TenantScoped, Base):
-    __tablename__ = "sdk_session_events"
+class ApprovalRequestPost(TenantScoped, Base):
+    """Where one approval request is shown on one bridge, and how it is named.
+
+    `token` rides in the card's controls and `handle` (`A12`) is what a person
+    types to answer in words; both resolve back to the request through this
+    row, so neither names the session. `external_post_id` is null until the
+    platform confirms the post. `removed_at` is set once an answered card has
+    been taken off a platform that removes them, and `unconfirmed_notice_at`
+    once the channel has been told a card's delivery could not be confirmed.
+    """
+
+    __tablename__ = "approval_request_posts"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "session_id", "sequence"),
-        UniqueConstraint(
+        PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "request_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_approval_request_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_approval_request_posts_agent",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("token", name="uq_approval_request_posts_token"),
+        Index(
+            "uq_approval_request_posts_handle",
+            "bridge_id",
+            "external_channel_id",
+            text("lower(handle)"),
+            unique=True,
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The platform's thread root the card was posted under, if any.
+    thread_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    unconfirmed_notice_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TurnStatusPost(TenantScoped, Base):
+    """The message a turn is drawn in on a bridge, and what hangs off it.
+
+    `reaction_message_ref` is the asking message as posted on this platform,
+    and `mark` the work marker this turn has put on it (`queued` / `working`),
+    or null. `attention_post_id` is the separate message that says the turn is
+    stuck, on a platform that uses one.
+    """
+
+    __tablename__ = "turn_status_posts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "turn_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_turn_status_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_turn_status_posts_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "mark IN ('queued', 'working')",
+            name="ck_turn_status_posts_mark",
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    thread_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reaction_message_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attention_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# As for messages: `create_all` has to build the announcing triggers too, or the
+# push tests would exercise tables that announce nothing. The function is
+# `CREATE OR REPLACE`, so creating it with each table is harmless.
+for _table, _triggers in (
+    (
+        ApprovalRequest.__table__,
+        (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
+    ),
+    (SessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+):
+    for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+
+
+# ── Usage metering ───────────────────────────────────────────────────────────
+
+
+class UsageMetric(StrEnum):
+    """What is counted. Cache reads and writes are kept apart from input
+    tokens because providers price them apart."""
+
+    MESSAGES = "messages"
+    TURNS = "turns"
+    INPUT_TOKENS = "input_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+    CACHE_READ_TOKENS = "cache_read_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
+
+
+class TenantUsage(TenantScoped, Base):
+    """What a tenant has consumed, counted as it happens, one row per hour.
+
+    The record that quotas are enforced against and that billing will read,
+    so it is kept apart from the rows it counts: deleting a room cascades to
+    its messages, and a count derived from `messages` would forget usage the
+    tenant has already spent. Written in the same transaction as the thing it
+    counts, so the two cannot disagree.
+
+    Hourly buckets because a budget period is configurable: any period of a
+    whole number of hours is a sum over these rows, while a coarser bucket
+    would fix the shortest period a budget can have.
+
+    `client_id` is who consumed it: the sender of a message, or the client of
+    the agent a turn ran for. No foreign key, so a count outlives the client it
+    names. `model` is empty where a metric has none.
+    """
+
+    __tablename__ = "tenant_usage"
+    __table_args__ = (
+        # Leads on the metric so "this tenant's turns since a moment" — the
+        # shape every budget check asks — is a range scan on the key itself.
+        PrimaryKeyConstraint(
+            "tenant_id", "metric", "bucket_start", "client_id", "model"
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_tenant_usage_metric",
+        ),
+        CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
+    )
+
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+# A budget's period is at most a leap year, and its limit at most the largest
+# integer a JavaScript client reads exactly. Both keep the period arithmetic
+# and the gateway's numbers from overflowing.
+MAX_BUDGET_PERIOD_HOURS = 8784
+MAX_BUDGET_AMOUNT = 2**53 - 1
+
+
+class UsageBudget(TenantScoped, Base):
+    """A ceiling on one metric over a repeating period.
+
+    `agent_id` null covers every agent in the tenant; otherwise the one agent.
+    `model` empty covers every model. An agent that has reached any budget
+    covering it is stopped until the period turns over; people are never
+    stopped. A tenant with no budgets is unlimited.
+
+    Periods are whole hours counted from the Unix epoch in UTC, so a daily
+    budget turns over at midnight UTC and every writer agrees when.
+    """
+
+    __tablename__ = "usage_budgets"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_usage_budgets_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_usage_budgets_metric",
+        ),
+        CheckConstraint(
+            f"amount_limit > 0 AND amount_limit <= {MAX_BUDGET_AMOUNT}",
+            name="ck_usage_budgets_amount_limit",
+        ),
+        CheckConstraint(
+            f"period_hours > 0 AND period_hours <= {MAX_BUDGET_PERIOD_HOURS}",
+            name="ck_usage_budgets_period_hours",
+        ),
+        Index(
+            "uq_usage_budgets_tenant_wide",
             "tenant_id",
-            "session_id",
-            "epoch",
-            "host_sequence",
-            name="uq_sdk_event_host_sequence",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
         ),
-        UniqueConstraint("tenant_id", "session_id", "event_id", name="uq_sdk_event_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "session_id"],
-            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
-            name="fk_sdk_session_events_session",
-            ondelete="CASCADE",
-        ),
-    )
-
-    session_id: Mapped[str] = mapped_column(Text, nullable=False)
-    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    epoch: Mapped[str] = mapped_column(Text, nullable=False)
-    event_id: Mapped[str] = mapped_column(Text, nullable=False)
-    host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    host_event: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
-
-
-class SdkSessionCommand(TenantScoped, Base):
-    __tablename__ = "sdk_session_commands"
-    __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "session_id", "command_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "session_id"],
-            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
-            name="fk_sdk_session_commands_session",
-            ondelete="CASCADE",
+        Index(
+            "uq_usage_budgets_agent",
+            "tenant_id",
+            "agent_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
         ),
     )
 
-    session_id: Mapped[str] = mapped_column(Text, nullable=False)
-    command_id: Mapped[str] = mapped_column(Text, nullable=False)
-    accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    command: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    status: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    room_control_followup: Mapped[str | None] = mapped_column(Text, nullable=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

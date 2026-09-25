@@ -3,17 +3,10 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
   entry: {
     agents: 'src/agents/registry.ts',
-    // The runtime pin, for the parts of the app that register the Switch MCP
-    // server themselves rather than through a connector file.
-    distribution: 'src/distribution.ts',
-    // The room-workflow skill, for a session whose config directory the app
-    // writes and which therefore cannot see the installed connector's copy.
-    'claude-skill': 'src/agents/impl/claude/skill-file.ts',
-    'cursor-skill': 'src/agents/impl/cursor/skill-file.ts',
-    'antigravity-skill': 'src/agents/impl/antigravity/skill-file.ts',
-    'codex-skill': 'src/agents/impl/codex/skill-file.ts',
-    'opencode-skill': 'src/agents/impl/opencode/skill-file.ts',
+    'switch-skill': 'src/switch-skill/index.ts',
   },
+  // The skill is edited as Markdown and shipped inside the bundle as a string.
+  loader: { '.md': 'text' },
   format: ['esm'],
   dts: true,
   deps: {

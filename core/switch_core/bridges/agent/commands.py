@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
@@ -19,10 +20,10 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
 )
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
+from switch_core.db.models import CollaborationBridge, Room
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
-from switch_core.sessions.service import SessionAuthority, SessionError
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -234,6 +235,130 @@ class Command:
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 
+# Room controls name the session's current generation and turn by this rather
+# than by id: Switch keeps neither, and the host fills in its own.
+CURRENT = "current"
+
+_CONTROL_BODIES: dict[str, dict[str, str]] = {
+    "reset": {"type": "session.reset"},
+    "compact": {"type": "session.compact"},
+    "interrupt": {"type": "turn.interrupt", "turnId": CURRENT},
+}
+
+
+def room_control_frame(
+    *,
+    agent_id: str,
+    session_id: str,
+    room_id: str,
+    action: str,
+    actor_id: str,
+    message_id: str,
+    thread_id: str | None,
+    surface: str,
+    requester_name: str,
+) -> dict[str, object]:
+    """The `session_command` frame a room control is relayed as.
+
+    Beside the contract command it names who asked, as the room knows them,
+    so the session can answer that person once the control has applied.
+    """
+    body = _CONTROL_BODIES.get(action)
+    if body is None:
+        raise ValueError(f"{action} is not a room control")
+    frame = _control_frame(
+        command_id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"sdk-control:{agent_id}:{room_id}:{message_id}:{action}",
+            )
+        ),
+        session_id=session_id,
+        room_id=room_id,
+        actor_id=actor_id,
+        message_id=message_id,
+        thread_id=thread_id,
+        surface=surface,
+        body=body,
+    )
+    frame["requesterName"] = requester_name
+    return frame
+
+
+def stop_control_frame(
+    *,
+    agent_id: str,
+    session_id: str,
+    room_id: str,
+    actor_id: str,
+    message_ref: str,
+    turn_id: str,
+    thread_id: str | None,
+    surface: str,
+) -> dict[str, object]:
+    """The frame a press on a platform's Stop control is relayed as: `!interrupt`.
+
+    Keyed by the control pressed — the message it is on and the turn it named
+    when drawn — so pressing it twice is one command, while the same message
+    offering to stop a later turn is another. No Switch message did the
+    asking, so the origin names none.
+    """
+    return _control_frame(
+        command_id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"sdk-stop:{agent_id}:{room_id}:{message_ref}:{turn_id}",
+            )
+        ),
+        session_id=session_id,
+        room_id=room_id,
+        actor_id=actor_id,
+        message_id=None,
+        thread_id=thread_id,
+        surface=surface,
+        body=_CONTROL_BODIES["interrupt"],
+    )
+
+
+def _control_frame(
+    *,
+    command_id: str,
+    session_id: str,
+    room_id: str,
+    actor_id: str,
+    message_id: str | None,
+    thread_id: str | None,
+    surface: str,
+    body: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "contractVersion": 1,
+        "commandId": command_id,
+        "sessionId": session_id,
+        "epoch": CURRENT,
+        "origin": {
+            "surface": surface,
+            "actorId": actor_id,
+            "roomId": room_id,
+            "threadId": thread_id,
+            "messageId": message_id,
+        },
+        "body": dict(body),
+    }
+
+
+async def _room_surface(client: AgentClient, room_id: str) -> str:
+    """The platform a room is bridged to, as a contract surface."""
+    async with client.session_factory() as db:
+        room = await db.get(Room, room_id)
+        bridge = (
+            await db.get(CollaborationBridge, room.bridge_id)
+            if room is not None and room.bridge_id
+            else None
+        )
+    return bridge.type if bridge is not None else "switch-web"
+
+
 async def _reply(
     client: AgentClient | AdminClient,
     room: RoomRef,
@@ -297,26 +422,44 @@ async def _dispatch_control_command(
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
         return
-    try:
-        receipt = await SessionAuthority(client.session_factory).submit_room_control(
-            agent.id,
-            meta.room_id,
-            command,
-            event.user_id,
-            event.message_id,
-            event.thread_id,
-            client._connections,
+    # A session that connected to this room takes the command itself, over
+    # its agent's controller. Nothing is queued: with no controller to relay
+    # it to, the room is told so.
+    placed = client._connections.session_in_room(agent.id, meta.room_id)
+    if placed is not None:
+        if not event.message_id:
+            await _reply(
+                client,
+                room,
+                event,
+                f"Could not send {command}: the room command has no stable message ID.",
+            )
+            return
+        frame = room_control_frame(
+            agent_id=agent.id,
+            session_id=placed,
+            room_id=meta.room_id,
+            action=command,
+            actor_id=event.user_id,
+            message_id=event.message_id,
+            thread_id=event.thread_id,
+            surface=await _room_surface(client, meta.room_id),
+            requester_name=event.user_name,
         )
-    except SessionError as exc:
-        await _reply(client, room, event, f"Could not queue {command}: {exc}")
-        return
-    if receipt is not None:
-        await _reply(
-            client,
-            room,
-            event,
-            f"{command.capitalize()} command: {receipt.status}. Check the session for its outcome.",
-        )
+        if client._connections.relay_session_command(agent.id, frame):
+            await _reply(
+                client,
+                room,
+                event,
+                ack,
+            )
+        else:
+            await _reply(
+                client,
+                room,
+                event,
+                f"Could not send {command}: the agent's controller is not connected to Switch.",
+            )
         return
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
@@ -349,7 +492,10 @@ async def _dispatch_control_command(
             # command args so the controller can fold it into the reconnect
             # prompt.
             role = await client._room_role_store.agent_room_role(
-                session, meta.room_id, agent.id, client._connections.live_agent_ids()
+                session,
+                meta.room_id,
+                agent.id,
+                client._connections.live_connection_ids(),
             )
         live = statuses.get(agent.id) == AgentStatus.LIVE
         caps = (runtime.control_capabilities or {}) if runtime else {}
@@ -809,7 +955,7 @@ async def _cmd_roles(
             await _reply(client, room, event, "No roles defined in this room.")
             return
         holders = await client._room_role_store.live_holders_for_room(
-            session, meta.room_id, client._connections.live_agent_ids()
+            session, meta.room_id, client._connections.live_connection_ids()
         )
         holder_names: dict[str, str] = {}
         for holder_id in {h for ids in holders.values() for h in ids}:

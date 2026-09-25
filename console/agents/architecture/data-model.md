@@ -76,9 +76,10 @@ agents whose Switch server had been destroyed.
 - **The worktree-era `session` grouping.** With no worktrees, a session was a
   near-empty wrapper around a single conversation. We collapsed it: the upstream
   `conversation` becomes Switch Console's `session`.
-- **The `terminals` table.** Sessions now represent SDK conversations. The legacy
-  `shellId` database column remains for storage compatibility and is not exposed
-  by session APIs.
+- **The `terminals` table and terminal sessions.** Every session is an SDK
+  conversation. The legacy `sessions.shell_id` column was dropped in migration
+  0050; there is no session kind, so a session created by a terminal-era build
+  is simply resumed through the SDK host like any other.
 - **`provider` as a per-session column.** A provider is a property of the agent
   (an agent is from one provider), so it moved up from the session onto the
   agent.

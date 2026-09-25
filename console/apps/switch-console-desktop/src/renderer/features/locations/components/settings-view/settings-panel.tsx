@@ -6,6 +6,7 @@ import { AddressingPolicySettingsSection } from '@renderer/features/locations/co
 import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { AutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-session-settings-section';
+import { ProviderSignInSettingsSection } from '@renderer/features/locations/components/settings-view/sections/provider-sign-in-settings-section';
 import {
   asMounted,
   getLocationStore,
@@ -44,6 +45,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
       <AgentInstructionsSection locationId={locationId} agentId={agentId} />
       <section className="flex flex-col gap-6">
         <SectionLabel>General</SectionLabel>
+        <ProviderSignInSettingsSection locationId={locationId} agentId={agentId} />
         <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />
         <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
         <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />

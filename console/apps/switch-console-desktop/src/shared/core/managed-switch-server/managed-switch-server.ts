@@ -124,9 +124,42 @@ export type DeployedTelemetry =
   | { known: true; enabled: boolean }
   | { known: false; reason: string };
 
+/**
+ * A managed stack that is behind this build's pin and is being moved onto it.
+ *
+ * Console upgrades such a stack on its own, and sessions for agents on the
+ * server wait while it does, so the state is visible to both the renderer and
+ * the session gate:
+ *
+ * - `updating` — the database is being backed up or the stack restarted at the
+ *   pin. Sessions wait for it to finish.
+ * - `failed` — the backup or the restart failed. Sessions are refused with
+ *   `error` until a retry succeeds.
+ * - `pending` — the stack is stopped. It is upgraded when it is next started,
+ *   never started at the old version.
+ */
+export type ManagedServerUpgrade =
+  | { state: 'updating'; from: string; to: string }
+  | { state: 'failed'; from: string; to: string; error: string }
+  | { state: 'pending'; from: string; to: string };
+
+/** Why a session cannot start on a managed server whose upgrade has not
+ * finished. Shared so the thrown error and the UI say the same thing. */
+export function managedServerUpgradeBlockedReason(
+  serverName: string,
+  upgrade: Exclude<ManagedServerUpgrade, { state: 'updating' }>
+): string {
+  if (upgrade.state === 'pending') {
+    return `${serverName} is stopped on switch-core ${upgrade.from} and needs switch-core ${upgrade.to}. Start it from the server's page to update it; sessions on it start once the update finishes.`;
+  }
+  return `Updating ${serverName} from switch-core ${upgrade.from} to ${upgrade.to} failed: ${upgrade.error} Retry the update from the server's page; sessions on it stay paused until it succeeds.`;
+}
+
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
+  /** Set while the stack is behind this build's pin and not yet upgraded. */
+  upgrade: ManagedServerUpgrade | null;
   /** The registered server's id once the stack is up, else null. */
   serverId: string | null;
   /** The pinned switch-core version this build runs. */

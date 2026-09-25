@@ -119,9 +119,11 @@ class ClientLifecycleService:
         nothing to repair that short of the next boot.
 
         This is now the one seam a tenant comes into existence through, so
-        that whatever eventually offers tenant creation (there is no such
-        endpoint yet — Phase 2's scope) has a single place to call rather
-        than a row to insert and a checklist to remember. It reuses
+        that whatever offers tenant creation — `POST /tenants` today — has a
+        single place to call rather than a row to insert and a checklist to
+        remember. Whether a caller is *allowed* to create one is decided
+        before this, at the route: this call provisions, it does not
+        authorise. It reuses
         `ensure_system_client` rather than duplicating its per-type,
         per-tenant provisioning logic: the new tenant is simply the one gap
         that enumeration has not filled yet.

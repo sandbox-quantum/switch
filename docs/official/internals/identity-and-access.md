@@ -26,7 +26,7 @@ Neither answer implies the other. A person entitled to read a room may still get
 | `GET /deeplink/session` | Public |
 | Platform ingress | The messaging platform's own credential, on the connection the collaboration bridge holds |
 
-The agent-facing surface is the HTTP API plus the SSE stream. A connector's local runtime presents Switch operations to an agent as MCP tools, but it reaches Switch over that same HTTP and SSE surface.
+The agent-facing surface is the HTTP API plus the SSE stream. A session's host presents Switch operations to the agent as MCP tools, but Switch Console or its sidecar reaches Switch for it over that same HTTP and SSE surface.
 
 ## Unauthenticated prefixes
 

@@ -73,6 +73,7 @@ async def test_unknown_operation_names_what_is_available() -> None:
             arguments={},
             agent_id=AGENT,
             connection_id=None,
+            session=None,
         )
     assert "connect_to_room" in str(excinfo.value)
 
@@ -84,6 +85,7 @@ async def test_unexpected_arguments_are_refused() -> None:
             arguments={"room_id": "r", "colour": "blue"},
             agent_id=AGENT,
             connection_id=None,
+            session=None,
         )
     assert "colour" in str(excinfo.value)
 
@@ -95,6 +97,7 @@ async def test_missing_required_arguments_are_refused() -> None:
             arguments={},
             agent_id=AGENT,
             connection_id=None,
+            session=None,
         )
     assert "room_id" in str(excinfo.value)
 
@@ -125,6 +128,7 @@ async def test_the_call_context_carries_agent_and_connection() -> None:
             arguments={"room_id": "room-1"},
             agent_id=AGENT,
             connection_id="conn-9",
+            session=None,
         )
     finally:
         registry._REGISTRY.pop("fake_op", None)
@@ -138,14 +142,18 @@ async def test_the_call_context_carries_agent_and_connection() -> None:
 
 def test_the_call_context_is_cleared_after_the_call() -> None:
     assert current_call_context() is None
-    token = set_call_context(CallContext(agent_id=AGENT, session_key="c1"))
+    token = set_call_context(
+        CallContext(agent_id=AGENT, session_key="c1", session=None)
+    )
     assert current_call_context() is not None
     reset_call_context(token)
     assert current_call_context() is None
 
 
 def test_agent_id_prefers_the_bound_context_over_the_request_scope() -> None:
-    token = set_call_context(CallContext(agent_id="bound-agent", session_key=None))
+    token = set_call_context(
+        CallContext(agent_id="bound-agent", session_key=None, session=None)
+    )
     try:
         # No HTTP request in scope at all: resolving would fail if the bound
         # context were not consulted first.
@@ -155,7 +163,9 @@ def test_agent_id_prefers_the_bound_context_over_the_request_scope() -> None:
 
 
 def test_session_key_prefers_the_bound_context() -> None:
-    token = set_call_context(CallContext(agent_id=AGENT, session_key="conn-7"))
+    token = set_call_context(
+        CallContext(agent_id=AGENT, session_key="conn-7", session=None)
+    )
     try:
         assert op_context.session_key() == "conn-7"
     finally:
@@ -209,6 +219,7 @@ async def test_the_call_context_survives_a_dropped_operation_call() -> None:
                 arguments={"room_id": "room-1"},
                 agent_id=AGENT,
                 connection_id="conn-9",
+                session=None,
             )
 
         assert current_call_context() is None

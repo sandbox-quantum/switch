@@ -104,7 +104,7 @@ it
               )
             ),
         },
-        adapterFor(provider)
+        adapterFor(provider, undefined, '')
       );
       const command = {
         contractVersion: 1 as const,

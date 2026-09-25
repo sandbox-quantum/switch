@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
@@ -69,8 +69,7 @@ export class LocalServerHost implements ServerHost {
     await writeFile(path, content, mode !== undefined ? { encoding: 'utf8', mode } : 'utf8');
     if (mode === undefined) return;
     // writeFile only applies `mode` when creating; enforce it on rewrite too.
-    await chmod(path, mode);
-    if (process.platform === 'win32') await restrictWindowsFileToOwner(path);
+    await this.restrictMode(relPath, mode);
   }
 
   async readFile(relPath: string): Promise<string | null> {
@@ -80,6 +79,16 @@ export class LocalServerHost implements ServerHost {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
+  }
+
+  async removeFile(relPath: string): Promise<void> {
+    await rm(join(this.workingDir, relPath), { force: true });
+  }
+
+  async restrictMode(relPath: string, mode: number): Promise<void> {
+    const path = join(this.workingDir, relPath);
+    await chmod(path, mode);
+    if (process.platform === 'win32') await restrictWindowsFileToOwner(path);
   }
 
   streamCommand(

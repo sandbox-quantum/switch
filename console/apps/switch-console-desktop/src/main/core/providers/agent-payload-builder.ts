@@ -49,11 +49,9 @@ function buildMetadata(provider: CLIAgentPluginProvider): AgentMetadata {
       prompt: capabilities.prompt,
       sessions: capabilities.sessions,
       autoApprove: capabilities.autoApprove,
-      hooks: capabilities.hooks,
       mcp: capabilities.mcp,
       plugins: capabilities.plugins,
       repoAgents: capabilities.repoAgents,
-      switchSetup: capabilities.switchSetup,
     },
     installDocs: capabilities.hostDependency.installDocs ?? null,
   };

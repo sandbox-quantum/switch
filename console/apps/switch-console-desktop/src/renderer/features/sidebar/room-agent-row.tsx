@@ -1,10 +1,13 @@
 import { Bot, ChevronRight, DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
+import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -117,7 +120,10 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                 className="-mx-[1.5px] bg-transparent"
               />
             </span>
-            <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
+            <SidebarMenuAction
+              aria-label={`Open agent ${label}`}
+              className="flex-initial truncate select-none"
+            >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{label}</span>
                 {/* Mirrors the agent-grouped row: the same agent must not carry
@@ -136,8 +142,19 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                   sshHost={location.data?.sshHost ?? null}
                   agentId={agent.providerId ?? null}
                 />
+                {agent.providerId && (
+                  <ProviderIssueIndicator
+                    providerId={agent.providerId}
+                    sshHost={location.data?.sshHost ?? null}
+                    hostReachable={!hostReachabilityStore.isBlocked(location.data?.sshHost ?? null)}
+                    onOpen={() =>
+                      navigate('location', { locationId: agent.locationId, agentName: agent.name })
+                    }
+                  />
+                )}
               </span>
             </SidebarMenuAction>
+            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger

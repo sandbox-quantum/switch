@@ -4,8 +4,7 @@ import { useState } from 'react';
  * One thing on a host, in detail (CHOO-1809).
  *
  * Deliberately the same shape as the agents settings sheet: an identity header,
- * an **Installation** section with the found/not-found card, and — for an agent
- * type — a **Switch setup** section for its connector. Setting up Claude Code
+ * an **Installation** section with the found/not-found card. Setting up Claude Code
  * on a remote host should not look like a different product from setting it up
  * locally.
  *
@@ -367,43 +366,6 @@ function AgentTypeDetail({
         sshHost={sshHost}
         dir=""
       />
-
-      {row.plugin && (
-        <Field>
-          <Label>Switch setup</Label>
-          <div className="space-y-2 rounded-lg border p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="text-sm text-foreground">switch-connector</span>
-                <StatusBadge tone={stepBadge(row.plugin).tone}>
-                  {stepBadge(row.plugin).label}
-                </StatusBadge>
-                {row.plugin.version && (
-                  <span className="text-xs text-foreground-muted">v{row.plugin.version}</span>
-                )}
-              </div>
-              <StepActions
-                step={row.plugin}
-                onInstall={() => onInstall(row.plugin!.id)}
-                installing={installingStepId === row.plugin.id}
-                hostBusy={hostBusy}
-                onSkip={() => onSkip(row.plugin!.id)}
-                skipping={skippingStepId === row.plugin.id}
-              />
-            </div>
-            {row.plugin.state === 'failed' && row.plugin.error && (
-              <p className="text-xs text-destructive">{row.plugin.error}</p>
-            )}
-            {row.plugin.state === 'failed' && row.plugin.output && (
-              <FailureOutput output={row.plugin.output} />
-            )}
-            <p className="text-xs text-foreground-muted">
-              Connects this agent to a Switch instance. Without it the agent starts on this host
-              with no Switch tools.
-            </p>
-          </div>
-        </Field>
-      )}
     </>
   );
 }

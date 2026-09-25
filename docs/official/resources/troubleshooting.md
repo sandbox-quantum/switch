@@ -6,10 +6,6 @@ Published at <https://docs.flintai.dev/flintai/switch/resources/troubleshooting>
 
 **If an agent didn't answer you at all, check the address first.** A message with no `@`, or with the name misspelled, reaches nobody and produces no error and no hint. [Work with your team](../using/mention-and-message.md) covers what counts as an address.
 
-**Note**
-
-Switch Console has a version, and the Switch connector installed into each agent provider has its own. They look alike and move independently, so "update Switch" is ambiguous. Each fix names the one it means.
-
 ## Connecting to a server
 
 ### Which address is wrong?
@@ -56,19 +52,11 @@ If what's waiting there isn't a prompt but a message naming your agent as not fo
 
 **Check the auto-trust setting if this keeps happening.** Select **Settings** at the bottom of the sidebar, then the **General** tab. **Auto-trust worktree directories** is on by default, and it writes the trust entry for Claude Code and Codex before the session launches.
 
-### Session starts with no Switch tools
-
-**The Switch connector was never installed into that agent provider.** The provider is installed and the agent is registered, and the session gives no error at any point: it starts normally, joins no room, and inviting the agent has no visible effect.
-
-The connector is reported separately from the provider, and the provider's row already says so — it reads **Switch setup required**. Select **Settings**, then **Agent providers**, then the provider — the **Switch setup** card there has an install control of its own. Install the connector, then start the session again. See [Set up agent providers](../getting-started/set-up-agent-providers.md).
-
-When a session starts and nothing appears in the room, check this before anything else, because it's a step people reasonably believe they already did. Switch Console's own add-agent flow won't offer a provider that has no connector, so an agent in this state was usually registered somewhere else.
-
 ### Agent not found on launch
 
 The message names your agent as not found and then lists Claude Code's own built-in subagents. None of them are Switch agents, and nothing in the message mentions Switch.
 
-Switch Console starts a Claude Code agent as a Claude Code subagent of the same name, so Claude Code needs a matching definition at `.claude/agents/` in the agent's working directory, named for the registered Switch agent. An agent added through Switch Console's own add-agent flow has one. An agent registered any other way does not: the configure skill registering the main agent, the Gateway's **Register Agent** dialog, or an agent adopted from an identity file under `.switch/agents/` in the working directory.
+Switch Console starts a Claude Code agent as a Claude Code subagent of the same name, so Claude Code needs a matching definition at `.claude/agents/` in the agent's working directory, named for the registered Switch agent. An agent added through Switch Console's own add-agent flow has one. An agent registered any other way does not: the Gateway's **Register Agent** dialog, or an agent adopted from an identity file under `.switch/agents/` in the working directory.
 
 Create that file, with the `name` in its frontmatter matching the registered agent name character for character.
 
@@ -89,12 +77,6 @@ Real-time delivery has to be switched on for the session, and Switch Console kno
 **Note**
 
 Real-time delivery depends on how the agent is authenticated. Claude Code signed in through Anthropic — subscription, Console, or API key — can receive pushed events. An installation running against a managed model service such as Vertex AI or Bedrock cannot, and is registered as an agent that reads the room when it next looks. That agent isn't broken: reach it with delegated work, or expect a reply when it next reads. Auto-create still works, but the session it starts reads the room the same way.
-
-### 404 from a package registry
-
-The Switch connector is most likely reaching for a package where it used to live, from before Switch became a public repository. It's the connector that's out of date rather than Switch Console, and the two update separately.
-
-Update Switch Console first, then select **Settings**, then **Agent providers**. **A row with a connector update waiting reads Connector update alongside Installed**, so **Installed** on its own isn't the thing to look for. The update is yours to accept and nothing moves until you take it — updating Switch Console leaves an old connector exactly where it was.
 
 ## Talking to an agent in a room
 

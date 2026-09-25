@@ -20,13 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     ClientDeclaration,
+    Closure,
     ConnectionRegistry,
 )
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 
 VALID_UUID = "11111111-1111-1111-1111-111111111111"
+_ROOM_REFUSED = Closure(code="closed", message="room already claimed", room_id="room")
 
 
 class _RecordingSink:
@@ -153,6 +156,7 @@ class TestASessionIsTheAgentNotTheConnection:
             spawn_capable=False,
             cursor=0,
             declaration=ClientDeclaration(),
+            expected_generation=None,
         )
         return connection_id
 
@@ -176,7 +180,7 @@ class TestASessionIsTheAgentNotTheConnection:
         self._reporter(sink, registry)
 
         cid = self._open(registry)
-        registry.close(cid, "room already claimed")
+        registry.close(cid, _ROOM_REFUSED)
         await _settle()
 
         assert sink.sent == []
@@ -189,7 +193,7 @@ class TestASessionIsTheAgentNotTheConnection:
 
         for _ in range(20):
             cid = self._open(registry)
-            registry.close(cid, "room already claimed")
+            registry.close(cid, _ROOM_REFUSED)
         await _settle()
 
         assert sink.sent == []
@@ -206,7 +210,7 @@ class TestASessionIsTheAgentNotTheConnection:
         for _ in range(5):
             cid = self._open(registry)
             await self._stream(reporter, registry, cid)
-            registry.close(cid, "heartbeat lapsed")
+            registry.close(cid, HEARTBEAT_LAPSED)
             await asyncio.sleep(0.01)  # well inside the grace period
         await _settle()
 
@@ -222,7 +226,7 @@ class TestASessionIsTheAgentNotTheConnection:
 
         cid = self._open(registry)
         await self._stream(reporter, registry, cid)
-        registry.close(cid, "heartbeat lapsed")
+        registry.close(cid, HEARTBEAT_LAPSED)
         await asyncio.sleep(0.15)
         await _settle()
 
@@ -242,7 +246,7 @@ class TestASessionIsTheAgentNotTheConnection:
         cid = self._open(registry)
         await self._stream(reporter, registry, cid)
         reporter._sessions["agent-1"].started_at = time.monotonic() - 300.0
-        registry.close(cid, "heartbeat lapsed")
+        registry.close(cid, HEARTBEAT_LAPSED)
         await asyncio.sleep(0.15)
         await _settle()
 
@@ -275,7 +279,7 @@ class TestASessionIsTheAgentNotTheConnection:
         second = self._open(registry)
         await self._stream(reporter, registry, first)
         await self._stream(reporter, registry, second)
-        registry.close(first, "heartbeat lapsed")
+        registry.close(first, HEARTBEAT_LAPSED)
         await asyncio.sleep(0.15)
         await _settle()
 
@@ -317,7 +321,7 @@ class TestASessionIsTheAgentNotTheConnection:
         registry.set_close_listener(lambda conn: (_ for _ in ()).throw(RuntimeError()))
         cid = self._open(registry)
 
-        assert registry.close(cid, "heartbeat lapsed") is not None
+        assert registry.close(cid, HEARTBEAT_LAPSED) is not None
         assert registry.get(cid) is None
 
 

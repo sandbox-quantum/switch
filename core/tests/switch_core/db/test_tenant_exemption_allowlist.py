@@ -57,6 +57,10 @@ _ALLOWED_MODULES = {
     # Reconciling every room's client membership at startup fans out over
     # every tenant's rooms before binding each room's own tenant.
     "switch_core.room_service",
+    # Session-activity upkeep expires overdue approval requests and prunes
+    # old activity lines in every tenant: enumerate, then bind each tenant and
+    # work under its own policy, the same shape as the runtime-state sweep.
+    "switch_core.session_activity.maintenance",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
@@ -128,20 +132,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
-    # The SDK session publisher and the cards it draws. `bridge_core` is the
-    # only thing that builds any of the three, by two routes and both bound: a
-    # button press or a typed answer arrives through `BridgeCore._traced`,
-    # which binds the tenant of the room the channel maps to; and the sweep
-    # loop is created inside a `tenant_scope(self._bridge_tenant_id)` that
-    # `BridgeCore.start` opens for exactly that, so the task carries the
-    # bridge's tenant for its whole life. Worth saying plainly, because
-    # `start()` itself runs under `no_tenant()` and that scope is the only
-    # thing standing between the sweep and an unbound context. The sweep's own
-    # reads say so too: they are keyed on `require_tenant_id()`, so an unbound
-    # publisher raises on its first pass rather than quietly reading nothing.
-    "switch_core.sessions.publication",
-    "switch_core.bridges.collaboration.session.inbound",
-    "switch_core.bridges.collaboration.session.outbound",
     # ── The exemption's own plumbing. It opens a session with nothing bound
     # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.

@@ -59,7 +59,7 @@ Prefer an alias you already have, so the connection uses the user, key and port 
 
 ### Install what the host is missing
 
-Switch Console checks the host for what it needs and doesn't already have: the Claude Code CLI, the Switch connector, `git`, `tmux`, and Node.js 18 or newer.
+Switch Console checks the host for what it needs and doesn't already have: the agent provider CLIs, `git`, `tmux`, and Node.js 18 or newer, which the process Switch Console deploys there runs on.
 
 Each one is a row of its own, carrying **Install**, **Update**, **Skip** and **Retry** as it applies. **There's no install-everything control** — work down the rows. A row reading **Could not be checked** is neither a pass nor a failure, and it needs another look.
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -25,17 +26,23 @@ import type {
   ProviderSessionStartInput,
   ProviderTurnStartResult,
 } from '../adapter';
-import { ProviderSessionError, ProviderUnavailableError } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderSessionError,
+  ProviderUnavailableError,
+} from '../adapter';
 import type {
   ApprovalDecision,
   ApprovalOption,
   ItemStatus,
   ProviderItem,
   ProviderRuntimeEvent,
+  TokenUsage,
   TurnOutcome,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { CumulativeUsage, mergeUsage } from '../usage';
 import {
   approvalContent,
   isRecord,
@@ -122,6 +129,41 @@ export interface ClaudeAdapterOptions {
   logger?: ClaudeAdapterLogger;
   /** Test seam: a scripted stand-in for the SDK's `query()`. */
   query?: typeof sdkQuery;
+  /** Test seam: whether Claude Code has a saved conversation with this id. */
+  savedConversationExists?: (
+    nativeSessionId: string,
+    env: Record<string, string>
+  ) => Promise<boolean>;
+}
+
+/**
+ * Whether Claude Code saved a conversation with this id. Claude writes a
+ * conversation only once a turn has run in it, under its config directory's
+ * `projects/<directory>/<id>.jsonl`; an id that was handed out but never used
+ * has no file, and resuming it fails with "No conversation found".
+ */
+async function claudeConversationSaved(
+  nativeSessionId: string,
+  env: Record<string, string>
+): Promise<boolean> {
+  const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude');
+  let projects: string[];
+  try {
+    projects = await readdir(join(configDir, 'projects'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  for (const project of projects) {
+    try {
+      await access(join(configDir, 'projects', project, `${nativeSessionId}.jsonl`));
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+    }
+  }
+  return false;
 }
 
 type EventBody<T extends ProviderRuntimeEvent = ProviderRuntimeEvent> =
@@ -169,6 +211,13 @@ interface SessionState {
   streamMessageId: string | null;
   stopping: boolean;
   exited: boolean;
+  /**
+   * The SDK's per-model totals run for the whole query, so a turn's spend is
+   * the difference from the last result. Anything spent between turns
+   * (compaction) lands on the next turn to end rather than being dropped.
+   */
+  usage: CumulativeUsage;
+  unreportedUsage: TokenUsage[];
 }
 
 /** An async iterable the adapter pushes into for the life of the session. */
@@ -280,11 +329,15 @@ export class ClaudeAdapter implements ProviderAdapter {
   private readonly executablePath: string | undefined;
   private readonly logger: ClaudeAdapterLogger | undefined;
   private readonly queryFn: typeof sdkQuery;
+  private readonly savedConversationExists: NonNullable<
+    ClaudeAdapterOptions['savedConversationExists']
+  >;
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.executablePath = options.claudeExecutablePath;
     this.logger = options.logger;
     this.queryFn = options.query ?? sdkQuery;
+    this.savedConversationExists = options.savedConversationExists ?? claudeConversationSaved;
   }
 
   subscribe(listener: (event: ProviderRuntimeEvent) => void): () => void {
@@ -318,6 +371,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     const executable = resolveClaudeExecutable(this.executablePath, input.env);
 
     const nativeSessionId = input.resume?.nativeSessionId ?? randomUUID();
+    if (input.resume && !(await this.savedConversationExists(nativeSessionId, input.env)))
+      throw new ProviderConversationUnavailableError(
+        PROVIDER,
+        input.sessionId,
+        `Claude Code has no saved conversation ${nativeSessionId} to resume.`
+      );
 
     filterShadowedWarningOnce();
 
@@ -328,6 +387,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       ...(permissionMode ? { permissionMode } : {}),
       strictMcpConfig: false,
+      // The connector plugin Switch used to ship would add a second Switch
+      // server with its own connection; kept off for installs that still have it.
       ...(mcpServers.switch
         ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
         : {}),
@@ -372,6 +433,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       streamMessageId: null,
       stopping: false,
       exited: false,
+      usage: new CumulativeUsage(),
+      unreportedUsage: [],
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -617,6 +680,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleMessage(session: SessionState, message: SDKMessage): void {
+    if (message.type === 'result') this.recordUsage(session, message);
     if (session.compaction) {
       if (message.type === 'system' && message.subtype === 'compact_boundary')
         session.compaction.boundary = true;
@@ -817,6 +881,27 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
+  private recordUsage(session: SessionState, result: SDKResultMessage): void {
+    const totals = new Map(
+      Object.entries(result.modelUsage ?? {}).map(([model, counts]) => [
+        model,
+        {
+          inputTokens: counts.inputTokens,
+          outputTokens: counts.outputTokens,
+          cacheReadTokens: counts.cacheReadInputTokens,
+          cacheWriteTokens: counts.cacheCreationInputTokens,
+        },
+      ])
+    );
+    session.unreportedUsage = mergeUsage(session.unreportedUsage, session.usage.advance(totals));
+  }
+
+  private takeUsage(session: SessionState): TokenUsage[] {
+    const usage = session.unreportedUsage;
+    session.unreportedUsage = [];
+    return usage;
+  }
+
   private handleResult(session: SessionState, result: SDKResultMessage): void {
     const turn = session.turn;
     if (!turn) return;
@@ -850,6 +935,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId: turn.turnId,
       outcome,
       ...(message ? { message } : {}),
+      usage: this.takeUsage(session),
       raw: { source: 'claude', payload: result },
     });
     this.emit(session, { type: 'session.state.changed', status: 'ready' });
@@ -1009,6 +1095,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         turnId: turn.turnId,
         outcome: 'interrupted',
         message: reason,
+        usage: this.takeUsage(session),
       });
     }
 

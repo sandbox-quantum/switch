@@ -8,6 +8,7 @@ import {
   canUpdate,
   dependenciesMet,
   groupPlanSteps,
+  needsFirstCheck,
   outcomeLabel,
   stepBadge,
   versionSubtitle,
@@ -88,84 +89,53 @@ describe('stepBadge — green must be earned', () => {
   });
 });
 
-describe('agentTypeBadge — a CLI alone is not usable', () => {
+describe('agentTypeBadge', () => {
   const cli = (patch: Partial<HostSetupStep> = {}) =>
     step({ id: 'claude-code', kind: 'agent-cli', name: 'Claude Code', ...patch });
-  const plugin = (patch: Partial<HostSetupStep> = {}) =>
-    step({
-      id: 'claude-code:plugin',
-      kind: 'agent-plugin',
-      name: 'Claude Code · Switch connector',
-      ...patch,
+  const row = (c: HostSetupStep) => ({ agentId: 'claude-code', name: 'Claude Code', cli: c });
+
+  it('is installed when the CLI is satisfied', () => {
+    expect(agentTypeBadge(row(cli({ state: 'satisfied' })))).toEqual({
+      tone: 'success',
+      label: 'Installed',
     });
-  const row = (c: HostSetupStep, p: HostSetupStep | null) => ({
-    agentId: 'claude-code',
-    name: 'Claude Code',
-    cli: c,
-    plugin: p,
   });
 
-  it('is installed only when both the CLI and the connector are satisfied', () => {
-    expect(
-      agentTypeBadge(row(cli({ state: 'satisfied' }), plugin({ state: 'satisfied' })))
-    ).toEqual({ tone: 'success', label: 'Installed' });
-  });
-
-  it('calls out the connector when the CLI is there but the connector is not', () => {
-    // Without the connector the agent starts and has no Switch tools — rounding
-    // this up to "Installed" is what makes that failure invisible.
-    expect(agentTypeBadge(row(cli({ state: 'satisfied' }), plugin({ state: 'pending' })))).toEqual({
-      tone: 'warning',
-      label: 'Switch setup required',
-    });
+  it('stays installed when a newer CLI exists', () => {
+    expect(agentTypeBadge(row(cli({ state: 'satisfied', updateAvailable: true }))).label).toBe(
+      'Installed'
+    );
   });
 
   it('reports the CLI state when the CLI itself is missing', () => {
-    expect(agentTypeBadge(row(cli({ state: 'pending', outcome: 'missing' }), plugin())).label).toBe(
+    expect(agentTypeBadge(row(cli({ state: 'pending', outcome: 'missing' }))).label).toBe(
       'Not installed'
     );
   });
 
-  it('surfaces a failure from either half', () => {
-    expect(
-      agentTypeBadge(
-        row(cli({ state: 'satisfied' }), plugin({ state: 'failed', outcome: 'missing' }))
-      ).tone
-    ).toBe('danger');
+  it('surfaces a failure', () => {
+    expect(agentTypeBadge(row(cli({ state: 'failed', outcome: 'missing' }))).tone).toBe('danger');
   });
 
   it('shows work in flight ahead of the resting state', () => {
-    expect(
-      agentTypeBadge(row(cli({ state: 'satisfied' }), plugin({ state: 'installing' }))).label
-    ).toBe('Installing…');
+    expect(agentTypeBadge(row(cli({ state: 'installing' }))).label).toBe('Installing…');
   });
 });
 
 describe('groupPlanSteps', () => {
-  it('splits prerequisites from agent types and pairs each CLI with its connector', () => {
+  it('splits prerequisites from agent types', () => {
     const grouped = groupPlanSteps(
       plan([
         step({ id: 'git', name: 'Git' }),
         step({ id: 'gh', kind: 'core-dependency', name: 'GitHub CLI' }),
         step({ id: 'claude-code', kind: 'agent-cli', name: 'Claude Code' }),
-        step({
-          id: 'claude-code:plugin',
-          kind: 'agent-plugin',
-          name: 'Claude Code · Switch connector',
-        }),
       ])
     );
 
     expect(grouped.prerequisites.map((s) => s.id)).toEqual(['git', 'gh']);
     expect(grouped.agentTypes).toHaveLength(1);
     expect(grouped.agentTypes[0]!.agentId).toBe('claude-code');
-    expect(grouped.agentTypes[0]!.plugin?.id).toBe('claude-code:plugin');
-  });
-
-  it('keeps an agent type whose connector step is absent', () => {
-    const grouped = groupPlanSteps(plan([step({ id: 'codex', kind: 'agent-cli', name: 'Codex' })]));
-
-    expect(grouped.agentTypes[0]!.plugin).toBeNull();
+    expect(grouped.agentTypes[0]!.cli.id).toBe('claude-code');
   });
 
   it('is empty for a host with no plan', () => {
@@ -379,5 +349,14 @@ describe('versionSubtitle', () => {
     expect(
       versionSubtitle(step({ state: 'pending', outcome: 'missing', version: '0.146.0' }))
     ).toBeNull();
+  });
+});
+
+describe('needsFirstCheck', () => {
+  it('asks for a first look while any step has never been observed', () => {
+    const observed = step({ id: 'git', state: 'satisfied', outcome: 'satisfied' });
+    expect(needsFirstCheck(plan([observed, step({ id: 'node' })]))).toBe(true);
+    expect(needsFirstCheck(plan([observed]))).toBe(false);
+    expect(needsFirstCheck(null)).toBe(false);
   });
 });

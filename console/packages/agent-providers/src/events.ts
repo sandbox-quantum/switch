@@ -83,13 +83,36 @@ interface EventBase {
   raw?: { source: string; payload: unknown };
 }
 
+/**
+ * Tokens one model consumed. `model` is the provider's own id, or empty when
+ * the provider runs its default without naming it. Cache reads and writes are
+ * counted apart from `inputTokens` because they are priced apart.
+ */
+export interface TokenUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
 export type ProviderRuntimeEvent = EventBase &
   (
     | { type: 'session.started'; nativeSessionId: string }
     | { type: 'session.state.changed'; status: SessionStatus; message?: string }
     | { type: 'session.exited'; reason: string }
     | { type: 'turn.started'; turnId: string }
-    | { type: 'turn.completed'; turnId: string; outcome: TurnOutcome; message?: string }
+    /**
+     * `usage` is what the turn spent, one entry per model. Empty when the
+     * provider reports nothing — not a claim that the turn was free.
+     */
+    | {
+        type: 'turn.completed';
+        turnId: string;
+        outcome: TurnOutcome;
+        message?: string;
+        usage: TokenUsage[];
+      }
     | { type: 'item.started'; turnId: string; item: ProviderItem }
     | { type: 'item.updated'; turnId: string; item: ProviderItem }
     | { type: 'item.completed'; turnId: string; item: ProviderItem }

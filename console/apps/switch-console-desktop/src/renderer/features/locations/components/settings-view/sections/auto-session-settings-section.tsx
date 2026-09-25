@@ -43,7 +43,7 @@ export function AutoSessionSettingsSection({
             Auto-create a session on notify
             <InfoTooltip
               label="More info about auto-creating a session"
-              content="Switch Console watches this agent's Switch rooms and starts a session — connected to the room and ready to reply — whenever it's addressed with no session running."
+              content="Switch Console holds this agent's room connection either way. With this on it also starts a session — connected to the room and ready to reply — whenever the agent is addressed with none running; with it off the agent stays addressable and answers that it has no session."
             />
           </span>
         </FieldTitle>

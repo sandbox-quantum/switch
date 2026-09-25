@@ -53,7 +53,6 @@ function makeSessionRow(values: Partial<SessionRow>): SessionRow {
     agentId: values.agentId ?? 'agent-1',
     title: values.title ?? 'Test Session',
     config: values.config ?? null,
-    shellId: values.shellId ?? 'system',
     status: values.status ?? 'in_progress',
     agentStatus: values.agentStatus ?? null,
     agentStatusSeen: values.agentStatusSeen ?? 1,

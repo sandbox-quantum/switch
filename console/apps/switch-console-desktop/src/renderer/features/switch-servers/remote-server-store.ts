@@ -7,6 +7,7 @@ import type {
   ConnectRemoteServerResult,
   DeployedTelemetry,
   DockerAvailability,
+  ManagedServerUpgrade,
   RemoteStackProbe,
   StackRegister,
   SwitchVersionDrift,
@@ -28,6 +29,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
     phase: 'stopped',
+    upgrade: null,
     serverId: null,
     version: '',
     deployedVersion: null,
@@ -140,6 +142,11 @@ export class RemoteServerStore {
   /** Set when the host's switch-core differs from the version this build pins. */
   driftFor(sshHost: string): SwitchVersionDrift | null {
     return this.statusFor(sshHost).drift;
+  }
+
+  /** Set while the host's stack is behind this build's pin and not yet upgraded. */
+  upgradeFor(sshHost: string): ManagedServerUpgrade | null {
+    return this.statusFor(sshHost).upgrade;
   }
 
   /** What the host's running stack is doing about usage data, or null when

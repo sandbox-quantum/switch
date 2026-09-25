@@ -30,6 +30,8 @@ class _FakePuppet:
         filename,
         mimetype,
         size,
+        *,
+        metered,
         msgtype,
         caption=None,
         thread_root_id=None,
@@ -51,7 +53,7 @@ class _FakePuppet:
         return f"$evt-{len(self.media) - 1}"
 
     async def send_message(
-        self, matrix_room_id, content, format=None, thread_root_id=None
+        self, matrix_room_id, content, *, metered, format=None, thread_root_id=None
     ):  # noqa: ANN001, ANN201, A002
         self.messages.append({"content": content, "thread_root_id": thread_root_id})
         return "$evt-text"
@@ -64,11 +66,6 @@ class _FakeAdapter:
 
 async def _no_text_answer(_msg: object) -> None:
     """These tests exercise the relay, not the session half of a message."""
-    return None
-
-
-async def _no_session_demo(_msg: object, _room_id: str) -> None:
-    """The demo harness is off in production and off here."""
     return None
 
 
@@ -91,7 +88,6 @@ def _fake_bridge() -> SimpleNamespace:
 
     ns = SimpleNamespace(
         _handle_text_answer=_no_text_answer,
-        _handle_session_demo=_no_session_demo,
         _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},

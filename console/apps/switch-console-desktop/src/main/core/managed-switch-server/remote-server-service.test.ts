@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
+import type * as ManagedUpgrade from './managed-upgrade';
 import type { StackOnHost } from './stack-state';
 import type * as StackState from './stack-state';
 
@@ -35,6 +36,7 @@ const writeRecord = vi.hoisted(() =>
   vi.fn((_host: unknown, _action: unknown) => Promise.resolve())
 );
 const readRegister = vi.hoisted(() => vi.fn());
+const readUpgradeJournal = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 
 vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
   hostReachabilityService: { requireReachable, isBlocked, on: onReachability },
@@ -76,6 +78,10 @@ vi.mock('./ports', () => ({ clearPorts }));
 vi.mock('./deployed-version', () => ({ readVersionStatus }));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry }));
 vi.mock('./console-register', () => ({ writeRecord, readRegister }));
+vi.mock('./managed-upgrade', async (importOriginal) => ({
+  ...(await importOriginal<typeof ManagedUpgrade>()),
+  readUpgradeJournal,
+}));
 
 const ports = { gateway: 41000, api: 41001, mattermost: 41002, postgres: 41003 };
 const secrets = {
@@ -117,6 +123,15 @@ const RECORD = {
   managementKind: 'remote',
   sshHost: 'vm-1',
 };
+
+/** Launch the service and wait out the reconciles it starts in the background. */
+async function boot(service: {
+  initialize(): Promise<void>;
+  ensureReady(sshHost: string, serverName: string): Promise<void>;
+}) {
+  await service.initialize();
+  await service.ensureReady('vm-1', 'Team server');
+}
 
 /** The service is a module singleton; each case gets a fresh one. */
 async function loadService() {
@@ -271,7 +286,7 @@ describe('a record that cannot be written', () => {
 
     // Launch picks the stack back up and records the sighting.
     inspectStack.mockResolvedValue(present(true));
-    await service.initialize();
+    await boot(service);
 
     expect(service.getStatus('vm-1').recordWarning).toBeNull();
   });
@@ -313,7 +328,7 @@ describe('picking a shared stack back up', () => {
     inspectStack.mockResolvedValue(present(true));
     const service = await loadService();
 
-    await service.initialize();
+    await boot(service);
 
     expect(adoptRunningStack).toHaveBeenCalledWith(host, present(true));
     expect(host.establishNetworking).toHaveBeenCalledWith(ports);
@@ -334,7 +349,7 @@ describe('picking a shared stack back up', () => {
     });
     const service = await loadService();
 
-    await service.initialize();
+    await boot(service);
 
     expect(ensureManagedServer).toHaveBeenCalledWith(
       {
@@ -352,7 +367,7 @@ describe('picking a shared stack back up', () => {
     inspectStack.mockResolvedValue(present(false));
     const service = await loadService();
 
-    await service.initialize();
+    await boot(service);
 
     expect(service.getStatus('vm-1')).toMatchObject({ phase: 'stopped', notice: null });
     expect(host.dispose).toHaveBeenCalledOnce();
@@ -373,7 +388,7 @@ describe('recording that this Console still uses the stack', () => {
     inspectStack.mockResolvedValue(present(true));
     const service = await loadService();
 
-    await service.initialize();
+    await boot(service);
     expect(writeRecord).toHaveBeenCalledExactlyOnceWith(expect.anything(), null);
 
     // Requests fail; the stack is looked at again, and is still there.
@@ -390,7 +405,7 @@ describe('recording that this Console still uses the stack', () => {
       createRemoteServerHost.mockResolvedValue(fakeHost());
       inspectStack.mockResolvedValue(present(true));
       const service = await loadService();
-      await service.initialize();
+      await boot(service);
 
       vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
       service.recheck('vm-1');
@@ -408,7 +423,7 @@ describe('recheck', () => {
     createRemoteServerHost.mockResolvedValue(first);
     inspectStack.mockResolvedValue(present(true));
     const service = await loadService();
-    await service.initialize();
+    await boot(service);
     return { service, first };
   }
 
@@ -514,7 +529,7 @@ describe('a host coming back while an operation starts', () => {
     createRemoteServerHost.mockResolvedValue(fakeHost());
     inspectStack.mockResolvedValue(present(false));
     const service = await loadService();
-    await service.initialize();
+    await boot(service);
     const [, onChange] = onReachability.mock.calls[0] as [
       string,
       (change: { current: { status: string; sshHost: string } }) => void,

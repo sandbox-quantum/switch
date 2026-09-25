@@ -8,7 +8,9 @@ import {
   getSessionStore,
 } from '@renderer/features/sessions/stores/session-selectors';
 import { useSessionActionProps } from '@renderer/features/sessions/use-session-actions';
+import { SessionIssueIndicator } from '@renderer/features/sidebar/session-issue-indicator';
 import { SessionSidebarTrailingSlot } from '@renderer/features/sidebar/session-sidebar-agent-status';
+import { SessionRoomConnection } from '@renderer/features/switch-rooms/session-room-connection';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { cn } from '@renderer/utils/utils';
@@ -88,6 +90,10 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
               {sessionName}
             </span>
           </SidebarMenuAction>
+          <SessionIssueIndicator sessionId={sessionId} />
+          {'agentId' in session.data && (
+            <SessionRoomConnection compact sessionId={sessionId} agentId={session.data.agentId} />
+          )}
         </div>
         {/* The status and the actions button take turns in one slot rather than
             sitting side by side: the row is narrow, and a second control

@@ -6,8 +6,9 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy.exc import IntegrityError
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -17,10 +18,16 @@ from switch_core.db.models import Invitation, Tenant, TenantMember, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import (
+    BudgetNotFound,
+    BudgetStanding,
+    BudgetStore,
+)
 from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
 )
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
@@ -39,6 +46,7 @@ from switch_core.gateway.dependencies import (
     current_telemetry,
     get_agent_store,
     get_api_key_store,
+    get_budget_store,
     get_client_lifecycle,
     get_config,
     get_invitation_store,
@@ -46,9 +54,13 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
     get_system_session,
+    get_usage_store,
     get_user_store,
 )
 from switch_core.gateway.schemas import (
+    BudgetCreateRequest,
+    BudgetResponse,
+    BudgetUpdateRequest,
     InvitationAcceptRequest,
     InvitationCreateRequest,
     InvitationCreateResponse,
@@ -58,6 +70,7 @@ from switch_core.gateway.schemas import (
     SessionUserResponse,
     TenantCreateRequest,
     TenantMembershipResponse,
+    UsageTotalResponse,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -201,17 +214,123 @@ async def list_tenants(
     return await list_tenant_memberships(session_factory, user_store, user_id)
 
 
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
+async def _lock_workspace_allowance(
+    session: AsyncSession, caller: AuthenticatedCaller, limit: int
+) -> User:
+    """Lock the caller's row and raise 403 unless they may create one more
+    workspace. Returns the locked row, for the caller to count the creation on.
+
+    Creating a workspace is not just a row: `all_tenant_ids()` drives a fan-out
+    per tenant at boot and a sweep every few seconds, so unbounded creation
+    buys the deployment steady-state work
+    (`docs/old/multi-tenancy-phase2-tenants.md`, §5). A limit of 0 closes the
+    route entirely, which is how a deployment that is not ready to offer
+    self-service says so.
+
+    The bound is on workspaces created (`users.workspaces_created`), not on
+    workspaces owned: ownership can be handed to another account, so a count of
+    ownership could be reset by creating, handing over and stepping down, over
+    and over. An invitation into someone else's workspace spends nothing.
+
+    The row lock is what makes the check hold under concurrent requests. It
+    is taken `NOWAIT`, so a second request from the same person is refused
+    with 409 at once rather than holding a pool connection while it waits —
+    the request holding the lock needs more connections to provision, and a
+    burst of waiters could starve it of them. `FOR NO KEY UPDATE` rather than
+    `FOR UPDATE`, because the new owner membership's foreign key takes a key
+    share on this same row from another session, and `FOR UPDATE` would make
+    the request wait on itself.
+    """
+    if limit == 0:
+        raise HTTPException(
+            status_code=403,
+            detail="Workspace creation is disabled on this deployment",
+        )
+    try:
+        user = await session.scalar(
+            select(User)
+            .where(User.id == caller.id)
+            .with_for_update(key_share=True, nowait=True)
+        )
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+            raise
+        raise HTTPException(
+            status_code=409,
+            detail="Another workspace is being created for you; try again shortly",
+        ) from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    if user.workspaces_created >= limit:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"You have created {user.workspaces_created} workspaces, and "
+                f"this deployment allows {limit}"
+            ),
+        )
+    return user
+
+
+async def _provision_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    client_lifecycle: ClientLifecycleService,
+    caller: AuthenticatedCaller,
+    name: str,
+) -> Tenant:
+    slug = _derive_slug(name)
+    try:
+        tenant = await client_lifecycle.create_tenant(name, slug)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Slug already taken: {slug}"
+        ) from exc
+
+    try:
+        async with tenant_session(session_factory, tenant.id) as session:
+            await user_store.add_membership(
+                session, tenant_id=tenant.id, user_id=caller.id, role="owner"
+            )
+            await session.commit()
+    except Exception:
+        logger.error(
+            "Workspace %s (slug %s) was created but its owner membership for "
+            "user %s was not written: it now has no members and its slug is "
+            "taken. Insert the membership to repair it.",
+            tenant.id,
+            slug,
+            caller.id,
+        )
+        raise
+    return tenant
+
+
 @router.post("/tenants", status_code=201)
 async def create_tenant(
     req: TenantCreateRequest,
-    user_id: Annotated[str, Depends(get_authenticated_user_id)],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    allowance: Annotated[AsyncSession, Depends(get_system_session)],
 ) -> TenantMembershipResponse:
     """Create a workspace. The caller becomes its `owner`.
+
+    How many workspaces one person may create is bounded, and the bound is
+    checked before anything is provisioned — see `_lock_workspace_allowance`.
+    Deployment operators are exempt, both because the bypass is what
+    `is_operator` means everywhere else in this codebase (`authz.py`) and
+    because the person provisioning workspaces for other people is the one
+    caller a self-service bound must not stop; nothing is counted for them. This
+    is the only route in this file with no tenant to authorize against, so the
+    limit is what stands in for the role check its neighbours have.
 
     Provisioning goes through `ClientLifecycleService.create_tenant` — "the
     one seam a tenant comes into existence through" — rather than inserting a
@@ -230,30 +349,19 @@ async def create_tenant(
     — a 500 with the orphan unrecorded — is the silent degradation this
     codebase refuses. An operator repairs it by inserting the membership.
     """
-    slug = _derive_slug(req.name)
-    try:
-        tenant = await client_lifecycle.create_tenant(req.name, slug)
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=409, detail=f"Slug already taken: {slug}"
-        ) from exc
-
-    try:
-        async with tenant_session(session_factory, tenant.id) as session:
-            await user_store.add_membership(
-                session, tenant_id=tenant.id, user_id=user_id, role="owner"
-            )
-            await session.commit()
-    except Exception:
-        logger.error(
-            "Workspace %s (slug %s) was created but its owner membership for "
-            "user %s was not written: it now has no members and its slug is "
-            "taken. Insert the membership to repair it.",
-            tenant.id,
-            slug,
-            user_id,
+    if caller.is_operator:
+        tenant = await _provision_workspace(
+            session_factory, user_store, client_lifecycle, caller, req.name
         )
-        raise
+    else:
+        user = await _lock_workspace_allowance(
+            allowance, caller, config.gateway_max_workspaces_per_user
+        )
+        tenant = await _provision_workspace(
+            session_factory, user_store, client_lifecycle, caller, req.name
+        )
+        user.workspaces_created += 1
+        await allowance.commit()
 
     return TenantMembershipResponse(
         id=tenant.id, slug=tenant.slug, name=tenant.name, role="owner"
@@ -331,6 +439,169 @@ async def create_invitation(
     await session.commit()
     emit_safely(current_telemetry(), "invitation_sent", {})
     return InvitationCreateResponse(token=token, **_invitation_fields(invitation))
+
+
+@router.get("/tenants/{tenant_id}/usage")
+async def get_usage(
+    tenant_id: str,
+    since: Annotated[datetime, Query()],
+    until: Annotated[datetime, Query()],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    usage_store: Annotated[UsageStore, Depends(get_usage_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> list[UsageTotalResponse]:
+    """The bound tenant's usage per metric, consumer and model over `[since, until)`.
+
+    `owner`/`admin` only. Usage is counted in whole UTC hours, so `since` is
+    widened to the start of its hour. Both bounds must carry a timezone: a
+    naive time would be read in the server's zone and quietly shift the window.
+    """
+    _require_bound_tenant(tenant_id)
+    if since.tzinfo is None or until.tzinfo is None:
+        raise HTTPException(
+            status_code=400, detail="since and until must include a timezone offset"
+        )
+    if since >= until:
+        raise HTTPException(status_code=400, detail="since must be before until")
+    totals = await usage_store.totals(
+        session, tenant_id=tenant_id, since=since, until=until
+    )
+    return [
+        UsageTotalResponse(
+            metric=t.metric,
+            client_id=t.client_id,
+            client_name=t.client_name,
+            client_type=t.client_type,
+            model=t.model,
+            amount=t.amount,
+        )
+        for t in totals
+    ]
+
+
+def _budget_response(standing: BudgetStanding) -> BudgetResponse:
+    return BudgetResponse(
+        id=standing.id,
+        agent_id=standing.agent_id,
+        agent_name=standing.agent_name,
+        metric=standing.metric,
+        model=standing.model,
+        amount_limit=standing.amount_limit,
+        period_hours=standing.period_hours,
+        spent=standing.spent,
+        resets_at=standing.resets_at,
+        exhausted=standing.exhausted,
+    )
+
+
+async def _budget_standing(
+    session: AsyncSession, budget_store: BudgetStore, tenant_id: str, budget_id: str
+) -> BudgetResponse:
+    for standing in await budget_store.standings(
+        session, tenant_id=tenant_id, agent_id=None
+    ):
+        if standing.id == budget_id:
+            return _budget_response(standing)
+    raise HTTPException(status_code=404, detail="Budget not found")
+
+
+@router.get("/tenants/{tenant_id}/budgets")
+async def list_budgets(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> list[BudgetResponse]:
+    """Every budget of the bound tenant with its spend in the current period.
+    `owner`/`admin` only."""
+    _require_bound_tenant(tenant_id)
+    standings = await budget_store.standings(
+        session, tenant_id=tenant_id, agent_id=None
+    )
+    return [_budget_response(s) for s in standings]
+
+
+@router.post("/tenants/{tenant_id}/budgets", status_code=201)
+async def create_budget(
+    tenant_id: str,
+    body: BudgetCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> BudgetResponse:
+    """Add a budget to the bound tenant. `owner`/`admin` only.
+
+    404 when `agent_id` names no agent in this workspace; 409 when the same
+    agent (or the whole workspace), metric and model already has one — edit
+    that one instead.
+    """
+    _require_bound_tenant(tenant_id)
+    if body.agent_id is not None:
+        agent = await agent_store.get(session, body.agent_id)
+        if agent is None or agent.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="Agent not found")
+    try:
+        budget = await budget_store.create(
+            session,
+            tenant_id=tenant_id,
+            agent_id=body.agent_id,
+            metric=body.metric,
+            model=body.model,
+            amount_limit=body.amount_limit,
+            period_hours=body.period_hours,
+        )
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A budget for this agent, metric and model already exists",
+        ) from exc
+    await session.commit()
+    return await _budget_standing(session, budget_store, tenant_id, budget.id)
+
+
+@router.put("/tenants/{tenant_id}/budgets/{budget_id}")
+async def update_budget(
+    tenant_id: str,
+    budget_id: str,
+    body: BudgetUpdateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> BudgetResponse:
+    """Change a budget's limit and period. `owner`/`admin` only. What it
+    covers is fixed; to cover something else, add another budget."""
+    _require_bound_tenant(tenant_id)
+    try:
+        await budget_store.update(
+            session,
+            tenant_id=tenant_id,
+            budget_id=budget_id,
+            amount_limit=body.amount_limit,
+            period_hours=body.period_hours,
+        )
+    except BudgetNotFound as exc:
+        raise HTTPException(status_code=404, detail="Budget not found") from exc
+    await session.commit()
+    return await _budget_standing(session, budget_store, tenant_id, budget_id)
+
+
+@router.delete("/tenants/{tenant_id}/budgets/{budget_id}", status_code=204)
+async def delete_budget(
+    tenant_id: str,
+    budget_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> Response:
+    """Remove a budget. `owner`/`admin` only."""
+    _require_bound_tenant(tenant_id)
+    try:
+        await budget_store.delete(session, tenant_id=tenant_id, budget_id=budget_id)
+    except BudgetNotFound as exc:
+        raise HTTPException(status_code=404, detail="Budget not found") from exc
+    await session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/tenants/{tenant_id}/invitations")

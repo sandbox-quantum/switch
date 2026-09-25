@@ -11,7 +11,7 @@ from __future__ import annotations
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_summary
 from switch_core.sessions.contract import Item, TurnUpsert
 
-from .test_session_activity import TURN, _item, _items, _turn
+from .session_fixtures import TURN, _item, _items, _turn
 
 
 def _identity(text: str) -> str:

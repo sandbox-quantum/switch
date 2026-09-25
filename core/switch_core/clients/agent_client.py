@@ -17,6 +17,10 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.presence import (
+    agents_present_in,
+    rooms_occupied,
+)
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
@@ -29,6 +33,7 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
+from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
     PLATFORM_MARKER,
     platform_on_behalf_of,
@@ -53,6 +58,7 @@ from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -270,8 +276,9 @@ class AgentClient(ClientBase[ClientConfig]):
             client_store=self.client_store,
             agent_store=agent_store,
             external_user_store=external_user_store,
-            live_agent_ids=connections.live_agent_ids,
+            live_connection_ids=connections.live_connection_ids,
         )
+        self._budget_guard = BudgetGuard(BudgetStore())
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
         # timers. Both are cleared when a group completes or times out, so a
@@ -341,7 +348,9 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
-        await self.send_message(room.room_id, greeting, format="markdown")
+        await self.send_message(
+            room.room_id, greeting, format="markdown", metered=False
+        )
 
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """Forget the room's events, everywhere this agent could still read them.
@@ -853,7 +862,11 @@ class AgentClient(ClientBase[ClientConfig]):
         """Post a command result as this agent (an agent-owned command like
         `!run-cmd` answers in the agent's own voice, not as a system message)."""
         await self.send_message(
-            room_id, body, format=format, thread_root_id=thread_root_id
+            room_id,
+            body,
+            format=format,
+            thread_root_id=thread_root_id,
+            metered=False,
         )
 
     async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
@@ -923,28 +936,32 @@ class AgentClient(ClientBase[ClientConfig]):
             return _STARTING_SESSION_MESSAGE
 
         if connection_model == "auto_session":
+            # The heartbeat arm only: a client still running the
+            # /watch/heartbeat loop declares no capability, and that loop meant
+            # willingness. A connection declares its own, which the check above
+            # has already asked — reading a connection as willing because it
+            # exists promises a session over a session worker that will never
+            # spawn one, or over a controller with auto-start switched off.
             watching = await self._agent_session_store.get_live_agent_ids(
                 session, [self.agent.id], None
             )
-            if self.agent.id in watching or self._connections.is_live(self.agent.id):
+            if self.agent.id in watching:
                 return _STARTING_SESSION_MESSAGE
 
+        occupied = rooms_occupied(self.agent.id, self._connections)
         room_ids = await self._agent_session_store.live_connected_rooms(
             session, self.agent.id
         )
-        # A connection covering a room is a session in it, whether or not
-        # anything wrote an agent_sessions row for it.
-        room_ids = sorted(
-            set(room_ids)
-            | {
-                room
-                for conn in self._connections.for_agent(self.agent.id)
-                for room in conn.rooms
-            }
+        # Where the agent actually is, which is not what its connections cover:
+        # a shared one covers every room the agent belongs to, and offering the
+        # user "it is busy in these rooms" from that names rooms nothing is in.
+        room_ids = sorted(set(room_ids) | occupied)
+        bound_here = (
+            await self._agent_session_store.has_room_binding(
+                session, self.agent.id, meta.room_id
+            )
+            or meta.room_id in occupied
         )
-        bound_here = await self._agent_session_store.has_room_binding(
-            session, self.agent.id, meta.room_id
-        ) or self._connections.has_session_in(self.agent.id, meta.room_id)
         names: list[str] = []
         holds_role_here = False
         other_room_ids = [rid for rid in room_ids if rid != meta.room_id]
@@ -959,7 +976,7 @@ class AgentClient(ClientBase[ClientConfig]):
                     session,
                     meta.room_id,
                     self.agent.id,
-                    self._connections.live_agent_ids(),
+                    self._connections.live_connection_ids(),
                 )
                 is not None
             )
@@ -1088,14 +1105,18 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         if connection_model == "session_passive":
             return False
-        # Union of the two presence sources while both kinds of client exist
+        # Union of the presence sources while every kind of client exists
         # (CHOO-1857 stage B): a client on the push transport keeps only a
-        # connection, one still polling keeps only the heartbeat row.
+        # connection, one still polling keeps only the heartbeat row, and a
+        # session Switch has a record of is answered from that record.
         if connection_model == "always_on":
             if self._connections.is_live(self.agent.id):
                 return True
-        elif self._connections.has_session_in(self.agent.id, room_id):
-            # A claimed room slot, not mere coverage: an `all`-scope watcher
+        elif self.agent.id in agents_present_in(
+            [self.agent.id], room_id, self._connections
+        ):
+            # A session in the room, or a claimed room slot no session of this
+            # agent accounts for — not mere coverage: an `all`-scope watcher
             # covering this room is not a session that can answer.
             return True
 
@@ -1114,7 +1135,9 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        await self.send_message(room.room_id, "Working on it.", format="markdown")
+        await self.send_message(
+            room.room_id, "Working on it.", format="markdown", metered=False
+        )
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
@@ -1310,8 +1333,8 @@ class AgentClient(ClientBase[ClientConfig]):
     ) -> _GateOutcome:
         """Apply the scoped addressing policy to a message that tags this agent.
 
-        When the sender is not permitted by the agent's policy, the message is
-        demoted to unaddressed room chatter and the caller is handed a refusal
+        When the sender is not permitted by the agent's policy, or the agent
+        has reached a budget covering it, the message is demoted to unaddressed room chatter and the caller is handed a refusal
         to post (once, guarded by AUTO_REPLY_FLAG so two agents can't
         ping-pong). Zero cost for the common case: only messages that already
         tag this agent are ever checked, and open policies short-circuit.
@@ -1320,10 +1343,19 @@ class AgentClient(ClientBase[ClientConfig]):
             session, agent, event.sender, meta.room_id, event.content
         )
         if decision.allowed:
-            return _GateOutcome(addressed=True, refusal=None)
+            try:
+                await self._budget_guard.require_within(
+                    session, tenant_id=self.tenant_id, agent_id=agent.id
+                )
+            except BudgetExceeded as exc:
+                refusal = str(exc)
+            else:
+                return _GateOutcome(addressed=True, refusal=None)
+        else:
+            refusal = decision.refusal
         if self._triggered_by_auto_reply(event):
             return _GateOutcome(addressed=False, refusal=None)
-        return _GateOutcome(addressed=False, refusal=decision.refusal)
+        return _GateOutcome(addressed=False, refusal=refusal)
 
     @staticmethod
     def _triggered_by_auto_reply(event: InboundMessage) -> bool:
@@ -1347,6 +1379,7 @@ class AgentClient(ClientBase[ClientConfig]):
             mentions=[event.sender],
             thread_root_id=thread_root_id,
             extra_content={AUTO_REPLY_FLAG: True},
+            metered=False,
         )
 
     def _args_tag_my_name(self, text: str) -> bool:

@@ -20,7 +20,7 @@ vi.mock('@main/core/execution-context/local-execution-context', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: async () => ({ id: 'server' }),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchSdkSessions: mocks.sessions }));
+vi.mock('./host-sessions', () => ({ listHostSessions: mocks.sessions }));
 const { sharedAgentDiagnostics, sharedAgentLogs } = await import('./diagnostics');
 beforeEach(() => {
   vi.resetAllMocks();
@@ -59,10 +59,15 @@ it('redacts watcher failures and propagates SSH failures', async () => {
         supervisorPid: null,
         buildHash: null,
         failure: 'token=example-placeholder',
+        takenOver: { at: '2026-01-01T00:00:00.000Z', reason: 'token=example-placeholder' },
       },
     ]),
   });
-  expect((await sharedAgentDiagnostics('agent')).watchers[0].failure).toContain('[REDACTED]');
+  const [watcher] = (await sharedAgentDiagnostics('agent')).watchers;
+  expect(watcher.failure).toContain('[REDACTED]');
+  // Whatever the server said when it evicted us reaches the panel too, so it
+  // goes through the same redaction as any other reported text.
+  expect(watcher.takenOver?.reason).toContain('[REDACTED]');
   mocks.exec.mockRejectedValueOnce(new Error('SSH unavailable'));
   await expect(sharedAgentDiagnostics('agent')).rejects.toThrow('SSH unavailable');
 });

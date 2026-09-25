@@ -190,5 +190,14 @@ export type Snapshot = {
     decidedBy: { actorId: Id; surface: Surface; commandId: Id } | null;
   })[];
   commandStatuses: Extract<ServerBody, { type: 'command.status' }>[];
+  /** Recent notices (the newest ones only), each placed after the item it followed. */
+  notices: SnapshotNotice[];
   nextPageToken: string | null;
+};
+
+export type SnapshotNotice = {
+  level: 'info' | 'warning' | 'error';
+  code: string;
+  message: string;
+  afterItemId: Id | null;
 };

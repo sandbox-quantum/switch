@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4ceaa1d7-1a57-4401-8008-92bcea4a3fb1",
+  "id": "9bf29a0b-5aea-41b1-8394-0475326b97f7",
   "prevId": "ce740e52-65ff-463a-8a1a-5a61accf558f",
   "tables": {
     "agents": {
@@ -340,21 +340,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "observed": {
-          "name": "observed",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
-        },
-        "observed_owner": {
-          "name": "observed_owner",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -703,14 +688,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "shell_id": {
-          "name": "shell_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'system'"
         },
         "status": {
           "name": "status",

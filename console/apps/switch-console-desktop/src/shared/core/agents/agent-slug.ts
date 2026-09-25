@@ -18,9 +18,6 @@ const MAX_SLUG_INPUT = 128;
  *
  * Leading and trailing `.` and `_` go the way of `-`, since the pattern wants a
  * letter or digit first and a name ending in a separator reads as truncated.
- *
- * Each connector plugin's `configure` skill documents this rule for agents that
- * register without Switch Console; keep them in step.
  */
 export function slugifyAgentNamePart(value: string): string {
   if (value.length > MAX_SLUG_INPUT) return '';

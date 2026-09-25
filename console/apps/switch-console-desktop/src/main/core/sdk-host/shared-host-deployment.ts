@@ -9,6 +9,7 @@ import type { IExecutionContext } from '@main/core/execution-context/types';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { READ_JSON } from './remote-json';
 
 /**
  * Every deployment leaves a bundle named after its own hash, so without this
@@ -76,7 +77,8 @@ export async function deploySharedHost(
   } else ctx = new LocalExecutionContext();
   const { stdout } = await ctx.exec('node', [
     '-e',
-    "const fs=require('node:fs'),path=require('node:path');const base=path.join(require('node:os').homedir(),'.local','state','switch',process.argv[2]);let root=path.join(base,process.argv[1]);if(process.argv[2]==='sdk-watchers'&&fs.existsSync(base)){const matches=fs.readdirSync(base).filter(name=>{try{return JSON.parse(fs.readFileSync(path.join(base,name,'config.json'),'utf8')).session.agentId===process.argv[3]}catch(e){if(e.code==='ENOENT')return false;throw e}});if(matches.length>1)throw new Error('Competing saved watchers require explicit cleanup.');if(matches.length)root=path.join(base,matches[0]);} console.log(root)",
+    READ_JSON +
+      "const fs=require('node:fs'),path=require('node:path');const base=path.join(require('node:os').homedir(),'.local','state','switch',process.argv[2]);let root=path.join(base,process.argv[1]);if(process.argv[2]==='sdk-watchers'&&fs.existsSync(base)){const matches=fs.readdirSync(base).filter(name=>{try{return readJson(path.join(base,name,'config.json')).session.agentId===process.argv[3]}catch(e){if(e.code==='ENOENT')return false;throw e}});if(matches.length>1)throw new Error('Competing saved watchers require explicit cleanup.');if(matches.length)root=path.join(base,matches[0]);} console.log(root)",
     key,
     watcher ? 'sdk-watchers' : 'sdk-sessions',
     identity,

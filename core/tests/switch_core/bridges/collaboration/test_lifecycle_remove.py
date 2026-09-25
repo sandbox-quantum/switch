@@ -74,7 +74,6 @@ def _service(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=ExternalUserStore(),
         bridge_message_map_store=MagicMock(),
-        session_request_post_store=MagicMock(),
         room_store=RoomStore(),
         agent_store=MagicMock(),
         client_store=MagicMock(),
@@ -84,6 +83,9 @@ def _service(
         session_factory=session_factory,
         config=MagicMock(),
         client_factory=MagicMock(),
+        session_activity_listener=MagicMock(),
+        session_activity_service=MagicMock(),
+        connections=MagicMock(),
     )
 
 

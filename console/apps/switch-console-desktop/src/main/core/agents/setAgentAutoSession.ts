@@ -14,33 +14,43 @@ import type { Agent } from '@shared/core/agents/agents';
 import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
 import { locationWhereAgentRuns } from './observed-guard';
-import { ensureRemoteWatcher, stopRemoteWatcher } from './remote-watcher';
+import { ensureRemoteWatcher } from './remote-watcher';
 
 export type AgentAutoSessionParams = { agentId: string; enabled: boolean };
 
 /**
  * Apply an agent's auto_session state to the LOCAL side only: mirror the flag
- * and start/stop the watcher. Remote agents are auto-started by their on-VM
- * watcher daemon (which also writes the watch-enabled marker file), so drive
- * the VM watcher explicitly; the in-process `autoSessionWatcher.reconcile`
- * no-ops for remote agents (startForAgent skips them). Does NOT touch the
- * gateway profile — callers that also mutate the gateway must do so separately.
+ * and tell the agent's controller whether it may start sessions. The controller
+ * itself stays up either way — an agent linked to Switch holds its connection
+ * because it exists, so turning automatic sessions off leaves it addressable
+ * and answering that it has no session. A remote agent's controller runs on its
+ * host, so that side is driven over the transport rather than in process. Does
+ * NOT touch the gateway profile — callers that also mutate the gateway must do
+ * so separately.
  */
 async function applyLocalAutoSessionState(agent: Agent, enabled: boolean): Promise<void> {
   await setAutoSessionAgent(agent.id, enabled);
-  if ((await getRemoteAgentLocation(agent)) !== null) {
-    if (enabled) await ensureRemoteWatcher(agent.id);
-    else await stopRemoteWatcher(agent.id);
-  } else {
-    await autoSessionWatcher.reconcile(agent.id, enabled);
-  }
+  if ((await getRemoteAgentLocation(agent)) !== null) await ensureRemoteWatcher(agent.id);
+  else await autoSessionWatcher.reconcile(agent.id);
 }
 
 /**
  * Toggle an agent's auto_session capability. Single write path: flips the
  * gateway profile (`connection_model` ⇄ `auto_session`) via the known-agent
- * options, mirrors the flag locally, and starts/stops the watcher. The local
- * agent must be linked to a Switch server and have a Switch agent id.
+ * options, mirrors the flag locally, and tells the controller whether it may
+ * spawn. The local agent must be linked to a Switch server and have a Switch
+ * agent id.
+ *
+ * The two writes are ordered by which half-applied state is honest, because
+ * either one can fail and leave the other standing. `auto_session` is the
+ * profile on which the server answers an addressed agent with "starting a
+ * session", and it grants that on the strength of the profile rather than on
+ * what the controller declared — so a profile that says `auto_session` while
+ * the controller cannot spawn is a promise nothing will keep. Enabling
+ * therefore makes the controller spawn-capable first and claims the profile
+ * second; disabling gives the promise up first and stands the controller down
+ * second. A failure at either step lands on `session_addressable`, where the
+ * server asks the connection instead of the profile.
  */
 export async function setAgentAutoSession(params: AgentAutoSessionParams): Promise<void> {
   const agent = await getAgentById(params.agentId);
@@ -55,8 +65,13 @@ export async function setAgentAutoSession(params: AgentAutoSessionParams): Promi
   const server = await getServer(agent.serverId);
   if (!server) throw new Error(`No Switch server with id ${agent.serverId}`);
 
-  await setAutoSession(server, agent.switchAgentId, params.enabled);
-  await applyLocalAutoSessionState(agent, params.enabled);
+  if (params.enabled) {
+    await applyLocalAutoSessionState(agent, true);
+    await setAutoSession(server, agent.switchAgentId, true);
+    return;
+  }
+  await setAutoSession(server, agent.switchAgentId, false);
+  await applyLocalAutoSessionState(agent, false);
 }
 
 /**

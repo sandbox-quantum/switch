@@ -6,9 +6,9 @@ import {
   type RepoAgentAttributes,
   type RepoAgentDefinition,
   type RepoAgentField,
-  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
+  RECOGNISED_SWITCH_TOOL_RULES,
   SWITCH_AGENT_SETTINGS_DIR,
-  SWITCH_CONNECTOR_TOOL_RULES,
+  SWITCH_TOOL_RULES,
 } from '@switch-console/core/agents/plugins';
 
 /**
@@ -33,15 +33,15 @@ export const CLAUDE_SUBAGENTS = {
 
 const SWITCH_ENV_KEYS = ['SWITCH_API_ENDPOINT', 'SWITCH_API_TOKEN', 'SWITCH_AGENT_ID'] as const;
 
-/** Prefix of the Switch connector's MCP tools. A subagent can only participate
- * in Switch if its tool allowlist grants it (or omits `tools` entirely, which
- * Claude Code reads as "all tools"). */
-const SWITCH_MCP_TOOL_PREFIX = 'mcp__plugin_switch-connector_switch';
+/** Prefix of one tool of the `switch` MCP server. A subagent can only
+ * participate in Switch if its tool allowlist grants the server or one of its
+ * tools (or omits `tools` entirely, which Claude Code reads as "all tools"). */
+const SWITCH_MCP_TOOL_PREFIX = 'mcp__switch__';
 
 /** Rules to strip on read-back, so the form shows only the user's own tools.
  * Wider than what is written, so a definition authored by an older Switch Console
  * does not surface a retired rule as if the user had chosen it. */
-const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES;
+const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_TOOL_RULES;
 
 const MD_SUFFIX = '.md';
 
@@ -282,7 +282,7 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
     if (key === 'tools') {
       const list = toList(raw);
       if (list.length > 0) {
-        lines.push(`tools: ${dedupe([...list, ...SWITCH_CONNECTOR_TOOL_RULES]).join(', ')}`);
+        lines.push(`tools: ${dedupe([...list, ...SWITCH_TOOL_RULES]).join(', ')}`);
       }
       continue;
     }
@@ -316,7 +316,9 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
 function isEligible(tools: string[] | null): boolean {
   // No `tools` line → inherits every tool (including the Switch MCP tools).
   if (tools === null) return true;
-  return tools.some((tool) => tool.startsWith(SWITCH_MCP_TOOL_PREFIX));
+  return tools.some(
+    (tool) => SWITCH_RULES.includes(tool) || tool.startsWith(SWITCH_MCP_TOOL_PREFIX)
+  );
 }
 
 function asNonEmptyString(value: unknown): string | null {

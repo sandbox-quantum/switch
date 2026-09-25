@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   disable: vi.fn(),
   remove: vi.fn(async () => ({ changes: 1 })),
   restart: vi.fn(),
+  setStopped: vi.fn(),
   teardown: vi.fn(async () => ({ success: true })),
 }));
 vi.mock('./getAgentById', () => ({
@@ -14,9 +15,18 @@ vi.mock('./getAgentById', () => ({
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer: async () => ({ id: 'server' }),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchSdkSessions: mocks.list }));
+vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/core/sdk-host/shared-agent-runtime', () => ({ stopSharedSession: mocks.stop }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({ configureSharedWatcher: mocks.disable }));
+vi.mock('@main/core/sdk-host/shared-watcher', () => ({
+  configureSharedWatcher: mocks.disable,
+  applyControllerState: mocks.restart,
+}));
+// Sidecar management is deliberately left real: it owns the Start transition,
+// and a stand-in for it would assert the call rather than what the call does.
+vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
+  setControllerStopped: mocks.setStopped,
+}));
+vi.mock('@main/core/agents/agent-location', () => ({ getRemoteAgentLocation: vi.fn() }));
 vi.mock('@main/core/sessions/session-runtime-manager', () => ({
   sessionRuntimeManager: { teardownSession: mocks.teardown },
 }));
@@ -39,10 +49,7 @@ vi.mock('./observed-guard', () => ({
   // Every agent in these cases is one this Console runs (CHOO-2893).
   locationWhereAgentRuns: async () => ({ sshHost: 'host', dir: '/work', observed: false }),
 }));
-vi.mock('./remote-watcher', () => ({
-  ensureRemoteWatcher: mocks.restart,
-  startRemoteDiscovery: vi.fn(),
-}));
+vi.mock('./remote-watcher', () => ({ startRemoteDiscovery: vi.fn() }));
 const session = {
   sessionId: 'remote-only',
   agentId: 'agent',
@@ -71,10 +78,24 @@ it('stops all server-owned sessions for this agent before removing local views',
     { ...session, sessionId: 'ended', status: 'stopped' },
   ]);
   await resetRemoteAgent('local');
-  expect(mocks.disable).toHaveBeenCalledWith('local', false);
-  expect(mocks.stop).toHaveBeenCalledExactlyOnceWith({ id: 'server' }, 'remote-only');
+  expect(mocks.disable).toHaveBeenCalledWith(
+    'local',
+    { connected: false, spawning: false },
+    'explicit'
+  );
+  expect(mocks.stop).toHaveBeenCalledExactlyOnceWith('local', 'remote-only');
   expect(mocks.remove).toHaveBeenCalledTimes(1);
-  expect(mocks.restart).toHaveBeenCalledWith('local');
+  expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit');
+});
+it('brings back a controller somebody had stopped by hand', async () => {
+  // Being stopped is durable and survives a reset, so putting the controller
+  // back the way it was configured would leave it stopped while the modal says
+  // the agent was restarted fresh. Clearing that record is what reconnects it;
+  // auto-start is a separate setting and is not touched here.
+  mocks.list.mockResolvedValue([session]);
+  await resetRemoteAgent('local');
+  expect(mocks.setStopped).toHaveBeenCalledWith('local', false);
+  expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit');
 });
 it('keeps local state and auto-start disabled when stop has an unknown outcome', async () => {
   mocks.list.mockResolvedValue([session]);

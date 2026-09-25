@@ -1,8 +1,12 @@
 import { eq } from 'drizzle-orm';
 import { assertRunsHere, forgetObservedLocationIfUnused } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { discardControllerState } from '@main/core/sdk-host/shared-watcher';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
-import { setAutoSessionAgent } from '@main/core/switch-rooms/auto-session-store';
+import {
+  setAutoSessionAgent,
+  setControllerStopped,
+} from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import {
   deleteAgent as gatewayDeleteAgent,
@@ -150,7 +154,7 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
-    await removeSwitchCredentials(agent.providerId, ctx.fs);
+    await removeSwitchCredentials(ctx.fs);
     // A provider that registers the Switch server itself (Codex) leaves a
     // per-agent launch profile under the user's home — a different scope than
     // ctx.fs, reached through its own home filesystem (local or remote).
@@ -168,17 +172,17 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    only when `deleteInSwitch` is set (the opt-in "also delete in Switch").
  * 2. The agent's running sessions (runtime + view-state), which previously
  *    only the location-delete path handled.
- * 3. Its auto_session watcher (or, for a remote agent, the on-VM sidecar's
- *    watch flag + reconciler) and the local auto_session mirror. The watcher
- *    caches the agent's Switch credentials in memory, so without an explicit
- *    stop it keeps heartbeating and polling notifications for an agent that
- *    no longer exists.
- * 4. Only when `removeProvisionedFiles` is set, or a remote agent is deleted
- *    in Switch: the Switch credentials + definition file provisioned on disk
- *    for THIS agent (local or remote), and its sidecar. A plain remove leaves
- *    the working directory and the host's processes untouched — on a shared
- *    host they may belong to another install (CHOO-2560). Sibling agents'
- *    files are never touched either way.
+ * 3. Its local controller and the state that controller left behind, plus the
+ *    local auto_session mirror. The controller caches the agent's Switch
+ *    credentials in memory, so without an explicit stop it keeps heartbeating
+ *    and answering rooms for an agent that no longer exists. A controller on a
+ *    remote host is stopped and discarded only for a full cleanup — see 4.
+ * 4. Only when `removeProvisionedFiles` or `deleteInSwitch` is set: the remote
+ *    controller and its state, and (for `removeProvisionedFiles`, or a remote
+ *    agent deleted in Switch) the Switch credentials + definition file
+ *    provisioned on disk for THIS agent and its sidecar. A plain remove leaves the working directory and the host's
+ *    processes untouched — on a shared host they may belong to another install
+ *    (CHOO-2560). Sibling agents' files are never touched either way.
  *
  * The agent's location row is intentionally kept — locations are reusable
  * and other agents may still live there.
@@ -224,9 +228,11 @@ async function removeAgent(
   // Terminating it stops its owner's sessions, deleting it in Switch deletes
   // their agent, and its files are in their directory: all theirs to do.
   if (terminate && location) assertRunsHere(location);
-  if (terminate && agent) {
-    if (location?.sshHost) await stopRemoteWatcher(agentId);
-    else await autoSessionWatcher.stopForAgent(agentId);
+  const stopController = () =>
+    location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
+  const stoppedUpFront = terminate && agent !== undefined;
+  if (stoppedUpFront) {
+    await stopController();
     await stopSharedAgentSessions(agent);
   }
   // Gateway cascade first: fail loud before touching local state so a failure
@@ -250,16 +256,30 @@ async function removeAgent(
     })
   );
 
-  // A remote agent's watcher runs on its host, beside its sessions, and serves
-  // every Console that uses the agent — on a shared host, other people's too
-  // (CHOO-2893). Removing the agent from this Console leaves it running, as the
-  // removal dialog promises; only terminating the agent, above, stops it. A
-  // local agent's watcher is this Console's own child, so it goes with the row.
-  if (!(location && location.sshHost !== null)) {
-    await autoSessionWatcher.stopForAgent(agentId);
+  // Required where it runs at all, and the last thing that may refuse — a full
+  // cleanup has already stopped the controller above, before the sessions it
+  // owns were torn down under it, so only the discard is left to do here. A
+  // controller outlives the row it is not stopped with: it holds this agent's
+  // credentials and connection and goes on answering as an agent the app says
+  // is gone, and the journal it leaves is adopted by anything later registered
+  // under the same Switch identity, which then resumes from a dead cursor.
+  // Deleting over the top of that also destroys the id needed to try again. So
+  // a failure here keeps the row — the same trade as the gateway cascade above,
+  // and the reason the files below stay best-effort: litter on an unreachable
+  // host is not a live impostor.
+  //
+  // On a remote host it runs only for a full cleanup. Controller identity is
+  // deterministic, so the process answering for this agent there may have been
+  // started by another install and won the connection, and a plain remove is
+  // this Console forgetting the agent rather than a claim over the host.
+  // Locally there is no such ambiguity: the controller is this process.
+  if (location === null || location.sshHost === null || terminate) {
+    if (!stoppedUpFront) await stopController();
+    await discardControllerState(agentId);
   }
 
   await setAutoSessionAgent(agentId, false);
+  await setControllerStopped(agentId, false);
 
   if (agent && location && removeFiles) {
     await removeProvisionedFiles(agent, location).catch((error) => {

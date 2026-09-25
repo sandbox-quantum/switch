@@ -26,7 +26,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -603,8 +603,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
                 <CircleAlert />
                 <AlertDescription>
                   No agent provider is set up on this computer yet. A template creates an agent that
-                  runs here, so it needs Claude Code, Codex or OpenCode installed with its Switch
-                  connector first.
+                  runs here, so it needs an agent CLI such as Claude Code, Codex or OpenCode
+                  installed first.
                 </AlertDescription>
                 <AlertAction>
                   <Button

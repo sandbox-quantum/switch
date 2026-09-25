@@ -47,6 +47,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     ACTIVITY_NOT_A_MEMBER,
 )
 
+from .session_fixtures import _item, _turn
 from .test_mattermost_press import (
     CALLBACK_BASE,
     CHANNEL,
@@ -59,7 +60,6 @@ from .test_mattermost_press import (
     _record,
 )
 from .test_mattermost_sdk_only import _activity, _card, _posts
-from .test_session_activity import _item, _turn
 
 CALLBACK_URL = f"{CALLBACK_BASE}/collaboration/mattermost/bridge-1/callback"
 CONSOLE_URL = "https://console.example.test/s/1"

@@ -64,7 +64,6 @@ Run `just` with no arguments to list every recipe. The most-used ones:
 | `core/tests/` | Test suite, mirroring the `switch_core/` module structure |
 | `gateway/` | Operator dashboard frontend (Node/Vite) |
 | `console/` | The Switch Console desktop app |
-| `connectors/` | Agent connectors (`claude-code-plugin`, `codex-plugin`, `opencode-plugin`) |
 | `deploy/` | Deployment assets — Docker Compose stacks (`local/`), the Helm chart (`remote/`) and shared images |
 | `docs/` | `official/` — the published documentation synced into the repo (generated, edit the docs repository); `old/` — internal architecture, protocol and bridge references |
 | `switch-expert/` | Instructions and knowledge for an agent that answers questions about Switch |

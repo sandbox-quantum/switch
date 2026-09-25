@@ -55,6 +55,12 @@ from tests.conftest import RLSHarness
 
 _RLS_REVISION = "265ed188ad6f"
 
+# Scoped by the frozen inventories and dropped afterwards by `b9e4d2a71c05`,
+# which removed the server-side session tables.
+_DROPPED_BY_LATER_REVISIONS = frozenset(
+    {"sdk_sessions", "sdk_session_events", "sdk_session_commands"}
+)
+
 
 async def _make_tenant(owner: async_sessionmaker, tenant_id: str) -> None:
     async with owner() as session:
@@ -421,7 +427,9 @@ class TestCatalogueCoverage:
 
         So this asserts the direction that stays meaningful: the frozen list
         must name nothing the models have since dropped, which would leave the
-        chain policing a table that is no longer there.
+        chain policing a table that is no longer there. A table a later
+        revision drops is the exception, because the chain stops policing it
+        the moment it is gone; those are named in `_DROPPED_BY_LATER_REVISIONS`.
 
         The direction it cannot check — that every scoped model table really
         does end up policed — is not left uncovered. It is checked against a
@@ -440,7 +448,7 @@ class TestCatalogueCoverage:
         stale = {
             table: column
             for table, column in from_migration.items()
-            if table not in from_models
+            if table not in from_models and table not in _DROPPED_BY_LATER_REVISIONS
         }
         assert stale == {}, (
             "the frozen table inventories in the scoping migrations name "

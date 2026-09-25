@@ -19,6 +19,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
@@ -26,7 +27,9 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
@@ -45,12 +48,11 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
-from switch_core.gateway.sessions import router as sessions_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.room_service import RoomService
+from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
-from switch_core.sessions.service import SessionError
 
 
 def create_gateway_app(
@@ -71,6 +73,8 @@ def create_gateway_app(
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
     template_store: TemplateStore,
+    usage_store: UsageStore,
+    budget_store: BudgetStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     install_service: MessagingInstallService | None,
@@ -93,6 +97,8 @@ def create_gateway_app(
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         template_store=template_store,
+        usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
@@ -115,7 +121,9 @@ def create_gateway_app(
         register_oidc_client(config)
 
     app.add_exception_handler(SessionError, session_error_response)
-    app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
+    app.include_router(
+        agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
+    )
     app.include_router(auth_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])

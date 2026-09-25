@@ -8,10 +8,17 @@ vi.mock('node:fs/promises', async (original) => ({
   realpath: async (path: string) => path,
 }));
 const servers: FakeAppServer[] = [];
+/** What the fake agent declares in `initialize`. */
+const acp = { http: true };
 vi.mock('node:child_process', () => ({
   spawn: () => {
     const server = new FakeAppServer();
-    server.replyAlways('initialize', () => ({ agentCapabilities: { loadSession: true } }));
+    server.replyAlways('initialize', () => ({
+      agentCapabilities: {
+        loadSession: true,
+        ...(acp.http ? { mcpCapabilities: { http: true } } : {}),
+      },
+    }));
     server.replyAlways('authenticate', () => ({}));
     server.replyAlways('session/new', () => ({ sessionId: 'native' }));
     server.replyAlways('session/load', () => ({}));
@@ -24,6 +31,7 @@ vi.mock('node:child_process', () => ({
 const { createCursorAdapter } = await import('./cursor-adapter');
 beforeEach(() => {
   servers.length = 0;
+  acp.http = true;
 });
 async function setup(resume = false) {
   const adapter = createCursorAdapter();
@@ -305,4 +313,48 @@ it('serializes turns submitted synchronously by completion listeners', async () 
   await flush();
   expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
   expect(events.at(-1)).toMatchObject({ type: 'session.state.changed', status: 'running' });
+});
+
+const httpSwitch = {
+  switch: {
+    transport: 'http' as const,
+    url: 'http://127.0.0.1:4567/mcp',
+    headers: { Authorization: 'Bearer per-session' },
+  },
+};
+
+it('registers an HTTP MCP server with its headers when the agent declares HTTP', async () => {
+  const adapter = createCursorAdapter();
+  await adapter.startSession({
+    sessionId: 'http',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: httpSwitch,
+  });
+  expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [
+      {
+        name: 'switch',
+        type: 'http',
+        url: 'http://127.0.0.1:4567/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer per-session' }],
+      },
+    ],
+  });
+});
+
+it('refuses to start a session whose HTTP MCP servers the agent cannot reach', async () => {
+  acp.http = false;
+  const adapter = createCursorAdapter();
+  await expect(
+    adapter.startSession({
+      sessionId: 'no-http',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: httpSwitch,
+    })
+  ).rejects.toThrow('Cursor CLI does not declare MCP over HTTP');
+  expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
 });

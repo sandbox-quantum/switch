@@ -29,7 +29,6 @@ describe('buildEnvFile', () => {
     namespace: 'sandbox-quantum',
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
-    sessionDemo: false,
     telemetryEnabled: false,
   });
   const vars = Object.fromEntries(
@@ -95,11 +94,6 @@ describe('buildEnvFile', () => {
     // An entry here must say why the stack is correct without it — leaving a
     // var unset is a decision, not a default.
     const intentionallyUnset = new Set<string>([
-      // The recorded session demo, which posts a card into a real channel with
-      // no session behind it. Off is the correct state for a released Console:
-      // it is written only for a stack built from a local checkout, and this
-      // `env` is the released one. Temporary — goes when the demo does.
-      'SESSION_DEMO_ENABLED',
       // The four below configure switch-core as a distributed messaging app —
       // one app we own, installed by a customer into their own workspace, with
       // the platform posting events to URLs declared once in the app manifest.
@@ -124,21 +118,8 @@ describe('buildEnvFile', () => {
     expect(missing, 'compose interpolates these but the .env does not set them').toEqual([]);
   });
 
-  it('turns the session demo on for a checkout build and off otherwise', () => {
-    // The .env is regenerated on every start, so a developer has nowhere to set
-    // this by hand — and a released Console runs pinned images that have never
-    // heard of it. Temporary, and it goes when the demo does.
+  it('never passes the removed session demo switch, which older switch-core images reject when empty', () => {
     expect(env).not.toContain('SESSION_DEMO_ENABLED');
-    const fromCheckout = buildEnvFile({
-      version: 'checkout',
-      registry: 'ghcr.io',
-      namespace: 'sandbox-quantum',
-      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
-      secrets,
-      sessionDemo: true,
-      telemetryEnabled: false,
-    });
-    expect(fromCheckout).toContain('SESSION_DEMO_ENABLED=true');
   });
 
   it('carries the telemetry answer in both directions, never by omission', () => {
@@ -153,7 +134,6 @@ describe('buildEnvFile', () => {
       namespace: 'sandbox-quantum',
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
       secrets,
-      sessionDemo: false,
       telemetryEnabled: true,
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
@@ -164,14 +144,6 @@ describe('buildEnvFile', () => {
     // reaches the container, which is the failure mode this pairing exists to
     // rule out — the writer and the contract have to agree.
     expect(composeYaml).toMatch(/^\s+TELEMETRY_ENABLED:\s*$/m);
-  });
-
-  it('gives switch-core a boolean for the session demo when the .env names none', () => {
-    // A released start writes no SESSION_DEMO_ENABLED, and switch-core refuses
-    // to boot on an empty boolean — so an empty compose default took down
-    // every managed stack that did not build from a checkout.
-    expect(vars.SESSION_DEMO_ENABLED).toBeUndefined();
-    expect(composeYaml).toMatch(/^\s+SESSION_DEMO_ENABLED: \$\{SESSION_DEMO_ENABLED:-false\}$/m);
   });
 
   it('points the deeplink redirect at the API, not the operator UI', () => {
@@ -191,7 +163,6 @@ describe('readStackEnv', () => {
     namespace: 'sandbox-quantum',
     ports,
     secrets,
-    sessionDemo: false,
     telemetryEnabled: true,
   });
 
@@ -279,7 +250,6 @@ describe('keysDisagreeing', () => {
     namespace: 'sandbox-quantum',
     ports,
     secrets,
-    sessionDemo: false,
     telemetryEnabled: true,
   });
 

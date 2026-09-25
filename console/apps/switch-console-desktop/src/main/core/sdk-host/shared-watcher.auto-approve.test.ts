@@ -25,6 +25,18 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
+vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
+  ensureServerSessionReady: vi.fn(async () => {}),
+}));
+vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn(async () => null) }));
+vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
+  listAutoSessionAgentIds: vi.fn(async () => []),
+  listStoppedControllerAgentIds: vi.fn(async () => []),
+}));
+vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
+vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
+  SshExecutionContext: vi.fn(),
+}));
 vi.mock('@main/core/agents/updateAgent', () => ({ updateAgent: mocks.updateAgent }));
 vi.mock('@main/core/agents/agent-location', () => ({ getAgentLocation: mocks.location }));
 vi.mock('@main/core/locations/location-manager', () => ({
@@ -120,7 +132,7 @@ it('takes auto-approve from the host when another Console changed it', async () 
   mocks.agent.mockResolvedValue(agent(false));
   savedSpec('full-access');
 
-  await configureSharedWatcher('agent-1', true);
+  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
   expect(writtenMode()).toBe('full-access');
   // And this Console's toggle is brought in line with what the agent runs with.
@@ -131,7 +143,7 @@ it('leaves the row alone when it already agrees with the host', async () => {
   mocks.agent.mockResolvedValue(agent(true));
   savedSpec('full-access');
 
-  await configureSharedWatcher('agent-1', true);
+  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
   expect(writtenMode()).toBe('full-access');
   expect(mocks.updateAgent).not.toHaveBeenCalled();
@@ -140,7 +152,7 @@ it('leaves the row alone when it already agrees with the host', async () => {
 it('writes the first watcher from the row, with no spec on the host yet', async () => {
   mocks.agent.mockResolvedValue(agent(true));
 
-  await configureSharedWatcher('agent-1', true);
+  await configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'explicit');
 
   expect(writtenMode()).toBe('full-access');
   expect(mocks.updateAgent).not.toHaveBeenCalled();
@@ -150,7 +162,13 @@ it('writes this Console’s value when the person using it has just changed it',
   mocks.agent.mockResolvedValue(agent(true));
   savedSpec('approval-required');
 
-  await configureSharedWatcher('agent-1', true, undefined, 'this-console');
+  await configureSharedWatcher(
+    'agent-1',
+    { connected: true, spawning: true },
+    'explicit',
+    undefined,
+    'this-console'
+  );
 
   expect(writtenMode()).toBe('full-access');
   expect(mocks.updateAgent).not.toHaveBeenCalled();
@@ -167,7 +185,12 @@ it('does not take a subagent watcher’s setting for its parent’s', async () =
     return { stdout, stderr };
   });
 
-  await configureSharedWatcher('agent-1', true, 'helper');
+  await configureSharedWatcher(
+    'agent-1',
+    { connected: true, spawning: true },
+    'explicit',
+    'helper'
+  );
 
   expect(writtenMode()).toBe('approval-required');
   expect(mocks.updateAgent).not.toHaveBeenCalled();

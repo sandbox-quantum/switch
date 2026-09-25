@@ -40,7 +40,6 @@ function envFor(overrides: Partial<LocalServerSecrets> = {}, version = '0.27.0')
     namespace: 'sandbox-quantum',
     ports,
     secrets: { ...secrets, ...overrides },
-    sessionDemo: false,
     telemetryEnabled: false,
   });
 }

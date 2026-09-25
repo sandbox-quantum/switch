@@ -4,13 +4,13 @@ import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { useAgents } from '@renderer/lib/stores/use-agents';
-import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
+import type { AgentTypeBlockedKind } from '@shared/core/agent-types/agent-type-availability';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type { AgentTypeBlockedKind } from '@shared/core/switch-setup/agent-type-availability';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
 
 /**
@@ -26,10 +26,9 @@ const BLOCKED_LABEL: Record<AgentTypeBlockedKind, string> = {
 };
 
 /**
- * Picks the agent type for a new Switch agent. Only agent types that are both
- * Switch-supported and have their connector plugin installed (i.e. actually
- * usable) are offered; if none qualify, the user is pointed at the per-agent
- * Switch setup.
+ * Picks the agent type for a new Switch agent. Only agent types whose CLI is
+ * installed where the agent will run (i.e. actually usable) are offered; if
+ * none qualify, the user is pointed at where agent providers are installed.
  *
  * Everything past this picker is gated on a chosen type — the directory scan,
  * the onboard-existing list and every submit button — so leaving it unset
@@ -86,19 +85,19 @@ export function AgentTypePicker({
     <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
       <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
       {/* Name the host: "no agent type is set up" reads as a global problem,
-            but availability is per-host — the connector may well be installed
+            but availability is per-host — the CLI may well be installed
             locally and simply missing on the machine being targeted. */}
       <span>
         {sshHost ? (
           <>
             No agent type is set up for Switch on <span className="font-medium">{sshHost}</span>.
-            Install an agent&apos;s Switch connector on that host in Settings &rarr; Remote hosts
-            before onboarding it there.
+            Install an agent CLI on that host in Settings &rarr; Remote hosts before onboarding it
+            there.
           </>
         ) : (
           <>
-            No agent type is set up for Switch on this computer. Install an agent&apos;s Switch
-            connector in Settings &rarr; Agent providers before onboarding it.
+            No agent type is set up for Switch on this computer. Install an agent CLI in Settings
+            &rarr; Agent providers before onboarding it.
           </>
         )}
       </span>

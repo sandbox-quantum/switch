@@ -9,6 +9,11 @@ both doors, which is what keeps them from drifting apart.
 `session_key` is deliberately vague about what it identifies: an MCP transport
 session today, a connection id over HTTP. Both are "the thing that owns the
 room binding", and operations only ever compare them for equality.
+
+`session` is the narrower fact, and is set only when the caller named an SDK
+session rather than a bare connection. It is what a room-scoped operation
+prefers, because a connection shared by several sessions cannot answer "which
+room did *this* caller mean".
 """
 
 from __future__ import annotations
@@ -27,9 +32,30 @@ from switch_core.logging_context import (
 
 
 @dataclass(frozen=True)
+class CallerSession:
+    """The SDK session a caller named, resolved and fenced by the front door.
+
+    `room_id` is the room that session is working in — the session's own,
+    rather than whatever its connection happens to cover, which is the
+    distinction that lets several sessions of one agent share a connection.
+    None when it is in no room, or in more than one.
+
+    The fence travels with it so an operation that *changes* the binding writes
+    it back through the same guarded path the door read it through, instead of
+    a second, weaker way into the session row.
+    """
+
+    id: str
+    host_id: str
+    epoch: str
+    room_id: str | None
+
+
+@dataclass(frozen=True)
 class CallContext:
     agent_id: str
     session_key: str | None
+    session: CallerSession | None
 
 
 @dataclass(frozen=True)

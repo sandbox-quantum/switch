@@ -355,8 +355,15 @@
     {
       "idx": 50,
       "version": "6",
-      "when": 1790192915515,
-      "tag": "0050_observed_locations",
+      "when": 1790248865722,
+      "tag": "0050_drop_session_shell_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1790351172209,
+      "tag": "0051_observed_locations",
       "breakpoints": true
     }
   ]

@@ -15,6 +15,8 @@ const readDeployedVersionMock = vi.hoisted(() => vi.fn());
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const dockerRunOneOffMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
+const prepareUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
+const finishUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
   COMPATIBLE_SWITCH_VERSION: '0.24.0',
@@ -62,6 +64,10 @@ vi.mock('@main/core/switch-servers/auth', () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
 vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
+vi.mock('./managed-upgrade', () => ({
+  prepareUpgrade: prepareUpgradeMock,
+  finishUpgrade: finishUpgradeMock,
+}));
 
 const { startStack } = await import('./pipeline');
 
@@ -85,6 +91,8 @@ function options(checkoutRoot: string | null = null) {
       serverName: 'Local',
       onMessage: vi.fn(),
       onLog: vi.fn(),
+      activate: true,
+      onUpgrade: vi.fn(),
       signal: new AbortController().signal,
       checkoutRoot,
     },

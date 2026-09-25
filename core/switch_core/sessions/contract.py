@@ -404,6 +404,19 @@ class Command(_Model):
     body: CommandBody
 
 
+class RoomMessageReceipt(CommandStatus):
+    """A room-message receipt for a host that asked to be handed the command.
+
+    The command is set only when this submission is what created it and the
+    session has nothing else queued, so running it from here cannot put it
+    ahead of work asked for earlier. Any other status is a receipt to report
+    rather than work to run, and the command endpoint remains the way to reach
+    one withheld here or lost with this response.
+    """
+
+    command: Command | None
+
+
 # ── Snapshot ─────────────────────────────────────────────────────────────────
 
 

@@ -8,13 +8,12 @@
  * surfacing them as MCP notifications, or deciding to start a session are all
  * the consumer's business.
  *
- * Imported by Switch Console (which submits them to a session's SDK adapter)
- * and by this package's own MCP runtime (which serves them next to the agent).
- * It exists because those two had a copy each and the copies drifted within a
- * day.
+ * Imported by Switch Console and the agent sidecar, which submit them to a
+ * session's SDK adapter.
  *
- * The MCP runtime is a separate entry point (`./bin`) so importing the client
- * does not drag in the MCP SDK.
+ * The tool surface a session host serves and its watcher runs is a separate
+ * entry point, `./hosted`, so importing the client does not drag in the MCP
+ * SDK.
  */
 
 export {
@@ -28,20 +27,29 @@ export {
 } from './artifacts';
 export {
   BEAT_INTERVAL_MS,
+  EVICTION_CLOSED,
+  EVICTION_CREDENTIALS_REJECTED,
+  EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_TAKEN_OVER,
+  PlacementsRefusedError,
   SwitchEventStream,
+  type ApprovalOutcome,
+  type SessionCommand,
   type DeliveryFilter,
   type EventStreamLogger,
+  type Eviction,
   type StreamScope,
   type SwitchEventStreamDeps,
 } from './event-stream';
 export {
-  findOrphanedRuntimes,
-  parseProcessTable,
-  reapOrphanedRuntimes,
-  staleSessionDirs,
-  type ProcessRow,
-  type ReapOutcome,
-} from './reap';
+  RoomAdmissionError,
+  SwitchRoomAdmissions,
+  type CarriedRooms,
+  type RefusedRoom,
+  type RoomAdmission,
+  type RoomDelivery,
+  type RoomReservation,
+} from './room-admission';
 export { readSse, type SseFrame } from './sse';
 export type {
   AgentBridgeEvent,

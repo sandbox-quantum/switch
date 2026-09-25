@@ -55,6 +55,10 @@ vi.mock('./deployed-version', () => ({
 }));
 vi.mock('./compose', () => ({ composeUp: composeUpMock, composeDown: composeDownMock }));
 vi.mock('./health', () => ({ waitForHealth: waitForHealthMock }));
+vi.mock('./managed-upgrade', () => ({
+  prepareUpgrade: vi.fn(async () => null),
+  finishUpgrade: vi.fn(),
+}));
 vi.mock('./bundled-compose', () => ({ bundledComposeYaml: () => 'services: {}' }));
 vi.mock('./env-file', async (importOriginal) => ({
   ...(await importOriginal<typeof EnvFile>()),
@@ -139,8 +143,10 @@ function startOptions(host: ServerHost) {
     host,
     ref: { kind: 'remote' as const, sshHost: 'vm-1' },
     serverName: 'Team server',
+    activate: true,
     onMessage: vi.fn(),
     onLog: vi.fn(),
+    onUpgrade: vi.fn(),
     signal: new AbortController().signal,
     checkoutRoot: null,
   };

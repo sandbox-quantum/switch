@@ -24,6 +24,7 @@ import { buildEnvFile, keysDisagreeing } from './env-file';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
+import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
 import { type LocalServerSecrets, withRuntimePassword } from './secret-values';
@@ -51,10 +52,16 @@ export type StartStackOptions = {
   ref: ManagedServerRef;
   /** Display name for the registered server record. */
   serverName: string;
+  /** Whether to make this the active server. False for an upgrade Console runs
+   * on its own, which must not switch the user away from what they have open. */
+  activate: boolean;
   /** Coarse step messages for the UI ("Pulling images…"). */
   onMessage: (message: string) => void;
   /** Live compose output lines for the UI log tail. */
   onLog: (line: string) => void;
+  /** Fired before a start that moves the stack forward to this build's pin, so
+   * the supervisor can hold sessions until it finishes. */
+  onUpgrade: (upgrade: OwedUpgrade) => void;
   /** Aborts an in-flight health wait (stop/cancel/quit). */
   signal: AbortSignal;
   /** Dev-only: root of the Switch checkout to build the stack's images from,
@@ -310,8 +317,8 @@ async function settingsFor(
 }
 
 /**
- * Register the running stack, make it the active server, and sign in as its
- * admin. Switch Console generated that password, so it signs in on the user's
+ * Register the running stack, make it the active server when asked, and sign
+ * in as its admin. Switch Console generated that password, so it signs in on the user's
  * behalf rather than showing a login wall for a secret they never saw. A
  * failed sign-in does not fail the caller — the stack is healthy, and the
  * server view falls back to its sign-in panel.
@@ -320,6 +327,7 @@ async function registerAndSignIn(
   ref: ManagedServerRef,
   serverName: string,
   settings: StackSettings,
+  activate: boolean,
   onMessage: (message: string) => void
 ): Promise<string> {
   const server = await ensureManagedServer(
@@ -330,7 +338,7 @@ async function registerAndSignIn(
     },
     ref
   );
-  await setActiveServerId(server.id);
+  if (activate) await setActiveServerId(server.id);
 
   onMessage('Signing in…');
   const login = await passwordLogin(
@@ -350,25 +358,28 @@ async function registerAndSignIn(
 
 /**
  * Full start pipeline: detect Docker → plan where the settings come from →
- * refuse a downgrade → materialise compose + `.env` → publish the `.env` →
- * `compose up` → establish networking → health-gate → register + activate →
- * silent admin sign-in → reconcile agent servers. Returns without registering
+ * refuse a downgrade → back up and journal an upgrade → materialise compose +
+ * `.env` → publish the `.env` → `compose up` → establish networking →
+ * health-gate → register (+ activate) → silent admin sign-in → reconcile agent
+ * servers → close the upgrade journal. Returns without registering
  * anything if Docker is unavailable, the host's stack cannot safely be started
  * from here, the stack is newer than this build, or it never turns healthy.
  *
  * Doubles as the update path: the `.env` and compose file are re-materialised
  * from this build every time, so `compose up -d` on an already-running stack
  * re-pulls the newly pinned tags and recreates only the changed containers,
- * leaving the data volumes in place for switch-core to migrate forward. On a
- * shared host that is an update for everyone using the stack, which is why the
- * settings it writes are the host's own rather than this desktop's.
+ * leaving the data volumes in place for switch-core to migrate forward. A
+ * stack behind the pin has its database dumped first (see managed-upgrade.ts).
+ * On a shared host that is an update for everyone using the stack, which is why
+ * the settings it writes are the host's own rather than this desktop's.
  *
  * With `checkoutRoot` set (dev only) the images are built from that working
  * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
  * so nothing downstream mistakes them for a release.
  */
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
-  const { host, ref, serverName, onMessage, onLog, signal, checkoutRoot } = opts;
+  const { host, ref, serverName, activate, onMessage, onLog, onUpgrade, signal, checkoutRoot } =
+    opts;
 
   const docker = await host.detectDocker();
   if (!docker.available) {
@@ -396,6 +407,10 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   const downgrade = await refuseDowngrade(host, checkoutRoot);
   if (downgrade) return downgrade;
 
+  // Back the database up before anything can migrate it: the Matrix backfill
+  // below already starts the stack, and the rewrite after it moves the pin.
+  const upgrade = await prepareUpgrade(host, checkoutRoot, onMessage, onUpgrade);
+
   // Copy the homeserver's history across before the upgrade removes the only
   // thing that can read it. Runs against the stack as currently deployed, so
   // it must happen before the compose file and `.env` are re-materialised for
@@ -418,7 +433,6 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     namespace: RELEASE_REPO_OWNER,
     ports: settings.ports,
     secrets: settings.secrets,
-    sessionDemo: checkoutRoot !== null,
     telemetryEnabled,
   });
   await host.writeFile(ENV_FILE_NAME, env, 0o600);
@@ -452,7 +466,8 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     return { kind: 'error', message: 'The server did not become healthy in time.' };
   }
 
-  const serverId = await registerAndSignIn(ref, serverName, settings, onMessage);
+  const serverId = await registerAndSignIn(ref, serverName, settings, activate, onMessage);
+  if (upgrade) await finishUpgrade(host);
   return { kind: 'started', serverId, telemetryEnabled };
 }
 
@@ -533,7 +548,7 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectRe
     };
   }
 
-  const serverId = await registerAndSignIn(ref, serverName, settings, onMessage);
+  const serverId = await registerAndSignIn(ref, serverName, settings, true, onMessage);
   return { kind: 'connected', serverId, deployedVersion: stack.env.version };
 }
 
@@ -553,4 +568,6 @@ export async function resetStack(host: ServerHost): Promise<void> {
   if (host.sharedState !== null) await withdrawPublishedEnv(host.sharedState);
   await clearSecrets(host);
   await clearPorts(host);
+  // Nothing is left to resume. The backups stay on disk.
+  await finishUpgrade(host);
 }

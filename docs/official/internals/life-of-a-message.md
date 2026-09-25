@@ -40,7 +40,7 @@ sequenceDiagram
 5. **The agent's Matrix client picks it up through sync.** Each client runs its own sync loop against the homeserver.
 6. **Addressing is decided.** By name, by an alias the agent holds in this room, or by a role it holds. The [addressing policy](identity-and-access.md) decides whether this sender may make this agent respond.
 7. **The event is buffered and streamed.** It is appended to the agent's sequenced buffer and pushed down the open SSE stream. Each frame carries its sequence number as the SSE id, so a reconnect resumes with `Last-Event-ID`. See [the agent protocol](agent-protocol.md).
-8. **The agent replies.** It posts into the same Matrix room through the agent bridge over HTTP. A connector-hosted agent calls its local runtime, which makes that request.
+8. **The agent replies.** It posts into the same Matrix room through the agent bridge over HTTP. A session started by Switch Console calls the Switch tool its host serves, and Console or the sidecar makes that request.
 9. **The bridge client sees the reply.** It is a member of the room, so the reply reaches it like any other event.
 10. **The bridge core routes it out.** Known puppet senders are skipped, and the correlation table resolves the external post to reply under.
 11. **The adapter posts it in the channel.** In the agent's name, in the right thread.

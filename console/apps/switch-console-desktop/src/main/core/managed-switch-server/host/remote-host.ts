@@ -69,10 +69,16 @@ export class RemoteServerHost implements ServerHost {
 
   async writeFile(relPath: string, content: string, mode?: number): Promise<void> {
     await this.fs.write(relPath, content);
-    if (mode !== undefined) {
-      // ctx is rooted at workingDir, so the relative path resolves there.
-      await this.ctx.exec('chmod', [mode.toString(8).padStart(3, '0'), relPath]);
-    }
+    if (mode !== undefined) await this.restrictMode(relPath, mode);
+  }
+
+  async removeFile(relPath: string): Promise<void> {
+    await this.ctx.exec('rm', ['-f', relPath]);
+  }
+
+  async restrictMode(relPath: string, mode: number): Promise<void> {
+    // ctx is rooted at workingDir, so the relative path resolves there.
+    await this.ctx.exec('chmod', [mode.toString(8).padStart(3, '0'), relPath]);
   }
 
   async readFile(relPath: string): Promise<string | null> {
