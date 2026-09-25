@@ -43,6 +43,8 @@ import {
   serverDeployedTelemetry,
   serverDrift,
   serverPlacementLabel,
+  serverProgress,
+  serverUpgrade,
 } from './server-presentation';
 import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -285,6 +287,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           rather than waiting inside the stack card further down. */}
         <VersionDriftNotice
           drift={drift}
+          upgrade={serverUpgrade(server)}
+          progress={serverProgress(server)}
           disabled={stackTransitioning}
           onRestart={() => restartStack(server)}
         />

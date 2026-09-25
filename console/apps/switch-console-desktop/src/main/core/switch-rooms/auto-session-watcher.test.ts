@@ -2,7 +2,9 @@ import { beforeEach, expect, it, vi } from 'vitest';
 type Change = { current: { sshHost: string; status: string } };
 const mocks = vi.hoisted(() => {
   const listeners: ((change: Change) => void)[] = [];
+  const upgraded: ((serverId: string) => void)[] = [];
   return {
+    upgraded,
     apply: vi.fn(),
     configure: vi.fn(),
     dispose: vi.fn(async () => {}),
@@ -39,6 +41,9 @@ vi.mock('./auto-session-store', () => ({
   setAutoSessionSubagent: vi.fn(),
 }));
 vi.mock('@main/lib/logger', () => ({ log: { error: vi.fn() } }));
+vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
+  onManagedServerUpgraded: (listener: (serverId: string) => void) => mocks.upgraded.push(listener),
+}));
 const { autoSessionWatcher } = await import('./auto-session-watcher');
 
 beforeEach(() => {
@@ -162,4 +167,38 @@ it('applies the saved settings when asked to reconcile an agent', async () => {
 it('stops everything it hosts when Console closes', async () => {
   await autoSessionWatcher.dispose();
   expect(mocks.dispose).toHaveBeenCalled();
+});
+
+it('does not hold one server’s agents behind another server’s update', async () => {
+  mocks.agents.mockResolvedValue([
+    { id: 'updating', switchAgentId: 'switch-1', serverId: 'local' },
+    { id: 'elsewhere', switchAgentId: 'switch-2', serverId: 'other' },
+  ]);
+  let finish: () => void = () => {};
+  mocks.apply.mockImplementation(async (agentId: string) => {
+    if (agentId === 'updating')
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+  });
+  const boot = autoSessionWatcher.initialize();
+
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledWith('elsewhere', 'restore'));
+  finish();
+  await boot;
+});
+
+it('starts the controllers of a server once an update they were refused for finishes', async () => {
+  mocks.agents.mockResolvedValue([
+    { id: 'upgraded', switchAgentId: 'switch-1', serverId: 'local' },
+    { id: 'elsewhere', switchAgentId: 'switch-2', serverId: 'other' },
+    { id: 'unlinked', switchAgentId: null, serverId: 'local' },
+  ]);
+  await autoSessionWatcher.initialize();
+  mocks.apply.mockClear();
+
+  for (const listener of mocks.upgraded) listener('local');
+
+  await vi.waitFor(() => expect(mocks.apply).toHaveBeenCalledTimes(1));
+  expect(mocks.apply).toHaveBeenCalledWith('upgraded', 'restore');
 });

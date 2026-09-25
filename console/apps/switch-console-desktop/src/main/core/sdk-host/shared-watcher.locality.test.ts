@@ -12,7 +12,14 @@ const mocks = vi.hoisted(() => ({
   removeRoots: vi.fn(),
   agentById: vi.fn(),
   ssh: vi.fn(),
+  ready: vi.fn(),
+  server: vi.fn(),
 }));
+
+vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
+  ensureServerSessionReady: mocks.ready,
+}));
+vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
 
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
   listStoppedControllerAgentIds: mocks.stopped,
@@ -75,7 +82,10 @@ beforeEach(() => {
     name: 'scout',
     switchAgentId: 'switch-agent-1',
     providerId: 'claude',
+    serverId: 'server-1',
   });
+  mocks.server.mockResolvedValue({ id: 'server-1', name: 'Local', managed: true });
+  mocks.ready.mockResolvedValue(undefined);
 });
 
 it('watches a local agent inside Console without deploying a host', async () => {
@@ -203,4 +213,49 @@ it('leaves a stopped controller off the air however auto-start is set', async ()
   await applyControllerState('agent-1', 'restore');
   expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
   expect(mocks.startLocal).not.toHaveBeenCalled();
+});
+
+it('connects only once the agent’s managed server is ready', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  let ready: () => void = () => {};
+  mocks.ready.mockReturnValue(
+    new Promise<void>((resolve) => {
+      ready = resolve;
+    })
+  );
+  const connecting = configureSharedWatcher(
+    'agent-1',
+    { connected: true, spawning: true },
+    'restore'
+  );
+  await vi.waitFor(() =>
+    expect(mocks.ready).toHaveBeenCalledWith(expect.objectContaining({ id: 'server-1' }))
+  );
+  expect(mocks.startLocal).not.toHaveBeenCalled();
+  ready();
+  await connecting;
+  expect(mocks.startLocal).toHaveBeenCalled();
+});
+
+it('never connects to a server whose update failed', async () => {
+  mocks.location.mockResolvedValue({
+    id: 'remote',
+    dir: '/work',
+    sshHost: 'builder',
+    connectionId: 'connection-1',
+  });
+  mocks.ready.mockRejectedValue(new Error('Updating Local from switch-core 0.1.0 failed'));
+  await expect(
+    configureSharedWatcher('agent-1', { connected: true, spawning: true }, 'restore')
+  ).rejects.toThrow('failed');
+  expect(mocks.deploy).not.toHaveBeenCalled();
+  expect(mocks.startLocal).not.toHaveBeenCalled();
+});
+
+it('stands a watcher down without waiting for its server', async () => {
+  mocks.location.mockResolvedValue({ id: 'local', dir: '/work', sshHost: null });
+  mocks.ready.mockRejectedValue(new Error('update failed'));
+  await configureSharedWatcher('agent-1', { connected: false, spawning: false }, 'explicit');
+  expect(mocks.ready).not.toHaveBeenCalled();
+  expect(mocks.stopLocal).toHaveBeenCalledWith('switch-agent-1');
 });

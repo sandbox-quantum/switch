@@ -1317,6 +1317,19 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Managed servers behind the app's switch-core pin are upgraded
+  automatically**, and sessions wait for it. The local server is upgraded at
+  startup and a remote managed server when its host is reconciled (at startup
+  and whenever the host becomes reachable); a stopped one is upgraded at its
+  next start rather than started at the old version. Every database is backed up
+  with `pg_dumpall` into a timestamped `backups/` directory next to the stack
+  first, and an `upgrade.json` journal resumes an interrupted upgrade or refuses
+  it loudly. Sessions and room watchers for agents on the server wait while it
+  updates and are refused with the error if it fails. The server page shows the
+  update's progress, or its error and a Retry button, in place of the optional
+  "Restart to update" banner.
+
 ### [0.35.0] - 2026-09-23
 
 #### Added
