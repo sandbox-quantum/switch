@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import uuid
 from collections.abc import Callable
@@ -33,8 +34,10 @@ MARKER_PATH = MARKER_DIRECTORY / "machine.json"
 RUNTIME_DIRECTORY = Path("/run/switch-hosted")
 LOCK_PATH = Path("/run/lock/switch-hosted-worker.lock")
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
-BAKED_MCP_RUNTIME_PATH = Path("/opt/switch/agent-providers/switch-agent-runtime.mjs")
-BAKED_MCP_RUNTIME_ENV = "SWITCH_HOSTED_MCP_RUNTIME_PATH"
+OBSOLETE_BUNDLE_PATH = STATE_PATH / "obsolete-bundle"
+OBSOLETE_BUNDLE_EXIT_CODE = 75
+OBSOLETE_POLL_SECONDS = 30
+OBSOLETE_WARN_SECONDS = 5 * 60
 IMDS_BASE = "http://169.254.169.254/latest"
 MAX_SECRET_BYTES = 128 * 1024
 ROOT_UID = 0
@@ -44,6 +47,7 @@ SECRET_ARN_RE = re.compile(
     r"^arn:(aws|aws-us-gov|aws-cn):secretsmanager:([a-z]{2}(?:-gov)?-[a-z]+-\d):([0-9]{12}):secret:([A-Za-z0-9/_+=.@-]+)$"
 )
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,199}$")
+WORKER_CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
 
 
 class WorkerError(RuntimeError):
@@ -96,8 +100,6 @@ class RuntimeConfig:
     agent_user: str
     agent_group: str
     path: str
-    mcp_runtime: str
-    mcp_runtime_path: str | None
     allow_initial_format: bool
     artifact_sha256: dict[str, str]
     providers: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -136,6 +138,7 @@ class SecretBundle:
     deployment: dict[str, Any]
     provider_credential: str | None
     switch_credentials: dict[str, Any]
+    worker_capability: str
     github_credential: str | None = None
 
 
@@ -189,11 +192,10 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
             "agentUser",
             "agentGroup",
             "path",
-            "mcpRuntime",
             "allowInitialFormat",
             "artifactSha256",
         },
-        {"mcpRuntimePath", "providers"},
+        {"providers"},
         "worker runtime",
     )
     if runtime_value["version"] != 1:
@@ -201,17 +203,6 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
     if not isinstance(runtime_value["allowInitialFormat"], bool):
         raise WorkerError("Worker initial-format policy is invalid.")
     artifact_sha256 = _artifact_hashes(runtime_value["artifactSha256"])
-    mcp_runtime_path = (
-        _absolute_path(runtime_value["mcpRuntimePath"], "baked MCP runtime")
-        if "mcpRuntimePath" in runtime_value
-        else None
-    )
-    if mcp_runtime_path is not None and mcp_runtime_path != str(BAKED_MCP_RUNTIME_PATH):
-        raise WorkerError("Baked MCP runtime path is not fixed.")
-    if (mcp_runtime_path is None) != ("mcpRuntime" not in artifact_sha256):
-        raise WorkerError(
-            "Baked MCP runtime path and hash must be configured together."
-        )
     runtime = RuntimeConfig(
         node_path=_absolute_path(runtime_value["nodePath"], "Node executable"),
         bootstrap_path=_absolute_path(
@@ -226,8 +217,6 @@ def load_worker_config(assignment_path: Path, runtime_path: Path) -> WorkerConfi
         agent_user=_identifier(runtime_value["agentUser"], "agent user"),
         agent_group=_identifier(runtime_value["agentGroup"], "agent group"),
         path=_text(runtime_value["path"], "runtime PATH"),
-        mcp_runtime=_text(runtime_value["mcpRuntime"], "pinned MCP runtime"),
-        mcp_runtime_path=mcp_runtime_path,
         allow_initial_format=runtime_value["allowInitialFormat"],
         artifact_sha256=artifact_sha256,
         providers=_provider_runtimes(runtime_value.get("providers", {})),
@@ -303,7 +292,7 @@ def _artifact_hashes(value: Any) -> dict[str, str]:
     value = _strict(
         value,
         {"node", "bootstrap", "sharedHostDaemon", "provider"},
-        {"mcpRuntime"},
+        set(),
         "runtime artifact hashes",
     )
     for name, digest in value.items():
@@ -326,6 +315,7 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
             "assignment",
             "deployment",
             "switchCredentials",
+            "workerCapability",
         },
         {"githubCredential", "providerCredential"},
         "assignment secret",
@@ -356,6 +346,11 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
     switch_credentials = _validate_switch_credentials(
         value["switchCredentials"], config.agent_id
     )
+    worker_capability = value["workerCapability"]
+    if not isinstance(worker_capability, str) or not WORKER_CAPABILITY_RE.fullmatch(
+        worker_capability
+    ):
+        raise WorkerError("Worker capability is invalid.")
     if deployment["session"]["agentId"] != config.agent_id:
         raise WorkerError("Hosted deployment belongs to a different agent.")
     has_github_credential = "githubCredential" in value
@@ -367,7 +362,9 @@ def parse_secret_document(raw: str, config: WorkerConfig) -> SecretBundle:
     github_credential = (
         _github_credential(value["githubCredential"]) if has_github_credential else None
     )
-    return SecretBundle(deployment, credential, switch_credentials, github_credential)
+    return SecretBundle(
+        deployment, credential, switch_credentials, worker_capability, github_credential
+    )
 
 
 def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
@@ -380,9 +377,10 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
             "workspacePath",
             "runtimeMode",
             "switchCredentialsPath",
-            "mcpRuntime",
+            "workerCapabilityPath",
+            "watch",
         },
-        {"github", "room", "watch"},
+        {"github"},
         "hosted deployment",
     )
     if value["version"] != 1:
@@ -390,18 +388,12 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     session = _strict(
         value["session"],
         {"sessionId", "agentId"},
-        {"nativeSessionId"},
+        set(),
         "deployment session",
     )
     _identifier(session["sessionId"], "deployment session ID")
     _identifier(session["agentId"], "deployment agent ID")
-    if "nativeSessionId" in session:
-        _identifier(session["nativeSessionId"], "deployment native session ID")
-    if ("room" in value) == ("watch" in value):
-        raise WorkerError("Specify either a room session or an agent watcher.")
-    if "watch" in value and (
-        not isinstance(value["watch"], bool) or "nativeSessionId" in session
-    ):
+    if not isinstance(value["watch"], bool):
         raise WorkerError("Deployment watcher configuration is invalid.")
     provider = _strict(
         value["provider"],
@@ -451,15 +443,6 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
                 raise WorkerError("Deployment model options are invalid.")
     if value["workspacePath"] != str(WORKSPACE_PATH):
         raise WorkerError("Hosted deployment workspace path is not fixed.")
-    if "room" in value:
-        room = _strict(value["room"], {"roomId"}, {"startCursor"}, "deployment room")
-        _identifier(room["roomId"], "deployment room ID")
-        if "startCursor" in room and (
-            isinstance(room["startCursor"], bool)
-            or not isinstance(room["startCursor"], int)
-            or room["startCursor"] < 0
-        ):
-            raise WorkerError("Deployment room cursor is invalid.")
     if value["runtimeMode"] not in {
         "approval-required",
         "auto-accept-edits",
@@ -468,9 +451,10 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
         raise WorkerError("Hosted deployment runtime mode is invalid.")
     if value["switchCredentialsPath"] != str(RUNTIME_DIRECTORY / "secrets/switch.json"):
         raise WorkerError("Hosted deployment Switch credential path is not fixed.")
-    _text(value["mcpRuntime"], "deployment MCP runtime")
-    if value["mcpRuntime"] != config.runtime.mcp_runtime:
-        raise WorkerError("Hosted deployment MCP runtime is not the pinned runtime.")
+    if value["workerCapabilityPath"] != str(
+        RUNTIME_DIRECTORY / "secrets/worker-capability"
+    ):
+        raise WorkerError("Hosted deployment worker capability path is not fixed.")
     if "github" in value:
         github = _strict(
             value["github"],
@@ -587,17 +571,20 @@ class SecretsManager:
             client = boto3.client("secretsmanager", region_name=region)
         self._client = client
 
-    def read(self, secret_id: str) -> str:
+    def read(self, secret_id: str) -> tuple[str, str]:
         try:
             response = self._client.get_secret_value(
                 SecretId=secret_id, VersionStage="AWSCURRENT"
             )
             value = response.get("SecretString")
+            version_id = response.get("VersionId")
         except Exception:
             raise WorkerError("The assignment secret could not be read.") from None
         if not isinstance(value, str):
             raise WorkerError("The assignment secret is not a JSON string.")
-        return value
+        if not isinstance(version_id, str) or not version_id:
+            raise WorkerError("The assignment secret has no version ID.")
+        return value, version_id
 
 
 class Commands:
@@ -1233,6 +1220,7 @@ def materialize_secrets(
                     bundle.switch_credentials, separators=(",", ":")
                 ),
                 "deployment.json": json.dumps(bundle.deployment, separators=(",", ":")),
+                "worker-capability": bundle.worker_capability,
             }
             if bundle.provider_credential is not None:
                 files["provider"] = bundle.provider_credential + "\n"
@@ -1310,8 +1298,6 @@ def build_launch(
         "SWITCH_HOST_BOOT_ID": identity.boot_id,
         "SWITCH_HOST_ASSIGNMENT_GENERATION": str(identity.assignment_generation),
     }
-    if config.runtime.mcp_runtime_path is not None:
-        environment[BAKED_MCP_RUNTIME_ENV] = config.runtime.mcp_runtime_path
     return arguments, environment
 
 
@@ -1359,8 +1345,6 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
         "sharedHostDaemon": config.runtime.shared_host_daemon_path,
         "provider": config.runtime.provider_binary_path,
     }
-    if config.runtime.mcp_runtime_path is not None:
-        artifacts["mcpRuntime"] = config.runtime.mcp_runtime_path
     hashes = dict(config.runtime.artifact_sha256)
     for provider, runtime in config.runtime.providers.items():
         artifacts["provider-" + provider] = runtime["path"]
@@ -1398,7 +1382,6 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
         json.dumps(
             {
                 "artifacts": hashes,
-                "mcpRuntime": config.runtime.mcp_runtime,
                 "nodeVersion": version,
             },
             sort_keys=True,
@@ -1406,6 +1389,66 @@ def verify_pinned_runtime(config: WorkerConfig) -> str:
         ).encode()
     ).hexdigest()
     return fingerprint
+
+
+def record_obsolete_bundle(path: Path, version_id: str) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(version_id)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def read_obsolete_bundle(path: Path) -> str | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise WorkerError("Obsolete bundle marker is invalid.") from None
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_size > 1024:
+            raise WorkerError("Obsolete bundle marker is invalid.")
+        return os.read(descriptor, 1024).decode().strip()
+    except (OSError, UnicodeError):
+        raise WorkerError("Obsolete bundle marker is invalid.") from None
+    finally:
+        os.close(descriptor)
+
+
+def await_current_bundle(
+    secrets: SecretsManager, secret_id: str, marker: Path
+) -> tuple[str, str]:
+    raw, version_id = secrets.read(secret_id)
+    obsolete = read_obsolete_bundle(marker)
+    if obsolete is None:
+        return raw, version_id
+    warned_at: float | None = None
+    while version_id == obsolete:
+        now = time.monotonic()
+        if warned_at is None or now - warned_at >= OBSOLETE_WARN_SECONDS:
+            print(
+                "The assignment secret still holds the bundle Switch refused as "
+                "obsolete; waiting for the controller to publish the current one.",
+                file=sys.stderr,
+                flush=True,
+            )
+            warned_at = now
+        time.sleep(OBSOLETE_POLL_SECONDS)
+        raw, version_id = secrets.read(secret_id)
+    os.unlink(marker)
+    _fsync_directory(marker.parent)
+    return raw, version_id
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1444,12 +1487,25 @@ def main(argv: list[str] | None = None) -> int:
         uid, gid = prepare_agent_directories(
             config.runtime.agent_user, config.runtime.agent_group
         )
-        raw_secret = SecretsManager(config.secret_region).read(config.secret_id)
+        raw_secret, version_id = await_current_bundle(
+            SecretsManager(config.secret_region),
+            config.secret_id,
+            OBSOLETE_BUNDLE_PATH,
+        )
         bundle = parse_secret_document(raw_secret, config)
         raw_secret = ""
         deployment_path, cleanup = materialize_secrets(bundle, uid, gid)
         launch, environment = build_launch(config, identity, deployment_path, uid, gid)
-        return run_child(launch, environment)
+        code = run_child(launch, environment)
+        if code == OBSOLETE_BUNDLE_EXIT_CODE:
+            record_obsolete_bundle(OBSOLETE_BUNDLE_PATH, version_id)
+            print(
+                "Switch refused this worker's bundle as obsolete; restarting onto "
+                "the current assignment secret.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return code
     finally:
         cleanup()
         root_lock.close()

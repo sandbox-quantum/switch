@@ -2,8 +2,7 @@
 
 This directory is the trusted launcher contract for the first hosted-agent EC2
 backend. The AMI is built ahead of time and pins Node.js 24, the provider CLI,
-the built `@switch-console/agent-providers` bootstrap artifacts and the
-built Switch MCP runtime. The instance profile can call only
+and the built `@switch-console/agent-providers` bootstrap artifacts. The instance profile can call only
 `secretsmanager:GetSecretValue` for this assignment's one secret (and the KMS
 decrypt operation constrained to that secret). The launcher makes no EC2,
 IAM, KMS, S3 or secret-list calls.
@@ -14,19 +13,16 @@ Build the self-contained Node entrypoints first:
 
 Then run the installer while baking the AMI:
 
-    install.sh /path/to/runtime-build <node-sha256> <provider-sha256> \
-      @sandboxaq/switch-agent-runtime@<exact-version>
+    install.sh /path/to/runtime-build <node-sha256> <provider-sha256>
 
-The runtime manifest is verified before its three bundles are installed. The Node and
+The runtime manifest is verified before its two bundles are installed. The Node and
 provider executables must match image-pipeline SHA256 pins. The installer writes
-those digests, all bundle digests and the exact MCP runtime package identity into the
-root-only runtime configuration. The launcher rehashes every artifact at each
-start and binds that configuration fingerprint into the retained-disk marker.
-The baked MCP entrypoint is fixed at
-`/opt/switch/agent-providers/switch-agent-runtime.mjs`; neither assignment metadata
-nor the secret deployment document can select a command or path. The package identity
-remains in the deployment contract so an older runtime configuration without the
-optional baked path continues to launch the exact version through `npx`.
+those digests and all bundle digests into the root-only runtime configuration.
+The launcher rehashes every artifact at each start and binds that configuration
+fingerprint into the retained-disk marker. Neither assignment metadata nor the
+secret deployment document can select a command or path. The worker runs one
+shared watcher (`shared-host-daemon --watch-worker`); there is no separately
+bundled MCP runtime.
 
 The installer creates the unprivileged
 `switch-agent` account, installs the launcher and systemd unit, checks the
@@ -39,7 +35,7 @@ checked-in `runtime.json` shows the generated schema; its zero digests are
 examples and are never installed.
 
 For additional providers, preinstall their pinned runtimes and place a
-`providers.json` beside the three bundles. It maps `codex`, `cursor`, `opencode`,
+`providers.json` beside the two bundles. It maps `codex`, `cursor`, `opencode`,
 and `antigravity` to `{ "path": "/opt/switch/providers/<provider>", "sha256": "<digest>" }`.
 Antigravity uses `/opt/switch/providers/antigravity-acp`.
 Each entry must be a root-owned executable, with no symlink or group/world write
@@ -102,13 +98,10 @@ shape:
       "context": "Non-secret session instructions"
     },
     "workspacePath": "/data/workspace",
-    "room": {
-      "roomId": "server-room-id",
-      "startCursor": 0
-    },
+    "watch": true,
     "runtimeMode": "approval-required",
     "switchCredentialsPath": "/run/switch-hosted/secrets/switch.json",
-    "mcpRuntime": "@sandboxaq/switch-agent-runtime@<pinned-version>"
+    "workerCapabilityPath": "/run/switch-hosted/secrets/worker-capability"
   },
   "providerCredential": "raw-provider-credential",
   "switchCredentials": {
@@ -117,19 +110,21 @@ shape:
       "SWITCH_API_TOKEN": "switch-agent-token",
       "SWITCH_AGENT_ID": "server-agent-id"
     }
-  }
+  },
+  "workerCapability": "worker-capability-for-this-revision"
 }
 ```
 
-`session.nativeSessionId`, `provider.model` and
-`room.startCursor` are the only optional deployment fields, matching the
-hosted bootstrap. A provider credential is a nonempty single-line string of at
+`provider.model`, `provider.definition` and `github` are the only optional
+deployment fields, matching the hosted bootstrap. `workerCapability` is the
+capability Switch issued for the launch's current revision: 16 to 4096
+printable ASCII characters without whitespace. It is never logged. A provider credential is a nonempty single-line string of at
 most 16 KiB. The Switch endpoint must be HTTPS without URL credentials, query
 or fragment. IDs, generation, volume, executable and all fixed paths are
 cross-checked before any secret is handed to the unprivileged process.
 
-The root launcher writes only the deployment document, raw provider credential
-and Switch credential JSON into the systemd runtime directory under
+The root launcher writes only the deployment document, raw provider credential,
+Switch credential JSON and worker capability into the systemd runtime directory under
 `/run`, verifies that it is tmpfs, atomically installs a root-owned, `switch-agent`-group-readable directory with
 mode 0750 and files with mode 0440. It removes validated crash orphans before
 launch and removes the active files when the child exits. Secret values are never arguments
@@ -156,12 +151,10 @@ wrapper passes the token only to its child process. The agent environment does
 not carry a static installation token. Failed renewal stops the operation with
 a visible error. The image must provide GitHub CLI at `/usr/local/bin/gh`.
 
-A managed deployment sets `watch: true` instead of `room`. The shared watcher
-starts and reuses the normal per-room sessions. `provider.definition` contains
+Every deployment runs the shared watcher, which starts and reuses the normal
+per-room sessions; `watch` is its automatic-session flag. `provider.definition` contains
 the same rendered Claude agent definition used by local agents; bootstrap writes
 it beneath the selected workspace and refuses a conflicting existing definition.
-Single-room operator deployments remain supported. A deployment must specify
-exactly one of `room` and `watch`.
 
 ## Disk and boot ownership
 
@@ -210,6 +203,14 @@ does not replace the conversation or use the parent directory as a fallback.
 
 The systemd unit uses `Restart=always`, so an unexpected clean runtime exit is
 repaired; explicit unit stops and instance shutdown do not restart it.
+
+When Switch refuses the worker's capability as obsolete, or evicts it because
+the launch was superseded, the daemon exits with code 75. The launcher records
+the secret `VersionId` it booted with in `/data/state/obsolete-bundle` and
+exits. On the next start, while `AWSCURRENT` is still that version, it does not
+start the daemon: it polls the secret every 30 seconds and logs a warning every
+5 minutes. Once a different version is current it deletes the marker and boots
+on it.
 
 Automatic instance replacement and volume relocation are intentionally
 unsupported in this slice. A future replacement path needs controller-issued
@@ -272,8 +273,8 @@ References: [Git credential helpers](https://git-scm.com/docs/gitcredentials),
 
 ## Managed session control and credentials
 
-Managed workers poll owner-authorized operations for manual session start and
-restart. Operations have durable IDs and are claimed once. An unconfirmed result
+Managed workers claim owner-authorized operations for manual session start and
+restart when Switch signals them. Operations have durable IDs and are claimed once. An unconfirmed result
 becomes `unknown`; the worker does not execute it again. Chat messages, approvals,
 interrupt, stop, and transcript recovery use the same session protocol as local
 agents. `autoSession: false` disables automatic room starts while keeping manual

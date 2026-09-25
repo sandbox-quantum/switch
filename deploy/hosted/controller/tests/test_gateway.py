@@ -27,6 +27,7 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
         "provider_credential": "SYNTHETIC-PROVIDER",
         "switch_credentials": {"env": {}},
         "github_credential": "SYNTHETIC-GITHUB",
+        "worker_capability": "SYNTHETIC-WORKER-CAPABILITY",
         "repository": "example/project",
         "spec": {
             "name": "helper",
@@ -52,7 +53,6 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
             "https://switch.example.com",
             "SYNTHETIC-CONTROLLER",
             "m6i.large",
-            "@sandboxaq/switch-agent-runtime@0.4.2",
         ),
         cfg,
         store,
@@ -76,6 +76,9 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
     assert saved[request_id]["assignment"]["dataVolumeId"] == "vol-0123456789abcdef0"
     assert deployment["watch"] is True
     assert "room" not in deployment
+    assert "mcpRuntime" not in deployment
+    assert deployment["workerCapabilityPath"] == "/run/switch-hosted/secrets/worker-capability"
+    assert saved[request_id]["workerCapability"] == "SYNTHETIC-WORKER-CAPABILITY"
     assert deployment["github"]["refresh"] is True
     assert deployment["provider"]["definition"]["name"] == "helper"
     store.close()
@@ -88,7 +91,7 @@ def test_one_failed_launch_does_not_block_other_launches(tmp_path, failure):
     cfg = config(tmp_path, max_agents=2)
     store = AgentStore(cfg.state_db_path, cfg.fingerprint())
     gateway = Gateway(
-        GatewayConfig("https://switch.example.test", "SYNTHETIC", "m6i.large", "runtime"),
+        GatewayConfig("https://switch.example.test", "SYNTHETIC", "m6i.large"),
         cfg,
         store,
         Mock(),

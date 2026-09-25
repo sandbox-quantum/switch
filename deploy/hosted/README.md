@@ -76,7 +76,7 @@ The backend chart exposes `switchCore.hostedControllerSecret` (files
 `controller.json` and the referenced key) and `switchCore.hostedLaunchCapacity`.
 
 Mount a controller secret with `gateway.json` containing `origin`, the matching
-`token`, an allowed `instance_type`, and a pinned `mcp_runtime`. Set the controller
+`token` and an allowed `instance_type`. Set the controller
 chart's `gatewaySecretName` to that secret. The token authorizes only the hosted
 controller routes for its configured tenant. It is not a user or agent API key.
 The assignment UUIDs must match the Terraform and controller configurations.

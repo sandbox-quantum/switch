@@ -28,6 +28,7 @@ BOOT_2 = "22222222-2222-4222-8222-222222222222"
 FS_UUID = "33333333-3333-4333-8333-333333333333"
 RUNTIME_FP = "a" * 64
 GITHUB_CREDENTIAL = "synthetic-github-credential"
+WORKER_CAPABILITY = "synthetic-worker-capability-0123456789"
 
 
 def config() -> worker.WorkerConfig:
@@ -47,15 +48,12 @@ def config() -> worker.WorkerConfig:
             agent_user="switch-agent",
             agent_group="switch-agent",
             path="/opt/switch/node/bin:/usr/bin:/bin",
-            mcp_runtime="@sandboxaq/switch-agent-runtime@0.4.2",
-            mcp_runtime_path="/opt/switch/agent-providers/switch-agent-runtime.mjs",
             allow_initial_format=True,
             artifact_sha256={
                 "node": "1" * 64,
                 "bootstrap": "2" * 64,
                 "sharedHostDaemon": "3" * 64,
                 "provider": "4" * 64,
-                "mcpRuntime": "5" * 64,
             },
         ),
     )
@@ -75,10 +73,10 @@ def deployment() -> dict:
             "context": "test",
         },
         "workspacePath": "/data/workspace",
-        "room": {"roomId": "room-1", "startCursor": 0},
+        "watch": True,
         "runtimeMode": "approval-required",
         "switchCredentialsPath": "/run/switch-hosted/secrets/switch.json",
-        "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2",
+        "workerCapabilityPath": "/run/switch-hosted/secrets/worker-capability",
     }
 
 
@@ -101,6 +99,7 @@ def secret(provider: str = "provider-value", switch_token: str = "switch-value")
                     "SWITCH_AGENT_ID": "agent-1",
                 }
             },
+            "workerCapability": WORKER_CAPABILITY,
         }
     )
 
@@ -168,11 +167,9 @@ class WorkerTests(unittest.TestCase):
         serialized = json.dumps({"arguments": arguments, "environment": environment})
         self.assertNotIn(parsed.provider_credential, serialized)
         self.assertNotIn("switch-value", serialized)
+        self.assertNotIn(WORKER_CAPABILITY, serialized)
         self.assertEqual(environment["SWITCH_HOST_BOOT_ID"], BOOT_1)
-        self.assertEqual(
-            environment["SWITCH_HOSTED_MCP_RUNTIME_PATH"],
-            "/opt/switch/agent-providers/switch-agent-runtime.mjs",
-        )
+        self.assertNotIn("SWITCH_HOSTED_MCP_RUNTIME_PATH", environment)
         altered = json.loads(secret())
         altered["assignment"]["generation"] = 8
         with self.assertRaisesRegex(worker.WorkerError, "does not match"):
@@ -184,18 +181,16 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "endpoint is invalid"):
             worker.parse_secret_document(json.dumps(insecure), config())
 
-    def test_watcher_assignment_is_room_independent_and_unambiguous(self):
+    def test_deployment_is_an_agent_watcher_only(self):
         document = json.loads(secret())
         deployment = document["deployment"]
-        deployment.pop("room")
-        deployment["watch"] = True
         parsed = worker.parse_secret_document(json.dumps(document), config())
         self.assertTrue(parsed.deployment["watch"])
-        self.assertNotIn("room", parsed.deployment)
         for invalid in (
             {**deployment, "room": {"roomId": "room-1"}},
             {**deployment, "watch": "true"},
             {key: value for key, value in deployment.items() if key != "watch"},
+            {**deployment, "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2"},
             {
                 **deployment,
                 "session": {**deployment["session"], "nativeSessionId": "old"},
@@ -206,7 +201,27 @@ class WorkerTests(unittest.TestCase):
                 with self.assertRaises(worker.WorkerError):
                     worker.parse_secret_document(json.dumps(document), config())
 
-    def test_runtime_config_requires_a_fixed_baked_path_and_matching_hash(self):
+    def test_worker_capability_is_required_bounded_and_at_a_fixed_path(self):
+        parsed = worker.parse_secret_document(secret(), config())
+        self.assertEqual(parsed.worker_capability, WORKER_CAPABILITY)
+        for invalid in ("short", "has space in it 0123456789", "x" * 4097, 7):
+            with self.subTest(invalid=invalid):
+                document = json.loads(secret())
+                document["workerCapability"] = invalid
+                with self.assertRaisesRegex(
+                    worker.WorkerError, "capability is invalid"
+                ):
+                    worker.parse_secret_document(json.dumps(document), config())
+        document = json.loads(secret())
+        del document["workerCapability"]
+        with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
+            worker.parse_secret_document(json.dumps(document), config())
+        document = json.loads(secret())
+        document["deployment"]["workerCapabilityPath"] = "/tmp/worker-capability"
+        with self.assertRaisesRegex(worker.WorkerError, "capability path is not fixed"):
+            worker.parse_secret_document(json.dumps(document), config())
+
+    def test_runtime_config_has_no_bundled_mcp_runtime(self):
         assignment = {
             "version": 1,
             "installationId": "installation-1",
@@ -226,57 +241,6 @@ class WorkerTests(unittest.TestCase):
             "agentUser": "switch-agent",
             "agentGroup": "switch-agent",
             "path": "/opt/switch/node/bin:/usr/bin:/bin",
-            "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2",
-            "allowInitialFormat": True,
-            "artifactSha256": {
-                "node": "1" * 64,
-                "bootstrap": "2" * 64,
-                "sharedHostDaemon": "3" * 64,
-                "provider": "4" * 64,
-            },
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            assignment_path = Path(temporary) / "assignment.json"
-            runtime_path = Path(temporary) / "runtime.json"
-            assignment_path.write_text(json.dumps(assignment))
-
-            runtime["mcpRuntimePath"] = str(worker.BAKED_MCP_RUNTIME_PATH)
-            runtime_path.write_text(json.dumps(runtime))
-            with self.assertRaisesRegex(worker.WorkerError, "configured together"):
-                worker.load_worker_config(assignment_path, runtime_path)
-
-            del runtime["mcpRuntimePath"]
-            runtime["artifactSha256"]["mcpRuntime"] = "5" * 64
-            runtime_path.write_text(json.dumps(runtime))
-            with self.assertRaisesRegex(worker.WorkerError, "configured together"):
-                worker.load_worker_config(assignment_path, runtime_path)
-
-            runtime["mcpRuntimePath"] = "/tmp/runtime.mjs"
-            runtime_path.write_text(json.dumps(runtime))
-            with self.assertRaisesRegex(worker.WorkerError, "path is not fixed"):
-                worker.load_worker_config(assignment_path, runtime_path)
-
-    def test_legacy_runtime_config_without_a_baked_artifact_remains_valid(self):
-        assignment = {
-            "version": 1,
-            "installationId": "installation-1",
-            "agentId": "agent-1",
-            "generation": 7,
-            "assignmentSecretId": "arn:aws:secretsmanager:eu-west-1:000000000000:secret:assignment-1",
-            "dataVolumeId": VOLUME,
-            "dataDevice": "/dev/sdf",
-            "mountPath": "/data",
-        }
-        runtime = {
-            "version": 1,
-            "nodePath": "/opt/switch/node/bin/node",
-            "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
-            "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
-            "providerBinaryPath": "/opt/switch/claude/bin/claude",
-            "agentUser": "switch-agent",
-            "agentGroup": "switch-agent",
-            "path": "/opt/switch/node/bin:/usr/bin:/bin",
-            "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2",
             "allowInitialFormat": True,
             "artifactSha256": {
                 "node": "1" * 64,
@@ -290,22 +254,32 @@ class WorkerTests(unittest.TestCase):
             runtime_path = Path(temporary) / "runtime.json"
             assignment_path.write_text(json.dumps(assignment))
             runtime_path.write_text(json.dumps(runtime))
-
             parsed = worker.load_worker_config(assignment_path, runtime_path)
+            self.assertEqual(parsed.runtime.artifact_sha256, runtime["artifactSha256"])
 
-        self.assertIsNone(parsed.runtime.mcp_runtime_path)
+            for key, value in (
+                ("mcpRuntime", "@sandboxaq/switch-agent-runtime@0.4.2"),
+                (
+                    "mcpRuntimePath",
+                    "/opt/switch/agent-providers/switch-agent-runtime.mjs",
+                ),
+            ):
+                with self.subTest(key=key):
+                    runtime_path.write_text(json.dumps({**runtime, key: value}))
+                    with self.assertRaisesRegex(
+                        worker.WorkerError, "missing or unexpected"
+                    ):
+                        worker.load_worker_config(assignment_path, runtime_path)
+            hashes = {**runtime["artifactSha256"], "mcpRuntime": "5" * 64}
+            runtime_path.write_text(json.dumps({**runtime, "artifactSha256": hashes}))
+            with self.assertRaisesRegex(worker.WorkerError, "missing or unexpected"):
+                worker.load_worker_config(assignment_path, runtime_path)
 
     def test_tampered_baked_runtime_fails_checksum_verification(self):
         with tempfile.TemporaryDirectory() as temporary:
             paths = {}
             hashes = {}
-            for name in (
-                "node",
-                "bootstrap",
-                "sharedHostDaemon",
-                "provider",
-                "mcpRuntime",
-            ):
+            for name in ("node", "bootstrap", "sharedHostDaemon", "provider"):
                 path = Path(temporary) / name
                 path.write_bytes(f"trusted-{name}".encode())
                 path.chmod(0o444)
@@ -319,8 +293,6 @@ class WorkerTests(unittest.TestCase):
                 agent_user="switch-agent",
                 agent_group="switch-agent",
                 path="/usr/bin:/bin",
-                mcp_runtime="@sandboxaq/switch-agent-runtime@0.4.2",
-                mcp_runtime_path=paths["mcpRuntime"],
                 allow_initial_format=True,
                 artifact_sha256=hashes,
             )
@@ -334,9 +306,9 @@ class WorkerTests(unittest.TestCase):
                 device_path="/dev/sdf",
                 runtime=runtime,
             )
-            Path(paths["mcpRuntime"]).chmod(0o644)
-            Path(paths["mcpRuntime"]).write_text("tampered")
-            Path(paths["mcpRuntime"]).chmod(0o444)
+            Path(paths["bootstrap"]).chmod(0o644)
+            Path(paths["bootstrap"]).write_text("tampered")
+            Path(paths["bootstrap"]).chmod(0o444)
             completed = subprocess.CompletedProcess(
                 [paths["node"], "--version"], 0, "v24.1.0\n", ""
             )
@@ -449,11 +421,12 @@ class WorkerTests(unittest.TestCase):
 
             def get_secret_value(self, **kwargs):
                 self.calls.append(kwargs)
-                return {"SecretString": secret()}
+                return {"SecretString": secret(), "VersionId": "version-1"}
 
         client = Client()
         self.assertEqual(
-            worker.SecretsManager("eu-west-1", client).read("secret-id"), secret()
+            worker.SecretsManager("eu-west-1", client).read("secret-id"),
+            (secret(), "version-1"),
         )
         self.assertEqual(
             client.calls, [{"SecretId": "secret-id", "VersionStage": "AWSCURRENT"}]
@@ -960,6 +933,12 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(
                     (directory / "github").read_text(), GITHUB_CREDENTIAL + "\n"
                 )
+                self.assertEqual(
+                    (directory / "worker-capability").read_text(), WORKER_CAPABILITY
+                )
+                self.assertNotIn(
+                    WORKER_CAPABILITY, (directory / "deployment.json").read_text()
+                )
                 self.assertNotIn(
                     GITHUB_CREDENTIAL, (directory / "deployment.json").read_text()
                 )
@@ -989,6 +968,105 @@ class WorkerTests(unittest.TestCase):
         ):
             self.assertEqual(worker.run_child(["safe"], {"PATH": "/usr/bin"}), 0)
         killpg.assert_called_once_with(4321, signal.SIGTERM)
+
+
+class Secrets:
+    def __init__(self, versions):
+        self.versions = list(versions)
+        self.reads = 0
+
+    def read(self, secret_id):
+        self.reads += 1
+        version = self.versions.pop(0) if len(self.versions) > 1 else self.versions[0]
+        return f"secret-{version}", version
+
+
+class ObsoleteBundleTests(unittest.TestCase):
+    def test_no_marker_boots_the_current_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "obsolete-bundle"
+            self.assertEqual(
+                worker.await_current_bundle(Secrets(["v1"]), "secret-id", marker),
+                ("secret-v1", "v1"),
+            )
+
+    def test_marker_is_private_and_holds_the_booted_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "obsolete-bundle"
+            worker.record_obsolete_bundle(marker, "v1")
+            self.assertEqual(marker.read_text(), "v1")
+            self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o600)
+            self.assertEqual(worker.read_obsolete_bundle(marker), "v1")
+
+    def test_same_version_waits_and_warns_then_boots_the_next_one(self):
+        clock = [0.0]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "obsolete-bundle"
+            worker.record_obsolete_bundle(marker, "v1")
+            secrets = Secrets(["v1"] * 12 + ["v2"])
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(worker.time, "sleep", side_effect=sleep),
+                mock.patch.object(
+                    worker.time, "monotonic", side_effect=lambda: clock[0]
+                ),
+                mock.patch.object(worker.sys, "stderr", stderr),
+            ):
+                result = worker.await_current_bundle(secrets, "secret-id", marker)
+            self.assertEqual(result, ("secret-v2", "v2"))
+            self.assertEqual(sleeps, [30] * 12)
+            self.assertEqual(stderr.getvalue().count("obsolete"), 2)
+            self.assertFalse(marker.exists())
+
+    def test_symlinked_marker_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "target"
+            target.write_text("v1")
+            marker = Path(temporary) / "obsolete-bundle"
+            marker.symlink_to(target)
+            with self.assertRaisesRegex(worker.WorkerError, "marker is invalid"):
+                worker.read_obsolete_bundle(marker)
+
+    def test_exit_75_records_the_booted_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "obsolete-bundle"
+            lock = mock.Mock()
+            with (
+                mock.patch.object(worker.os, "geteuid", return_value=0),
+                mock.patch.object(worker, "acquire_root_lock", return_value=lock),
+                mock.patch.object(worker, "load_worker_config", return_value=config()),
+                mock.patch.object(worker, "verify_pinned_runtime", return_value="f"),
+                mock.patch.object(worker, "ImdsV2"),
+                mock.patch.object(worker, "_read_boot_id", return_value=BOOT_1),
+                mock.patch.object(
+                    worker, "prepare_storage", return_value=(mock.Mock(), False)
+                ),
+                mock.patch.object(worker, "reconcile_boot_identity"),
+                mock.patch.object(
+                    worker, "prepare_agent_directories", return_value=(1, 1)
+                ),
+                mock.patch.object(
+                    worker, "SecretsManager", return_value=Secrets(["v1"])
+                ),
+                mock.patch.object(worker, "parse_secret_document"),
+                mock.patch.object(
+                    worker,
+                    "materialize_secrets",
+                    return_value=(Path("/run/deployment.json"), lambda: None),
+                ),
+                mock.patch.object(worker, "build_launch", return_value=([], {})),
+                mock.patch.object(worker, "run_child", return_value=75),
+                mock.patch.object(worker, "OBSOLETE_BUNDLE_PATH", marker),
+                mock.patch.object(worker.sys, "stderr", io.StringIO()),
+            ):
+                self.assertEqual(worker.main([]), worker.OBSOLETE_BUNDLE_EXIT_CODE)
+            self.assertEqual(marker.read_text(), "v1")
 
 
 if __name__ == "__main__":
