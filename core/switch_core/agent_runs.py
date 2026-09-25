@@ -1,37 +1,12 @@
 """Runs: the rooms agents create, kept as a tree a person can see and stop.
 
-An agent can create a room, and a kickoff in that room can wake other agents
-that create rooms of their own. Nothing about the shape of that chain says
-whether it is going wrong: two agents that keep handing work to each other
-across new rooms is often exactly what was meant. So the server does not
-guess. It records the chain, stops the few requests that cannot work, and
-leaves the rest to people, who can see every run and stop it.
-
-**The run.** Every room an agent creates records the room it was working in
-(``parent_room_id``) and the root of its run (``run_id``). A template a person
-runs is a run of its own, rooted at the room it made. An agent working in an
-ordinary room a person made (a lobby, a DM) starts a new run with each room it
-creates there, rooted at that room: stopping one chain must not stop agents
-from ever creating rooms from the lobby again. The run's state sits on its
-root (``run_control``): running, paused, or stopped.
-
-**What is refused**, before anything is created, with the reason:
-
-* A second room while the agent's previous one is still being created. One at
-  a time throttles an agent without counting anything.
-* Any room in a run that is paused or stopped.
-* A kickoff that mentions an agent whose addressing does not admit the
-  creating agent. The room would sit there with nobody working in it, and
-  the agent would be told it succeeded.
-* The same request made again: the agent asks for a room with the same kickoff
-  as a room it already made higher up the same path. That is the one pattern
-  that marks a task going round, so the run is paused and its owner can let it
-  continue.
-
-**What an agent is told.** A kickoff an agent posts carries the run so far, so
-the agents it wakes can see what already happened and decline to repeat it.
-Whether two steps mean the same thing is a judgment the agents can make and
-the server cannot.
+Every room an agent creates records the room it was working in and the root
+of its run. Before anything is created, the server refuses what cannot work:
+a second creation while one is in flight, a room in a paused or stopped run,
+a kickoff a mentioned agent would ignore, and the same kickoff again on one
+path, which pauses the run until someone lets it continue. A kickoff an
+agent posts carries the run so far, so the agents it wakes can decline to
+repeat a step.
 """
 
 from __future__ import annotations
