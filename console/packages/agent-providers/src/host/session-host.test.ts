@@ -505,6 +505,25 @@ it('resumes an ordinary interrupted session without a reset decision', async () 
   await vi.waitFor(() => expect(resumed.snapshot().session.status).toBe('ready'));
 });
 
+it('starts a new conversation on restart when the provider never answered a turn', async () => {
+  const { host, emit, root } = await start('claude');
+  await host.command(message('failed-turn'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({
+    type: 'turn.completed',
+    turnId: 'failed-turn',
+    outcome: 'error',
+    message: 'Not signed in',
+  });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+  await host.shutdown();
+  const next = setup('claude');
+  const restarted = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(restarted);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[0][0].resume).toBeUndefined();
+  expect(restarted.resetDecisionPending).toBe(false);
+});
+
 it('validates native model choices and persists a confirmed choice across restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
   roots.push(root);

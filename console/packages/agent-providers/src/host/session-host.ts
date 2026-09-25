@@ -246,10 +246,28 @@ export class HostedSession {
         host.replica = new SessionReplica(next);
       }
       await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
-      const native = await host.startProvider({
-        ...config.input,
-        ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
-      });
+      // A provider conversation exists only once a turn has run in it. One whose
+      // every turn failed before the provider answered (a CLI not yet signed in,
+      // say) was never created, so resuming it can only fail, and starting a new
+      // one loses nothing.
+      const never = host.nativeId !== null && host.everyTurnFailedUnanswered();
+      const { resume: _savedResume, ...freshInput } = config.input;
+      const native = await host.startProvider(
+        never
+          ? freshInput
+          : {
+              ...config.input,
+              ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
+            }
+      );
+      if (never)
+        await host.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'CONVERSATION_STARTED_FRESH',
+          message:
+            'Started a new provider conversation: the earlier one never got an answer, so there was nothing to resume.',
+        });
       await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
       host.nativeId = native.nativeSessionId;
       await host.eventSerial;
@@ -276,6 +294,20 @@ export class HostedSession {
       await host.shutdown();
       throw error;
     }
+  }
+
+  /**
+   * Whether the session has turns and every one of them failed without the
+   * provider ever answering: no agent message, no completed or interrupted
+   * turn. Such a session's provider conversation was never created.
+   */
+  private everyTurnFailedUnanswered(): boolean {
+    const snapshot = this.replica.snapshot();
+    return (
+      snapshot.turns.length > 0 &&
+      snapshot.turns.every((turn) => turn.status === 'error') &&
+      !snapshot.items.some((item) => item.kind === 'assistant-message')
+    );
   }
 
   private async startProvider(input: ProviderSessionStartInput) {
