@@ -175,14 +175,15 @@ contracts:
     # reason as revision 4.
     #
     # Revision 7 adds the hosted worker. A hosted agent's stream opens only
-    # with the worker capability of its launch's current revision, and from a
-    # client that declares this revision (`upgrade_required` otherwise). The
+    # with the worker capability of its launch's current revision
+    # (`X-Switch-Worker-Capability`, plus the host identity headers), and from
+    # a client that declares this revision (`upgrade_required` otherwise). The
     # attached worker alone is sent `worker_attached`, `relay`, `relay_cancel`,
-    # `operation` and `credential`. Nothing changes for a local agent, so
-    # `accepts` stays at 1.
+    # `wake`, `mailbox_cancel`, `operation` and `credential`. Nothing changes
+    # for a local agent, so `accepts` stays at 1.
     artifacts:
       switch-core: { speaks: 7, accepts: 1 }
-      agent-runtime: { speaks: 6, accepts: 1 }
+      agent-runtime: { speaks: 7, accepts: 1 }
 
   gateway-api:
     description: >-

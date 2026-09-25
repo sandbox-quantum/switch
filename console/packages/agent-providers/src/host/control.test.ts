@@ -5,6 +5,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { AttachmentTransfers } from './attachment-transfers';
 import { CONTROL_FILE, ControlClient, serveControl } from './control';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
@@ -52,7 +53,12 @@ async function started() {
   const ensure = vi.fn(async () => ({ created: true }));
   const stop = new AbortController();
   const watcher = new WatcherControl();
-  const serving = serveControl(base, links, ensure, watcher, stop.signal);
+  const transfers = new AttachmentTransfers(base);
+  const serving = serveControl(
+    base,
+    { agentId: 'agent', links, ensure, watcher, transfers },
+    stop.signal
+  );
   await vi.waitFor(async () =>
     expect(await readFile(join(base, CONTROL_FILE), 'utf8')).toBeTruthy()
   );

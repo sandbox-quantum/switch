@@ -3,13 +3,13 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Command, Session } from '@switch-console/shared/session-v1';
+import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter, TurnAttachment } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { connectParent } from './session-channel';
-import { runSharedHost } from './shared-host';
+import { runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
 const roots: string[] = [];
@@ -756,3 +756,41 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it('says a session is busy for each thing that keeps it from parking, and idle otherwise', () => {
+  const snapshot = (session: Partial<Session>, turns: string[], requests: string[]) =>
+    ({
+      session: { ...SESSION, ...session },
+      turns: turns.map((status) => ({ status })),
+      requests: requests.map((state) => ({ state })),
+    }) as unknown as Snapshot;
+  expect(
+    sessionBusy(
+      snapshot({ status: 'ready' }, ['completed'], ['answered']),
+      { resetDecisionPending: false },
+      0
+    )
+  ).toEqual({
+    busy: false,
+    reasons: [],
+  });
+  expect(
+    sessionBusy(
+      snapshot({ status: 'running' }, ['running', 'running'], ['open']),
+      { resetDecisionPending: true },
+      3
+    )
+  ).toEqual({
+    busy: true,
+    reasons: [
+      { kind: 'turn_running', count: 2 },
+      { kind: 'approval_open', count: 1 },
+      { kind: 'reset_waiting', count: 1 },
+      { kind: 'room_pending', count: 3 },
+    ],
+  });
+  expect(
+    sessionBusy(snapshot({ status: 'starting' }, [], []), { resetDecisionPending: false }, 0)
+      .reasons
+  ).toEqual([{ kind: 'turn_starting', count: 1 }]);
+});

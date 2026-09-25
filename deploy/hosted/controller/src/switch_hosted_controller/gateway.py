@@ -35,7 +35,6 @@ class GatewayConfig:
     origin: str
     token: str = field(repr=False)
     instance_type: str
-    mcp_runtime: str
 
     @classmethod
     def load(cls, path: Path) -> GatewayConfig:
@@ -44,7 +43,6 @@ class GatewayConfig:
             "origin",
             "token",
             "instance_type",
-            "mcp_runtime",
         }:
             raise ConfigError("Cloud gateway configuration keys are invalid.")
         if not all(isinstance(value, str) and value for value in raw.values()):
@@ -272,6 +270,7 @@ class Gateway:
         }[provider]
         deployment = {
             "version": 1,
+            "revision": prepared["revision"],
             "session": {
                 "sessionId": "watcher-" + prepared["agent_id"],
                 "agentId": prepared["agent_id"],
@@ -301,7 +300,7 @@ class Gateway:
             "watch": spec["auto_session"],
             "runtimeMode": "full-access" if spec["auto_approve"] else "approval-required",
             "switchCredentialsPath": "/run/switch-hosted/secrets/switch.json",
-            "mcpRuntime": self.settings.mcp_runtime,
+            "workerCapabilityPath": "/run/switch-hosted/secrets/worker-capability",
         }
         model = spec["definition_attributes"].get("model")
         if model:
@@ -317,4 +316,5 @@ class Gateway:
             "deployment": deployment,
             "switchCredentials": prepared["switch_credentials"],
             "githubCredential": prepared["github_credential"],
+            "workerCapability": prepared["worker_capability"],
         }

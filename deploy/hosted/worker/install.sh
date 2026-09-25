@@ -5,14 +5,13 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "install.sh must run as root" >&2
   exit 1
 fi
-if [ "$#" -ne 4 ]; then
-  echo "usage: install.sh <runtime-build-dir> <node-sha256> <provider-sha256> <pinned-mcp-runtime>" >&2
+if [ "$#" -ne 3 ]; then
+  echo "usage: install.sh <runtime-build-dir> <node-sha256> <provider-sha256>" >&2
   exit 1
 fi
 runtime_build=$1
 expected_node_sha=$2
 expected_provider_sha=$3
-pinned_mcp_runtime=$4
 if [ "${#expected_node_sha}" -ne 64 ] || [ "${#expected_provider_sha}" -ne 64 ]; then
   echo "node and provider SHA256 values must be lowercase 64-character hashes" >&2
   exit 1
@@ -20,13 +19,6 @@ fi
 case "$expected_node_sha$expected_provider_sha" in
   *[!0-9a-f]*) echo "node and provider SHA256 values must be lowercase 64-character hashes" >&2; exit 1 ;;
 esac
-python3 - "$pinned_mcp_runtime" <<'PY'
-import re
-import sys
-package = chr(64) + "sandboxaq/switch-agent-runtime" + chr(64)
-if not re.fullmatch(re.escape(package) + r"[0-9]+[.][0-9]+[.][0-9]+", sys.argv[1]):
-    raise SystemExit("MCP runtime must be an exact stable package version")
-PY
 
 for command in python3 setpriv lsblk wipefs udevadm mkfs.ext4 mount findmnt sha256sum git gh; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -55,7 +47,6 @@ if (
     != {
         "hosted-bootstrap.mjs",
         "shared-host-daemon.mjs",
-        "switch-agent-runtime.mjs",
     }
 ):
     raise SystemExit("hosted runtime manifest is invalid")
@@ -82,7 +73,6 @@ install -d -o root -g root -m 0755 /opt/switch/agent-providers
 install -d -o root -g root -m 0755 /data
 install -o root -g root -m 0755 "$runtime_build/hosted-bootstrap.mjs" /opt/switch/agent-providers/hosted-bootstrap.mjs
 install -o root -g root -m 0755 "$runtime_build/shared-host-daemon.mjs" /opt/switch/agent-providers/shared-host-daemon.mjs
-install -o root -g root -m 0755 "$runtime_build/switch-agent-runtime.mjs" /opt/switch/agent-providers/switch-agent-runtime.mjs
 install -o root -g root -m 0444 "$runtime_build/manifest.json" /opt/switch/agent-providers/manifest.json
 
 node_path=/opt/switch/node/bin/node
@@ -104,12 +94,11 @@ actual_provider_sha=$(sha256sum "$provider_path" | cut -d ' ' -f 1)
 }
 bootstrap_sha=$(sha256sum /opt/switch/agent-providers/hosted-bootstrap.mjs | cut -d ' ' -f 1)
 shared_sha=$(sha256sum /opt/switch/agent-providers/shared-host-daemon.mjs | cut -d ' ' -f 1)
-mcp_runtime_sha=$(sha256sum /opt/switch/agent-providers/switch-agent-runtime.mjs | cut -d ' ' -f 1)
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install -o root -g root -m 0755 "$source_dir/switch_hosted_worker.py" /usr/local/libexec/switch-hosted-worker
 install -o root -g root -m 0644 "$source_dir/switch-hosted-worker.service" /etc/systemd/system/switch-hosted-worker.service
-python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$actual_provider_sha" "$pinned_mcp_runtime" "$mcp_runtime_sha" "$runtime_build" <<'PY'
+python3 - "$actual_node_sha" "$bootstrap_sha" "$shared_sha" "$actual_provider_sha" "$runtime_build" <<'PY'
 import hashlib
 import json
 import os
@@ -118,7 +107,7 @@ import stat
 import sys
 import tempfile
 
-node_sha, bootstrap_sha, shared_sha, provider_sha, mcp_runtime, mcp_runtime_sha, runtime_build = sys.argv[1:]
+node_sha, bootstrap_sha, shared_sha, provider_sha, runtime_build = sys.argv[1:]
 value = {
     "version": 1,
     "nodePath": "/opt/switch/node/bin/node",
@@ -128,15 +117,12 @@ value = {
     "agentUser": "switch-agent",
     "agentGroup": "switch-agent",
     "path": "/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin",
-    "mcpRuntime": mcp_runtime,
-    "mcpRuntimePath": "/opt/switch/agent-providers/switch-agent-runtime.mjs",
     "allowInitialFormat": True,
     "artifactSha256": {
         "node": node_sha,
         "bootstrap": bootstrap_sha,
         "sharedHostDaemon": shared_sha,
         "provider": provider_sha,
-        "mcpRuntime": mcp_runtime_sha,
     },
 }
 providers_path = Path(runtime_build) / "providers.json"

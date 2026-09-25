@@ -88,6 +88,7 @@ export async function prepareSharedConfig(
         sessionId: config.session.sessionId,
         sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
         config: execution.codexConfig,
+        auth: process.env.SWITCH_HOSTED_BOOTSTRAP === '1' ? 'refresh' : 'copy-once',
       });
     input.systemContext = execution.context;
   }

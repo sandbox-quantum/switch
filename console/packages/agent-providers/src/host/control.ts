@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import {
+  type AttachmentTransfers,
+  attachmentChunkSchema,
+  ControlError,
+} from './attachment-transfers';
+import { readJournalSnapshot } from './journal-snapshot';
 import { liveSupervisor, sharedSessionRoot } from './launch';
 import {
   SessionHostFailedError,
@@ -13,6 +19,7 @@ import {
   type SessionLinks,
   type SessionRequest,
 } from './session-channel';
+import { listSessions } from './session-list';
 import {
   type PlaceOutcome,
   type WatcherControl,
@@ -32,29 +39,147 @@ import {
 
 export const CONTROL_FILE = 'control.json';
 
-const clientMessageSchema = z.union([
-  z.object({ token: z.string().min(1) }),
-  z.object({ id: z.number().int(), sessionId: z.string().min(1), request: sessionRequestSchema }),
-  z.object({ id: z.number().int(), subscribe: z.string().min(1) }),
-  z.object({ id: z.number().int(), unsubscribe: z.string().min(1) }),
+/**
+ * One message Console sends a sidecar or a watcher, whether over the loopback
+ * socket or relayed through Switch: the one vocabulary both paths answer.
+ */
+export const controlMessageSchema = z.union([
+  z.object({ sessionId: z.string().min(1), request: sessionRequestSchema }),
+  z.object({ subscribe: z.string().min(1) }),
+  z.object({ unsubscribe: z.string().min(1) }),
   z.object({
-    id: z.number().int(),
     ensure: z.object({ config: z.unknown(), resuming: z.boolean(), restart: z.boolean() }),
   }),
   /** Console's "Reconnect to room": move a room's messages to this session. */
-  z.object({
-    id: z.number().int(),
-    place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }),
-  }),
-  z.object({
-    id: z.number().int(),
-    forget: z.string().min(1),
-  }),
+  z.object({ place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }) }),
+  z.object({ forget: z.string().min(1) }),
   /** The room watcher's connection state and placements, as it holds them now. */
-  z.object({ id: z.number().int(), health: z.literal(true) }),
+  z.object({ health: z.literal(true) }),
   /** Start or stop pushing `{health}` to this connection whenever the watcher's changes. */
-  z.object({ id: z.number().int(), watchHealth: z.boolean() }),
+  z.object({ watchHealth: z.boolean() }),
+  /** The agent's sessions on this host, as their hosts recorded them. */
+  z.object({ list: z.literal(true) }),
+  /** A session read from its journal, whether or not its host is running. */
+  z.object({ journal: z.string().min(1) }),
+  /** One page of a paged answer; only the relay pages its answers. */
+  z.object({
+    page: z.object({ snapshotId: z.string().min(1), index: z.number().int().nonnegative() }),
+  }),
+  z.object({ attachment: attachmentChunkSchema }),
+  z.object({ attachmentCancel: z.string().min(1) }),
 ]);
+export type ControlMessage = z.infer<typeof controlMessageSchema>;
+
+const clientMessageSchema = z.union([
+  z.object({ token: z.string().min(1) }),
+  z.intersection(z.object({ id: z.number().int() }), controlMessageSchema),
+]);
+
+/** What `serverMessageSchema` pushes on a connection besides its answers. */
+export type ControlPush =
+  | { sessionId: string; event: ServerEvent }
+  | { sessionId: string; failure: string | null }
+  | { health: WatcherHealth };
+
+/** One connection's live views: its session subscriptions and health watch. */
+export class ControlPeer {
+  readonly subscriptions = new Map<string, () => void>();
+  unwatchHealth: (() => void) | null = null;
+
+  constructor(readonly send: (push: ControlPush) => void) {}
+
+  close(): void {
+    for (const unsubscribe of this.subscriptions.values()) unsubscribe();
+    this.subscriptions.clear();
+    this.unwatchHealth?.();
+    this.unwatchHealth = null;
+  }
+}
+
+export type ControlContext = {
+  agentId: string;
+  links: SessionLinks;
+  ensure: EnsureSession;
+  watcher: WatcherControl;
+  transfers: AttachmentTransfers;
+};
+
+const sentAttachmentsSchema = z.object({
+  body: z.object({
+    type: z.literal('message.send'),
+    attachments: z.array(z.object({ attachmentId: z.string() })),
+  }),
+});
+
+/**
+ * Answer one control message; a refusal throws. `page` is the relay's.
+ * `dispatching` is called just before a session request is sent to its host.
+ */
+export async function handleControlMessage(
+  context: ControlContext,
+  peer: ControlPeer,
+  message: ControlMessage,
+  dispatching: () => void
+): Promise<unknown> {
+  const { links, watcher } = context;
+  if ('request' in message) {
+    const sessionRoot = sharedSessionRoot(message.sessionId);
+    if (message.request.type === 'command') {
+      const sent = sentAttachmentsSchema.safeParse(message.request.command);
+      if (sent.success)
+        context.transfers.consume(sent.data.body.attachments.map((a) => a.attachmentId));
+    }
+    // Waits for a host that is starting, not for one nothing is running.
+    const running = await liveSupervisor(sessionRoot);
+    return links.dispatch(sessionRoot, message.request, running ? REQUEST_WAIT_MS : 0, dispatching);
+  }
+  if ('subscribe' in message) {
+    const sessionId = message.subscribe;
+    const sessionRoot = sharedSessionRoot(sessionId);
+    if (!peer.subscriptions.has(sessionId)) {
+      const offEvents = links.subscribe(sessionRoot, (event) => peer.send({ sessionId, event }));
+      const offFailure = links.onFailure((failed, failure) => {
+        if (failed === sessionRoot) peer.send({ sessionId, failure });
+      });
+      // A host that comes up again has put its failure behind it.
+      const offReady = links.onReady((ready) => {
+        if (ready === sessionRoot) peer.send({ sessionId, failure: null });
+      });
+      peer.subscriptions.set(sessionId, () => {
+        offEvents();
+        offFailure();
+        offReady();
+      });
+    }
+    // Answered with the failure already recorded, so a subscriber that
+    // arrives after the host stopped still hears why.
+    return { failure: links.failure(sessionRoot) };
+  }
+  if ('unsubscribe' in message) {
+    peer.subscriptions.get(message.unsubscribe)?.();
+    peer.subscriptions.delete(message.unsubscribe);
+    return null;
+  }
+  if ('place' in message) return watcher.place(message.place.sessionId, message.place.roomId);
+  if ('forget' in message) return watcher.forget(message.forget);
+  if ('health' in message) return watcher.health();
+  if ('watchHealth' in message) {
+    if (message.watchHealth)
+      peer.unwatchHealth ??= watcher.onHealth((health) => peer.send({ health }));
+    else {
+      peer.unwatchHealth?.();
+      peer.unwatchHealth = null;
+    }
+    return null;
+  }
+  if ('list' in message) return listSessions(context.agentId);
+  if ('journal' in message) return readJournalSnapshot(message.journal);
+  if ('page' in message)
+    throw new ControlError('refused_message', 'Pages are served only to relayed answers.');
+  if ('attachment' in message) return context.transfers.receive(message.attachment);
+  if ('attachmentCancel' in message) return context.transfers.cancel(message.attachmentCancel);
+  return context.ensure(message.ensure);
+}
 
 export type EnsureSession = (input: {
   config: unknown;
@@ -79,12 +204,10 @@ function lines(socket: Socket | Duplex, onLine: (line: string) => void): void {
   });
 }
 
-/** Serve Console's requests for the sessions under `links` until `signal` aborts. */
+/** Serve Console's requests for the sessions under `context.links` until `signal` aborts. */
 export async function serveControl(
   root: string,
-  links: SessionLinks,
-  ensure: EnsureSession,
-  watcher: WatcherControl,
+  context: ControlContext,
   signal: AbortSignal
 ): Promise<void> {
   const token = randomBytes(32).toString('hex');
@@ -93,17 +216,11 @@ export async function serveControl(
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
     let authenticated = false;
-    const subscriptions = new Map<string, () => void>();
-    let unwatchHealth: (() => void) | null = null;
     const send = (message: unknown) => {
       if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
     };
-    socket.on('close', () => {
-      for (const unsubscribe of subscriptions.values()) unsubscribe();
-      subscriptions.clear();
-      unwatchHealth?.();
-      unwatchHealth = null;
-    });
+    const peer = new ControlPeer(send);
+    socket.on('close', () => peer.close());
     socket.on('error', () => socket.destroy());
     lines(socket, (line) => {
       let parsed: z.infer<typeof clientMessageSchema>;
@@ -123,63 +240,18 @@ export async function serveControl(
         return;
       }
       if ('token' in parsed) return;
-      const reply = (work: Promise<unknown>) =>
-        work.then(
-          (value) => send({ id: parsed.id, ok: true, value: value ?? null }),
-          (error: unknown) =>
-            send({
-              id: parsed.id,
-              ok: false,
-              error: error instanceof Error ? error.message : String(error),
-              unavailable: error instanceof SessionUnavailableError,
-              ...(error instanceof SessionHostFailedError ? { failure: error.failure } : {}),
-            })
-        );
-      if ('request' in parsed) {
-        const sessionRoot = sharedSessionRoot(parsed.sessionId);
-        // Waits for a host that is starting, not for one nothing is running.
-        void reply(
-          liveSupervisor(sessionRoot).then((running) =>
-            links.request(sessionRoot, parsed.request, running ? REQUEST_WAIT_MS : 0)
-          )
-        );
-      } else if ('subscribe' in parsed) {
-        const sessionId = parsed.subscribe;
-        const sessionRoot = sharedSessionRoot(sessionId);
-        if (!subscriptions.has(sessionId)) {
-          const offEvents = links.subscribe(sessionRoot, (event) => send({ sessionId, event }));
-          const offFailure = links.onFailure((failed, failure) => {
-            if (failed === sessionRoot) send({ sessionId, failure });
-          });
-          // A host that comes up again has put its failure behind it.
-          const offReady = links.onReady((ready) => {
-            if (ready === sessionRoot) send({ sessionId, failure: null });
-          });
-          subscriptions.set(sessionId, () => {
-            offEvents();
-            offFailure();
-            offReady();
-          });
-        }
-        // Answered with the failure already recorded, so a subscriber that
-        // arrives after the host stopped still hears why.
-        void reply(Promise.resolve({ failure: links.failure(sessionRoot) }));
-      } else if ('unsubscribe' in parsed) {
-        subscriptions.get(parsed.unsubscribe)?.();
-        subscriptions.delete(parsed.unsubscribe);
-        void reply(Promise.resolve(null));
-      } else if ('place' in parsed)
-        void reply(watcher.place(parsed.place.sessionId, parsed.place.roomId));
-      else if ('forget' in parsed) void reply(watcher.forget(parsed.forget));
-      else if ('health' in parsed) void reply(Promise.resolve(watcher.health()));
-      else if ('watchHealth' in parsed) {
-        if (parsed.watchHealth) unwatchHealth ??= watcher.onHealth((health) => send({ health }));
-        else {
-          unwatchHealth?.();
-          unwatchHealth = null;
-        }
-        void reply(Promise.resolve(null));
-      } else void reply(ensure(parsed.ensure));
+      const { id, ...message } = parsed;
+      void handleControlMessage(context, peer, message as ControlMessage, () => {}).then(
+        (value) => send({ id, ok: true, value: value ?? null }),
+        (error: unknown) =>
+          send({
+            id,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            unavailable: error instanceof SessionUnavailableError,
+            ...(error instanceof SessionHostFailedError ? { failure: error.failure } : {}),
+          })
+      );
     });
   });
   await new Promise<void>((resolve, reject) => {

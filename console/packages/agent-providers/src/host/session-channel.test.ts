@@ -247,3 +247,42 @@ it('refuses a question from a host that has not said who it is, and tells who ex
   expect(exits).toEqual([['root', IDENTITY]]);
   expect(links.identity('root')).toBeNull();
 });
+
+it('keeps what a host last said about being busy, and answers a barrier once it has settled', async () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  const heard: string[] = [];
+  links.onBusy((root) => heard.push(root));
+  links.attach('root', child as unknown as ChildProcess);
+  await expect(links.barrier('root', 100)).rejects.toThrow(SessionUnavailableError);
+  child.emit('message', { kind: 'ready' });
+  const running = { busy: true, reasons: [{ kind: 'turn_running', count: 1 }] };
+  child.emit('message', { kind: 'busy', ...running });
+  expect(links.busy('root')).toEqual(running);
+
+  const answer = links.barrier('root', 1000);
+  const [barrier] = child.sent as { kind: string; id: number }[];
+  expect(barrier).toMatchObject({ kind: 'busyBarrier' });
+  child.emit('message', { kind: 'busy', busy: false, reasons: [], barrier: barrier!.id });
+  expect(await answer).toEqual({ busy: false, reasons: [] });
+
+  const lost = links.barrier('root', 1000);
+  child.emit('exit', 0, null);
+  await expect(lost).rejects.toThrow(SessionUnavailableError);
+  expect(links.busy('root')).toBeNull();
+  expect(heard).toEqual(['root', 'root', 'root']);
+});
+
+it('answers a busy barrier on the host side with the settled state', async () => {
+  const { sent, port } = fakePort();
+  const served = connectParent(port);
+  served.onBarrier(async () => ({ busy: true, reasons: [{ kind: 'approval_open', count: 2 }] }));
+  served.busy({ busy: false, reasons: [] }, null);
+  port.emit('message', { kind: 'busyBarrier', id: 4 });
+  await vi.waitFor(() =>
+    expect(sent).toEqual([
+      { kind: 'busy', busy: false, reasons: [] },
+      { kind: 'busy', busy: true, reasons: [{ kind: 'approval_open', count: 2 }], barrier: 4 },
+    ])
+  );
+});

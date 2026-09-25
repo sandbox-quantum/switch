@@ -3,8 +3,11 @@ import {
   BEAT_INTERVAL_MS,
   BEAT_SETTLE_LIMIT_MS,
   EVICTION_CREDENTIALS_REJECTED,
+  EVICTION_LAUNCH_SUPERSEDED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
+  WORKER_CAPABILITY_OBSOLETE,
+  WorkerCallError,
   type Eviction,
   type SwitchEventStreamDeps,
 } from './event-stream';
@@ -109,6 +112,7 @@ function makeStream(
     onEvent: () => {},
     onGap: () => {},
     onEvicted: () => {},
+    worker: null,
     log,
     signal: abort.signal,
     ...deps,
@@ -1425,4 +1429,195 @@ it('states placements on the attached incarnation, and raises on a refusal', asy
   } finally {
     abort.abort();
   }
+});
+
+describe('a hosted worker', () => {
+  const worker = { capability: 'cap-1', bootId: 'boot-1', instanceId: 'i-1' };
+
+  function refused(status: number, code: string) {
+    return {
+      ok: false,
+      status,
+      body: null,
+      text: async (): Promise<string> => JSON.stringify({ detail: { code, message: code } }),
+    };
+  }
+
+  it('states its capability and host on the open', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      body: openForever(),
+      text: async (): Promise<string> => '',
+    }));
+    const { abort } = makeStream(fetchMock, { rooms: [], worker });
+    await flush();
+    const open = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
+    expect(open?.[1]?.headers).toMatchObject({
+      'X-Switch-Worker-Capability': 'cap-1',
+      'X-Switch-Host-Boot-Id': 'boot-1',
+      'X-Switch-Host-Instance-Id': 'i-1',
+    });
+    abort.abort();
+  });
+
+  it.each([
+    [403, WORKER_CAPABILITY_OBSOLETE],
+    [403, 'worker_capability_required'],
+    [426, 'upgrade_required'],
+    [403, 'hosted_worker_only'],
+  ])('stops for good on a %i %s open', async (status, code) => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => refused(status, code));
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      worker,
+      onEvicted: (e) => evicted.push(e),
+    });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(evicted.map((e) => e.code)).toEqual([code]);
+    abort.abort();
+  });
+
+  it('backs off and retries while another worker is attached', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => refused(409, 'worker_already_attached'));
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      worker,
+      onEvicted: (e) => evicted.push(e),
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(urlsFor(fetchMock, '/events').length).toBeGreaterThan(1);
+    expect(urlsFor(fetchMock, '/events').length).toBeLessThan(6);
+    expect(evicted).toEqual([]);
+    abort.abort();
+  });
+
+  it('halts on a launch_superseded eviction', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? {
+            ok: true,
+            status: 200,
+            body: frameThenClose('evicted', { code: 'launch_superseded', reason: 'bumped' }),
+            text: async (): Promise<string> => '',
+          }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const evicted: Eviction[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      worker,
+      onEvicted: (e) => evicted.push(e),
+    });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
+    expect(evicted.map((e) => e.code)).toEqual([EVICTION_LAUNCH_SUPERSEDED]);
+    abort.abort();
+  });
+
+  it('hands worker frames over in order and not as room events', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(connected(4));
+        controller.enqueue(encodeFrame('worker_attached', { launch_revision: 3 }));
+        controller.enqueue(encodeFrame('operation', { id: 'op-1' }));
+      },
+    });
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? { ok: true, status: 200, body, text: async (): Promise<string> => '' }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const frames: [string, unknown][] = [];
+    const events: unknown[] = [];
+    const { abort } = makeStream(fetchMock, {
+      rooms: [],
+      worker,
+      onEvent: (e) => void events.push(e),
+      onWorkerFrame: (name, data) => void frames.push([name, data]),
+    });
+    await flush();
+    expect(frames).toEqual([
+      ['worker_attached', { launch_revision: 3 }],
+      ['operation', { id: 'op-1' }],
+    ]);
+    expect(events).toEqual([]);
+    abort.abort();
+  });
+
+  it('sends an up-call as its connection and incarnation, and raises a refusal with its code', async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/events'))
+        return {
+          ok: true,
+          status: 200,
+          body: openForever(),
+          text: async (): Promise<string> => '',
+        };
+      if (u.endsWith('/claim')) return refused(409, 'already_claimed');
+      return {
+        ok: true,
+        status: 200,
+        text: async (): Promise<string> => '{"queued_operations":[]}',
+      };
+    });
+    const { stream, abort } = makeStream(fetchMock, { rooms: [], worker });
+    await expect(
+      stream.workerCall('/agents/agent-1/connection/idle', { busy: false })
+    ).resolves.toEqual({
+      queued_operations: [],
+    });
+    const idle = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/connection/idle'));
+    expect(String(idle?.[0])).toBe('https://switch.test/agents/agent-1/connection/idle');
+    expect(JSON.parse(String(idle?.[1]?.body))).toEqual({
+      busy: false,
+      connection_id: 'conn-1',
+      generation: 0,
+    });
+    const claim = stream.workerCall('/hosted/operations/op-1/claim', {});
+    await expect(claim).rejects.toBeInstanceOf(WorkerCallError);
+    await expect(claim).rejects.toMatchObject({ status: 409, code: 'already_claimed' });
+    abort.abort();
+  });
+});
+
+describe('test_gap_above_cursor_is_not_cursor_reset', () => {
+  it('reports a restart gap resuming above the cursor as no cursor reset', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(connected());
+        controller.enqueue(
+          new TextEncoder().encode(
+            'id: 7\nevent: message\ndata: {"type":"message","room_id":"r"}\n\n'
+          )
+        );
+        controller.enqueue(
+          encodeFrame('gap', {
+            from_sequence: 7,
+            resumed_at: 2 ** 32 - 1,
+            reason: 'server restarted',
+            rooms: [],
+          })
+        );
+      },
+    });
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('/events')
+        ? { ok: true, status: 200, body, text: async (): Promise<string> => '' }
+        : { ok: true, status: 200, text: async (): Promise<string> => '' }
+    );
+    const gaps: { cursorReset?: boolean; resumedAt?: number }[] = [];
+    const { stream, abort } = makeStream(fetchMock, { rooms: [], onGap: (g) => void gaps.push(g) });
+    await flush();
+    expect(gaps).toEqual([expect.objectContaining({ resumedAt: 2 ** 32 - 1, cursorReset: false })]);
+    expect(stream.position).toBe(2 ** 32 - 1);
+    abort.abort();
+  });
 });

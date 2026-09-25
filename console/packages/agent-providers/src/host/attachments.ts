@@ -109,3 +109,30 @@ export async function stageAttachment(
   }
   return { path, mimeType: attachment.mimeType };
 }
+
+/**
+ * The file staged for `attachment` ahead of the command that names it, as a
+ * Console upload is: null when nothing is staged under its id.
+ */
+export async function readStagedAttachment(
+  root: string,
+  attachment: Attachment
+): Promise<{ data: Uint8Array; sha256: string } | null> {
+  if (!attachment.name || basename(attachment.name) !== attachment.name) return null;
+  const path = join(
+    root,
+    'attachments',
+    createHash('sha256').update(attachment.attachmentId).digest('hex'),
+    attachment.name
+  );
+  let data: Buffer;
+  try {
+    if ((await lstat(path)).isSymbolicLink())
+      throw new Error('Attachment file must not be a symbolic link.');
+    data = await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  return { data, sha256: createHash('sha256').update(data).digest('hex') };
+}

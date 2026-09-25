@@ -581,6 +581,13 @@ export class HostedSession {
     return result;
   }
 
+  /** Resolves once every command and outcome queued before it has been taken or refused. */
+  barrier(): Promise<void> {
+    const result = this.serial.then(() => {});
+    this.serial = result;
+    return result;
+  }
+
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
