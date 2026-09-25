@@ -466,6 +466,32 @@ it('resumes at the server head after its numbering restarts', async () => {
   ]);
 });
 
+it('keeps a mailbox delivery out of the stream position, and knows it again after a restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-wake-position-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await SharedWatchAssignments.open(root);
+  const woken = { sequence: 1, roomId: 'room', messageId: 'woken' };
+  await assignments.park(woken, true, true);
+  // Assigned, and then the watcher dies before the session takes it.
+  const wakeConfig = await assignments.assign(config, woken);
+  // A stream event on the number the wake was handed is a different message.
+  const streamed = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'other',
+    messageId: 'streamed',
+  });
+  expect(streamed.session.sessionId).not.toBe(wakeConfig.session.sessionId);
+  expect(assignments.cursor).toBe(0);
+
+  await assignments.restart();
+  const restarted = await SharedWatchAssignments.open(root);
+  expect(restarted.known(woken)).toBe(true);
+  expect(await restarted.assign(config, woken)).toEqual(wakeConfig);
+  expect(restarted.cursor).toBe(0);
+});
+
 /** The rename both Console and the SSH inline script use to replace the file. */
 async function writeFlags(root: string, flags: { enabled: boolean; spawn: boolean }) {
   const temporary = join(root, 'watch.json.tmp');

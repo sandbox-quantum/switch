@@ -58,7 +58,16 @@ const assignmentSchema = z.strictObject({
   roomId: z.string().min(1),
   messageId: z.string().min(1),
   config: sharedConfigSchema,
+  // Made for a mailbox delivery: its sequence is no position in the stream's numbering.
+  wake: z.literal(true).optional(),
 });
+
+/**
+ * The sequence a mailbox delivery is handed on. A wake is not numbered in the
+ * stream; the journal marks it so, and everything after it knows the delivery
+ * by room and message.
+ */
+const WAKE_SEQUENCE = 1;
 
 /** Marks where the server's sequence numbering restarted. */
 const restartSchema = z.strictObject({ restarted: z.literal(true), at: z.string().min(1) });
@@ -348,7 +357,7 @@ export class SharedWatchAssignments {
       // A held delivery's assignment is not a position. It can be made under a
       // numbering the sequence it names does not belong to, and the release
       // that closes it says where it got to.
-      else if (isAssignment(record) && !released.has(delivery(record))) {
+      else if (isAssignment(record) && !record.wake && !released.has(delivery(record))) {
         // An assignment is only made once the one before it has been routed, so
         // a journal written before routing was recorded still resumes at its
         // last complete event instead of from the beginning.
@@ -502,11 +511,19 @@ export class SharedWatchAssignments {
     // A held delivery is recognised by the room and message it names. The
     // sequence it arrived on may belong to a numbering the server has since
     // restarted, where it now stands for somebody else's message.
+    // A mailbox delivery has no stream position at all, so it is only ever
+    // recognised that way, under whichever numbering it was first assigned.
+    const identity = delivery(event);
+    const wake = this.journal.records.some(
+      (record) => isParked(record) && record.wake === true && delivery(record) === identity
+    );
     const waiting = new Set(this.pending().map(delivery));
     const assignments = this.current.filter(isAssignment);
-    const duplicate = waiting.has(delivery(event))
-      ? assignments.find((record) => delivery(record) === delivery(event))
-      : assignments.find((record) => record.sequence === event.sequence);
+    const duplicate = wake
+      ? this.every.find((record) => delivery(record) === identity)
+      : waiting.has(identity)
+        ? assignments.find((record) => delivery(record) === identity)
+        : assignments.find((record) => !record.wake && record.sequence === event.sequence);
     if (duplicate) {
       if (duplicate.roomId !== event.roomId || duplicate.messageId !== event.messageId)
         throw new Error('Watcher sequence changed message identity.');
@@ -522,6 +539,7 @@ export class SharedWatchAssignments {
       roomId: event.roomId,
       messageId: event.messageId,
       config,
+      ...(wake ? { wake: true as const } : {}),
     });
     return config;
   }
@@ -1112,7 +1130,7 @@ export async function runSharedWatcher(
           .parse(entry.event);
         await accept(
           {
-            sequence: Math.max(1, assignments.cursor),
+            sequence: WAKE_SEQUENCE,
             roomId: entry.room_id,
             messageId: entry.message_id,
             event: { type: event.type, payload: event.payload, missed: event.missed ?? null },
