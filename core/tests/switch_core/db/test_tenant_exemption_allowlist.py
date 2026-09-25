@@ -122,6 +122,9 @@ _RAW_SESSION_FACTORY_MODULES = {
     # Runs: reached from the gateway's run endpoints and from an agent's room
     # creation, both of which have bound the caller's tenant.
     "switch_core.agent_runs",
+    # Refusals: recorded from an agent operation, which has bound the calling
+    # agent's tenant.
+    "switch_core.agent_refusals",
     # ── Reached only from inside a unit of work that has already bound the
     # tenant of the row it is acting on — an inbound bridge event, a delivery,
     # a sweep row, an authenticated agent operation.

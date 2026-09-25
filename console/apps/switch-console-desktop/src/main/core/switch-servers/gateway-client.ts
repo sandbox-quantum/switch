@@ -1281,6 +1281,62 @@ export async function changeTemplateRun(
   return toTemplateRun((await res.json()) as TemplateRunJson);
 }
 
+// ── Agent refusals ──────────────────────────────────────────────────────────
+
+/** A request the server turned down for an agent, and the sentence it gave. */
+export type AgentRefusal = {
+  id: string;
+  agentId: string | null;
+  /** Null when the agent has since been deleted. */
+  agentName: string | null;
+  /** What the agent asked to do, e.g. `run_template` or `create_room`. */
+  operation: string;
+  /** A stable code for why, e.g. `not_yours` or `run_paused`. */
+  reason: string;
+  /** The sentence the agent got, as plain text. */
+  message: string;
+  /** What the request was about, such as a template or room name. */
+  subject: string | null;
+  createdAt: string;
+};
+
+type AgentRefusalJson = {
+  id: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  operation: string;
+  reason: string;
+  message: string;
+  subject: string | null;
+  created_at: string;
+};
+
+/**
+ * The latest requests the server refused the signed-in user's agents (every
+ * agent's, for an admin), newest first (`GET /agent-refusals`). Null when the
+ * server does not support the endpoint (404): a server from before refusals
+ * were recorded.
+ */
+export async function fetchAgentRefusals(server: SwitchServer): Promise<AgentRefusal[] | null> {
+  try {
+    const res = await gatewayFetch(server, '/agent-refusals', { authenticated: true });
+    const json = (await res.json()) as AgentRefusalJson[];
+    return json.map((r) => ({
+      id: r.id,
+      agentId: r.agent_id,
+      agentName: r.agent_name,
+      operation: r.operation,
+      reason: r.reason,
+      message: r.message,
+      subject: r.subject,
+      createdAt: r.created_at,
+    }));
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return null;
+    throw e;
+  }
+}
+
 // ── Stored templates (template registry) ────────────────────────────────────
 
 export type StoredTemplateSummary = {

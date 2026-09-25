@@ -48,6 +48,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from switch_core.addressing import can_address, parse_policy
+from switch_core.agent_refusals import AgentRefused
 from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -65,7 +66,7 @@ logger = logging.getLogger(__name__)
 RunState = Literal["running", "paused", "stopped"]
 
 
-class RunRefused(ValueError):
+class RunRefused(AgentRefused):
     """A room an agent asked for that was not created, and why. The message
     is written for the agent: it says what happened and what to do next."""
 
@@ -213,8 +214,9 @@ class RunService:
             ).scalar()
             if not got:
                 raise RunRefused(
+                    "busy",
                     "You are already creating a room. Wait for it to finish, "
-                    "then try again."
+                    "then try again.",
                 )
             try:
                 yield
@@ -247,12 +249,14 @@ class RunService:
             return
         if control.state == "paused":
             raise RunRefused(
+                "run_paused",
                 f"Nothing was created: this run is paused. {control.reason} "
-                f"The owner can let it continue from Templates in Switch Console."
+                f"The owner can let it continue from Templates in Switch Console.",
             )
         raise RunRefused(
+            "run_stopped",
             f"Nothing was created: this run was stopped by "
-            f"{control.by_name or 'its owner'}. No more rooms can be created in it."
+            f"{control.by_name or 'its owner'}. No more rooms can be created in it.",
         )
 
     async def _check_repeat(self, origin: AgentOrigin, hashes: list[str]) -> None:
@@ -306,9 +310,10 @@ class RunService:
                 f"continue from Templates in Switch Console.",
             )
         raise RunRefused(
+            "repeat",
             f"Nothing was created, and the run is paused: {reason} If this is a "
             f"new step, say how it differs and ask {origin.owner_name or 'your owner'} "
-            f"to let the run continue from Templates in Switch Console."
+            f"to let the run continue from Templates in Switch Console.",
         )
 
     async def _check_audience(
@@ -346,12 +351,13 @@ class RunService:
         if refused:
             listed = ", ".join(refused)
             raise RunRefused(
+                "kickoff_ignored",
                 f"Nothing was created: the kickoff mentions {listed}, and "
                 f"{'it does' if len(refused) == 1 else 'they do'} not accept "
                 f"messages from {agent.name}, so nobody would start work in the "
                 f"room. Ask their owner to let {agent.name} address them (in "
                 f"Switch Console, the agent's 'Who can talk to your agent'), or "
-                f"leave them out of the kickoff."
+                f"leave them out of the kickoff.",
             )
 
     async def _trace(self, origin: AgentOrigin) -> str | None:
@@ -417,7 +423,7 @@ class RunService:
                 raise LookupError(root_id)
             current = run_control(root)
             if current is not None and current.state == "stopped":
-                raise RunRefused("This run is already stopped.")
+                raise RunRefused("run_stopped", "This run is already stopped.")
             # The database's clock, the one rooms are stamped with: a room made
             # after this Continue must compare as later, whatever the app
             # server's clock says.

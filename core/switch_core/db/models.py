@@ -1014,6 +1014,12 @@ class Template(TenantScoped, Base):
         # scoping the name to the owner already scopes it to the tenant.
         UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
         UniqueConstraint("id", "tenant_id", name="uq_templates_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_templates_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1032,6 +1038,10 @@ class Template(TenantScoped, Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # The agent that saved it through an agent operation, NULL for a person.
+    # ``owner_id`` is the agent's owner either way; only this agent may change
+    # or delete what it saved (see ``agent_template_ops``).
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1040,6 +1050,44 @@ class Template(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class AgentRefusal(TenantScoped, Base):
+    """A request an agent made that the server refused, and why.
+
+    Kept so people can see what agents are asked to do and cannot, which is
+    what a finer rights model should be designed from. ``message`` is the
+    sentence the agent was given; ``subject`` names what it was about (a
+    template or a room), as text, so the record outlives the thing.
+    """
+
+    __tablename__ = "agent_refusals"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_agent_refusals_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_refusals_agent",
+            ondelete="SET NULL (agent_id)",
+        ),
+        Index("ix_agent_refusals_owner_id_created_at", "owner_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kept apart from the agent: a refusal stays its owner's to see after
+    # the agent is deleted.
+    agent_name: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

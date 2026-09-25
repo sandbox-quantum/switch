@@ -362,6 +362,36 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "reference_type_deleted": {"age_days": NUMBER},
     "template_created": {"template_kind": TEMPLATE_KIND},
     "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": NUMBER},
+    # An agent asked for something and was told no, on purpose. Which rule
+    # people run into is what a finer rights model is designed from; who and
+    # what stays on the server, in `agent_refusals`.
+    "agent_request_refused": {
+        "operation": one_of(
+            "list_templates",
+            "get_template",
+            "run_template",
+            "save_template",
+            "update_template",
+            "delete_template",
+            "create_room",
+            "create_room_from_yaml",
+        ),
+        "reason": one_of(
+            "not_found",
+            "not_yours",
+            "name_taken",
+            "visibility_not_allowed",
+            "invalid",
+            "too_large",
+            "missing_agents",
+            "agent_creation_console_only",
+            "busy",
+            "run_paused",
+            "run_stopped",
+            "repeat",
+            "kickoff_ignored",
+        ),
+    },
     "room_link_created": {},
     "room_link_removed": {},
     "room_role_defined": {"exclusive": BOOLEAN},

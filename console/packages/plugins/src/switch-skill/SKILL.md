@@ -421,6 +421,26 @@ carrying a display name addresses no one.
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.
 
+### Templates
+
+Templates saved on the workspace can be found, read, run and saved by you.
+
+- **`list_templates`**: what you can use, every shared template plus your
+  owner's private ones. Each row says who saved it and `can_edit`.
+- **`get_template`**: one template's document, its `params` (the inputs to
+  fill) and `agent_slots` (the agents it would create).
+- **`run_template`**: create the rooms a saved template describes, like
+  `create_room_from_yaml`. You cannot create agents; an agent or team
+  template runs when you fill each slot with an existing agent, in
+  `agents: {slot name: agent name}`.
+- **`save_template`**: save a template for your owner, `private` or
+  `shared`. Only you can change or delete it afterwards.
+- **`update_template`** / **`delete_template`**: only for templates you saved.
+
+A refusal says why (a template you did not save, a slot that needs a new
+agent, a name your owner already uses). Tell the person who asked, and what
+they can do instead. Your owner can see refusals in Switch Console.
+
 ### Room documents and attached resources
 
 `connect_to_room` advertises the room's `references`, `documents` and
@@ -791,6 +811,12 @@ Every Switch tool you call in normal operation, one line each.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group.
 - `create_room_from_yaml` — provision a room or group from a YAML template.
+- `list_templates`: the saved templates you can use.
+- `get_template`: one template's document, inputs and agent slots.
+- `run_template`: create the rooms a saved template describes.
+- `save_template`: save a template, private or shared.
+- `update_template`: change a template you saved.
+- `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
