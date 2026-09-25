@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -696,3 +697,73 @@ async def test_relay_stream_shows_a_full_worker_queue(worker_app):
             await retried
     finally:
         await stream.aclose()
+
+
+WORKER_ATTACHED_FIELDS = {
+    "launch_revision",
+    "limits",
+    "idle",
+    "credential_revision",
+    "queued_operations",
+    "relay_fence",
+    "cancelled",
+}
+RELAY_FIELDS = {"id", "deadline_ms", "relay_seq", "message"}
+
+
+async def test_worker_attaches_answers_a_relay_and_reports_idle_over_the_wire(
+    worker_app,
+):
+    client, request_id, agent_id, service, factory, prepared = worker_app
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.state = "ready"
+        await session.commit()
+    agent = await _agent(factory, agent_id)
+    conn_id = str(uuid4())
+    stream = await _open(
+        service, agent, capability=prepared["worker_capability"], connection_id=conn_id
+    )
+    (state, _), (attached_event, attached) = await _first_frames(stream, 2)
+    assert (state, attached_event) == ("connection_state", "worker_attached")
+    assert set(attached) == WORKER_ATTACHED_FIELDS
+    generation = service.connections.get(conn_id).stream_generation
+
+    sent_at_ms = int(time.time() * 1000)
+    relaying = asyncio.create_task(
+        client.post(
+            f"/hosted-launches/{request_id}/relay",
+            json={"message": {"health": True}, "timeout_ms": 5000},
+        )
+    )
+    ((relay_event, relay),) = await _first_frames(stream, 1)
+    assert relay_event == "relay"
+    assert set(relay) == RELAY_FIELDS
+    assert relay["relay_seq"] is None
+    assert relay["message"] == {"health": True}
+    assert sent_at_ms + 4000 <= relay["deadline_ms"] <= int(time.time() * 1000) + 5000
+    fence = {"connection_id": conn_id, "generation": generation}
+    reply = await client.post(
+        f"/agents/{agent_id}/connection/relay/{relay['id']}",
+        json={**fence, "ok": True, "value": {"health": 1}},
+    )
+    assert reply.status_code == 200, reply.text
+    relayed = await relaying
+    assert relayed.status_code == 200, relayed.text
+    assert relayed.json()["value"] == {"health": 1}
+
+    idle = await client.post(
+        f"/agents/{agent_id}/connection/idle",
+        json={
+            **fence,
+            "report_seq": 1,
+            "relays_through": attached["relay_fence"],
+            "busy": False,
+            "reasons": [],
+            "sessions": {"total": 0, "live": 0, "parked": 0, "failed": 0},
+        },
+    )
+    assert idle.status_code == 200, idle.text
+    assert set(idle.json()) >= {"queued_operations", "credential_revision"}
+    assert idle.json()["credential_revision"] == attached["credential_revision"]
+    assert service.connections.fresh_idle_report(agent_id, request_id, 1) is not None
