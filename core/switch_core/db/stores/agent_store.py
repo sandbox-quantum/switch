@@ -1,17 +1,26 @@
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
     Agent,
     Model,
+    Skill,
     Tool,
+    agent_skills,
     require_tenant_id,
     room_agents,
+    room_skills,
 )
 
 
 class AgentStore:
     # ── Agent CRUD ────────────────────────────────────────────────────────────
+
+    async def lock_name(self, session: AsyncSession, name: str) -> None:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"agent-name:{require_tenant_id()}:{name}"},
+        )
 
     async def create(self, session: AsyncSession, agent: Agent) -> None:
         session.add(agent)
@@ -136,6 +145,26 @@ class AgentStore:
         agent = await session.get(Agent, agent_id)
         if not agent:
             return
+        owned_skills = select(Skill.id).where(
+            Skill.owner_agent_id == agent_id, Skill.visibility == "private"
+        )
+        await session.execute(
+            delete(agent_skills).where(
+                or_(
+                    agent_skills.c.agent_id == agent_id,
+                    agent_skills.c.skill_id.in_(owned_skills),
+                )
+            )
+        )
+        await session.execute(
+            delete(room_skills).where(room_skills.c.skill_id.in_(owned_skills))
+        )
+        await session.execute(delete(Skill).where(Skill.id.in_(owned_skills)))
+        await session.execute(
+            update(Skill)
+            .where(Skill.owner_agent_id == agent_id)
+            .values(owner_agent_id=None)
+        )
         await session.execute(delete(Tool).where(Tool.agent_id == agent_id))
         await session.execute(delete(Model).where(Model.agent_id == agent_id))
         await session.execute(
