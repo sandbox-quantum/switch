@@ -476,11 +476,12 @@ export async function buildSharedHostConfig(
           }
         : {}),
       codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
-      // Codex and OpenCode load the skill as a file; the others take it as
-      // system context.
-      skill: provider === 'codex' || provider === 'opencode' ? SWITCH_SKILL_FILE : '',
+      // OpenCode loads the skill as a file through its own skill tool; the
+      // others take it as system context. Codex has no skill tool, so a skill
+      // file would be read with a shell command that needs approval.
+      skill: provider === 'opencode' ? SWITCH_SKILL_FILE : '',
       context: [
-        provider === 'codex' || provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
+        provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
         specialization.instructions,
       ]
         .filter(Boolean)
