@@ -1758,11 +1758,9 @@ async def _provision_as_agent(
     protocol = get_protocol()
     acting = await _acting_for()
     agent, owner = acting.agent, acting.owner
-    async with protocol.session_factory() as session:
-        # The owner's standing in this tenant, the same bit the gateway's
-        # from-yaml route derives, so a document provisions the same way
-        # whichever way it arrives.
-        owner_is_admin = await protocol.user_store.administers(session, owner)
+    # An agent acts for its owner but not with the owner's admin reach: a
+    # document it writes or a template it runs attaches only what the owner
+    # could attach as a member, never another person's private reference.
 
     rooms_yaml = protocol.room_yaml_service()
     inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
@@ -1792,7 +1790,7 @@ async def _provision_as_agent(
             group_result = await rooms_yaml.provision_group(
                 parsed.spec,
                 user_id=owner.id,
-                is_admin=owner_is_admin,
+                is_admin=False,
                 creator_name=builtins["$creator"],
                 origin=origin,
                 template_name=template_name,
@@ -1802,7 +1800,7 @@ async def _provision_as_agent(
             parsed.spec,
             kickoff=parsed.kickoff,
             user_id=owner.id,
-            is_admin=owner_is_admin,
+            is_admin=False,
             creator_name=builtins["$creator"],
             origin=origin,
             template_name=template_name,

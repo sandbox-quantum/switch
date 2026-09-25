@@ -1,5 +1,5 @@
 import { ChevronRight } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AgentRefusal } from '@main/core/switch-servers/gateway-client';
 import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
@@ -16,22 +16,27 @@ import { formatTimeAgo } from './template-runs';
 function useAgentRefusals(serverId: string): AgentRefusal[] {
   const [refusals, setRefusals] = useState<AgentRefusal[]>([]);
 
-  const load = useCallback(async () => {
-    try {
-      const list = await rpc.switchServers.listAgentRefusals({ serverId });
-      setRefusals(list ?? []);
-    } catch {
-      // The refusals are a side note to the listing; it renders without them.
-    }
-  }, [serverId]);
-
   useEffect(() => {
+    // An answer that lands after the listing moved to another server belongs
+    // to the old one and is dropped.
+    let current = true;
+    const load = async () => {
+      try {
+        const list = await rpc.switchServers.listAgentRefusals({ serverId });
+        if (current) setRefusals(list ?? []);
+      } catch {
+        // The refusals are a side note to the listing; it renders without them.
+      }
+    };
     setRefusals([]);
     void load();
     const onFocus = () => void load();
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [load]);
+    return () => {
+      current = false;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [serverId]);
 
   return refusals;
 }

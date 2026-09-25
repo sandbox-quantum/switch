@@ -13,9 +13,10 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import yaml
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from switch_core.agent_refusals import AgentRefused
+from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import agent_slots, room_document, template_kind
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
@@ -30,8 +31,9 @@ from switch_core.bridges.agent.operations.definitions import (
     save_template,
     update_template,
 )
-from switch_core.db.models import AgentRefusal, Room, Template, User
+from switch_core.db.models import Agent, AgentRefusal, Room, Template, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.template_store import TemplateStore
 
 ROOM_TEMPLATE = """\
 version: 1
@@ -420,3 +422,150 @@ async def test_an_agent_cannot_change_another_agents_template_of_the_same_owner(
 
     with pytest.raises(AgentRefused, match="saved by agent claude-code.bob"):
         await _as(tools["agent_id"], delete_template, template_id=saved["id"])
+
+
+GROUP_TEAM_TEMPLATE = """\
+version: 1
+params:
+  team: { type: string }
+agents:
+  - name: "{team}-lead"
+    instructions: Lead.
+  - name: "{team}-helper"
+    instructions: Help.
+group:
+  name: "{team}"
+rooms:
+  - name: "{team}-lobby"
+    description: Where people arrive
+    agents: ["{team}-lead"]
+    aliases: { "{team}-lead": boss }
+    kickoff: "@{team}-lead welcome people."
+  - name: "{team}-work"
+    description: Where the work happens
+    agents: ["{team}-lead", "{team}-helper"]
+    kickoff: "@{team}-helper start, and tell @{team}-lead."
+"""
+
+
+def test_a_team_template_with_a_group_fills_every_room():
+    document, inputs = room_document(
+        GROUP_TEAM_TEMPLATE,
+        {"blue-lead": "claude-code.alice", "blue-helper": "claude-code.bob"},
+        {"team": "blue"},
+    )
+
+    doc = yaml.safe_load(document)
+    lobby, work = doc["rooms"]
+    assert lobby["agents"] == ["claude-code.alice"]
+    assert lobby["aliases"] == {"claude-code.alice": "boss"}
+    assert lobby["kickoff"] == "@claude-code.alice welcome people."
+    assert work["agents"] == ["claude-code.alice", "claude-code.bob"]
+    assert work["kickoff"] == "@claude-code.bob start, and tell @claude-code.alice."
+    assert inputs == {"team": "blue"}
+
+
+@pytest.mark.asyncio
+async def test_run_a_team_template_that_makes_a_group(tools):
+    template_id = await _stored(
+        tools, tools["user_id"], "blue team", GROUP_TEAM_TEMPLATE, kind="group"
+    )
+
+    result = await _as(
+        tools["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "blue"},
+        agents={"blue-lead": "claude-code.alice", "blue-helper": "claude-code.bob"},
+    )
+
+    assert result["errors"] == []
+    assert {r["room_name"] for r in result["rooms"]} == {"blue-lobby", "blue-work"}
+    async with tools["session_factory"]() as session:
+        names = {
+            r.template_name
+            for r in (await session.execute(select(Room))).scalars().all()
+        }
+    assert names == {"blue team"}
+
+
+def test_a_slot_reached_through_a_param_is_swapped_too():
+    template = """\
+params:
+  member: { type: string, default: worker }
+agents:
+  - name: worker
+    instructions: Work.
+room:
+  name: shop
+  description: The shop
+  agents: ["{member}"]
+  aliases: { "{member}": w }
+kickoff: "@{member} start"
+"""
+    document, _ = room_document(template, {"worker": "claude-code.bob"}, {})
+
+    doc = yaml.safe_load(document)
+    assert doc["room"]["agents"] == ["claude-code.bob"]
+    assert doc["room"]["aliases"] == {"claude-code.bob": "w"}
+    assert doc["kickoff"] == "@claude-code.bob start"
+
+
+def test_a_slot_named_agent_does_not_touch_the_agent_placeholder():
+    template = """\
+agent:
+  name: agent
+  instructions: Help.
+room:
+  name: "Ask {agent}"
+  description: "Ask {agent}"
+  agents: ["{agent}"]
+kickoff: "@{agent} start"
+"""
+    document, _ = room_document(template, {"agent": "claude-code.bob"}, {})
+
+    doc = yaml.safe_load(document)
+    assert doc["room"]["name"] == "Ask claude-code.bob"
+    assert doc["room"]["agents"] == ["claude-code.bob"]
+    assert doc["kickoff"] == "@claude-code.bob start"
+
+
+@pytest.mark.asyncio
+async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tools):
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="mine",
+        description="",
+        yaml=ROOM_TEMPLATE,
+    )
+    templates = AgentTemplates(TemplateStore(), max_bytes=64 * 1024)
+    async with tools["session_factory"]() as session:
+        agent = await session.get(Agent, tools["agent_id"])
+        owner = await session.get(User, tools["user_id"])
+        acting = ActingFor(agent=agent, owner=owner)
+        stale = await templates._own(session, acting, saved["id"])
+
+        async def read_before_the_change(*_: Any) -> Template:
+            return stale
+
+        templates._own = read_before_the_change  # type: ignore[method-assign]
+        # Between the read and the lock the mark goes, as when the agent
+        # that saved it is deleted.
+        async with tools["session_factory"]() as other:
+            await other.execute(
+                update(Template)
+                .where(Template.id == saved["id"])
+                .values(created_by_agent_id=None)
+            )
+            await other.commit()
+        with pytest.raises(AgentRefused, match="no longer yours"):
+            await templates.update(
+                session,
+                acting,
+                saved["id"],
+                name=None,
+                description="changed",
+                content=None,
+                visibility=None,
+            )

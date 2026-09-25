@@ -88,13 +88,14 @@ def _param_defaults(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, A
 def _name_pattern(names: list[str]) -> re.Pattern[str] | None:
     """A mention of any of ``names``, the longest first, counted only when
     neither neighbour could continue an agent name: `my-helper` is not
-    `helper`, and "@helper." at the end of a sentence still is."""
+    `helper`, and "@helper." at the end of a sentence still is. A name inside
+    a `{placeholder}` is left alone."""
     if not names:
         return None
     ordered = sorted(names, key=len, reverse=True)
     alternatives = "|".join(re.escape(n) for n in ordered)
     return re.compile(
-        rf"(?<![A-Za-z0-9_.-])({alternatives})(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
+        rf"(?<![A-Za-z0-9_.{{-])({alternatives})(?![A-Za-z0-9_}}-]|\.[A-Za-z0-9_-])"
     )
 
 
@@ -162,20 +163,29 @@ def room_document(
             "Nothing was created: this template only creates an agent, with no "
             "room to run. Creating agents happens in Switch Console.",
         )
-    used = _placeholders(room_part, set())
-    params = {
-        name: spec
-        for name, spec in (data.get("params") or {}).items()
-        if name in used
-        and not (isinstance(spec, dict) and spec.get("type") in CONSOLE_PARAM_TYPES)
-    }
-    run_inputs = {k: v for k, v in inputs.items() if k in params}
-    single = isinstance(data.get("agent"), dict)
-    if single:
+    if isinstance(data.get("agent"), dict):
         # A one-agent template names its agent `{agent}` in the room, a value
         # the Console supplies. Here it is the agent that fills the slot.
-        params = {"agent": {"type": "string"}, **params}
-        run_inputs["agent"] = next(iter(replacements.values()))
+        values["agent"] = next(iter(replacements.values()))
+    # Every value already known is filled in before names are swapped, so a
+    # slot reached through a param (`agents: ["{member}"]` with `member`
+    # defaulting to a slot) is swapped too. What is left, a chain or an input
+    # nobody gave, stays for the server to resolve.
+    room_part = interpolate(room_part, values)
+    declared = {
+        name: spec
+        for name, spec in (data.get("params") or {}).items()
+        if not (isinstance(spec, dict) and spec.get("type") in CONSOLE_PARAM_TYPES)
+    }
+    still_used = _placeholders(room_part, set())
+    # Given inputs keep their params, so the server still checks them against
+    # the param's pattern and bounds.
+    params = {
+        name: spec
+        for name, spec in declared.items()
+        if name in still_used or name in inputs
+    }
+    run_inputs = {k: v for k, v in inputs.items() if k in params}
 
     pattern = _name_pattern(list(replacements))
 

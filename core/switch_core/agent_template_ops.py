@@ -271,14 +271,35 @@ class AgentTemplates:
                 content=content,
                 read_visibility=read,
                 write_visibility=write,
+                guard=lambda locked: self._still_own(acting, locked),
             )
         except TemplateNameTaken as e:
             raise self._name_taken(label) from e
+
+    @staticmethod
+    def _still_own(acting: ActingFor, locked: Template) -> None:
+        """The saver check again, on the row once it is locked: the agent
+        could have been deleted, clearing the mark, since it was read."""
+        if locked.created_by_agent_id != acting.agent.id:
+            raise AgentRefused(
+                "not_yours",
+                f"'{locked.name}' is no longer yours to change: an agent can "
+                "change or delete only the templates it saved itself.",
+                subject=locked.name,
+            )
 
     async def delete(
         self, session: AsyncSession, acting: ActingFor, template_id: str
     ) -> str:
         template = await self._own(session, acting, template_id)
-        name = template.name
-        await self._store.delete(session, template.id)
+        locked = await session.get(
+            Template, template.id, with_for_update=True, populate_existing=True
+        )
+        if locked is None:
+            raise AgentRefused(
+                "not_found", f"No template with id {template_id}.", subject=template_id
+            )
+        self._still_own(acting, locked)
+        name = locked.name
+        await self._store.delete(session, locked.id)
         return name

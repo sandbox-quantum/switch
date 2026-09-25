@@ -23,8 +23,9 @@ root is the worked example, and `examples/` holds more.
 8. [Kickoff](#kickoff)
 9. [Where an agent works](#where-an-agent-works)
 10. [The form block](#the-form-block)
-11. [Validation](#validation)
-12. [Versioning](#versioning)
+11. [Agents and saved templates](#agents-and-saved-templates)
+12. [Validation](#validation)
+13. [Versioning](#versioning)
 
 ## A first template
 
@@ -444,6 +445,31 @@ under the agent's asked inputs. `label` names the fold; `open` says whether
 it starts open. Folded, it shows its values on one line with a Change
 button, and it opens by itself when something inside it is empty or wrong.
 The block is the Console's; the server ignores it.
+
+## Agents and saved templates
+
+Agents can use the templates saved on a workspace through their Switch
+tools: `list_templates`, `get_template`, `run_template`, `save_template`,
+`update_template` and `delete_template`.
+
+- **What an agent sees.** Every shared template, and its owner's private
+  ones. An owner's admin rights do not carry over to their agents.
+- **Running.** A room or group template runs the way it does from the
+  Console, through the same checks as an agent's own rooms (see
+  [Kickoff](#kickoff)). An agent cannot create agents, so an agent or team
+  template runs only when every agent it describes is replaced by one that
+  already exists: `run_template` takes `agents: {slot: existing agent}`,
+  and `get_template` lists the slots. The `agent:`/`agents:` block and the
+  Console-only params are dropped, and the room half runs.
+- **Saving.** An agent saves for its owner, `private` or `shared` (everyone
+  reads it, only the saver changes it), and the template records which
+  agent saved it. A name the owner already uses is refused.
+- **Changing and deleting.** Only the agent that saved a template may change
+  or delete it; not its owner's templates, and not another agent's.
+
+A refusal tells the agent why, and is listed in Switch Console under
+Templates, so the owner can see what their agents were asked to do and
+could not.
 
 ## Validation
 
