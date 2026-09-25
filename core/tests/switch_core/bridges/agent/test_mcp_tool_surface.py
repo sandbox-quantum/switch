@@ -79,6 +79,13 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
         "create_room_group",
         "get_room_group_detail",
         "create_room_from_yaml",
+        "get_template_guide",
+        "list_templates",
+        "get_template",
+        "run_template",
+        "save_template",
+        "update_template",
+        "delete_template",
         "list_agents",
         "get_agent_detail",
         "update_agent_detail",
@@ -143,9 +150,9 @@ def _indexed_tools(skill: Path) -> list[str]:
     assert bullets, f"no tool bullets under '## Tool index' in {skill}"
     names = []
     for bullet in bullets:
-        match = re.fullmatch(r"- `([a-z_]+)` — .*", bullet)
+        match = re.fullmatch(r"- `([a-z_]+)`(?: —|:) .*", bullet)
         assert match is not None, (
-            f"{skill}: tool-index bullet is not `- \\`name\\` — description`, so "
+            f"{skill}: tool-index bullet is not `- \\`name\\`: description`, so "
             f"the tool it names would not be checked: {bullet!r}"
         )
         names.append(match.group(1))

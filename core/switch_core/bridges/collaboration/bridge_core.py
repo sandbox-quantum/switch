@@ -1825,9 +1825,9 @@ class BridgeCore:
             if (
                 person is not None
                 and not _is_thread_reply(event_content)
-                and f"@{person.name}" not in body
+                and person.label not in body
             ):
-                body = f"On behalf of @{person.name}:\n\n{body}"
+                body = f"On behalf of {person.label}:\n\n{body}"
             message_ref = await self._adapter.admin_message(
                 channel_id,
                 body,

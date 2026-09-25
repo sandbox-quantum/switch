@@ -87,10 +87,13 @@ import {
   deleteTemplate,
   updateTemplate,
   fetchTemplateDetail,
+  fetchAgentRefusals,
+  fetchTemplateRuns,
   fetchTemplates,
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
+  changeTemplateRun,
   createRoomFromTemplate,
   exportRoomYaml,
   fetchTemplateSchema,
@@ -99,6 +102,8 @@ import {
   type StoredTemplateSummary,
   type TemplateVisibility,
   type ProvisionFromTemplateResult,
+  type AgentRefusal,
+  type TemplateRun,
   updateAddressingPolicy,
   updateAgentIcon,
   updateRoom,
@@ -537,9 +542,27 @@ export const switchServersController = createRPCController({
   createRoomFromTemplate: async (
     serverId: string,
     yamlText: string,
-    inputs: Record<string, string | number | boolean>
+    inputs: Record<string, string | number | boolean>,
+    templateName?: string
   ): Promise<ProvisionFromTemplateResult> =>
-    createRoomFromTemplate(await requireServer(serverId), yamlText, inputs),
+    createRoomFromTemplate(await requireServer(serverId), yamlText, inputs, templateName),
+
+  /** The runs the user may see, or null when the server does not record runs. */
+  listTemplateRuns: async (params: { serverId: string }): Promise<TemplateRun[] | null> =>
+    fetchTemplateRuns(await requireServer(params.serverId)),
+
+  stopTemplateRun: async (params: { serverId: string; rootRoomId: string }): Promise<TemplateRun> =>
+    changeTemplateRun(await requireServer(params.serverId), params.rootRoomId, 'stop'),
+
+  continueTemplateRun: async (params: {
+    serverId: string;
+    rootRoomId: string;
+  }): Promise<TemplateRun> =>
+    changeTemplateRun(await requireServer(params.serverId), params.rootRoomId, 'continue'),
+
+  /** Requests the server refused the user's agents, or null when it does not record them. */
+  listAgentRefusals: async (params: { serverId: string }): Promise<AgentRefusal[] | null> =>
+    fetchAgentRefusals(await requireServer(params.serverId)),
 
   listTemplates: async (params: {
     serverId: string;

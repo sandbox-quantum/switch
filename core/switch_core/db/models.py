@@ -640,6 +640,9 @@ class Room(TenantScoped, Base):
         # and the ON DELETE SET NULL when a group is removed both scan the
         # table. Mirrors ix_agents_parent_agent_id.
         Index("ix_rooms_group_id", "group_id"),
+        # A run is listed, checked and stopped by its root on every agent
+        # create and every look at Recently used.
+        Index("ix_rooms_run_id", "run_id"),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -654,6 +657,18 @@ class Room(TenantScoped, Base):
             ["room_groups.tenant_id", "room_groups.id"],
             name="fk_rooms_group",
             ondelete="SET NULL (group_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_rooms_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_rooms_parent_room",
+            ondelete="SET NULL (parent_room_id)",
         ),
     )
 
@@ -673,6 +688,23 @@ class Room(TenantScoped, Base):
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
+    # The agent that created the room through an agent operation. NULL for a
+    # room a person created. `created_by` is the agent's owner in both cases.
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Where an agent-created room sits in its run (see `agent_runs`): the
+    # room the agent was working in when it asked, and the root of the chain,
+    # a room a person made. NULL for a person's room, which is its own root.
+    parent_room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The template the room came from, when it came from one: its registry
+    # name, or the name the creator gave a pasted document.
+    template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A fingerprint of the kickoff an agent posted here. Never shown; it is
+    # how the same request made twice on one path is recognised.
+    kickoff_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a run's root only: whether agents may keep creating rooms in the
+    # run. NULL means running. See `agent_runs.RunControl`.
+    run_control: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
@@ -982,6 +1014,12 @@ class Template(TenantScoped, Base):
         # scoping the name to the owner already scopes it to the tenant.
         UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
         UniqueConstraint("id", "tenant_id", name="uq_templates_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_templates_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1000,6 +1038,10 @@ class Template(TenantScoped, Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # The agent that saved it through an agent operation, NULL for a person.
+    # ``owner_id`` is the agent's owner either way; only this agent may change
+    # or delete what it saved (see ``agent_template_ops``).
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1008,6 +1050,44 @@ class Template(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class AgentRefusal(TenantScoped, Base):
+    """A request an agent made that the server refused, and why.
+
+    Kept so people can see what agents are asked to do and cannot, which is
+    what a finer rights model should be designed from. ``message`` is the
+    sentence the agent was given; ``subject`` names what it was about (a
+    template or a room), as text, so the record outlives the thing.
+    """
+
+    __tablename__ = "agent_refusals"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_agent_refusals_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_refusals_agent",
+            ondelete="SET NULL (agent_id)",
+        ),
+        Index("ix_agent_refusals_owner_id_created_at", "owner_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kept apart from the agent: a refusal stays its owner's to see after
+    # the agent is deleted.
+    agent_name: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

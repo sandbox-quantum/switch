@@ -153,6 +153,11 @@ class AdminClient(ClientBase[ClientConfig]):
             marker_value["on_behalf_of"] = {
                 "user_id": on_behalf_of.user_id,
                 "name": on_behalf_of.name,
+                **(
+                    {"agent_id": on_behalf_of.agent_id}
+                    if on_behalf_of.agent_id is not None
+                    else {}
+                ),
             }
         if reply_in_channel:
             # Only meaningful for a threaded message: the agents it addresses
@@ -168,6 +173,17 @@ class AdminClient(ClientBase[ClientConfig]):
         )
 
     # ── Admin notices ─────────────────────────────────────────────────────────
+
+    async def send_notice(self, room_id: str, body: str) -> None:
+        """Post a system notice about the room's run: that it was paused,
+        continued or stopped. Like every admin message it addresses nobody,
+        so no agent wakes on it."""
+        await self._send_admin(
+            room_id,
+            body,
+            message_type=AdminMessageType.RUN_NOTICE,
+            thread_root_id=None,
+        )
 
     async def _warn_unreachable_roles(
         self,

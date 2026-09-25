@@ -12,8 +12,13 @@ and room come from `operations.context`.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
+from switch_core.agent_refusals import AgentRefused, record_refusal
+from switch_core.agent_template_ops import ActingFor, AgentTemplates
+from switch_core.agent_templates import room_document
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
@@ -35,7 +40,9 @@ from switch_core.bridges.agent.protocol.instructions import build_room_instructi
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
-from switch_core.rooms_yaml import GroupSpec
+from switch_core.db.stores.template_store import TemplateStore
+from switch_core.rooms_yaml import GroupSpec, template_json_schema
+from switch_core.template_guide import TEMPLATE_GUIDE
 
 logger = logging.getLogger(__name__)
 
@@ -1120,29 +1127,31 @@ async def create_room(
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
-    result = await protocol.create_moderation_room(
-        agent_id=agent_id,
-        name=name,
-        description=description,
-        agent_names=agent_names,
-        include_subagents_for=include_subagents_for,
-        join_event_listeners=join_event_listeners,
-        user_names=user_names,
-        channel_type=channel_type,
-        bridge_id=bridge_id,
-        internal_only=internal_only,
-        admin_mode=admin_mode,
-        security_config=security_config,
-        instructions=instructions,
-        reference_ids=reference_ids,
-        package_ids=package_ids,
-        linked_rooms=linked_rooms,
-        read_visibility=read_visibility,
-        write_visibility=write_visibility,
-        group_name=group_name,
-        roles=roles,
-        aliases=aliases,
-    )
+    async with _refusals_recorded("create_room"):
+        result = await protocol.create_moderation_room(
+            agent_id=agent_id,
+            name=name,
+            description=description,
+            agent_names=agent_names,
+            include_subagents_for=include_subagents_for,
+            join_event_listeners=join_event_listeners,
+            user_names=user_names,
+            channel_type=channel_type,
+            bridge_id=bridge_id,
+            internal_only=internal_only,
+            admin_mode=admin_mode,
+            security_config=security_config,
+            instructions=instructions,
+            reference_ids=reference_ids,
+            package_ids=package_ids,
+            linked_rooms=linked_rooms,
+            read_visibility=read_visibility,
+            write_visibility=write_visibility,
+            group_name=group_name,
+            roles=roles,
+            aliases=aliases,
+            from_room_id=await connected_room(),
+        )
     return {
         "id": result.room.id,
         "name": result.room.name,
@@ -1671,6 +1680,15 @@ async def create_room_from_yaml(
     result provisioned as the calling agent's owner (an ownerless agent
     cannot provision rooms). Server-provided ``{$creator}`` names the owner.
 
+    A ``kickoff:`` is posted with your authority, not your owner's, and with
+    the run so far appended: the rooms that led here and who made them. The
+    call is refused, with nothing created, when the kickoff mentions an agent
+    that does not accept messages from you, when you ask for a room with the
+    same kickoff as one you already made further up the same path (the run is
+    then paused until your owner lets it continue), when the run was paused
+    or stopped, or while another room you asked for is still being created.
+    The refusal says which, and what to do.
+
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
             ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
@@ -1685,53 +1703,348 @@ async def create_room_from_yaml(
         failed_attachments}``. For a group: ``{group_id, group_name,
         rooms: [...], errors: [...]}``.
     """
+    async with _refusals_recorded("create_room_from_yaml"):
+        return await _provision_as_agent(yaml, inputs)
+
+
+async def _acting_for() -> ActingFor:
+    """The calling agent and the owner it acts for, or a clear error for an
+    agent with no owner."""
     agent_id = get_agent_id()
     protocol = get_protocol()
-
     async with protocol.session_factory() as session:
         agent = await protocol.agent_store.get(session, agent_id)
         if agent is None:
             raise ValueError(f"Unknown agent: {agent_id}")
-        if agent.owner_id is None:
-            raise ValueError(
-                f"Agent {agent_id} has no owner and cannot provision rooms"
-            )
-        owner = await session.get(User, agent.owner_id)
+        owner = await session.get(User, agent.owner_id) if agent.owner_id else None
         if owner is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner and cannot provision rooms"
             )
-        owner_id = owner.id
-        owner_name = owner.name
-        owner_email = owner.email
-        # The owner's standing in this tenant, the same bit the gateway's
-        # from-yaml route derives, so a document provisions the same way
-        # whichever way it arrives.
-        owner_is_admin = await protocol.user_store.administers(session, owner)
+    return ActingFor(agent=agent, owner=owner)
+
+
+@asynccontextmanager
+async def _refusals_recorded(operation_name: str) -> AsyncIterator[None]:
+    """Record a request refused on purpose, then let the refusal reach the
+    agent as it would have anyway (see ``agent_refusals``)."""
+    try:
+        yield
+    except AgentRefused as refusal:
+        protocol = get_protocol()
+        agent_id = get_agent_id()
+        async with protocol.session_factory() as session:
+            agent = await protocol.agent_store.get(session, agent_id)
+        await record_refusal(
+            protocol.session_factory,
+            getattr(protocol, "telemetry", None),
+            agent_id=agent_id,
+            agent_name=agent.name if agent else agent_id,
+            owner_id=agent.owner_id if agent else None,
+            operation=operation_name,
+            refusal=refusal,
+        )
+        raise
+
+
+async def _provision_as_agent(
+    yaml: str,
+    inputs: dict[str, Any] | None,
+    *,
+    template_name: str | None = None,
+) -> dict[str, Any]:
+    """Create the rooms a document describes, as the calling agent: the one
+    path for a document an agent writes and a template it runs, so the run
+    guards in ``agent_runs`` apply the same to both."""
+    protocol = get_protocol()
+    acting = await _acting_for()
+    agent, owner = acting.agent, acting.owner
+    # An agent acts for its owner but not with the owner's admin reach: a
+    # document it writes or a template it runs attaches only what the owner
+    # could attach as a member, never another person's private reference.
 
     rooms_yaml = protocol.room_yaml_service()
     inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
     builtins = await rooms_yaml.builtins_for(
-        user_id=owner_id, name=owner_name, email=owner_email, text=yaml, inputs=inputs
+        user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
     await rooms_yaml.check_entity_params(parsed)
-    if isinstance(parsed.spec, GroupSpec):
-        group_result = await rooms_yaml.provision_group(
-            parsed.spec,
-            user_id=owner_id,
-            is_admin=owner_is_admin,
-            creator_name=builtins["$creator"],
-        )
-        return group_result.model_dump()
-    result = await rooms_yaml.provision(
-        parsed.spec,
-        kickoff=parsed.kickoff,
-        user_id=owner_id,
-        is_admin=owner_is_admin,
-        creator_name=builtins["$creator"],
+    room_specs = (
+        [(r, r.kickoff) for r in parsed.spec.rooms]
+        if isinstance(parsed.spec, GroupSpec)
+        else [(parsed.spec, parsed.kickoff)]
     )
+    await _require_agents_exist([n for spec, _ in room_specs for n in spec.agents])
+    kickoffs = [
+        (text, list(spec.agents), dict(spec.aliases or {}))
+        for spec, text in room_specs
+        if text
+    ]
+    async with protocol.run_service().agent_creating(
+        agent,
+        owner_name=owner.name,
+        from_room_id=await connected_room(),
+        kickoffs=kickoffs,
+    ) as origin:
+        if isinstance(parsed.spec, GroupSpec):
+            group_result = await rooms_yaml.provision_group(
+                parsed.spec,
+                user_id=owner.id,
+                is_admin=False,
+                creator_name=builtins["$creator"],
+                origin=origin,
+                template_name=template_name,
+            )
+            return group_result.model_dump()
+        result = await rooms_yaml.provision(
+            parsed.spec,
+            kickoff=parsed.kickoff,
+            user_id=owner.id,
+            is_admin=False,
+            creator_name=builtins["$creator"],
+            origin=origin,
+            template_name=template_name,
+        )
     return result.model_dump()
+
+
+async def _require_agents_exist(names: list[str]) -> None:
+    """Every agent the rooms name must exist, checked before anything is
+    created and reported all at once rather than one per try."""
+    protocol = get_protocol()
+    wanted = list(dict.fromkeys(names))
+    async with protocol.session_factory() as session:
+        found = {
+            a.name for a in await protocol.agent_store.get_by_names(session, wanted)
+        }
+    missing = [n for n in wanted if n not in found]
+    if missing:
+        raise AgentRefused(
+            "missing_agents",
+            "Nothing was created: no agent is called "
+            f"{', '.join(missing)}. list_agents shows the ones that exist.",
+            subject=", ".join(missing),
+        )
+
+
+def _agent_templates() -> AgentTemplates:
+    protocol = get_protocol()
+    return AgentTemplates(TemplateStore(), max_bytes=protocol.config.template_max_bytes)
+
+
+@operation
+async def get_template_guide() -> dict[str, Any]:
+    """How to write a template: the language, and the schema this server
+    checks documents against.
+
+    Read it before writing a document for ``create_room_from_yaml`` or
+    ``save_template``. ``guide`` explains the keys, params, placeholders and
+    kickoff with an example; ``schema`` is the JSON Schema of the room and
+    group documents the server accepts.
+
+    Returns:
+        ``{guide, schema}``.
+    """
+    return {"guide": TEMPLATE_GUIDE, "schema": template_json_schema()}
+
+
+@operation
+async def list_templates(
+    query: str | None = None,
+    kind: str | None = None,
+) -> list[dict[str, Any]]:
+    """List the templates saved on this workspace that you can use.
+
+    That is every shared template plus your owner's private ones. Each row
+    says who saved it (a person, or which agent) and ``can_edit``: whether
+    you may change or delete it, which is true only for templates you saved.
+
+    Args:
+        query: Only templates whose name or description contains this.
+        kind: Only this kind: ``room``, ``group`` or ``agent``.
+
+    Returns:
+        ``[{id, name, description, kind, visibility, saved_by, can_edit}]``,
+        newest first.
+    """
+    protocol = get_protocol()
+    async with _refusals_recorded("list_templates"):
+        acting = await _acting_for()
+        async with protocol.session_factory() as session:
+            return await _agent_templates().listing(
+                session, acting, query=query, kind=kind
+            )
+
+
+@operation
+async def get_template(template_id: str) -> dict[str, Any]:
+    """Read one saved template: the document, the inputs it takes, and the
+    agents it would create.
+
+    Use it before ``run_template`` to know what to fill in. ``params`` are
+    the inputs (``required`` is as the template writes it; a param with no
+    default usually needs a value). ``agent_slots`` lists the agents an agent
+    or team template would create: the server cannot create agents, so to run
+    one you fill each slot with an existing agent.
+
+    Args:
+        template_id: The id from ``list_templates``.
+
+    Returns:
+        ``{id, name, description, kind, visibility, saved_by, can_edit,
+        params: [{name, type, description, default, required}],
+        agent_slots: [{name, description}], content}``.
+    """
+    protocol = get_protocol()
+    async with _refusals_recorded("get_template"):
+        acting = await _acting_for()
+        async with protocol.session_factory() as session:
+            return await _agent_templates().describe(session, acting, template_id)
+
+
+@operation
+async def run_template(
+    template_id: str,
+    inputs: dict[str, Any] | None = None,
+    agents: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create the rooms a saved template describes, as you, the same way
+    ``create_room_from_yaml`` does with a document you write.
+
+    Everything ``create_room_from_yaml`` says about kickoffs and refusals
+    applies here too, and the run is listed under the template's name in
+    Switch Console. An agent or team template runs only when each agent it
+    would create is filled with an agent that already exists: creating agents
+    happens in Switch Console.
+
+    Args:
+        template_id: The id from ``list_templates``.
+        inputs: Values for the template's params (see ``get_template``).
+        agents: For an agent or team template, which existing agent fills
+            each slot: ``{slot name: agent name}``, the slot named as
+            ``get_template`` lists it or as it reads with your inputs.
+
+    Returns:
+        As ``create_room_from_yaml``: for a room ``{room_id, room_name, ...}``,
+        for a group ``{group_id, group_name, rooms, errors}``.
+    """
+    protocol = get_protocol()
+    async with _refusals_recorded("run_template"):
+        acting = await _acting_for()
+        async with protocol.session_factory() as session:
+            template = await _agent_templates().load(session, acting, template_id)
+            content, name = template.content, template.name
+        try:
+            document, run_inputs = room_document(content, agents or {}, inputs or {})
+        except AgentRefused as refusal:
+            refusal.subject = refusal.subject or name
+            raise
+        return await _provision_as_agent(
+            document, run_inputs or None, template_name=name
+        )
+
+
+@operation
+async def save_template(
+    name: str,
+    description: str,
+    yaml: str,
+    visibility: str = "private",
+) -> dict[str, Any]:
+    """Save a template to this workspace, so it can be found and run again.
+
+    It is saved for your owner and marked as saved by you; only you can
+    change or delete it afterwards. Its kind (room, group or agent) is read
+    from the document.
+
+    Args:
+        name: A name your owner does not already use for a template.
+        description: One line on what it creates.
+        yaml: The template document, as ``create_room_from_yaml`` takes it.
+        visibility: ``private`` (only your owner sees it) or ``shared``
+            (everyone on the workspace sees it, only you change it).
+
+    Returns:
+        ``{id, name, kind, visibility}``.
+    """
+    protocol = get_protocol()
+    async with _refusals_recorded("save_template"):
+        acting = await _acting_for()
+        async with protocol.session_factory() as session:
+            template = await _agent_templates().save(
+                session,
+                acting,
+                name=name,
+                description=description,
+                content=yaml,
+                visibility=visibility,
+            )
+            await session.commit()
+            return {
+                "id": template.id,
+                "name": template.name,
+                "kind": template.kind,
+                "visibility": visibility,
+            }
+
+
+@operation
+async def update_template(
+    template_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    yaml: str | None = None,
+    visibility: str | None = None,
+) -> dict[str, Any]:
+    """Change a template you saved. Only the fields you pass change.
+
+    Templates saved by a person, or by another agent, cannot be changed by
+    you; save your own version under another name instead.
+
+    Returns:
+        ``{id, name, kind, visibility, version}``.
+    """
+    protocol = get_protocol()
+    async with _refusals_recorded("update_template"):
+        acting = await _acting_for()
+        async with protocol.session_factory() as session:
+            template = await _agent_templates().update(
+                session,
+                acting,
+                template_id,
+                name=name,
+                description=description,
+                content=yaml,
+                visibility=visibility,
+            )
+            await session.commit()
+            return {
+                "id": template.id,
+                "name": template.name,
+                "kind": template.kind,
+                "visibility": "shared"
+                if template.read_visibility == "public"
+                else "private",
+                "version": template.version,
+            }
+
+
+@operation
+async def delete_template(template_id: str) -> dict[str, Any]:
+    """Delete a template you saved. Templates saved by a person or another
+    agent cannot be deleted by you.
+
+    Returns:
+        ``{id, name}`` of the deleted template.
+    """
+    protocol = get_protocol()
+    async with _refusals_recorded("delete_template"):
+        acting = await _acting_for()
+        async with protocol.session_factory() as session:
+            name = await _agent_templates().delete(session, acting, template_id)
+            await session.commit()
+            return {"id": template_id, "name": name}
 
 
 @operation

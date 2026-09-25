@@ -33,8 +33,12 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
+import { cn } from '@renderer/utils/utils';
+import { AgentRefusalsRow } from './agent-refusals-list';
 import { prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
+import { formatTimeAgo, runMatches } from './template-runs';
+import { RECENT_ACTION, RECENT_ROW, TemplateRunRow, useTemplateRuns } from './template-runs-list';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -251,19 +255,11 @@ function Section({
   );
 }
 
-function formatTimeAgo(ms: number): string {
-  const seconds = Math.floor((Date.now() - ms) / 1000);
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 /**
- * Documents used from this Console, kept locally per workspace. Each can be
- * used again or saved to the workspace, where everyone can find it.
+ * What was used lately: the template runs the server records for this
+ * workspace, newest first, then the documents used from this Console, kept
+ * locally per workspace. A run opens to show the rooms it made; a document can
+ * be used again or saved to the workspace, where everyone can find it.
  */
 function RecentsSection({
   serverId,
@@ -287,6 +283,7 @@ function RecentsSection({
   // Each recent with its kind, classified by the same parser as the listing.
   const [recents, setRecents] = useState<(RecentTemplate & { kind: TemplateKind })[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const { runs, replace: replaceRun } = useTemplateRuns(serverId);
 
   useEffect(() => {
     let cancelled = false;
@@ -342,7 +339,9 @@ function RecentsSection({
       (kind === 'all' || r.kind === kind) &&
       (needle.length === 0 || r.name.toLowerCase().includes(needle))
   );
-  if (shown.length === 0) return null;
+  // A run creates rooms, so an agents-only listing leaves them out.
+  const shownRuns = kind === 'agent' ? [] : runs.filter((r) => runMatches(r, needle));
+  if (shown.length === 0 && shownRuns.length === 0) return null;
 
   return (
     <section>
@@ -351,51 +350,66 @@ function RecentsSection({
         Recently used
       </h3>
       <p className="mt-0.5 mb-3 text-xs text-foreground-muted">
-        Documents you used from this Console. Kept here only; Save to workspace makes one a template
-        everyone on the workspace can find.
+        Template runs on this workspace, and documents you used from this Console. Documents are
+        kept here only; Save to workspace makes one a template everyone on the workspace can find.
       </p>
-      <div className="flex flex-col gap-1">
-        {shown.map((r) => (
-          <div key={r.yamlText} className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() =>
-                navigate('templateImport', {
-                  serverId,
-                  yamlText: r.yamlText,
-                  sourceName: r.name,
-                })
-              }
-              className="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--sel-soft)]"
-            >
-              <span className="flex items-center gap-2 truncate">
-                {(() => {
-                  const Icon = KIND_ICON[r.kind];
-                  return <Icon className="size-3.5 shrink-0 text-foreground-muted" />;
-                })()}
-                {r.name}
-              </span>
-              <span className="shrink-0 text-xs text-foreground-passive">
-                {formatTimeAgo(r.usedAt)}
-              </span>
-            </button>
-            {onWorkspace.has(r.name) ? (
-              <span className="px-3 text-xs text-foreground-passive">On the workspace</span>
-            ) : (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                title="Save to the workspace, so everyone on it can use it"
-                disabled={saving === r.yamlText}
-                onClick={() => void saveToWorkspace(r)}
-              >
-                <Save className="size-3.5" />
-                Save to workspace
-              </Button>
-            )}
-          </div>
+      <div className="divide-y divide-border rounded-md border border-border">
+        <div className={cn(RECENT_ROW, 'text-[11px] font-medium text-foreground-passive')}>
+          <span>Name</span>
+          <span>Status</span>
+          <span>Size</span>
+          <span>When</span>
+          <span />
+        </div>
+        {shownRuns.map((run) => (
+          <TemplateRunRow
+            key={run.rootRoomId}
+            serverId={serverId}
+            run={run}
+            onChanged={replaceRun}
+          />
         ))}
+        {shown.map((r) => {
+          const Icon = KIND_ICON[r.kind];
+          const saved = onWorkspace.has(r.name);
+          return (
+            <div key={r.yamlText} className={RECENT_ROW}>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate('templateImport', {
+                    serverId,
+                    yamlText: r.yamlText,
+                    sourceName: r.name,
+                  })
+                }
+                className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:underline"
+              >
+                <Icon className="size-3.5 shrink-0 text-foreground-muted" />
+                <span className="truncate">{r.name}</span>
+              </button>
+              <span className="text-xs text-foreground-passive">{saved ? 'Saved' : ''}</span>
+              <span />
+              <span className="text-xs text-foreground-passive">{formatTimeAgo(r.usedAt)}</span>
+              <span className="flex justify-end">
+                {!saved && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={RECENT_ACTION}
+                    title="Save to the workspace, so everyone on it can use it"
+                    disabled={saving === r.yamlText}
+                    onClick={() => void saveToWorkspace(r)}
+                  >
+                    <Save className="size-3.5" />
+                    Save to workspace
+                  </Button>
+                )}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -705,6 +719,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
               query={query}
               onSaved={reload}
             />
+
+            <AgentRefusalsRow serverId={serverId} />
           </div>
         )}
       </div>

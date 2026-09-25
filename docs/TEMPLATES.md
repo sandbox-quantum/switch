@@ -23,8 +23,9 @@ root is the worked example, and `examples/` holds more.
 8. [Kickoff](#kickoff)
 9. [Where an agent works](#where-an-agent-works)
 10. [The form block](#the-form-block)
-11. [Validation](#validation)
-12. [Versioning](#versioning)
+11. [Agents and saved templates](#agents-and-saved-templates)
+12. [Validation](#validation)
+13. [Versioning](#versioning)
 
 ## A first template
 
@@ -358,6 +359,25 @@ its members have joined. An agent starts working when a message addresses
 it, so mention the agent here or it sits in the room without answering.
 Needs a `room:`; on a group document it goes inside each room entry.
 
+**When an agent runs the template.** The kickoff speaks for that agent, not
+its owner, so the agents it mentions wake only if their addressing admits
+it. The server checks this before creating anything: if a mentioned agent
+would ignore the kickoff, nothing is created and the agent is told which
+one and why. The kickoff also carries the run so far, the rooms that led to
+this one and who made them, so the agents it wakes can see what already
+happened.
+
+**Runs.** Every room an agent creates is recorded in a run: the room it was
+working in, and the room the run started from. A template a person runs is
+a run of its own; an agent creating a room from an ordinary room, such as a
+lobby, starts a new run with that room. Runs are listed in Switch Console
+under Templates, Recently used, as a tree, and the owner of an agent in the
+run, the person who ran its template, or an admin can stop one. A stopped
+run keeps its rooms; agents just cannot create more in it. An agent creates
+one room at a time, and when it asks for a room with the same kickoff as one
+it already made further up the same path, the run is paused. Continuing it
+wakes that agent where it stopped, so the run carries on.
+
 ## Where an agent works
 
 Three shapes cover the cases, each one line of template.
@@ -425,6 +445,33 @@ under the agent's asked inputs. `label` names the fold; `open` says whether
 it starts open. Folded, it shows its values on one line with a Change
 button, and it opens by itself when something inside it is empty or wrong.
 The block is the Console's; the server ignores it.
+
+## Agents and saved templates
+
+Agents can use the templates saved on a workspace through their Switch
+tools: `list_templates`, `get_template`, `run_template`, `save_template`,
+`update_template` and `delete_template`. `get_template_guide` gives an agent
+a condensed version of this document and the schema the server checks
+documents against (`core/switch_core/template_guide.py`; keep it in step).
+
+- **What an agent sees.** Every shared template, and its owner's private
+  ones. An owner's admin rights do not carry over to their agents.
+- **Running.** A room or group template runs the way it does from the
+  Console, through the same checks as an agent's own rooms (see
+  [Kickoff](#kickoff)). An agent cannot create agents, so an agent or team
+  template runs only when every agent it describes is replaced by one that
+  already exists: `run_template` takes `agents: {slot: existing agent}`,
+  and `get_template` lists the slots. The `agent:`/`agents:` block and the
+  Console-only params are dropped, and the room half runs.
+- **Saving.** An agent saves for its owner, `private` or `shared` (everyone
+  reads it, only the saver changes it), and the template records which
+  agent saved it. A name the owner already uses is refused.
+- **Changing and deleting.** Only the agent that saved a template may change
+  or delete it; not its owner's templates, and not another agent's.
+
+A refusal tells the agent why, and is listed in Switch Console under
+Templates, so the owner can see what their agents were asked to do and
+could not.
 
 ## Validation
 
