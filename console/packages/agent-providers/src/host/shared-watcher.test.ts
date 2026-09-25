@@ -77,7 +77,8 @@ type HostChild = EventEmitter & {
  * host is attached to its link when `start` is called — what the supervisor
  * does on spawning one — says it is ready straight away, and records every
  * request it is sent. It answers each one unless told to `drop` them, in which
- * case it stops before answering, as a host that crashed would.
+ * case it stops before answering, as a host that crashed would. A snapshot it
+ * answers itself, with its session's status, and does not record.
  */
 function sessionHosts() {
   const links = new SessionLinks();
@@ -104,6 +105,12 @@ function sessionHosts() {
      * as why — what a host whose provider CLI is not signed in does.
      */
     fail: null as string | null,
+    /**
+     * When set, each host started is ready for requests while its session is
+     * still `starting`, until `started` is called for it.
+     */
+    starting: false,
+    statuses: new Map<string, string>(),
     supervision: {
       build: 'build',
       start: async () => {},
@@ -122,6 +129,11 @@ function sessionHosts() {
           return true;
         }
         const { id, request } = message as { id: number; request: SessionRequest };
+        if (request.type === 'snapshot') {
+          const value = { session: { status: hosts.statuses.get(root) } };
+          setImmediate(() => child.emit('message', { kind: 'reply', id, ok: true, value }));
+          return true;
+        }
         requests.push({ root, request });
         const custom = hosts.answer?.(root, request) ?? null;
         setImmediate(() => {
@@ -151,6 +163,7 @@ function sessionHosts() {
         return true;
       };
       children.set(root, child);
+      hosts.statuses.set(root, hosts.starting ? 'starting' : 'ready');
       links.attach(root, child as unknown as ChildProcess);
       const failure = hosts.fail;
       if (failure !== null) {
@@ -183,6 +196,21 @@ function sessionHosts() {
       child.emit('message', { kind: 'ask', id, ask });
       await eventually(() => answers.some((answer) => answer.id === id));
       return answers.find((answer) => answer.id === id)!;
+    },
+    /** The session of the host at `root` finishes starting, as its provider says. */
+    started: (root: string, session: Record<string, unknown>) => {
+      hosts.statuses.set(root, 'ready');
+      children.get(root)!.emit('message', {
+        kind: 'event',
+        event: {
+          contractVersion: 1,
+          eventId: randomUUID(),
+          sessionId: session.sessionId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          body: { type: 'session.upsert', session: { ...session, status: 'ready' } },
+        },
+      });
     },
     /** The host at `root` exits. */
     exit: (root: string) => children.get(root)?.emit('exit', 0, null),
@@ -1594,8 +1622,8 @@ it('gives a room control longer than a host start to finish once its host has it
       body: { type: 'session.compact' },
       requesterName: 'Owner',
     });
-    await eventually(() => request.mock.results.length === 1);
-    await request.mock.results[0]!.value;
+    await eventually(() => request.mock.results.length === 2);
+    await request.mock.results[1]!.value;
     await new Promise((resolve) => setTimeout(resolve, 50));
   } finally {
     abort.abort();
@@ -1604,7 +1632,45 @@ it('gives a room control longer than a host start to finish once its host has it
   // The start is waited for on its own; the compaction then has longer than
   // the provider's own 180-second limit, and finished, so nothing is said.
   expect(ready.mock.calls).toEqual([[parked.sessionRoot, 120000]]);
-  expect(request.mock.calls[0]![2]).toBeGreaterThan(180000);
+  expect(request.mock.calls.find(([, asked]) => asked.type === 'command')![2]).toBeGreaterThan(
+    180000
+  );
+  expect(calls).toEqual([]);
+});
+
+it('holds a room control for a parked session until the session it starts is ready', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-starting-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  hosts.starting = true;
+  const calls = switchOperations({ owner: 'ada' });
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    const relayed = streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'reset',
+      body: { type: 'session.reset' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => hosts.links.ready(parked.sessionRoot));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(hosts.to(parked.sessionRoot)).toEqual([]);
+    hosts.started(parked.sessionRoot, { ...config.session, sessionId: parked.sessionId });
+    await relayed;
+    await eventually(() => hosts.to(parked.sessionRoot).length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(hosts.to(parked.sessionRoot)).toMatchObject([
+    { type: 'command', command: { commandId: 'reset', body: { type: 'session.reset' } } },
+  ]);
   expect(calls).toEqual([]);
 });
 

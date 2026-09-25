@@ -8,7 +8,11 @@ import {
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
-import { type CommandStatus, commandStatusSchema } from '@switch-console/shared/session-v1';
+import {
+  type CommandStatus,
+  commandStatusSchema,
+  sessionSchema,
+} from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -129,6 +133,11 @@ const HOST_START_MS = 120000;
  * compaction's own 180-second limit, and a reset's provider restart.
  */
 const COMMAND_MS = 300000;
+
+/** The part of a host's snapshot that says whether its session is still coming up. */
+const startingSnapshotSchema = z.object({
+  session: z.object({ status: sessionSchema.shape.status }),
+});
 
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
@@ -714,6 +723,50 @@ export async function runSharedWatcher(
       }
     };
     /**
+     * Waits until `deadline` for the session a host at this root is bringing
+     * up to leave `starting`: a host takes requests before its provider is
+     * ready, and refuses a control that needs a ready session until then.
+     */
+    const awaitSessionStarted = async (sessionRoot: string, deadline: number) => {
+      let status: string | null = null;
+      let wake = () => {};
+      const unsubscribe = links.subscribe(sessionRoot, (event) => {
+        if (event.body.type !== 'session.upsert') return;
+        status = event.body.session.status;
+        wake();
+      });
+      const unexit = links.onExit((exited) => {
+        if (exited === sessionRoot) wake();
+      });
+      try {
+        const snapshot = startingSnapshotSchema.safeParse(
+          await links.request(sessionRoot, { type: 'snapshot' }, deadline - Date.now())
+        );
+        if (!snapshot.success)
+          throw new Error('The session answered with a snapshot this build cannot read.');
+        status = snapshot.data.session.status;
+        while (status === 'starting') {
+          const failure = links.failure(sessionRoot);
+          if (failure !== null) throw new SessionHostFailedError(failure);
+          if (!links.ready(sessionRoot))
+            throw new SessionUnavailableError('The session host stopped while it was starting.');
+          const remaining = deadline - Date.now();
+          if (remaining <= 0)
+            throw new SessionUnavailableError('The session did not finish starting in time.');
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, remaining);
+            wake = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+          });
+        }
+      } finally {
+        unsubscribe();
+        unexit();
+      }
+    };
+    /**
      * Hands a room control to its session's host, starting a host that parked
      * or went away: the session still holds the room. Switch told the room the
      * control was sent before the session had it, so the room is told when it
@@ -757,8 +810,12 @@ export async function runSharedWatcher(
         answer = refused('There is no turn running to interrupt.');
       else {
         try {
-          if (!links.ready(sessionRoot)) await launch(config);
-          await links.awaitReady(sessionRoot, HOST_START_MS);
+          if (!links.ready(sessionRoot)) {
+            const deadline = Date.now() + HOST_START_MS;
+            await launch(config);
+            await links.awaitReady(sessionRoot, HOST_START_MS);
+            await awaitSessionStarted(sessionRoot, deadline);
+          }
         } catch (error) {
           answer = refused(reason(error));
         }
