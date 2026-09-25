@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -152,6 +153,50 @@ async def _say(
     session.add(message)
     await session.flush()
     return message
+
+
+async def _stored(
+    session: AsyncSession,
+    room: Room,
+    sender: Client,
+    *,
+    seq: int,
+    event_type: str,
+    content: dict[str, object],
+) -> None:
+    """A row the transport writes that is not a chat message: an arrival, a
+    tool-call report, a task transition. Every durable event gets one."""
+    session.add(
+        Message(
+            room_id=room.id,
+            seq=seq,
+            transport_event_id=f"$evt-{uuid.uuid4().hex}",
+            sender_id=sender.matrix_user_id,
+            sender_client_id=sender.id,
+            event_type=event_type,
+            msgtype=None,
+            body=None,
+            content=content,
+            sent_at=NOW - timedelta(hours=1),
+        )
+    )
+    await session.flush()
+
+
+async def _arrive(
+    session: AsyncSession, room: Room, client: Client, *, seq: int
+) -> None:
+    """Join the room the way the transport does: a membership row and a
+    message-log row, not only the former."""
+    await _join(session, client, room)
+    await _stored(
+        session,
+        room,
+        client,
+        seq=seq,
+        event_type="m.room.member",
+        content={"membership": "join", "displayname": client.display_name},
+    )
 
 
 TENANT_ZERO = "00000000-0000-0000-0000-000000000000"
@@ -410,6 +455,134 @@ class TestMessageCounts:
             counts = await _counts(session)
 
         assert counts.message_count_1d == 0
+
+
+class TestOnlyWhatSomeoneSaidCounts:
+    """The message log holds every durable event, not only the conversation.
+    An agent joining a room or reporting a tool call is not an agent message,
+    and a person being added to a room is not that person using it."""
+
+    async def test_agent_arrivals_and_reports_are_not_agent_messages(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            await _arrive(session, room, agent, seq=1)
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=2,
+                event_type="com.switch.report.tool_call",
+                content={"agent_id": "a", "tool_id": "Bash"},
+            )
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=3,
+                event_type="com.switch.task.update",
+                content={"task_id": "t", "status": "working"},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_count_1d == 0
+        assert counts.message_from_agent_1d == 0
+        assert counts.agent_active_7d == 0
+
+    async def test_a_person_added_to_a_room_is_not_active_in_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _arrive(session, room, human, seq=1)
+
+            counts = await _counts(session)
+            ever_active = await room_had_human_activity(session, TENANT_ZERO, room.id)
+
+        assert counts.message_from_human_1d == 0
+        assert counts.user_active_1d == 0
+        assert counts.room_active_1d == 0
+        assert ever_active is False
+
+    async def test_a_command_a_person_typed_is_something_they_said(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _join(session, human, room)
+            await _stored(
+                session,
+                room,
+                human,
+                seq=1,
+                event_type="com.switch.command",
+                content={"command": "reset", "args": ""},
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_from_human_1d == 1
+        assert counts.user_active_1d == 1
+        assert counts.room_active_1d == 1
+
+    async def test_the_notice_switch_posts_for_an_agent_is_not_the_agent_talking(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Addressed while it has no session, an agent "replies" with an
+        automatic notice. Counted, every unavailable agent reads as a
+        responsive one."""
+        async with session_factory() as session:
+            room = await _room(session)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _say(session, room, human, seq=1)
+            await _stored(
+                session,
+                room,
+                agent,
+                seq=2,
+                event_type="m.room.message",
+                content={
+                    "msgtype": "m.notice",
+                    "body": "no session; starting one",
+                    AUTO_REPLY_FLAG: True,
+                },
+            )
+
+            counts = await _counts(session)
+
+        assert counts.message_from_agent_1d == 0
+        assert counts.turn_human_to_agent_1d == 0
+
+    async def test_a_turn_pairs_across_rows_that_are_not_messages(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A second agent arriving between a question and its answer must not
+        be what the answer is paired with: that would read as one
+        human-to-agent turn from the arrival and one agent-to-agent turn from
+        the answer."""
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            answering = await _client(session, "agent")
+            arriving = await _client(session, "agent")
+            await _say(session, room, human, seq=1)
+            await _arrive(session, room, arriving, seq=2)
+            await _say(session, room, answering, seq=3)
+
+            counts = await _counts(session)
+
+        assert counts.turn_human_to_agent_1d == 1
+        assert counts.turn_agent_to_agent_1d == 0
 
 
 class TestAgentsAndConnectors:

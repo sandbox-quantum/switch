@@ -291,6 +291,14 @@ more easily than it charts a nested object. They count **configured** bridges,
 whether or not each is currently connected — which is up is process state, and
 `bridge_connected` / `bridge_disconnected` are how that is reported.
 
+**What counts as a message.** Every durable event is a row in the message log:
+arrivals, tool- and LLM-call reports and task transitions sit beside the
+conversation. The message counts, the turn counts and every "interacted" figure
+above (`user_active_*`, `room_active_*`, `agent_active_7d`) read only what a
+participant *said*: chat messages, and commands a person typed on a platform.
+The automatic notice Switch posts under an agent's name when it cannot take a
+request is excluded as well — the agent did not say it.
+
 **Turns rather than senders.** A turn is one message classified by who sent the
 message *before* it in the same room. That is the only way to tell an agent
 answering a person from two agents talking among themselves: a sender-only count

@@ -3,8 +3,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
-from switch_core.clients.agent_client import AUTO_REPLY_FLAG, AgentClient
+from switch_core.clients.agent_client import AgentClient
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
 )
