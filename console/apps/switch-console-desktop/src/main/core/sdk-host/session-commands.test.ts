@@ -7,9 +7,13 @@ const mocks = vi.hoisted(() => ({
   running: true,
   hydrate: vi.fn(async () => {}),
 }));
-const { Unavailable } = vi.hoisted(() => ({ Unavailable: class extends Error {} }));
+const { Unavailable, Failed } = vi.hoisted(() => ({
+  Unavailable: class extends Error {},
+  Failed: class extends Error {},
+}));
 vi.mock('@switch-console/agent-providers', () => ({
   SessionUnavailableError: Unavailable,
+  SessionHostFailedError: Failed,
   sharedSessionRoot: (id: string) => `/roots/${id}`,
   liveSupervisor: async () => (mocks.running ? { build: 'b' } : null),
 }));
@@ -126,4 +130,12 @@ it('starts a parked session again and then sends the command', async () => {
   expect(await submitSessionCommand('agent', command)).toEqual(applied);
   expect(mocks.hydrate).toHaveBeenCalledWith('session');
   expect(mocks.local.request).toHaveBeenCalledTimes(2);
+});
+
+it('starts a session whose host failed again when the user sends it something', async () => {
+  mocks.local.request
+    .mockRejectedValueOnce(new Failed('Sign in on the execution machine with claude auth login.'))
+    .mockResolvedValueOnce(applied);
+  expect(await submitSessionCommand('agent', command)).toEqual(applied);
+  expect(mocks.hydrate).toHaveBeenCalledWith('session');
 });
