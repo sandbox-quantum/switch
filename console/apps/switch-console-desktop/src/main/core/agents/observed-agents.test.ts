@@ -213,7 +213,8 @@ describe('attachObservedAgents', () => {
         ownerName: 'Admin',
       })
     );
-    expect(startRemoteDiscovery).toHaveBeenCalledOnce();
+    // Its sessions run in the owner's home, where this account cannot look.
+    expect(startRemoteDiscovery).not.toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith('agent:created', expect.anything(), 'unknown');
     expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
   });

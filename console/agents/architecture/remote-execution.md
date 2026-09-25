@@ -150,12 +150,14 @@ and instructions come from the agent's config file on the host, so they agree.
 Auto-approve lives in each row, so the watcher's saved spec on the host is
 what they share: every watcher write takes auto-approve from it and brings the
 row in line, except the write that follows the person changing it
-(`pushRemoteAutoApprove`), and with automatic sessions off that change goes
-into the saved spec directly (`recordAutoApproveOnHost`).
+(`pushRemoteAutoApprove`). When the watcher is not starting sessions — stopped,
+or automatic sessions off — nothing rewrites the spec now, so that change goes
+into it directly (`recordAutoApproveOnHost`).
 
-Two people acting on one session do not collide: prompts queue in the session's
-SDK host and run in turn, and either person's interrupt or stop ends the turn
-for both — it is one session, shown to everyone who can see it.
+Two Consoles under one account acting on one session do not collide: prompts
+queue in the session's SDK host and run in turn, and either one's interrupt or
+stop ends the turn for both — it is one session, reached through the same
+sidecar.
 
 **Removing an agent.** A plain remove takes the row out of this Console and
 leaves the agent running on its host, for its automatic sessions and anyone
@@ -165,9 +167,12 @@ identity has nothing left to run.
 
 **Agents another account runs are observed, not run.** Their working
 directories, credentials and watchers are in the other account's home. A
-location marked `observed` (migration 0050) holds agents whose identity came
-from the server alone; their sessions are read and driven through the server,
-and nothing about them touches the host. The guards sit at the chokepoints:
+location marked `observed` (migration 0051) holds agents whose identity came
+from the server alone, and nothing about them touches the host. Their sessions
+are not followed either: a session lives on its host, in the owning account's
+home, so only a Console signed in as that account can open one. What is shared
+is the server, where the agent can be talked to in rooms. The guards sit at the
+chokepoints:
 
 - `resolveWorkspaceFsFor` refuses an observed directory, so no read or write of
   an agent's files can reach one however it was asked for.
@@ -176,7 +181,7 @@ and nothing about them touches the host. The guards sit at the chokepoints:
   the session lease.
 - `openLocation` opens an observed location without a provider; creating or
   provisioning a session refuses with the owner named; storage migration and
-  room-session restore skip it.
+  session discovery skip it.
 - Actions a person asks for (auto-session, auto-approve, provider config,
   rename, restart, reset, sidecar, diagnostics, terminate, delete in Switch)
   refuse with `ObservedLocationError`. Removing the row is allowed.

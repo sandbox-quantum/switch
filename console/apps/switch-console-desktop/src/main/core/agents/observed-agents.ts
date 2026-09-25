@@ -145,8 +145,9 @@ export type AttachObservedAgentsParams = {
  * Follow agents another account runs on `sshHost` from this Console, with
  * their identity taken from the server alone. Reads nothing of theirs — in a
  * directory this account can list it only tries its agent files, to learn they
- * are refused — and starts nothing on the host; their sessions are found by
- * the session reconciler, which asks the server.
+ * are refused — and starts nothing on the host. Their sessions are not
+ * followed: a session lives on its host, in the owning account's home, and
+ * only a Console signed in as that account can open it.
  *
  * Refuses anything that is not what it claims: an agent the server does not
  * have, one whose directory the server does not name, one whose files this
@@ -293,16 +294,5 @@ export async function attachObservedAgents(
   }
 
   for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown');
-  // Lazy for the reason attach-configured-agents gives: remote-watcher loads
-  // Electron's `app` at the top level.
-  const { startRemoteDiscovery } = await import('./remote-watcher');
-  for (const agent of created) {
-    startRemoteDiscovery(agent.id).catch((error) => {
-      log.warn('attachObservedAgents: failed to start session discovery', {
-        agentId: agent.id,
-        error: String(error),
-      });
-    });
-  }
   return ok(created);
 }

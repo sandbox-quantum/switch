@@ -1,5 +1,6 @@
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
+import { getLocationById } from '@main/core/locations/store';
 import { listHostSessions } from '@main/core/sdk-host/host-sessions';
 import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionWasDeleted } from '@main/core/sessions/deleted-sessions';
@@ -70,6 +71,14 @@ class RemoteSessionReconciler {
     try {
       const agent = await getAgentById(agentId);
       if (!agent?.switchAgentId) {
+        this.stop(agentId);
+        return;
+      }
+      // Sessions are found in the host's own state, under the home of the
+      // account that runs them, read as this Console's account. An agent
+      // another account runs keeps its sessions where this account cannot
+      // look (CHOO-2893), so there is nothing to discover and nothing to poll.
+      if ((await getLocationById(agent.locationId))?.observed) {
         this.stop(agentId);
         return;
       }
