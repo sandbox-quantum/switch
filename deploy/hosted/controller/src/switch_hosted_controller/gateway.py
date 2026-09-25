@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -16,6 +17,23 @@ from .model import DesiredState, ObservedState
 from .store import AgentNotFoundError, AgentStore
 
 logger = logging.getLogger(__name__)
+
+WORKER_CAPABILITY_PATH = "/run/switch-hosted/secrets/worker-capability"
+WORKER_CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+
+
+def worker_attach_fields(prepared: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """The deployment and bundle fields a worker needs to attach to Switch.
+
+    The capability is the one Core's `prepare` issued for this launch revision;
+    the worker writes it to `WORKER_CAPABILITY_PATH` and sends it as
+    `X-Switch-Worker-Capability`. The boot and instance ids it sends beside it
+    are read on the machine itself, because a bundle outlives a boot.
+    """
+    capability = prepared.get("worker_capability")
+    if not isinstance(capability, str) or not WORKER_CAPABILITY_RE.fullmatch(capability):
+        raise ConfigError("Cloud gateway returned no valid worker capability.")
+    return {"workerCapabilityPath": WORKER_CAPABILITY_PATH}, {"workerCapability": capability}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -259,6 +277,7 @@ class Gateway:
                 )
 
     def bundle(self, prepared: dict, volume_id: str) -> dict:
+        attach_deployment, attach_bundle = worker_attach_fields(prepared)
         spec = prepared["spec"]
         provider = spec.get("provider", "claude")
         binary = {
@@ -300,7 +319,7 @@ class Gateway:
             "watch": spec["auto_session"],
             "runtimeMode": "full-access" if spec["auto_approve"] else "approval-required",
             "switchCredentialsPath": "/run/switch-hosted/secrets/switch.json",
-            "workerCapabilityPath": "/run/switch-hosted/secrets/worker-capability",
+            **attach_deployment,
         }
         model = spec["definition_attributes"].get("model")
         if model:
@@ -316,5 +335,5 @@ class Gateway:
             "deployment": deployment,
             "switchCredentials": prepared["switch_credentials"],
             "githubCredential": prepared["github_credential"],
-            "workerCapability": prepared["worker_capability"],
+            **attach_bundle,
         }
