@@ -1281,13 +1281,13 @@ it('passes an approval answer to the session it is for, and only that one', asyn
   }
 });
 
-it('hands a relayed command to the session it names, and only if it runs here', async () => {
+it('hands a relayed command to the session it names, starting its host if it parked', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-'));
   roots.push(root);
   paths.root = root;
   const config = await spawning(root);
   const own = await existing(root, config);
-  const idle = await existing(root, config);
+  const parked = await existing(root, config);
   const otherConfig = structuredClone(config);
   otherConfig.session.agentId = randomUUID();
   const other = await existing(root, otherConfig);
@@ -1297,30 +1297,149 @@ it('hands a relayed command to the session it names, and only if it runs here', 
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const abort = new AbortController();
   const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
-  const command = (sessionId: string) => ({ sessionId, commandId: `command-${sessionId}` });
+  const command = (sessionId: string) => ({
+    sessionId,
+    commandId: `command-${sessionId}`,
+    body: { type: 'session.reset' },
+  });
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onSessionCommand!(command(own.sessionId));
     await streams[0]!.onSessionCommand!(command(other.sessionId));
-    // This agent's, but with nothing running it: dropped and said, not started.
-    await streams[0]!.onSessionCommand!(command(idle.sessionId));
+    await streams[0]!.onSessionCommand!(command(parked.sessionId));
+    await eventually(() => hosts.to(parked.sessionRoot).length === 1);
     expect(hosts.to(own.sessionRoot)).toEqual([
       { type: 'command', command: command(own.sessionId), requesterName: null },
     ]);
+    expect(hosts.to(parked.sessionRoot)).toEqual([
+      { type: 'command', command: command(parked.sessionId), requesterName: null },
+    ]);
     expect(hosts.to(other.sessionRoot)).toEqual([]);
-    expect(hosts.to(idle.sessionRoot)).toEqual([]);
-    expect(ensureSharedProcess).not.toHaveBeenCalled();
-    const dropped = warn.mock.calls.map((call) => String(call[0]));
+    expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
+      parked.sessionRoot,
+    ]);
     expect(
-      dropped.some((line) => line.includes(`Dropped command command-${other.sessionId}`))
+      warn.mock.calls.some((call) =>
+        String(call[0]).includes(`Dropped command command-${other.sessionId}`)
+      )
     ).toBe(true);
-    expect(dropped.some((line) => line.includes(`Dropped command command-${idle.sessionId}`))).toBe(
-      true
-    );
   } finally {
     abort.abort();
     await run;
   }
+});
+
+it('starts a parked session for a room control while starting sessions is off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-nospawn-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'compact',
+      body: { type: 'session.compact' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => hosts.to(parked.sessionRoot).length === 1);
+    expect(hosts.to(parked.sessionRoot)[0]).toMatchObject({
+      type: 'command',
+      requesterName: 'Owner',
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('tells the room, as the session, when a room control cannot be carried out', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-failed-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  const calls = switchOperations({ owner: 'ada' });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  const origin = { roomId: 'room', threadId: 'thread-root' };
+  try {
+    await eventually(() => streams.length === 1);
+    // Nothing runs a parked session, so there is no turn to stop and no reason
+    // to start one.
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'interrupt',
+      origin,
+      body: { type: 'turn.interrupt', turnId: 'current' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => calls.length === 1);
+    expect(calls[0]).toEqual({
+      name: 'send_targeted_message',
+      session: parked.sessionId,
+      body: {
+        body: "I couldn't interrupt my session: There is no turn running to interrupt.",
+        target_names: ['Owner'],
+        thread_id: 'thread-root',
+      },
+    });
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+
+    hosts.fail = SIGN_IN;
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'reset',
+      origin,
+      body: { type: 'session.reset' },
+      requesterName: null,
+    });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]).toEqual({
+      name: 'post_message',
+      session: parked.sessionId,
+      body: { body: `I couldn't reset my session: ${SIGN_IN}`, thread_id: 'thread-root' },
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('starts a parked session serving a room again while starting sessions is off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-parked-nospawn-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
+    owner.sessionRoot,
+  ]);
+  expect(hosts.to(owner.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+  expect((await SharedWatchAssignments.open(root)).sessions()).toHaveLength(1);
 });
 
 it('refuses to run without being the parent of its sessions', async () => {

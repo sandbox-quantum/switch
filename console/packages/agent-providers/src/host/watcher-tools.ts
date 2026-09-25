@@ -134,6 +134,30 @@ function resultText(result: ToolResult): string {
   return result.content.map((part) => part.text).join('\n');
 }
 
+/** A call made as the session, in the room Switch holds it placed in. */
+function asSession(input: {
+  identity: SwitchIdentity;
+  connectionId: string;
+  session: { sessionId: string; hostId: string; epoch: string };
+  root: string;
+  cwd: string;
+}): CallerContext {
+  return {
+    identity: input.identity,
+    connectionId: input.connectionId,
+    selector: {
+      [SESSION_SELECTOR_HEADERS.sessionId]: input.session.sessionId,
+      [SESSION_SELECTOR_HEADERS.hostId]: input.session.hostId,
+      [SESSION_SELECTOR_HEADERS.epoch]: input.session.epoch,
+    },
+    room: null,
+    mediaDir: join(input.root, 'media'),
+    cwd: input.cwd,
+    deadConnection: (operation) =>
+      `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
+  };
+}
+
 /**
  * Tells a room that the session started to answer it could not start, and
  * why: as the agent, in the thread the message came from, and addressed to
@@ -152,20 +176,7 @@ export async function announceStartFailure(input: {
   threadId: string | null;
   failure: string;
 }): Promise<void> {
-  const ctx: CallerContext = {
-    identity: input.identity,
-    connectionId: input.connectionId,
-    selector: {
-      [SESSION_SELECTOR_HEADERS.sessionId]: input.session.sessionId,
-      [SESSION_SELECTOR_HEADERS.hostId]: input.session.hostId,
-      [SESSION_SELECTOR_HEADERS.epoch]: input.session.epoch,
-    },
-    room: null,
-    mediaDir: join(input.root, 'media'),
-    cwd: input.cwd,
-    deadConnection: (operation) =>
-      `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
-  };
+  const ctx = asSession(input);
   const thread = input.threadId ? { thread_id: input.threadId } : {};
   const detail = await callOperation(ctx, 'get_agent_detail', {
     agent_id: input.identity.agentId,
@@ -197,6 +208,41 @@ export async function announceStartFailure(input: {
     body: `I couldn't start a session, and my owner needs to fix it: ${input.failure} Then address me again.`,
     ...thread,
   });
+  if (posted.isError) throw new Error(resultText(posted));
+}
+
+/**
+ * Tells a room that a control typed in it (`!reset`, `!interrupt`) was not
+ * carried out, and why: Switch answered the room when it relayed the control,
+ * before the session had it. Addressed to whoever asked when the room named
+ * them. Raises when the room could not be told.
+ */
+export async function announceCommandFailure(input: {
+  identity: SwitchIdentity;
+  connectionId: string;
+  session: { sessionId: string; hostId: string; epoch: string };
+  root: string;
+  cwd: string;
+  threadId: string | null;
+  requesterName: string | null;
+  action: string;
+  failure: string;
+}): Promise<void> {
+  const ctx = asSession(input);
+  const thread = input.threadId ? { thread_id: input.threadId } : {};
+  const body = `I couldn't ${input.action}: ${input.failure}`;
+  if (input.requesterName) {
+    const targeted = await callOperation(ctx, 'send_targeted_message', {
+      body,
+      target_names: [input.requesterName],
+      ...thread,
+    });
+    if (!targeted.isError) return;
+    console.warn(
+      `Could not address ${input.requesterName} about a room control session ${input.session.sessionId} did not carry out: ${resultText(targeted)}. Telling the room without addressing them.`
+    );
+  }
+  const posted = await callOperation(ctx, 'post_message', { body, ...thread });
   if (posted.isError) throw new Error(resultText(posted));
 }
 
