@@ -483,6 +483,13 @@ it('wires the shared daemon to the supervisor and forwards shutdown', async () =
   expect(launched?.env.SWITCH_HOST_INSTANCE_ID).toBe('instance-fixture');
   expect(launched?.env.SWITCH_HOST_BOOT_ID).toBe('boot-fixture');
   expect(JSON.stringify(launched?.env)).not.toContain('worker-capability-secret');
+  expect(launched?.logRedactions).toEqual(
+    expect.arrayContaining([
+      'provider-secret-value',
+      'switch-secret-value',
+      'worker-capability-secret',
+    ])
+  );
   expect(launched?.signal.aborted).toBe(true);
 });
 

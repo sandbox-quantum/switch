@@ -77,6 +77,7 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();

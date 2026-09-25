@@ -652,6 +652,7 @@ export async function runHostedBootstrap(
       signal: input.signal,
       build: input.sharedDaemonEntrypoint,
       links: null,
+      logRedactions: prepared.logRedactions,
     });
   } catch (error) {
     if (error instanceof WorkerObsoleteError) throw error;
