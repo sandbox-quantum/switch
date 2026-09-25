@@ -169,6 +169,8 @@ def test_start_callback_cannot_publish_stale_success_or_error(tmp_path: Path, st
     cfg = config(tmp_path)
     store, agent = store_and_agent(cfg)
     agent = record_compute(store, agent, cfg.availability_zone)
+    store.require_bundle(agent.agent_id, 1, "bundle-1")
+    store.record_bundle(agent.agent_id, "bundle-1")
     store.set_observed(agent, ObservedState.STOPPED)
     cloud = StartRaceCloud(cfg.state_db_path, cfg.fingerprint(), fail=start_fails)
 

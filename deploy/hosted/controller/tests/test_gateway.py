@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 from test_controller import config
@@ -56,7 +56,11 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
         raise RuntimeError("Simulated crash after the secret write")
 
     secrets = SimpleNamespace(
-        describe_secret=Mock(side_effect=lambda **_: {"VersionIdsToStages": saved}),
+        describe_secret=Mock(
+            side_effect=lambda **_: {
+                "VersionIdsToStages": {token: ["AWSCURRENT"] for token in saved}
+            }
+        ),
         put_secret_value=Mock(side_effect=put),
     )
     gateway = Gateway(
@@ -83,14 +87,16 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
     assert len(store.list()) == 1
     assert secrets.put_secret_value.call_count == 1
     assert sum(call.args[0].endswith("/prepare") for call in gateway.request.call_args_list) == 1
-    deployment = saved[request_id]["deployment"]
-    assert saved[request_id]["assignment"]["dataVolumeId"] == "vol-0123456789abcdef0"
+    token = str(uuid5(UUID(request_id), "1"))
+    assert store.get("agent-1").bundle_token == token
+    deployment = saved[token]["deployment"]
+    assert saved[token]["assignment"]["dataVolumeId"] == "vol-0123456789abcdef0"
     assert deployment["watch"] is True
     assert deployment["revision"] == 1
     assert "room" not in deployment
     assert "mcpRuntime" not in deployment
     assert deployment["workerCapabilityPath"] == "/run/switch-hosted/secrets/worker-capability"
-    assert saved[request_id]["workerCapability"] == "SYNTHETIC-WORKER-CAPABILITY"
+    assert saved[token]["workerCapability"] == "SYNTHETIC-WORKER-CAPABILITY"
     assert deployment["github"]["refresh"] is True
     assert deployment["provider"]["definition"]["name"] == "helper"
     store.close()
