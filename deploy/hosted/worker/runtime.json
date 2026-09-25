@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "nodePath": "/opt/switch/node/bin/node",
+  "bootstrapPath": "/opt/switch/agent-providers/hosted-bootstrap.mjs",
+  "sharedHostDaemonPath": "/opt/switch/agent-providers/shared-host-daemon.mjs",
+  "providerBinaryPath": "/opt/switch/claude/bin/claude",
+  "agentUser": "switch-agent",
+  "agentGroup": "switch-agent",
+  "path": "/opt/switch/node/bin:/opt/switch/claude/bin:/usr/local/bin:/usr/bin:/bin",
+  "mcpRuntime": "@sandboxaq/switch-agent-runtime@0.4.2",
+  "mcpRuntimePath": "/opt/switch/agent-providers/switch-agent-runtime.mjs",
+  "allowInitialFormat": true,
+  "artifactSha256": {
+    "node": "0000000000000000000000000000000000000000000000000000000000000000",
+    "bootstrap": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sharedHostDaemon": "0000000000000000000000000000000000000000000000000000000000000000",
+    "provider": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mcpRuntime": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
