@@ -1,12 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   EVICTION_HEARTBEAT_LAPSED,
   EVICTION_TAKEN_OVER,
+  type SessionCommand,
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
+import {
+  type CommandStatus,
+  commandStatusSchema,
+  sessionSchema,
+} from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -29,6 +35,7 @@ import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
 import {
+  announceCommandOutcome,
   announceStartFailure,
   type PlaceOutcome,
   sessionToolAnswerer,
@@ -121,6 +128,17 @@ const OWNERSHIP_RETRY_MS = 5000;
 /** How long a message waits for its session's host to start and take it. */
 const HOST_START_MS = 120000;
 
+/**
+ * How long a room control may run once its host has it: past native
+ * compaction's own 180-second limit, and a reset's provider restart.
+ */
+const COMMAND_MS = 300000;
+
+/** The part of a host's snapshot that says whether its session is still coming up. */
+const startingSnapshotSchema = z.object({
+  session: z.object({ status: sessionSchema.shape.status }),
+});
+
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
 
@@ -140,6 +158,67 @@ function sessionIdFor(agentId: string, roomId: string, messageId: string): strin
   bytes[8] = (bytes[8]! & 63) | 128;
   const hex = bytes.toString('hex').slice(0, 32);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Whether a host has ever run this session: it writes its config on first launch. */
+async function launchedBefore(sessionId: string): Promise<boolean> {
+  try {
+    await stat(join(sharedSessionRoot(sessionId), 'config.json'));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** What a room control asks for, as a room reads it, and the thread it was typed in. */
+function controlOf(command: SessionCommand): {
+  action: string;
+  interrupt: boolean;
+  threadId: string | null;
+} {
+  const parsed = z
+    .object({
+      body: z.object({ type: z.string() }),
+      origin: z.object({ threadId: z.string().min(1).nullish() }).nullish(),
+    })
+    .safeParse(command);
+  const type = parsed.success ? parsed.data.body.type : null;
+  return {
+    action:
+      type === 'session.reset'
+        ? 'reset my session'
+        : type === 'session.compact'
+          ? 'compact my session'
+          : type === 'turn.interrupt'
+            ? 'interrupt my session'
+            : `run command ${command.commandId}`,
+    interrupt: type === 'turn.interrupt',
+    threadId: parsed.success ? (parsed.data.origin?.threadId ?? null) : null,
+  };
+}
+
+/**
+ * The last status the session's host recorded for a command, from its event
+ * journal; null when it recorded none. Read when the host's answer was lost,
+ * since the host may have carried the command out before it went.
+ */
+async function recordedStatus(sessionId: string, commandId: string): Promise<CommandStatus | null> {
+  let text: string;
+  try {
+    text = await readFile(join(sharedSessionRoot(sessionId), 'events.jsonl'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const record = z.object({ body: commandStatusSchema });
+  let found: CommandStatus | null = null;
+  // The last line may still be being written by a host that is running.
+  for (const line of text.split('\n').slice(0, -1)) {
+    const parsed = record.safeParse(JSON.parse(line));
+    if (parsed.success && parsed.data.body.commandId === commandId) found = parsed.data.body;
+  }
+  return found;
 }
 
 async function stopped(sessionId: string): Promise<boolean> {
@@ -602,13 +681,16 @@ export async function runSharedWatcher(
     const launch = async (config: SharedHostConfig) => {
       // Both flags are re-read here rather than taken from whoever asked for the
       // launch. Everything that reaches this point was admitted earlier and may
-      // have waited behind other work since — a queued event, or an assignment
-      // later in the restore loop — and a session started after somebody turned
-      // spawning off cannot be taken back.
+      // have waited behind other work since, and a session started after
+      // somebody turned spawning off cannot be taken back. Spawning governs
+      // new sessions only: one that has run before (parked, crashed, stopped
+      // for an upgrade) still holds its room, and is started again to serve it.
       const now = await readWatchFlags(root);
-      if (!now.enabled || !now.spawn || (await stopped(config.session.sessionId))) return;
+      const sessionId = config.session.sessionId;
+      if (!now.enabled || (await stopped(sessionId))) return;
+      if (!now.spawn && !(await launchedBefore(sessionId))) return;
       await ensureSharedProcess({
-        root: sharedSessionRoot(config.session.sessionId),
+        root: sharedSessionRoot(sessionId),
         config: reachableBy(config, connectionId),
         resuming: false,
         watcher: false,
@@ -638,6 +720,148 @@ export async function runSharedWatcher(
       } catch (error) {
         console.warn(`Could not pass ${what} to session ${sessionId}: ${String(error)}`);
         return false;
+      }
+    };
+    /**
+     * Waits until `deadline` for the session a host at this root is bringing
+     * up to leave `starting`: a host takes requests before its provider is
+     * ready, and refuses a control that needs a ready session until then.
+     */
+    const awaitSessionStarted = async (sessionRoot: string, deadline: number) => {
+      let status: string | null = null;
+      let wake = () => {};
+      const unsubscribe = links.subscribe(sessionRoot, (event) => {
+        if (event.body.type !== 'session.upsert') return;
+        status = event.body.session.status;
+        wake();
+      });
+      const unexit = links.onExit((exited) => {
+        if (exited === sessionRoot) wake();
+      });
+      try {
+        const snapshot = startingSnapshotSchema.safeParse(
+          await links.request(sessionRoot, { type: 'snapshot' }, deadline - Date.now())
+        );
+        if (!snapshot.success)
+          throw new Error('The session answered with a snapshot this build cannot read.');
+        status = snapshot.data.session.status;
+        while (status === 'starting') {
+          const failure = links.failure(sessionRoot);
+          if (failure !== null) throw new SessionHostFailedError(failure);
+          if (!links.ready(sessionRoot))
+            throw new SessionUnavailableError('The session host stopped while it was starting.');
+          const remaining = deadline - Date.now();
+          if (remaining <= 0)
+            throw new SessionUnavailableError('The session did not finish starting in time.');
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, remaining);
+            wake = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+          });
+        }
+      } finally {
+        unsubscribe();
+        unexit();
+      }
+    };
+    /**
+     * Hands a room control to its session's host, starting a host that parked
+     * or went away: the session still holds the room. Switch told the room the
+     * control was sent before the session had it, so the room is told when it
+     * was not carried out, or when that cannot be confirmed. An answer lost
+     * after the host had the control is never read as a refusal: the host may
+     * have carried it out.
+     */
+    const relayCommand = async (relayed: SessionCommand) => {
+      const { requesterName, ...command } = relayed;
+      const sessionId = command.sessionId;
+      const config = await sessionConfig(sessionId);
+      if (!config) {
+        console.warn(
+          `Dropped command ${command.commandId}: session ${sessionId} is not one of this agent's sessions here.`
+        );
+        return;
+      }
+      const sessionRoot = sharedSessionRoot(sessionId);
+      const requester = typeof requesterName === 'string' ? requesterName : null;
+      const { action, interrupt, threadId } = controlOf(relayed);
+      const reason = (error: unknown) =>
+        error instanceof SessionHostFailedError
+          ? error.failure
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      const refused = (why: string) => `I couldn't ${action}: ${why}`;
+      const unconfirmed = (why: string) =>
+        `I couldn't confirm whether I managed to ${action}: ${why} Check my session in Switch Console before asking again.`;
+      const fromStatus = (recorded: CommandStatus): string | null =>
+        recorded.status === 'applied'
+          ? null
+          : recorded.status === 'rejected'
+            ? refused(recorded.message ?? recorded.code ?? 'The session refused it.')
+            : recorded.status === 'unknown'
+              ? unconfirmed(recorded.message ?? recorded.code ?? 'The session did not say.')
+              : unconfirmed('It is still running.');
+      let answer: string | null = null;
+      if (await stopped(sessionId)) answer = refused('The session was stopped.');
+      else if (!links.ready(sessionRoot) && interrupt)
+        answer = refused('There is no turn running to interrupt.');
+      else {
+        try {
+          if (!links.ready(sessionRoot)) {
+            const deadline = Date.now() + HOST_START_MS;
+            await launch(config);
+            await links.awaitReady(sessionRoot, HOST_START_MS);
+            await awaitSessionStarted(sessionRoot, deadline);
+          }
+        } catch (error) {
+          answer = refused(reason(error));
+        }
+        if (answer === null) {
+          try {
+            const reply = commandStatusSchema.safeParse(
+              await links.request(
+                sessionRoot,
+                { type: 'command', command, requesterName: requester },
+                COMMAND_MS
+              )
+            );
+            answer = reply.success
+              ? fromStatus(reply.data)
+              : unconfirmed('The session answered with a status this build cannot read.');
+          } catch (error) {
+            // What the host recorded is the outcome. Without a record, the
+            // host answering no is a refusal; the host going quiet is not.
+            const recorded = await recordedStatus(sessionId, command.commandId);
+            answer = recorded
+              ? fromStatus(recorded)
+              : error instanceof SessionUnavailableError || error instanceof SessionHostFailedError
+                ? unconfirmed(`Its answer was lost (${reason(error)}).`)
+                : refused(reason(error));
+          }
+        }
+      }
+      if (answer === null) return;
+      console.warn(`Session ${sessionId}, command ${command.commandId}: ${answer}`);
+      try {
+        await announceCommandOutcome({
+          identity,
+          connectionId,
+          session: config.session,
+          root: sessionRoot,
+          cwd: config.start.input.cwd,
+          threadId,
+          requesterName: requester,
+          body: answer,
+        });
+      } catch (error) {
+        console.error(
+          `Could not tell the room about command ${command.commandId} for session ${sessionId} (${answer}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
       }
     };
     /**
@@ -881,21 +1105,9 @@ export async function runSharedWatcher(
       },
       // A room control (!reset, !interrupt) typed in one of the agent's rooms,
       // which only Switch sees. Handed to the session's host like any other.
-      onSessionCommand: async (relayed) => {
-        const { requesterName, ...command } = relayed;
-        const taken = await askSession(
-          command.sessionId,
-          {
-            type: 'command',
-            command,
-            requesterName: typeof requesterName === 'string' ? requesterName : null,
-          },
-          `command ${command.commandId}`
-        );
-        if (!taken)
-          console.warn(
-            `Dropped command ${command.commandId}: session ${command.sessionId} is not running here.`
-          );
+      // Not awaited: starting a parked host must not hold up the stream.
+      onSessionCommand: (relayed) => {
+        void relayCommand(relayed).catch((error: Error) => fail(error));
       },
       onEvent: (event) => {
         // Read as the event arrives rather than when its turn comes: what is

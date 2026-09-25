@@ -77,7 +77,8 @@ type HostChild = EventEmitter & {
  * host is attached to its link when `start` is called — what the supervisor
  * does on spawning one — says it is ready straight away, and records every
  * request it is sent. It answers each one unless told to `drop` them, in which
- * case it stops before answering, as a host that crashed would.
+ * case it stops before answering, as a host that crashed would. A snapshot it
+ * answers itself, with its session's status, and does not record.
  */
 function sessionHosts() {
   const links = new SessionLinks();
@@ -90,10 +91,26 @@ function sessionHosts() {
     requests,
     drop: false,
     /**
+     * When set, how each host answers a request instead of taking it: a reply,
+     * or `exit` for a host that stops before it answers.
+     */
+    answer: null as
+      | null
+      | ((
+          root: string,
+          request: SessionRequest
+        ) => Promise<{ ok: boolean; value?: unknown; error?: string } | 'exit'>),
+    /**
      * When set, each host started fails before it is ready, recording this
      * as why — what a host whose provider CLI is not signed in does.
      */
     fail: null as string | null,
+    /**
+     * When set, each host started is ready for requests while its session is
+     * still `starting`, until `started` is called for it.
+     */
+    starting: false,
+    statuses: new Map<string, string>(),
     supervision: {
       build: 'build',
       start: async () => {},
@@ -112,14 +129,41 @@ function sessionHosts() {
           return true;
         }
         const { id, request } = message as { id: number; request: SessionRequest };
+        if (request.type === 'snapshot') {
+          const value = { session: { status: hosts.statuses.get(root) } };
+          setImmediate(() => child.emit('message', { kind: 'reply', id, ok: true, value }));
+          return true;
+        }
         requests.push({ root, request });
+        const custom = hosts.answer?.(root, request) ?? null;
         setImmediate(() => {
           if (hosts.drop) child.emit('exit', null, 'SIGKILL');
-          else child.emit('message', { kind: 'reply', id, ok: true, value: null });
+          else if (custom)
+            void custom.then((reply) => {
+              if (reply === 'exit') child.emit('exit', null, 'SIGKILL');
+              else child.emit('message', { kind: 'reply', id, ...reply });
+            });
+          else
+            child.emit('message', {
+              kind: 'reply',
+              id,
+              ok: true,
+              value:
+                request.type === 'command'
+                  ? {
+                      type: 'command.status',
+                      commandId: (request.command as { commandId: string }).commandId,
+                      status: 'applied',
+                      code: null,
+                      message: null,
+                    }
+                  : null,
+            });
         });
         return true;
       };
       children.set(root, child);
+      hosts.statuses.set(root, hosts.starting ? 'starting' : 'ready');
       links.attach(root, child as unknown as ChildProcess);
       const failure = hosts.fail;
       if (failure !== null) {
@@ -152,6 +196,21 @@ function sessionHosts() {
       child.emit('message', { kind: 'ask', id, ask });
       await eventually(() => answers.some((answer) => answer.id === id));
       return answers.find((answer) => answer.id === id)!;
+    },
+    /** The session of the host at `root` finishes starting, as its provider says. */
+    started: (root: string, session: Record<string, unknown>) => {
+      hosts.statuses.set(root, 'ready');
+      children.get(root)!.emit('message', {
+        kind: 'event',
+        event: {
+          contractVersion: 1,
+          eventId: randomUUID(),
+          sessionId: session.sessionId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          body: { type: 'session.upsert', session: { ...session, status: 'ready' } },
+        },
+      });
     },
     /** The host at `root` exits. */
     exit: (root: string) => children.get(root)?.emit('exit', 0, null),
@@ -1281,13 +1340,13 @@ it('passes an approval answer to the session it is for, and only that one', asyn
   }
 });
 
-it('hands a relayed command to the session it names, and only if it runs here', async () => {
+it('hands a relayed command to the session it names, starting its host if it parked', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-'));
   roots.push(root);
   paths.root = root;
   const config = await spawning(root);
   const own = await existing(root, config);
-  const idle = await existing(root, config);
+  const parked = await existing(root, config);
   const otherConfig = structuredClone(config);
   otherConfig.session.agentId = randomUUID();
   const other = await existing(root, otherConfig);
@@ -1297,30 +1356,351 @@ it('hands a relayed command to the session it names, and only if it runs here', 
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const abort = new AbortController();
   const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
-  const command = (sessionId: string) => ({ sessionId, commandId: `command-${sessionId}` });
+  const command = (sessionId: string) => ({
+    sessionId,
+    commandId: `command-${sessionId}`,
+    body: { type: 'session.reset' },
+  });
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onSessionCommand!(command(own.sessionId));
     await streams[0]!.onSessionCommand!(command(other.sessionId));
-    // This agent's, but with nothing running it: dropped and said, not started.
-    await streams[0]!.onSessionCommand!(command(idle.sessionId));
+    await streams[0]!.onSessionCommand!(command(parked.sessionId));
+    await eventually(() => hosts.to(parked.sessionRoot).length === 1);
     expect(hosts.to(own.sessionRoot)).toEqual([
       { type: 'command', command: command(own.sessionId), requesterName: null },
     ]);
+    expect(hosts.to(parked.sessionRoot)).toEqual([
+      { type: 'command', command: command(parked.sessionId), requesterName: null },
+    ]);
     expect(hosts.to(other.sessionRoot)).toEqual([]);
-    expect(hosts.to(idle.sessionRoot)).toEqual([]);
-    expect(ensureSharedProcess).not.toHaveBeenCalled();
-    const dropped = warn.mock.calls.map((call) => String(call[0]));
+    expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
+      parked.sessionRoot,
+    ]);
     expect(
-      dropped.some((line) => line.includes(`Dropped command command-${other.sessionId}`))
+      warn.mock.calls.some((call) =>
+        String(call[0]).includes(`Dropped command command-${other.sessionId}`)
+      )
     ).toBe(true);
-    expect(dropped.some((line) => line.includes(`Dropped command command-${idle.sessionId}`))).toBe(
-      true
-    );
   } finally {
     abort.abort();
     await run;
   }
+});
+
+it('starts a parked session for a room control while starting sessions is off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-nospawn-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'compact',
+      body: { type: 'session.compact' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => hosts.to(parked.sessionRoot).length === 1);
+    expect(hosts.to(parked.sessionRoot)[0]).toMatchObject({
+      type: 'command',
+      requesterName: 'Owner',
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('tells the room, as the session, when a room control cannot be carried out', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-failed-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  const calls = switchOperations({ owner: 'ada' });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  const origin = { roomId: 'room', threadId: 'thread-root' };
+  try {
+    await eventually(() => streams.length === 1);
+    // Nothing runs a parked session, so there is no turn to stop and no reason
+    // to start one.
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'interrupt',
+      origin,
+      body: { type: 'turn.interrupt', turnId: 'current' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => calls.length === 1);
+    expect(calls[0]).toEqual({
+      name: 'send_targeted_message',
+      session: parked.sessionId,
+      body: {
+        body: "I couldn't interrupt my session: There is no turn running to interrupt.",
+        target_names: ['Owner'],
+        thread_id: 'thread-root',
+      },
+    });
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+
+    hosts.fail = SIGN_IN;
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'reset',
+      origin,
+      body: { type: 'session.reset' },
+      requesterName: null,
+    });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]).toEqual({
+      name: 'post_message',
+      session: parked.sessionId,
+      body: { body: `I couldn't reset my session: ${SIGN_IN}`, thread_id: 'thread-root' },
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+const commandIdOf = (request: SessionRequest): string =>
+  request.type === 'command' ? (request.command as { commandId: string }).commandId : '';
+
+const status = (commandId: string, value: string, code: string | null, message: string | null) => ({
+  type: 'command.status',
+  commandId,
+  status: value,
+  code,
+  message,
+});
+
+it('tells the room when a running session refuses a room control or cannot say how it went', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-refused-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config);
+  const hosts = sessionHosts();
+  await hosts.start(own.sessionRoot);
+  const calls = switchOperations({ owner: 'ada' });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const busy = 'Error: SESSION_BUSY: finish or interrupt the current turn first.';
+  hosts.answer = async (_root, request) => {
+    const commandId = commandIdOf(request);
+    if (commandId === 'compact')
+      return { ok: true, value: status(commandId, 'rejected', 'COMMAND_REJECTED', busy) };
+    if (commandId === 'interrupt')
+      return { ok: false, error: 'There is no turn running to interrupt.' };
+    if (commandId === 'reset')
+      return {
+        ok: true,
+        value: status(commandId, 'unknown', 'OUTCOME_UNKNOWN', 'Error: provider went away'),
+      };
+    return { ok: true, value: status(commandId, 'applied', null, null) };
+  };
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  const relay = (commandId: string, type: string) =>
+    streams[0]!.onSessionCommand!({
+      sessionId: own.sessionId,
+      commandId,
+      body: { type },
+      requesterName: 'Owner',
+    });
+  const said = () =>
+    calls.filter((call) => call.name === 'send_targeted_message').map((call) => call.body.body);
+  try {
+    await eventually(() => streams.length === 1);
+    await relay('compact', 'session.compact');
+    await eventually(() => said().length === 1);
+    await relay('interrupt', 'turn.interrupt');
+    await eventually(() => said().length === 2);
+    await relay('reset', 'session.reset');
+    await eventually(() => said().length === 3);
+    await relay('applied', 'session.reset');
+    await eventually(() => hosts.to(own.sessionRoot).length === 4);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(said()).toEqual([
+      `I couldn't compact my session: ${busy}`,
+      "I couldn't interrupt my session: There is no turn running to interrupt.",
+      "I couldn't confirm whether I managed to reset my session: Error: provider went away Check my session in Switch Console before asking again.",
+    ]);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('reads what the host recorded when its answer to a room control is lost', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-lost-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config);
+  const hosts = sessionHosts();
+  const calls = switchOperations({ owner: 'ada' });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const recorded: Record<string, string> = { applied: 'applied', running: 'dispatched' };
+  hosts.answer = async (sessionRoot, request) => {
+    const commandId = commandIdOf(request);
+    const value = recorded[commandId];
+    if (value)
+      await writeFile(
+        join(sessionRoot, 'events.jsonl'),
+        JSON.stringify({ sequence: 1, body: status(commandId, value, null, null) }) + '\n',
+        { flag: 'a' }
+      );
+    return 'exit';
+  };
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  const relay = async (commandId: string) => {
+    await streams[0]!.onSessionCommand!({
+      sessionId: own.sessionId,
+      commandId,
+      body: { type: 'session.reset' },
+      requesterName: null,
+    });
+    await eventually(() =>
+      hosts.to(own.sessionRoot).some((request) => commandIdOf(request) === commandId)
+    );
+  };
+  const said = () =>
+    calls.filter((call) => call.name === 'post_message').map((call) => call.body.body);
+  try {
+    await eventually(() => streams.length === 1);
+    // Applied before the host went: nothing to correct, and nothing sent twice.
+    await relay('applied');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(said()).toEqual([]);
+    await relay('running');
+    await eventually(() => said().length === 1);
+    await relay('silent');
+    await eventually(() => said().length === 2);
+    expect(said()).toEqual([
+      "I couldn't confirm whether I managed to reset my session: It is still running. Check my session in Switch Console before asking again.",
+      "I couldn't confirm whether I managed to reset my session: Its answer was lost (The session host stopped before it answered.). Check my session in Switch Console before asking again.",
+    ]);
+    expect(hosts.to(own.sessionRoot)).toHaveLength(3);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('gives a room control longer than a host start to finish once its host has it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-long-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  const calls = switchOperations({ owner: 'ada' });
+  const ready = vi.spyOn(hosts.links, 'awaitReady');
+  const request = vi.spyOn(hosts.links, 'request');
+  hosts.answer = async (_root, asked) => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const commandId = commandIdOf(asked);
+    return { ok: true, value: status(commandId, 'applied', null, null) };
+  };
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'compact',
+      body: { type: 'session.compact' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => request.mock.results.length === 2);
+    await request.mock.results[1]!.value;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  // The start is waited for on its own; the compaction then has longer than
+  // the provider's own 180-second limit, and finished, so nothing is said.
+  expect(ready.mock.calls).toEqual([[parked.sessionRoot, 120000]]);
+  expect(request.mock.calls.find(([, asked]) => asked.type === 'command')![2]).toBeGreaterThan(
+    180000
+  );
+  expect(calls).toEqual([]);
+});
+
+it('holds a room control for a parked session until the session it starts is ready', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-starting-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const parked = await existing(root, config);
+  const hosts = sessionHosts();
+  hosts.starting = true;
+  const calls = switchOperations({ owner: 'ada' });
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    const relayed = streams[0]!.onSessionCommand!({
+      sessionId: parked.sessionId,
+      commandId: 'reset',
+      body: { type: 'session.reset' },
+      requesterName: 'Owner',
+    });
+    await eventually(() => hosts.links.ready(parked.sessionRoot));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(hosts.to(parked.sessionRoot)).toEqual([]);
+    hosts.started(parked.sessionRoot, { ...config.session, sessionId: parked.sessionId });
+    await relayed;
+    await eventually(() => hosts.to(parked.sessionRoot).length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(hosts.to(parked.sessionRoot)).toMatchObject([
+    { type: 'command', command: { commandId: 'reset', body: { type: 'session.reset' } } },
+  ]);
+  expect(calls).toEqual([]);
+});
+
+it('starts a parked session serving a room again while starting sessions is off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-parked-nospawn-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, new WatcherControl());
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
+    owner.sessionRoot,
+  ]);
+  expect(hosts.to(owner.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+  expect((await SharedWatchAssignments.open(root)).sessions()).toHaveLength(1);
 });
 
 it('refuses to run without being the parent of its sessions', async () => {
