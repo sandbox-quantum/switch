@@ -94,6 +94,14 @@ class AgentStore:
                 )
             if "observed_operation_id" not in columns:
                 self._connection.execute("ALTER TABLE agents ADD COLUMN observed_operation_id TEXT")
+            if "required_bundle_revision" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE agents ADD COLUMN required_bundle_revision INTEGER"
+                )
+            if "required_bundle_token" not in columns:
+                self._connection.execute("ALTER TABLE agents ADD COLUMN required_bundle_token TEXT")
+            if "bundle_token" not in columns:
+                self._connection.execute("ALTER TABLE agents ADD COLUMN bundle_token TEXT")
             self._connection.execute("COMMIT")
         except Exception:
             if self._connection.in_transaction:
@@ -367,6 +375,32 @@ class AgentStore:
         )
         return self.get(claim.agent_id)
 
+    def require_bundle(self, agent_id: str, revision: int, token: str) -> Agent:
+        """Require the bundle of `revision` before the worker may launch or start.
+
+        A revision older than the one already required leaves the agent unchanged.
+        """
+        self._connection.execute(
+            """
+            UPDATE agents SET required_bundle_revision = ?, required_bundle_token = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ?
+            AND (required_bundle_revision IS NULL OR required_bundle_revision <= ?)
+            """,
+            (revision, token, agent_id, revision),
+        )
+        return self.get(agent_id)
+
+    def record_bundle(self, agent_id: str, token: str) -> Agent:
+        self._connection.execute(
+            """
+            UPDATE agents SET bundle_token = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE agent_id = ? AND required_bundle_token = ?
+            """,
+            (token, agent_id, token),
+        )
+        return self.get(agent_id)
+
     def get(self, agent_id: str) -> Agent:
         return self._get_row(agent_id)
 
@@ -463,4 +497,7 @@ def _agent(row: sqlite3.Row) -> Agent:
         instance_launch_issued=bool(row["instance_launch_issued"]),
         instance_terminal_observed=bool(row["instance_terminal_observed"]),
         volume_delete_issued=bool(row["volume_delete_issued"]),
+        required_bundle_revision=row["required_bundle_revision"],
+        required_bundle_token=row["required_bundle_token"],
+        bundle_token=row["bundle_token"],
     )

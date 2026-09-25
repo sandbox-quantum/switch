@@ -49,3 +49,6 @@ class Agent:
     instance_launch_issued: bool
     instance_terminal_observed: bool
     volume_delete_issued: bool
+    required_bundle_revision: int | None
+    required_bundle_token: str | None
+    bundle_token: str | None
