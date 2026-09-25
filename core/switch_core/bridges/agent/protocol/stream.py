@@ -172,7 +172,37 @@ async def _event_stream(
         # the sequence. Say so. Staying quiet would leave the client believing
         # it is caught up when its numbering no longer means anything.
         head = buffer.head(agent_id)
-        if conn.cursor > head:
+        floor = buffer.sequence_floor
+        if 0 < conn.cursor < floor - 1:
+            # Every boot numbers above the previous one, so a cursor below this
+            # boot's floor is one a restart left behind. The client keeps its
+            # sequence-based dedupe (nothing is reused); what it has lost is
+            # every event the old buffer held.
+            logger.warning(
+                "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
+                "earlier server boot (this boot starts at %s)",
+                agent_id,
+                conn.id,
+                conn.cursor,
+                floor,
+            )
+            previous = conn.cursor
+            conn.cursor = floor - 1
+            buffer.mark_restarted(agent_id)
+            yield _frame(
+                "gap",
+                {
+                    "from_sequence": previous,
+                    "resumed_at": conn.cursor,
+                    "rooms": sorted(conn.rooms),
+                    "all_rooms": True,
+                    "reason": "the server restarted since your last connection; "
+                    "events from before the restart are gone in every room, "
+                    "including any this connection has yet to claim — re-read "
+                    "room context",
+                },
+            )
+        elif conn.cursor > head:
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
                 "buffer only reaches %s — treating as a restart",

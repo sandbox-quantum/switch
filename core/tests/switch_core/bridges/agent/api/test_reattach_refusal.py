@@ -31,7 +31,7 @@ CONN_ID = "conn-1"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.connections = ConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None

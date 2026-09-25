@@ -98,7 +98,7 @@ def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> An
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(),
+        event_buffer=EventBuffer(sequence_base=0),
         agent_session_store=store,
         session_factory=session_factory,
         agent_store=SimpleNamespace(get=_returning(agent)),

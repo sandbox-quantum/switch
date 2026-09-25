@@ -225,7 +225,7 @@ def test_two_sessions_in_one_room_are_refused_without_change() -> None:
 
 async def test_the_displaced_stream_is_sent_room_released() -> None:
     registry = ConnectionRegistry()
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     loser = _open(
         registry, "loser", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
     )
@@ -249,7 +249,7 @@ async def test_the_displaced_stream_is_sent_room_released() -> None:
 
 async def test_an_older_client_stream_is_not_sent_room_released() -> None:
     registry = ConnectionRegistry()
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     loser = _open(
         registry, "loser", speaks=ROOM_RELEASED_PROTOCOL_REVISION - 1, scope="all"
     )

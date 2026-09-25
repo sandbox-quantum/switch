@@ -442,7 +442,7 @@ async def _serve(
     # and left from different asyncio contexts, where resetting the token
     # raises instead of unbinding.
     bind_tenant_id(TENANT_ZERO_ID)
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(sequence_base=0)
     connections = ConnectionRegistry()
     collab_lifecycle = _NoBridges()
 

@@ -138,7 +138,7 @@ class TestTheProtocolBindsItsAgent:
         assert all(getattr(r, "agent_id", None) == "agent-42" for r in closed)
 
     def test_an_overflowing_buffer_carries_the_agent(self, captured: _Capture) -> None:
-        buffer = EventBuffer(max_events_per_agent=2, retention_seconds=3600)
+        buffer = EventBuffer(max_events_per_agent=2, retention_seconds=3600, sequence_base=0)
         for index in range(5):
             buffer.enqueue(
                 "agent-99",

@@ -402,7 +402,7 @@ def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(),
+        event_buffer=EventBuffer(sequence_base=0),
         agent_session_store=_AbsentSessionStore(),
         session_factory=session_factory,
         agent_store=SimpleNamespace(

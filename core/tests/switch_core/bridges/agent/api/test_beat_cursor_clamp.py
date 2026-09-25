@@ -33,7 +33,7 @@ ROOM_ID = "room-1"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.connections = ConnectionRegistry()
 
 

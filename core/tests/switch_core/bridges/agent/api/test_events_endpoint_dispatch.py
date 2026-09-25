@@ -7,6 +7,7 @@ coexist — but the dispatch itself is easy to break silently, hence these.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,7 +30,7 @@ AGENT_ID = "agent-1"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.connections = ConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
@@ -346,3 +347,34 @@ class TestDeclaringARoomAtOpenTakesOver:
         assert claimant is not None
         assert claimant.id == "supervisor"
         assert "room-1" not in incumbent.rooms
+
+
+async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _Protocol()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def record(*_: Any) -> None:
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(protocol, "record_client_declaration", record)
+    first = asyncio.create_task(
+        _call(protocol, accept="text/event-stream", connection_id="c1")
+    )
+    await entered.wait()
+    newer = await _call(protocol, accept="text/event-stream", connection_id="c1")
+    await anext(newer.body_iterator)
+    release.set()
+    older = await first
+    frames = [frame async for frame in older.body_iterator]
+    assert frames == []
+    conn = protocol.connections.get("c1")
+    assert conn is not None
+    assert protocol.connections.beat(
+        AGENT_ID, "c1", 0, conn.stream_generation
+    ).stream_attached
+    await newer.body_iterator.aclose()

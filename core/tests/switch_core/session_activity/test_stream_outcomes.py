@@ -62,7 +62,7 @@ def _open_stream(approvals, *, agent_id=AGENT, scope="all", speaks=PROTOCOL_VERS
         expected_generation=None,
     )
     return event_stream(
-        conn=conn, registry=registry, buffer=EventBuffer(), approvals=approvals
+        conn=conn, registry=registry, buffer=EventBuffer(sequence_base=0), approvals=approvals
     )
 
 

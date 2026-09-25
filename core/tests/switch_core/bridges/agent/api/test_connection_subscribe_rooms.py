@@ -37,7 +37,7 @@ ROOM_B = "!room-b"
 class _Protocol:
     def __init__(self) -> None:
         self.connections = ConnectionRegistry()
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         return None

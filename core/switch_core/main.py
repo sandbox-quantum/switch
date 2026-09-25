@@ -89,7 +89,12 @@ from switch_core.db.engine import (
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    ApiKey,
+    User,
+    agent_event_boot_sequence,
+)
 from switch_core.db.runtime_role import (
     RuntimeRoleError,
     grant_runtime_role,
@@ -406,13 +411,15 @@ async def run(config: SwitchConfig) -> None:
     # `_seed_agent_registration_bootstrap_key`'s docstring), so only a
     # session-level lock, held for the whole span, actually serialises it.
     async with boot_lock(config):
+        async with engine.begin() as connection:
+            event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
         await _seed_admin_user(session_factory, user_store, config)
         await _seed_agent_registration_bootstrap_key(
             session_factory, user_store, api_key_store, agent_store, config
         )
 
     # ── Event queue + request trackers ───────────────────────────────────────
-    event_buffer = EventBuffer()
+    event_buffer = EventBuffer(sequence_base=event_boot << 32)
     connector_store = ServerConnectorStore()
 
     # ── Product telemetry ────────────────────────────────────────────────────

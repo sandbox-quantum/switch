@@ -49,7 +49,7 @@ class _Protocol:
 
     def __init__(self, registry: ConnectionRegistry) -> None:
         self.connections = registry
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.calls: list[tuple[str, str]] = []
         self.members: set[str] = {CONNECTED_ROOM, OTHER_ROOM}
         self.while_in_flight: list[Callable[[], None]] = []

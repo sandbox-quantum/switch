@@ -86,7 +86,7 @@ async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
 
 
 async def test_the_rooms_retained_events_are_forgotten() -> None:
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     buffer.enqueue(AGENT, LEFT, _message(LEFT, "said in the old room"))
     buffer.enqueue(AGENT, KEPT, _message(KEPT, "said in this one"))
 
@@ -112,14 +112,14 @@ async def test_the_rooms_claim_is_released() -> None:
     )
     connections.claim_room(conn, LEFT)
 
-    await _removed(_client(EventBuffer(), connections), "!left:test")
+    await _removed(_client(EventBuffer(sequence_base=0), connections), "!left:test")
 
     assert conn.rooms == set()
 
 
 async def test_a_room_that_cannot_be_resolved_drops_nothing() -> None:
     """Rather than guessing which room was meant and emptying the wrong one."""
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     buffer.enqueue(AGENT, LEFT, _message(LEFT, "still here"))
 
     await _removed(_client(buffer, ConnectionRegistry()), "!unknown:test")

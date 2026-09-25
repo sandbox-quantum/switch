@@ -44,7 +44,7 @@ def _watcher(registry: ConnectionRegistry, *, speaks: int, scope: str = "all"):
         expected_generation=None,
     )
     stream = event_stream(
-        conn=conn, registry=registry, buffer=EventBuffer(), approvals=None
+        conn=conn, registry=registry, buffer=EventBuffer(sequence_base=0), approvals=None
     )
     return conn, stream
 

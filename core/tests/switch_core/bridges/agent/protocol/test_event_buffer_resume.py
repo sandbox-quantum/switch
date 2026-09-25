@@ -40,7 +40,7 @@ def _bodies(items: list) -> list[str]:
 
 
 def test_sequence_numbers_are_monotonic_per_agent() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     assert buf.enqueue(AGENT, ROOM_A, _message("one")) == 1
     assert buf.enqueue(AGENT, ROOM_B, _message("two", room=ROOM_B)) == 2
     assert buf.enqueue(AGENT, ROOM_A, _message("three")) == 3
@@ -48,7 +48,7 @@ def test_sequence_numbers_are_monotonic_per_agent() -> None:
 
 
 def test_reading_does_not_consume() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("one"))
 
     assert _bodies(buf.read_from(AGENT, 0)) == ["one"]
@@ -58,7 +58,7 @@ def test_reading_does_not_consume() -> None:
 
 
 def test_resume_returns_only_events_after_the_cursor() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     for body in ("one", "two", "three"):
         buf.enqueue(AGENT, ROOM_A, _message(body))
 
@@ -67,7 +67,7 @@ def test_resume_returns_only_events_after_the_cursor() -> None:
 
 
 def test_events_missed_while_disconnected_are_replayed_on_resume() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("before"))
     seen = buf.read_from(AGENT, 0)
     cursor = seen[-1].seq
@@ -80,7 +80,7 @@ def test_events_missed_while_disconnected_are_replayed_on_resume() -> None:
 
 
 def test_room_and_notifiable_filters_are_independent() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("a-chatter"))
     buf.enqueue(AGENT, ROOM_A, _message("a-addressed", addressed=True))
     buf.enqueue(AGENT, ROOM_B, _message("b-addressed", addressed=True, room=ROOM_B))
@@ -102,7 +102,7 @@ def test_room_and_notifiable_filters_are_independent() -> None:
 
 
 def test_overflow_drops_oldest_and_flags_a_gap() -> None:
-    buf = EventBuffer(max_events_per_agent=3)
+    buf = EventBuffer(max_events_per_agent=3, sequence_base=0)
     for body in ("one", "two", "three", "four"):
         buf.enqueue(AGENT, ROOM_A, _message(body))
 
@@ -112,7 +112,7 @@ def test_overflow_drops_oldest_and_flags_a_gap() -> None:
 
 
 def test_resuming_from_an_expired_cursor_raises_rather_than_skipping() -> None:
-    buf = EventBuffer(max_events_per_agent=2)
+    buf = EventBuffer(max_events_per_agent=2, sequence_base=0)
     for body in ("one", "two", "three"):
         buf.enqueue(AGENT, ROOM_A, _message(body))
 
@@ -132,7 +132,7 @@ def test_retention_window_expires_events_and_flags_a_gap(
         lambda: clock["now"],
     )
 
-    buf = EventBuffer(retention_seconds=60)
+    buf = EventBuffer(retention_seconds=60, sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("old"))
 
     clock["now"] += 61
@@ -153,7 +153,7 @@ def test_a_quiet_agent_stops_serving_an_event_when_its_window_ends(
         lambda: clock["now"],
     )
 
-    buf = EventBuffer(retention_seconds=60)
+    buf = EventBuffer(retention_seconds=60, sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("only"))
 
     clock["now"] += 61
@@ -164,7 +164,7 @@ def test_a_quiet_agent_stops_serving_an_event_when_its_window_ends(
 
 
 def test_confirming_does_not_discard_events_for_other_readers() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("one"))
 
     buf.confirm(AGENT, "reader-a", 1)
@@ -175,7 +175,7 @@ def test_confirming_does_not_discard_events_for_other_readers() -> None:
 
 
 def test_confirm_never_rewinds() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.register_reader(AGENT, "reader-a", 0)
     buf.confirm(AGENT, "reader-a", 5)
     buf.confirm(AGENT, "reader-a", 2)
@@ -183,7 +183,7 @@ def test_confirm_never_rewinds() -> None:
 
 
 async def test_legacy_pollers_no_longer_steal_from_each_other() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("hello", addressed=True))
 
     room = await buf.poll_room(AGENT, ROOM_A, timeout=0)
@@ -196,7 +196,7 @@ async def test_legacy_pollers_no_longer_steal_from_each_other() -> None:
 
 
 async def test_legacy_poller_does_not_see_the_same_event_twice() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("one"))
 
     assert len(await buf.poll_room(AGENT, ROOM_A, timeout=0)) == 1
@@ -208,7 +208,7 @@ async def test_legacy_poller_does_not_see_the_same_event_twice() -> None:
 
 
 async def test_legacy_poller_receives_events_queued_before_it_polled() -> None:
-    buf = EventBuffer()
+    buf = EventBuffer(sequence_base=0)
     buf.enqueue(AGENT, ROOM_A, _message("queued-while-away"))
 
     events = await buf.poll_room(AGENT, ROOM_A, timeout=0)
