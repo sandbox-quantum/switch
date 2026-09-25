@@ -1976,10 +1976,16 @@ it('tells the room once when its host fails, and acks its messages held when the
       )
     );
     expect(acks()).not.toContain('held:message-1');
-    const idleCallsBefore = upcalls.calls.filter((call) => call.path.endsWith('/connection/idle')).length;
+    const idleCallsBefore = upcalls.calls.filter((call) =>
+      call.path.endsWith('/connection/idle')
+    ).length;
     await vi.advanceTimersByTimeAsync(FAILED_HOLD_MS + 30_000);
     await eventually(() => acks().includes('held:message-1'));
-    await eventually(() => upcalls.calls.filter((call) => call.path.endsWith('/connection/idle')).length > idleCallsBefore);
+    await eventually(
+      () =>
+        upcalls.calls.filter((call) => call.path.endsWith('/connection/idle')).length >
+        idleCallsBefore
+    );
     const last = upcalls.calls.filter((call) => call.path.endsWith('/connection/idle')).at(-1)!;
     expect(JSON.stringify(last.body.reasons)).not.toContain('failed_holding');
     expect(notices()).toEqual(['startup:message-1']);
