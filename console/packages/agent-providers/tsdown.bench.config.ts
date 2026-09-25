@@ -13,7 +13,13 @@ import { defineConfig } from 'tsdown';
  *       --config tsdown.bench.config.ts
  */
 export default defineConfig({
-  entry: { 'bench-host-daemon': 'src/host/bench/daemon.ts' },
+  entry: {
+    'bench-host-daemon': 'src/host/bench/daemon.ts',
+    // The hosted bootstrap supervises the daemon beside it by this name, so a
+    // hosted acceptance run boots the real bootstrap onto the stand-in provider.
+    'shared-host-daemon': 'src/host/bench/daemon.ts',
+    'hosted-bootstrap': 'src/host/hosted-bootstrap-cli.ts',
+  },
   outDir: 'dist-bench',
   format: ['esm'],
   dts: false,
