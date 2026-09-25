@@ -35,6 +35,7 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
+    AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
@@ -92,14 +93,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
-
-# Content flag stamped on the no-session / busy-elsewhere auto-reply (see
-# on_message). Its only job is to mark a message as itself an auto-reply so that
-# another offline agent addressed by it does NOT emit a second auto-reply — two
-# session-less agents tagging each other would otherwise ping-pong identical
-# "no session" replies forever. Riding as a field on the plain
-# m.room.message keeps the reply rendering normally for humans.
-AUTO_REPLY_FLAG = "com.switch.auto_reply"
 
 # How long to hold an incomplete multi-attachment group before delivering the
 # parts that did arrive, flagged as incomplete. Groups normally complete in

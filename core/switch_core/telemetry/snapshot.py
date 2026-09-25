@@ -36,6 +36,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -67,6 +68,11 @@ AGENT_CLIENT_TYPE = "agent"
 # configured, so a deployment with no Discord bridge reports zero rather than
 # omitting the property — the catalogue requires every key every time.
 PLATFORMS = ("slack", "mattermost", "discord", "teams", "telegram")
+
+# What a participant said, as opposed to everything else the transport stores in
+# the same table: arrivals, tool and LLM call reports, task transitions. A
+# command typed on a platform is something a person said.
+SPOKEN_EVENT_TYPES = ("m.room.message", "com.switch.command")
 
 _DAY = timedelta(days=1)
 # How far back the turn pairing looks for a message's predecessor. See
@@ -268,13 +274,29 @@ def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
     )
 
 
+def _spoken() -> tuple[Any, ...]:
+    """Something a participant said, not a row the transport stored beside it.
+
+    Every durable event is a row in `messages`, so without this an agent
+    joining a room or reporting a tool call reads as an agent message, and a
+    person being added to a room reads as that person being active. The
+    notice Switch posts under an agent's name when the agent cannot take a
+    request is excluded too: the agent did not say it.
+    """
+    return (
+        Message.event_type.in_(SPOKEN_EVENT_TYPES),
+        ~Message.content.has_key(AUTO_REPLY_FLAG),
+    )
+
+
 def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
-    """The message half of `_human_activity_conditions`: a person sent it, and
+    """The message half of `_human_activity_conditions`: a person said it, and
     it is live traffic rather than a backfill."""
     return (
         Client.type == HUMAN_CLIENT_TYPE,
         Client.tenant_id == tenant_id,
         Message.seq > 0,
+        *_spoken(),
     )
 
 
@@ -426,6 +448,7 @@ async def collect_tenant_counts(
             Message.sent_at >= week_ago,
             Client.type == AGENT_CLIENT_TYPE,
             Client.tenant_id == tenant_id,
+            *_spoken(),
         ),
     )
 
@@ -449,7 +472,10 @@ async def collect_tenant_counts(
         select(func.count())
         .select_from(Message)
         .where(
-            Message.tenant_id == tenant_id, Message.sent_at >= day_ago, Message.seq > 0
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= day_ago,
+            Message.seq > 0,
+            *_spoken(),
         ),
     )
     by_sender = await session.execute(
@@ -461,6 +487,7 @@ async def collect_tenant_counts(
             Message.sent_at >= day_ago,
             Message.seq > 0,
             Client.tenant_id == tenant_id,
+            *_spoken(),
         )
         .group_by(Client.type)
     )
@@ -577,6 +604,10 @@ async def _collect_turns(
             Message.tenant_id == tenant_id,
             Client.tenant_id == tenant_id,
             Message.seq > 0,
+            # Before the window function, not after: an arrival or a report
+            # between a question and its answer would otherwise be what the
+            # answer is paired with.
+            *_spoken(),
             # Bounded, or the window covers the tenant's whole history every
             # pass. The outer `sent_at` filter cannot be pushed in: the window
             # partitions by room, so narrowing the input would change which
