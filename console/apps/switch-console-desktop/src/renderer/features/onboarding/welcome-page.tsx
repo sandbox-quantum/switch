@@ -1,5 +1,6 @@
 import { Cloud, Server } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { SwitchConsoleAppIcon } from '@renderer/lib/switch-console-app-icon';
 import { Button } from '@renderer/lib/ui/button';
 import { StepPager } from '@renderer/lib/ui/step-pager';
@@ -27,7 +28,10 @@ const TAGLINE = 'Agents that work alongside your team, in the chat apps you alre
  * the two it takes — the emphasis on the card is a repeat of that in colour,
  * not the only place it is written.
  */
-export function WelcomePage({ onContinue }: { onContinue: () => void }) {
+export function WelcomePage() {
+  const showAddServerModal = useShowModal('addServerModal');
+  const onContinue = () => showAddServerModal({});
+
   return (
     <div className="flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]">
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">

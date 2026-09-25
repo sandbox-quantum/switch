@@ -18,7 +18,6 @@ export function shellShape({
   listError,
   installIsEmpty,
   viewWorksWithoutServer,
-  onboardingInProgress,
 }: {
   loaded: boolean;
   /**
@@ -50,8 +49,6 @@ export function shellShape({
    * here, so the next one of the same kind is not missed.
    */
   viewWorksWithoutServer: boolean;
-  /** Whether the first-run flow has been started and not yet finished. */
-  onboardingInProgress: boolean;
 }): ShellShape {
   // Checked before the read, not after. Such a view needs nothing from this
   // install to draw, and a first read that failed is exactly when Settings —
@@ -61,10 +58,5 @@ export function shellShape({
   // in hand is still the list, and a later refresh failing is not a reason to
   // take the app away.
   if (!loaded) return listError === null ? 'loading' : 'failed';
-  // A flow in progress outranks what the install holds, because the flow is
-  // what changes it: the server is added several pages before the user has
-  // signed in to it, and going by the contents alone would throw them out of
-  // the flow at the moment it half-succeeded.
-  if (onboardingInProgress) return 'onboarding';
   return installIsEmpty ? 'onboarding' : 'workspace';
 }

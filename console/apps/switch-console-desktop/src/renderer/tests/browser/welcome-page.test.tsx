@@ -11,7 +11,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const onContinue = vi.hoisted(() => vi.fn());
+const showModal = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -21,13 +21,17 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
+vi.mock('@renderer/lib/modal/modal-provider', () => ({
+  useShowModal: (id: string) => (props: unknown) => showModal(id, props),
+}));
+
 import { WelcomePage } from '@renderer/features/onboarding/welcome-page';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
-  onContinue.mockReset();
+  showModal.mockReset();
 });
 
 afterEach(async () => {
@@ -41,7 +45,7 @@ async function renderPage(): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<WelcomePage onContinue={onContinue} />));
+  await act(async () => root!.render(<WelcomePage />));
   return container;
 }
 
@@ -94,12 +98,12 @@ describe('the welcome page', () => {
     expect(button(el, 'Continue with your own server')).toBeDefined();
   });
 
-  it('moves the flow on from Continue', async () => {
+  it('opens the add-server flow from the button', async () => {
     const el = await renderPage();
 
     await act(async () => button(el, 'Continue with your own server').click());
 
-    expect(onContinue).toHaveBeenCalled();
+    expect(showModal).toHaveBeenCalledWith('addServerModal', {});
   });
 
   it('sends the pager forward to the same place as Continue', async () => {
@@ -109,6 +113,6 @@ describe('the welcome page', () => {
 
     await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Next page"]')!.click());
 
-    expect(onContinue).toHaveBeenCalled();
+    expect(showModal).toHaveBeenCalledWith('addServerModal', {});
   });
 });

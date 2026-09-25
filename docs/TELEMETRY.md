@@ -118,7 +118,7 @@ id, no IP field, no Switch identity.
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |
 | `onboarding_completed` | *(no fields)* |
-| `add_server_step` | `step`: `choose` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
+| `add_server_step` | `step`: `choose` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` |
 
 **Agents and sessions**
 

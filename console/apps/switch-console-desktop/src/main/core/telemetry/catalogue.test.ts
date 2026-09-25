@@ -46,8 +46,7 @@ function sampleFor(property: string): string | number | boolean {
     property === 'connected_to_room' ||
     property === 'delete_in_switch' ||
     property === 'resolved' ||
-    property === 'cold_start' ||
-    property === 'first_run'
+    property === 'cold_start'
   ) {
     return true;
   }
