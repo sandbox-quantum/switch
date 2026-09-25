@@ -343,6 +343,9 @@ it('resets into a new epoch and native conversation while retaining history', as
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
   emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed' });
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  // The turn reads completed a moment before the session reads ready again,
+  // and a reset is refused until it does.
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
   vi.mocked(adapter.startSession).mockImplementationOnce(async () => {
     emit({ type: 'session.state.changed', status: 'ready' });
     return { provider: 'claude', sessionId: 'session', nativeSessionId: 'fresh-native' };
