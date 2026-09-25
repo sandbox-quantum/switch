@@ -61,7 +61,7 @@ stream to Switch.
 | Level | Where | Bumped by |
 |---|---|---|
 | `hosted_launches.revision` *(#538)* | Postgres | every start, wake, restart, stop, autostop (`observe`, `note_addressed`, lifecycle routes) |
-| worker capability | `hosted_launches.worker_capability_hash`, `worker_capability_revision` (new) | every successful `prepare` |
+| worker capability | `hosted_launches.worker_capability_hash`, `worker_capability_encrypted`, `worker_capability_revision` (new) | first `prepare` at each running revision |
 | `Connection.stream_generation` | memory (`ConnectionRegistry._new_incarnation`, random seed per boot) | every stream open or reattach |
 | Core boot | `agent_event_boot` sequence *(#538, migration `51bc94a017d2`)* | every Core start |
 
@@ -70,31 +70,93 @@ A durable record that names a connection (`offered_to`, `claimed_by`) stores
 Core boot, so a record from another boot is treated as foreign, never
 compared.
 
-### Minting (controller, `hosted_controller.prepare` *(#538)*)
+### Issuance: one capability per running revision
 
-`prepare` already returns the agent key as `switch_credentials.env`
-(`SWITCH_API_TOKEN`). It additionally:
+The capability has to follow the revision, and the revision changes on every
+wake, while the `request_id` and the retained VM stay the same. Today's
+controller never gets a new bundle to a woken VM
+(`deploy/hosted/controller/.../gateway.py` `accept_launch` *(#538)*):
 
-- mints 32 random bytes as `worker_capability`, in the transaction that sets
-  `state = provisioning`, storing `sha256` in `worker_capability_hash` and
-  `launch.revision` in `worker_capability_revision`. The previous hash is
-  replaced, so only the most recently prepared VM holds a valid capability;
-- returns it as a top-level `worker_capability` field, not inside
-  `switch_credentials.env`, with `Cache-Control: no-store` as today.
+- it returns early once `instance_launch_issued` is set, which stays true for
+  the retained instance;
+- otherwise it calls `prepare` only when the assignment secret has no version
+  whose `ClientRequestToken` is the `request_id`, which is true after the
+  first launch;
+- the reconciler starts a stopped instance as soon as desired is `running`
+  (`reconciler.py` `_running`: `state == "stopped"` → `start_instance`),
+  without waiting for any bundle.
 
-A capability is valid iff its hash matches **and**
+The worker reads the assignment secret's `AWSCURRENT` version on every boot
+(`deploy/hosted/worker/switch_hosted_worker.py` `SecretsManager.read`
+*(#538)*), so refreshing that secret before the start reaches the VM on the
+next boot. The contract:
+
+**Core, `prepare` (idempotent by revision).** For a launch at revision R that
+is `desired_state = running` (checked already):
+
+- if `worker_capability_revision = R`, return the **same** capability,
+  decrypted from `worker_capability_encrypted`;
+- otherwise mint 32 random bytes, store `encrypt_token(capability,
+  jwt_secret_key)` in `worker_capability_encrypted` (the way the agent key's
+  `ApiKey.encrypted_key` is stored, `crypto.py`), `sha256` in
+  `worker_capability_hash` and R in `worker_capability_revision`, in the
+  transaction that sets `state = provisioning`;
+- return `{..., "revision": R, "worker_capability": ...}`. The capability is a
+  top-level field, not inside `switch_credentials.env`, with `Cache-Control:
+  no-store` as today.
+
+Minting overwrites the previous revision's values, so at most one capability
+is valid. A retry at the same revision returns the same bytes, so a lost
+response costs nothing.
+
+**Controller, bundle per revision.** `accept_launch` builds the bundle version
+token as `uuid5(request_id, str(revision))` and adds two columns to the
+controller's agent store (`store.py`, SQLite): `required_bundle_token` and
+`bundle_token`.
+
+1. For a job with desired `running`, set `required_bundle_token` to the
+   revision's token before anything else. The `instance_launch_issued` early
+   return is removed from this step; it still guards `run_instance`.
+2. If the secret already has a version with that token
+   (`describe_secret` → `VersionIdsToStages`), the bundle is persisted: set
+   `bundle_token` and stop.
+3. Otherwise call `prepare`, check `prepared.revision == job.revision` (a
+   mismatch is a stale job: stop and wait for the next poll), build the
+   bundle, and `put_secret_value` with that `ClientRequestToken`. The put
+   moves `AWSCURRENT` to the new version. Then set `bundle_token`.
+
+The reconciler neither calls `run_instance` nor `start_instance` while
+`bundle_token != required_bundle_token`; it reports `provisioning`. So a
+retained VM never boots on the previous revision's bundle.
+
+**Crash and loss recovery**:
+
+- A controller restart after `prepare` but before the put: the next poll
+  reaches step 3 again, `prepare` returns the same capability (same
+  revision), and the put goes through.
+- A lost `put_secret_value` response: either the version exists (step 2 on
+  the next poll) or it does not (step 3 again). Secrets Manager commits a put
+  atomically. A retry with the same token and different content (the GitHub
+  token is issued fresh on each `prepare`) is refused `ResourceExistsException`, which
+  the controller treats as step 2. Step 2 is checked first, so this only
+  happens when the check and the put race.
+- A restart between the put and `bundle_token`: step 2 on the next poll.
+- A revision bump between `prepare` and the put: `prepare` at the old
+  revision returned the old capability, which is now obsolete. The worker
+  would be refused, but the gate stops that happening: the job's revision is
+  stale, so the next poll recomputes the token for the new revision.
+
+**Validity.** A capability is valid iff its hash matches **and**
 `worker_capability_revision = launch.revision` **and** `desired_state =
 running`, `state != error`, owner still a tenant member (`worker_launch`
-*(#538)*). Any revision bump therefore makes it obsolete without a write. A
-`prepare` retried at the same revision (controller crash after boot) rotates
-it and the running VM is refused on its next reattach: a visible failure
-(`worker_capability_obsolete`, launch goes to `provisioning` and then the
-10-minute `error` path in `observe`), never two valid workers.
+*(#538)*). Any revision bump makes it obsolete without a write.
 
-The bootstrap writes it to `<state root>/worker-capability` with mode 0600 by
-atomic rename on every boot. It must not use `writeNewJson`
-(`hosted-bootstrap.ts` *(#538)*), which is write-once. The capability is never
-put in the provider or session environment and never logged.
+**On the worker.** `switch_hosted_worker.py` accepts a `workerCapability`
+field in the bundle (its parser rejects unknown fields today). The bootstrap
+writes it to `<state root>/worker-capability` with mode 0600 by atomic rename
+on every boot. It must not use `writeNewJson` (`hosted-bootstrap.ts`
+*(#538)*), which is write-once. The capability is never put in the provider or
+session environment and never logged.
 
 ### Attaching
 
@@ -187,7 +249,20 @@ for a database whose sequence was reset.
   all 403, and the worker's generation is unchanged.
 - `test_second_worker_refused_while_first_alive`, and
   `test_same_boot_takeover_evicts_old`.
-- `test_prepare_rotates_capability` (the old VM's reattach is refused).
+- `test_prepare_idempotent_by_revision` (core): two `prepare` calls at R
+  return the same capability; after a bump to R+1 a third returns a new one
+  and the R capability is refused on attach.
+- `test_sleep_wake_same_request_id_refreshes_bundle` (controller, with the
+  fake cloud of `tests/test_controller.py`): run, autostop, wake with the same
+  `request_id` and retained instance. `prepare` is called for the new
+  revision, a new secret version becomes `AWSCURRENT`, and `start_instance`
+  is not called before `bundle_token` matches. The woken worker attaches with
+  the new capability.
+- `test_controller_restart_between_issuance_and_persistence` (controller):
+  kill after `prepare` returns, before `put_secret_value`; restart. One secret
+  version for that revision, holding the capability `prepare` first returned.
+  The same test with the put response lost and a `ResourceExistsException`
+  retry.
 - `test_stream_reports_restart_below_floor` (core) and
   `test_gap_above_cursor_is_not_cursor_reset` (switch-agent-runtime).
 
@@ -199,7 +274,7 @@ worker. `session_command` stays room controls only.
 
 | Frame | Data | Body? |
 |---|---|---|
-| `worker_attached` | `{launch_revision, limits: {sessions_per_agent}, idle: {report_every_s, fresh_for_s}, credential_revision, queued_operations: [id], cancelled: [{room_id, message_id}]}` | no |
+| `worker_attached` | `{launch_revision, limits: {sessions_per_agent}, idle: {report_every_s, fresh_for_s}, credential_revision, queued_operations: [id], relay_fence, cancelled: [{room_id, message_id, reason}]}` (`reason` is `stopped` or `expired`) | no |
 | `relay` | `{id, deadline_ms, relay_seq \| null, message}` | yes (Console request) |
 | `relay_cancel` | `{id}` | no |
 | `wake` | `{entries: [{room_id, message_id, thread_id, event}]}`, ≤ 50 entries | yes (room event) |
@@ -208,8 +283,10 @@ worker. `session_command` stays room controls only.
 | `credential` | `{revision \| null}` | no: a doorbell to fetch |
 
 Frames that carry a body are queued per connection (as `session_commands`),
-bounded at 64 frames or 8 MiB. Past that a relay fails `worker_busy` (503) and
-a wake entry stays `pending`. Nothing is dropped silently.
+bounded at 64 frames or 8 MiB. A mutating relay reserves its slot before it
+takes a `relay_seq` (D2), so a full queue refuses it `worker_busy` (503)
+without consuming a sequence number. A wake entry that does not fit stays
+`pending`. Nothing is dropped silently.
 
 ## D1 — Console ⇄ cloud relay
 
@@ -256,11 +333,15 @@ response: {"ok": bool, "value"?: any, "error"?: {"code", "message"},
            "worker": {"launch_revision": int, "boot_id": str, "generation": int}}
 ```
 
-For a mutating message the route takes the launch lock, checks the launch is
-awake and the worker attached at the current revision, bumps
-`hosted_launches.relay_seq` (new, durable) and `active_at`, registers the
-pending relay, commits, and only then enqueues the `relay` frame (D2, C6).
-Read-only messages take no lock and carry `relay_seq: null`.
+For a mutating message the route takes the launch lock and checks that the
+launch is awake and the worker is attached at the current revision. It then
+reserves a slot in that connection's frame queue (or fails `worker_busy`),
+bumps `hosted_launches.relay_seq` (new, durable) and `active_at`, registers
+the pending relay, commits, and only then puts the frame in its reserved
+slot. Putting a frame in a reserved slot cannot fail. What can still lose the
+frame is the connection dying or Core crashing; both end in a reattach, and
+the reattach fence settles the sequence (D2). Read-only messages take no
+lock and carry `relay_seq: null`.
 
 | Code | HTTP | When |
 |---|---|---|
@@ -395,7 +476,7 @@ worker (`require_current`). Sent on every change and at least every
 {
   "connection_id": str, "generation": int,
   "report_seq": int,          // monotonic per watcher process; lower or equal is ignored
-  "relays_through": int,      // highest relay_seq the watcher has applied and reflected in busy
+  "relays_through": int,      // contiguous resolved watermark (below)
   "busy": bool,
   "reasons": [{"kind": str, "session_id": str | null, "count": int}],
   "sessions": {"total": int, "live": int, "parked": int, "failed": int}
@@ -429,8 +510,10 @@ nothing queued in the watcher is idle. Parking (`SWITCH_SESSION_PARK_AFTER_MS`,
 (`SessionHostFailedError`, `pumps` entry `failed`) with queued room messages,
 or one waiting on a reset decision, reports `failed_holding` /
 `reset_waiting` as busy for at most 15 minutes after its failure notice was
-posted, then idle. Its messages stay in the watcher journal and are retried on
-the next address after wake.
+posted, then idle. When the hold ends, the watcher acks each of that session's
+mailbox rows `held` (D3), so Core stops counting them too. The messages stay in
+the watcher journal and are retried on the next address of that session,
+after a wake if need be.
 
 Core stores the latest accepted report on the `Connection` with its own
 monotonic `received_at`. It is **fresh** when the connection is alive, the
@@ -444,18 +527,56 @@ A command can be dispatched and still be invisible to the next idle report.
 The watcher may have sent the report before it applied the command, or before
 the host posted `busy`. So Core does not wait to be told:
 
-- Under the launch lock, a mutating relay bumps `relay_seq` and sets
-  `active_at = now` before the frame is sent (D1).
+- Under the launch lock, a mutating relay reserves its queue slot, bumps
+  `relay_seq` and sets `active_at = now` before the frame is sent (D1).
 - While any mutating relay of the launch is pending (in the in-memory map),
   the launch is busy.
 - Once replies are in, idle is trusted again only from a report with
-  `relays_through ≥ hosted_launches.relay_seq`. The watcher advances
-  `relays_through` only after the host has taken the command, so its `busy`
-  already reflects it. A report below the watermark counts as busy.
-  `relay_seq` is durable, so the watermark survives a Core restart: the report
-  is absent then anyway.
+  `relays_through ≥ hosted_launches.relay_seq`, read under the lock at
+  decision time. A report below that counts as busy. `relay_seq` is durable,
+  so the rule survives a Core restart; the report is absent then anyway.
 - Read-only relays, the relay stream and snapshots take no lock and touch
-  neither `active_at` nor the watermark.
+  neither `active_at` nor `relay_seq`.
+
+**`relays_through` is a contiguous resolved watermark**: the largest N such
+that every sequence number up to N is *resolved*. It is never the highest
+number received, because a lower one may still be in flight. A sequence
+number is resolved when its effect, if any, is already reflected in the
+watcher's `busy`. Each number is resolved exactly one way:
+
+| Resolution | When |
+|---|---|
+| `taken` | `command`: the host replied to the command (accepted, or a status). The host posts `busy` before it replies whenever its busy state changed, and the channel is ordered, so the watcher has applied the change first. `place`, `forget`, `attachment`, `attachmentCancel`: the watcher's handler has returned its answer. |
+| `refused` | validation failed in the watcher, or the host refused (`STALE_EPOCH`, `UNSUPPORTED_CAPABILITY`, `HOST_STOPPING`, …). Nothing changed. |
+| `interrupted` | received before a watcher restart and not resolved. After the restart, host recovery has settled the command (`unknown`, `HOST_RESTARTED`), so current `busy` already reflects it. |
+| `not_delivered` | at or below the reattach fence and never received (below). |
+| `timed_out` | still unresolved 5 minutes after receipt. Logged as an error. Whatever the host is still doing shows in `sessionBusy`, so the VM stays up if it is doing anything. |
+
+The watcher keeps `relays.jsonl` beside `assignments.jsonl`, with records
+`received {seq, id}` (fsynced before the message is applied) and `resolved
+{seq, how}`. It computes `relays_through` from them: completion out of order
+advances nothing until the gap below it resolves.
+
+**Fenced reconciliation on attach.** A sequence number can be committed and
+never reach the watcher: the connection dies between commit and send, or Core
+crashes. Both end in a new attach, which runs under the launch lock:
+
+1. Every pending relay of the old connection or boot has already failed
+   `generation_changed`. A frame for a gone connection has no queue to land
+   in, so no relay numbered at or below the current `relay_seq` can reach the
+   new connection.
+2. Core sends `relay_fence = hosted_launches.relay_seq` in `worker_attached`.
+   Every relay after that takes a higher number and targets the new
+   connection.
+3. Before its first idle report, the watcher resolves every number at or
+   below the fence that has no `received` record as `not_delivered`, and
+   every `received` one without `resolved` as `interrupted` if its process
+   restarted.
+
+A hole therefore lasts at most until the next attach, and while it lasts the
+worker's connection is gone, so the report is absent and the launch is busy
+for that reason anyway. There are no Core-side voids to track: a queue
+refusal happens before a number is taken.
 
 ### Decision (controller observation)
 
@@ -466,8 +587,11 @@ with `idle_evidence(launch)`. The launch is busy when any of these holds:
    relay_seq`;
 2. a mutating relay of the launch is pending;
 3. a `hosted_operations` row is `queued`/`claimed` at the current revision;
-4. a `hosted_wake_mailbox` row for the agent is `pending`, `offered`,
-   `accepted` or `cancel_requested` (D3);
+4. a `hosted_wake_mailbox` row for the agent is `pending`, `offered` or
+   `accepted` (D3). `held` rows and `cancel_requested` tombstones do not
+   count. A held input is waiting for a new address, not for time, and a
+   tombstone is settled at the next attach. Whatever work either causes then
+   shows in the report;
 5. an `approval_requests` row for the agent is `open` (main's
    `session_activity` tables).
 
@@ -501,7 +625,24 @@ addressed event wakes it and lands in the mailbox, and a relay is refused
 - `test_read_only_relay_does_not_renew_activity`: `list`, `snapshot`, `page`
   and an open relay stream for longer than the grace window → the VM stops.
 - A mention between the last idle report and the decision prevents the stop.
-- A failed host with queued messages stops holding after 15 minutes.
+- `test_permanent_startup_failure_holds_then_sleeps`: a host that always
+  fails to start, one mention → one failure notice → busy for 15 minutes →
+  rows `held` → the VM stops. A later mention wakes it, the held message is
+  retried before the new one, and no second notice is posted for the held
+  message.
+- `test_relay_crash_after_commit_before_enqueue`: Core crashes after
+  committing `relay_seq = N` and before sending. After restart and reattach,
+  `relay_fence = N`, the watcher resolves N `not_delivered`, `relays_through`
+  reaches N, and the VM can stop.
+- `test_relay_queue_refusal_takes_no_sequence`: a full queue returns
+  `worker_busy` and `relay_seq` is unchanged.
+- `test_relay_out_of_order_completion`: N+1 resolves before N;
+  `relays_through` stays at N-1 until N resolves.
+- `test_relay_worker_restart`: the watcher restarts with N received but not
+  resolved. N resolves `interrupted` and the watermark advances; the host's
+  recovered state decides `busy`.
+- Each mutating message kind (`command` accepted, `command` refused, `place`,
+  `forget`, `attachment`, `attachmentCancel`) advances the watermark.
 - `sessionBusy` and parking agree (one predicate, table test).
 
 ## D3 — Wake mailbox
@@ -533,14 +674,21 @@ States:
 
 ```
 pending ──offer──▶ offered ──ack journaled──▶ accepted ──ack admitted──▶ admitted
-   ▲                  │                          │
-   └──lease expiry / ─┘                          │
-      foreign boot or generation                 │
+   ▲                  │                          │  ▲
+   └──lease expiry / ─┘                 ack held │  │ ack admitted (retry worked)
+      foreign boot or generation                 ▼  │
+                                                held
 explicit Stop: pending & !ever_offered ─▶ cancelled                       (definite)
-               pending & ever_offered, offered, accepted ─▶ cancel_requested
+               pending & ever_offered, offered, accepted, held ─▶ cancel_requested (stopped)
+24 h:          accepted, held ─▶ cancel_requested (expired)
 cancel_requested ─watcher─▶ cancelled (not admitted) | admitted (already running)
 other terminal: refused, duplicate, expired (never offered), expired_uncertain
 ```
+
+`held` is the durable form of the watcher's bounded failure hold (D2): the
+input is on the worker's disk, its failure notice has been posted, and it is
+waiting for the next address of its session, not for time. It does not keep
+the VM awake.
 
 ### Write
 
@@ -594,7 +742,19 @@ transition is a conditional update that only moves forward:
 | `admitted` | the session host has taken it (host `inbox.jsonl` `accepted`) | `accepted` → `admitted` |
 | `duplicate` | the journal already has it | → `accepted` or `admitted` as the journal says |
 | `refused` | the watcher will not act on it (limit reached and auto-start off); the watcher posts the notice | → `refused` |
+| `held` | the session's host failed to start, the failure notice is posted (`room-notices`, reason `startup`), and the 15-minute hold has ended | `accepted` → `held` |
+| `admitted` after `held` | a later address of the session started its host, and the held input was admitted ahead of the new one | `held` → `admitted` |
 | `cancelled` / `admitted` | reply to a cancel (below) | `cancel_requested` → `cancelled` / `admitted` |
+
+**Held inputs.** The watcher keeps a held input's `parked` record and its
+`failure-notified` key. It retries the host start only on a new address of
+the same session (a live event or a mailbox row), or on a Console `start` /
+`restart` operation for it, and then admits held inputs in their original
+order before the new one. If the start fails again, the new message gets its
+own notice and goes `held` after its own hold, while the already-held inputs
+stay `held` and get no second notice (once per message and reason, Failure
+notices). Sleeping, waking and Core restarts do not touch held inputs; only
+the watcher's journal and the rows do.
 
 An ack for a row already at or past the target state is `ok`. An ack from a
 `pending` row (reclaimed while the ack was in flight) is applied, so a lease
@@ -620,18 +780,20 @@ outcome as definite only when it knows it:
 - **Explicit Stop** (lifecycle route, in its transaction) moves rows that were
   never offered to `cancelled`, and posts one notice per room in-thread:
   "cancelled, not run". It moves `offered`, `accepted` and ever-offered
-  `pending` rows to `cancel_requested`, with no notice yet. `admitted` rows
-  are untouched. Explicit Stop never wakes.
+  `pending` rows and `held` rows to `cancel_requested` (reason `stopped`),
+  with no notice yet. `admitted` rows are untouched. Explicit Stop never
+  wakes.
 - If the worker is still attached, Core sends `mailbox_cancel` before the VM
   stops. In every case the `cancelled` list rides on the next
   `worker_attached`. `cancel_requested` rows are durable tombstones: kept until
-  the watcher answers or the launch is deleted.
+  the watcher answers or the launch is deleted. They are exempt from the 24 h
+  expiry and the 7-day prune below.
 - **Watcher reconcile, before admission.** On boot the watcher admits nothing
   from its journal (held rooms, parked deliveries, pump queue) until it has
   processed `worker_attached.cancelled`. For each entry:
-  - journaled and not yet admitted to a host: append `released` with reason
-    `cancelled` (fsynced), then ack `cancelled`, and Core posts "cancelled,
-    not run";
+  - journaled or held, and not yet admitted to a host: append `released`
+    with the entry's reason (fsynced), then ack `cancelled`, and Core posts
+    "cancelled, not run" (or "expired, not run" for reason `expired`);
   - already admitted: ack `admitted`, and Core posts "had already started
     before Stop";
   - unknown to the journal: ack `cancelled`, which is definite because
@@ -641,11 +803,17 @@ outcome as definite only when it knows it:
 
 ### Retention
 
-Rows that were never offered and are still `pending` expire after 24 h
-(`expired`, one notice per room, in-thread: "expired, not run"). Ever-offered
-rows past 24 h move to `expired_uncertain`, with a notice that says delivery
-could not be confirmed and never claims the event did not run. Terminal rows
-are pruned 7 days after `updated_at` by the upkeep loop.
+By state, 24 h after `addressed_at`:
+
+| State | Becomes | Notice |
+|---|---|---|
+| `pending`, never offered | `expired` | in-thread, one per room: "expired, not run" (definite: the worker never had it) |
+| `pending` ever offered, or `offered` | `expired_uncertain` | says delivery could not be confirmed; never claims the event did not run |
+| `accepted`, `held` | `cancel_requested` (reason `expired`) | none yet; the watcher settles it at the next attach, and the notice then says which way it went |
+| `cancel_requested` | unchanged | none. Tombstones are exempt from expiry and pruning and stay until the watcher answers or the launch is deleted. |
+
+Terminal rows (`admitted`, `cancelled`, `refused`, `duplicate`, `expired`,
+`expired_uncertain`) are pruned 7 days after `updated_at` by the upkeep loop.
 
 ### Tests that prove D3
 
@@ -665,6 +833,13 @@ are pruned 7 days after `updated_at` by the upkeep loop.
   after reconnect.
 - The 501st `pending`/`offered` insert is refused with a room notice; expiry
   notices distinguish `expired` from `expired_uncertain`.
+- `test_tombstone_survives_expiry_and_prune`: a `cancel_requested` row 8 days
+  old is still there and still in `worker_attached.cancelled`.
+- `test_held_row_expires_through_watcher`: a `held` row at 24 h becomes
+  `cancel_requested (expired)`; on the next attach the watcher releases it and
+  the notice says "expired, not run".
+- `test_permanent_startup_failure_holds_then_sleeps` (D2) covers the
+  `accepted → held → admitted` path.
 
 ## Operations: `hosted_operations` as the infra queue
 
@@ -809,7 +984,7 @@ drops (checked by grep). Never edit or re-parent them.
    ("<cutover_manifest>", "e3b7c9d2a415")`, with empty upgrade and downgrade.
 3. `<rev>_hosted_activity`: `hosted_wake_mailbox` (RLS, grants as
    `545f80e11f13`). `hosted_launches.worker_capability_hash`,
-   `worker_capability_revision`, `relay_seq`. `hosted_operations.claimed_by`,
+   `worker_capability_encrypted`, `worker_capability_revision`, `relay_seq`. `hosted_operations.claimed_by`,
    `claimed_boot_id`. It also copies every `hosted_cutover_items` row with
    disposition `import` into the mailbox as `pending`, `origin = cutover`,
    `expires_at = now() + 24 h`.
@@ -874,35 +1049,85 @@ it:
    `inbox.jsonl`, `events.jsonl`, `delivery-*.jsonl`, `shared-state.jsonl`)
    with **main's** schemas. Any failure blocks that volume and names the file
    and line;
-2. lists, without bodies:
-   - `room_pending`: `received` records with no `ack`;
-   - `command_pending`: `accepted` with no `dispatched`, split by origin
-     (room or Console);
-   - `command_uncertain`: `dispatched` with no `finished`;
-   - `request_open` (from `events.jsonl`);
-   - `reset_pending`;
+2. lists, without bodies, what it found per source:
+   - `room_pending`: `received` records in a session's `room-inbox.jsonl`
+     that are not acknowledged. The rule is exactly
+     `SharedRoomInbox.readMessageState` *(#538)*: an `ack` matches by
+     `identity` (`JSON.stringify([roomId, messageId])`) when it has one,
+     otherwise by the `sequence` of the latest `received` for that message,
+     and a `cursor` record with `reset: true` clears the sequence match.
+     Legacy `received` records without `missed`/`gap` parse with the defaults
+     (`storedReceivedSchema`). `failure-notified` identities are listed too;
+   - host commands from each session's `inbox.jsonl`, with `origin.surface`,
+     `origin.roomId` and `origin.messageId` and the furthest record seen
+     (`accepted`, `dispatched`, `finished`);
+   - `request_open` (from `events.jsonl`) and `reset_pending`, per session;
 3. uploads the manifest to `POST /gateway/hosted-cutover/{launch_id}/manifest`
    (tenant admin), which stores it in `hosted_cutover_items` and records its
    digest.
 
-The transitional Core then gives every item a disposition, joining
-`messages` (by `transport_event_id`) with `sdk_session_commands` receipts:
+**One disposition per logical room message.** The same message can appear in
+up to three sources at once: `room_pending` (its room-inbox ack was lost), a
+host command that got as far as `dispatched`, and a Core
+`sdk_session_commands` row whose status never became terminal. Core merges
+every record by `(agent_id, room_id, message_id)` before deciding. The Core
+receipt for a room message is found by its command id, which #538 derives as
+`uuid5(NAMESPACE_URL, "switch-room:{agent}:{room}:{message}")`
+(`sessions/service.py` `submit_room_message` *(#538)*). The strongest evidence
+wins, in this order:
+
+| Evidence, across all sources for the message | Disposition |
+|---|---|
+| a host `finished` record, or a receipt with status `applied` | `ran`: dropped, no notice |
+| a host `dispatched` record, or a receipt with status `dispatched` or `unknown` | `uncertain`: in-thread notice "may have been interrupted by the upgrade; re-send if needed". Never imported. |
+| a receipt with status `rejected` | `unrecoverable`: notice "was not run; please send it again" |
+| only `room_pending`, a host `accepted` record, or a receipt with status `accepted` | `import`: the payload is rebuilt with `to_inbound` and `message_payload` (replay's reconstruction without the 15-minute window) into `payload`. A multi-file group, a missing blob or a deleted message makes it `unrecoverable` instead. |
+
+Items that are not room messages are decided on their own:
 
 | Item | Disposition |
 |---|---|
-| `room_pending` or room-origin `command_pending`, with no finished command receipt for `(room, message)` | `import`: the payload is rebuilt with `to_inbound` and `message_payload` (replay's reconstruction without the 15-minute window) into `payload`. On a multi-file group, a missing blob or a deleted message it becomes `unrecoverable` instead. |
-| any item with a finished receipt | `ran`, dropped |
-| `command_uncertain` (room) | `uncertain`: notice "may have been interrupted by the upgrade; re-send if needed" |
-| Console-origin `command_pending` | `settled_by_host`: main's host marks it `unknown` in the transcript Console shows; nothing is posted to a room, so no private prompt text leaks |
-| undelivered Core-side `sdk_session_commands` (room origin) | `import` as above; Console origin → owner notice without the prompt text |
+| Console-origin host command, `accepted` only | `settled_by_host`: main's host marks it `unknown` in the transcript Console shows; nothing is posted to a room, so no private prompt text leaks |
+| Console-origin Core receipt never delivered to the host | owner notice without the prompt text |
 | `request_open` | `interrupted`: in-thread notice "the approval was interrupted by an upgrade; ask the agent again" (reason `upgrade`) |
 | `reset_pending` | `preserved`: no action |
-| `unrecoverable` | notice "could not be carried across the upgrade; please send it again" |
+
+A `failure-notified` message that is imported gets one more notice (reason
+`upgrade`): "will run now, after the upgrade", so the earlier failure notice
+is not the last word.
+
+**Imported commands never meet the old host's dedupe record.** Main's host
+accepts a command id it has seen only if the command is identical, and
+otherwise returns the old status or `IDEMPOTENCY_CONFLICT`
+(`session-host.ts` `accept`). The old `accepted` record for an imported
+message is still in `inbox.jsonl`, and recovery marks it `unknown`. The ids
+already differ: main's `roomCommandId` hashes with SHA-256 (`room-prompt.ts`)
+where #538 used uuid5. The contract does not rely on that. A mailbox row with
+`origin = cutover` runs under `uuidFrom("switch-room-cutover:{agent}:{room}:{message}")` (the hash `roomCommandId` uses),
+a namespace no earlier build used. The transcript then shows the old command
+as interrupted and not sent, followed by the imported one running: both true.
+Only `import` produces a mailbox row, and one message has at most one row
+(primary key), so it runs at most once.
 
 Notices are posted by the transitional Core, once per key, through #538's
 room-failure receipt path, before anything is deleted. Imported payloads live
 only in `hosted_cutover_items` until the `hosted_activity` revision copies
 them into the mailbox. Nothing is written to a file.
+
+Tests:
+
+- `test_cutover_merges_overlapping_records`. The fixture is a retained volume
+  written in the exact 758bc5ae formats: a `room-inbox.jsonl` with a legacy
+  `received` (no `missed`/`gap`), an `ack` without `identity`, a `cursor`
+  reset, and a `received` whose ack was lost; an `inbox.jsonl` whose
+  room-origin command for that same message reached `dispatched`; and an
+  `sdk_session_commands` row for it (the uuid5 id) with status `accepted`.
+  The result is one item, `uncertain`, with one notice and no mailbox row.
+  Variants: host `accepted` only → one `import`; receipt `applied` → `ran`.
+- `test_imported_command_not_deduped_by_old_record`: a session whose
+  `inbox.jsonl` holds the old `accepted` record for a message that is then
+  imported. After recovery the old command is `unknown`, and the imported one
+  is accepted under the cutover id and runs once.
 
 **Gate.** Before `b9e4d2a71c05` can run, every non-deleted launch needs a
 volume with `preflight_state = complete`, every item needs a disposition, and
@@ -978,10 +1203,12 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
 
 | What | Where | Durable? |
 |---|---|---|
-| Transcripts, provider state, native homes, placements, room journal, operation outcomes, unsent notices, unconfirmed acks, pinned pages, staged attachments | Worker volume | Yes (survives EC2 stop); pages and partial transfers are cleared at start |
-| Launch, revision, sleeping, `active_at`, worker capability hash, `relay_seq` | `hosted_launches` | Yes |
+| Transcripts, provider state, native homes, placements, room journal (including held inputs), relay journal (`relays.jsonl`), operation outcomes, unsent notices, unconfirmed acks, pinned pages, staged attachments | Worker volume | Yes (survives EC2 stop); pages and partial transfers are cleared at start |
+| Launch, revision, sleeping, `active_at`, worker capability (hash, encrypted copy, revision), `relay_seq` | `hosted_launches` | Yes |
+| Bundle token required and persisted, per agent | controller agent store (SQLite) | Yes |
+| Worker bundle for the current revision | assignment secret, `AWSCURRENT` | Yes; one version per running revision |
 | Start/restart commands and outcomes | `hosted_operations` | Yes |
-| Addressed events until admitted, and Stop tombstones | `hosted_wake_mailbox` | Yes, ≤ 24 h open, 7 d terminal |
+| Addressed events until admitted, held inputs, and cancel tombstones | `hosted_wake_mailbox` | Yes: 24 h to expiry, 7 d terminal; tombstones until answered |
 | Pre-cutover pending work | `hosted_cutover_items` | Until the mailbox copy; drop after the pilot |
 | Approval requests, activity rows | main's `session_activity` tables | Yes (as main) |
 | Idle report, pending relays, live subscriptions, placements, frame queues | `ConnectionRegistry` | No: lost on Core restart, and loss means busy / retry |
@@ -1001,48 +1228,64 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
 - Pre-cutover room messages older than the platform's own history (a deleted
   message) can only be reported, not replayed.
 
-## Open questions
+## Settled scope
 
-1. Whether a tenant admin should get read-only relay (`list`, `snapshot`) for
-   support. Relay is owner-only in this note, as #538 is.
-2. The 500-row mailbox bound and the 24 h expiry are guesses; revisit with
-   pilot traffic.
+- **Relay is owner-only.** Tenant admins get no relay, read-only or
+  otherwise, for now; a non-owner is 404 (D1). Support access would be a
+  separate, audited feature.
+- **Mailbox limits are pilot defaults**: 500 open rows per agent, 24 h to
+  expiry, 7 days to prune. Hitting a limit is always visible: a refused insert
+  tells the room, and expiry posts its notice. The upkeep loop logs, per agent,
+  open-row count, oldest open row age and refusals, and the pilot sets the
+  final values from those numbers.
 
 ## Work packages
 
 - **WP1 base port.** Rebase #538's non-session parts onto main: controller,
-  launches, provider and GitHub connections, bootstrap, `agent_event_boot`
+  launches, provider and GitHub connections, bootstrap, the controller's
+  per-revision bundle (`required_bundle_token` / `bundle_token`, start gated
+  on it, `accept_launch` without the `instance_launch_issued` early return
+  for the bundle step), `agent_event_boot`
   floor with the below-floor restart branch, `ac2ffa1d`. Remove every
   `SdkSession` / `SessionAuthority` use (`hosted_routes.py`,
   `hosted_launches.py`, `hosted_launch_store.py`, `session_routes.py`,
   `sessions/service.py`, `commands.py`). Merge revision. Tests: real upgrades
   from both heads; #538's controller and launch tests green;
-  `test_stream_reports_restart_below_floor`.
+  `test_stream_reports_restart_below_floor`,
+  `test_sleep_wake_same_request_id_refreshes_bundle`,
+  `test_controller_restart_between_issuance_and_persistence`.
 - **WP2 worker runtime on `--watch-worker`.** Main's `--watch-worker` branch
   of `shared-daemon.ts` with `SessionLinks` and in-process supervision; drop
   `runHostedControl`'s loop; factor `handleControlMessage` out of
   `serveControl`. Adds `list`, `journal`, paged answers, attachment transfers,
-  capability file and attach headers, idle report with `relays_through`,
+  capability file (from the bundle's `workerCapability`, accepted by
+  `switch_hosted_worker.py`) and attach headers, `relays.jsonl` and the
+  contiguous `relays_through` with the attach fence, idle report,
   `busy` IPC, the doorbell handlers (`operation`, `credential`) with claim and
   result via `operations.jsonl`, watcher-side admission, reconcile-before-admit
-  for `cancelled`, retried acks, `notices.jsonl`.
-- **WP3 server.** Worker capability: minted in `prepare`, checked on stream
-  open, one attached worker, `hosted_worker_only` gating of opens, reattach,
+  for `cancelled`, held inputs and the `held` ack, cutover rows under the
+  cutover command id, retried acks, `notices.jsonl`.
+- **WP3 server.** Worker capability: issued per running revision by
+  `prepare`, idempotent at a revision (stored encrypted beside its hash),
+  checked on stream open, one attached worker, `hosted_worker_only` gating of opens, reattach,
   subscribe and placements, `launch_superseded` eviction, and room-control
   relay narrowed to the worker. Protocol 7 frames (`worker_attached`, `relay`,
   `relay_cancel`, `wake`, `mailbox_cancel`, `operation`, `credential`) with
   bounded per-connection queues. Gateway relay route and relay stream
   (owner-only, 2 MiB requests, paged replies, resync reasons); agent relay
-  reply and push routes. `relay_seq` and `active_at` stamping under the launch
-  lock, pending-relay busy, idle report storage, `idle_evidence` with the
-  watermark. Operation doorbell with re-ring, fenced claim, result re-post.
+  reply and push routes. Mutating relays reserve a queue slot, then stamp
+  `relay_seq` and `active_at` under the launch lock; `relay_fence` in
+  `worker_attached`; pending-relay busy, idle report storage, `idle_evidence`
+  with the contiguous watermark and without `held` rows or tombstones. Operation doorbell with re-ring, fenced claim, result re-post.
   Credential doorbell and idle-report catch-up.
   `/agents/{id}/room-notices`. `!reset` two-step.
 - **WP4 mailbox.** Table with states, leases and `ever_offered`; write in
   `note_addressed`'s transaction; mark-offered-then-send on the live path and
   on attach; reclaim on attach, at start and in upkeep; forward-only ack
-  route; Stop's `cancelled` / `cancel_requested` split and tombstone delivery;
-  expiry (`expired` vs `expired_uncertain`) and pruning; the 500-row bound.
+  route; the `held` state; Stop's `cancelled` / `cancel_requested` split and
+  tombstone delivery; expiry by state (`expired`, `expired_uncertain`,
+  `cancel_requested (expired)`), tombstones exempt; pruning; the 500-row
+  bound and its upkeep metrics.
 - **WP5 Console cloud.** A `CloudRelayClient` with `ControlClient`'s
   interface; `askHost`, `transcripts.ts` (subscribe-first, paged snapshot,
   resync), `host-sessions.ts`, the health monitor and stop/forget route cloud
@@ -1050,7 +1293,8 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
   as health states from the launch, with an explicit wake; the cloud sidebar
   reads `list` instead of polling `sharedList`.
 - **WP6 cutover and state migration.** The transitional build
-  (cutover-manifest revision, manifest route, disposition job and notices),
+  (cutover-manifest revision, manifest route, the per-message merge and
+  disposition job, notices),
   `hosted-preflight`, the `just hosted-cutover-upgrade` gate, the pilot
   runbook above, the first-boot migration, and version gates on all three
   sides.
@@ -1060,8 +1304,10 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
   2. two sessions on one worker, room takeover between them
      (`replace_placements`, `room_released`);
   3. a pending approval, a running turn and a just-dispatched Console prompt
-     never auto-stop;
-  4. sleep → mention → exactly one turn, across a Core restart at each step;
+     never auto-stop; a lost relay and a permanently failing host do not keep
+     the VM up forever;
+  4. sleep → mention → exactly one turn, across a Core restart at each step,
+     with the woken VM on a fresh capability under the same `request_id`;
   5. explicit Stop never wakes; nothing reported "not run" ever runs;
   6. lost doorbell, lost claim and lost result: no double execution, outcome
      recovered;
