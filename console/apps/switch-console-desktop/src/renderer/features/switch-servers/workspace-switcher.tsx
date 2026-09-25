@@ -1,4 +1,4 @@
-import { ChevronsUpDown, Plus, Server } from 'lucide-react';
+import { ChevronsUpDown, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -70,7 +70,6 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   const store = switchServersStore;
   const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
-  const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
 
   useEffect(() => {
     void store.init();
@@ -140,23 +139,8 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
             <ServerWorkspaceGroup key={server.id} server={server} />
           ))}
           <DropdownMenuSeparator />
-          {/* Above Add server because it is the commoner errand by far: you add
-              a server once and make workspaces on it for as long as you use
-              it. It opens on the server you are already in — the modal asks
-              which only where there is more than one to ask about. */}
-          <DropdownMenuItem
-            onClick={() =>
-              showCreateWorkspaceModal({
-                serverId: activeServer.id,
-                onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
-              })
-            }
-          >
-            <Plus className="size-4" />
-            New workspace
-          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => showAddServerModal({})}>
-            <Server className="size-4" />
+            <Plus className="size-4" />
             Add server
           </DropdownMenuItem>
           <DropdownMenuSeparator />
