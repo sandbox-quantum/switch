@@ -46,6 +46,10 @@ const clientMessageSchema = z.union([
     id: z.number().int(),
     place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }),
   }),
+  z.object({
+    id: z.number().int(),
+    forget: z.string().min(1),
+  }),
   /** The room watcher's connection state and placements, as it holds them now. */
   z.object({ id: z.number().int(), health: z.literal(true) }),
   /** Start or stop pushing `{health}` to this connection whenever the watcher's changes. */
@@ -166,6 +170,7 @@ export async function serveControl(
         void reply(Promise.resolve(null));
       } else if ('place' in parsed)
         void reply(watcher.place(parsed.place.sessionId, parsed.place.roomId));
+      else if ('forget' in parsed) void reply(watcher.forget(parsed.forget));
       else if ('health' in parsed) void reply(Promise.resolve(watcher.health()));
       else if ('watchHealth' in parsed) {
         if (parsed.watchHealth) unwatchHealth ??= watcher.onHealth((health) => send({ health }));
@@ -317,6 +322,11 @@ export class ControlClient {
   /** Move a room's messages to this session, through the sidecar's room watcher. */
   async place(sessionId: string, roomId: string): Promise<PlaceOutcome> {
     return placeOutcomeSchema.parse(await this.call({ place: { sessionId, roomId } }));
+  }
+
+  /** Tell the sidecar's room watcher a session was deleted. */
+  async forget(sessionId: string): Promise<void> {
+    await this.call({ forget: sessionId });
   }
 
   /** The sidecar's room watcher: its connection state and placements. */

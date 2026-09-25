@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   EVICTION_HEARTBEAT_LAPSED,
@@ -980,26 +980,44 @@ export async function runSharedWatcher(
     const started = stream;
     started.start();
     unbind.push(
-      control.bind(async (sessionId, roomId): Promise<PlaceOutcome> => {
-        if (!(await sessionConfig(sessionId)))
-          throw new Error(`Session ${sessionId} is not one of this agent's sessions here.`);
-        if (await stopped(sessionId))
-          throw new Error(`Session ${sessionId} was stopped; start it before moving a room to it.`);
-        const before = placements.snapshot();
-        const moved = await placements.place(sessionId, roomId);
-        try {
-          await publish();
-        } catch (error) {
-          await placements.restore(before);
-          throw new Error(
-            `Switch refused to move room ${roomId} to session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-        if (moved.displaced)
+      control.bind({
+        forget: async (sessionId) => {
+          const entry = pumps.get(sessionId);
+          if (entry) {
+            entry.queue.length = 0;
+            pumps.delete(sessionId);
+          }
+          if (await placements.unplace(sessionId)) publishQuietly();
+          const sessionRoot = sharedSessionRoot(sessionId);
+          await supervision.stop(sessionRoot);
+          await rm(sessionRoot, { recursive: true, force: true });
           console.warn(
-            `Room ${roomId} moved from session ${moved.displaced} to session ${sessionId}.`
+            `Session ${sessionId} was deleted; its rooms start a new session next time.`
           );
-        return { sessionId, roomId, ...moved };
+        },
+        place: async (sessionId, roomId): Promise<PlaceOutcome> => {
+          if (!(await sessionConfig(sessionId)))
+            throw new Error(`Session ${sessionId} is not one of this agent's sessions here.`);
+          if (await stopped(sessionId))
+            throw new Error(
+              `Session ${sessionId} was stopped; start it before moving a room to it.`
+            );
+          const before = placements.snapshot();
+          const moved = await placements.place(sessionId, roomId);
+          try {
+            await publish();
+          } catch (error) {
+            await placements.restore(before);
+            throw new Error(
+              `Switch refused to move room ${roomId} to session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+          if (moved.displaced)
+            console.warn(
+              `Room ${roomId} moved from session ${moved.displaced} to session ${sessionId}.`
+            );
+          return { sessionId, roomId, ...moved };
+        },
       })
     );
     // Queued behind the events rather than run beside them: the decision it

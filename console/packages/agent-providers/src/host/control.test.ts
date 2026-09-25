@@ -181,7 +181,10 @@ it('moves a room to a session through the watcher, and says why when it cannot',
     previous: null,
     displaced: 'other',
   }));
-  const unbind = watcher.bind(placed);
+  const forgot = vi.fn(async () => {});
+  const unbind = watcher.bind({ place: placed, forget: forgot });
+  await console.forget('gone');
+  expect(forgot).toHaveBeenCalledWith('gone');
   expect(await console.place('session', 'room')).toEqual({
     sessionId: 'session',
     roomId: 'room',

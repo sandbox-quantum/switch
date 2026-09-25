@@ -244,6 +244,12 @@ export const watcherHealthSchema = z.object({
 });
 export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
 
+/** What a running watcher answers for, through its control. */
+export type WatcherHandlers = {
+  place: (sessionId: string, roomId: string) => Promise<PlaceOutcome>;
+  forget: (sessionId: string) => Promise<void>;
+};
+
 /**
  * Reaches a running watcher from outside it: Console's "Reconnect to room",
  * locally by a direct call and remotely through the sidecar's control port;
@@ -251,7 +257,7 @@ export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
  * keeps current here.
  */
 export class WatcherControl {
-  private placer: ((sessionId: string, roomId: string) => Promise<PlaceOutcome>) | null = null;
+  private handlers: WatcherHandlers | null = null;
   private current: WatcherHealth = {
     state: 'not-running',
     detail: null,
@@ -261,23 +267,40 @@ export class WatcherControl {
   private readonly healthListeners = new Set<(health: WatcherHealth) => void>();
 
   /** Called by the watcher while it runs; the returned function unbinds it. */
-  bind(placer: (sessionId: string, roomId: string) => Promise<PlaceOutcome>): () => void {
-    if (this.placer) throw new Error('A room watcher is already bound to this control.');
-    this.placer = placer;
+  bind(handlers: WatcherHandlers): () => void {
+    if (this.handlers) throw new Error('A room watcher is already bound to this control.');
+    this.handlers = handlers;
     return () => {
-      if (this.placer === placer) this.placer = null;
+      if (this.handlers === handlers) this.handlers = null;
     };
+  }
+
+  /** Whether a watcher is running behind this control. */
+  get running(): boolean {
+    return this.handlers !== null;
+  }
+
+  /**
+   * Forget a session Console deleted: stop its host, take its rooms off it,
+   * drop what was queued for it and remove its state, so the room's next
+   * message starts a new session rather than reaching the deleted one.
+   * Refused when no watcher is running.
+   */
+  forget(sessionId: string): Promise<void> {
+    if (!this.handlers)
+      return Promise.reject(new Error("The agent's room watcher is not running."));
+    return this.handlers.forget(sessionId);
   }
 
   /** Move a room's messages to this session. Refused when no watcher is running. */
   place(sessionId: string, roomId: string): Promise<PlaceOutcome> {
-    if (!this.placer)
+    if (!this.handlers)
       return Promise.reject(
         new Error(
           "The agent's room watcher is not running, so no session can be moved to a room. Turn the agent's room connection on first."
         )
       );
-    return this.placer(sessionId, roomId);
+    return this.handlers.place(sessionId, roomId);
   }
 
   health(): WatcherHealth {

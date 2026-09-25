@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
@@ -1208,6 +1208,38 @@ it('gives a room a new session once the one serving it has been stopped', async 
   // The room is the new session's now, and Switch was told.
   expect(published.at(-1)).toEqual({ [sessions.at(-1)!.session.sessionId]: 'room' });
   expect(hosts.to(join(root, sessions.at(-1)!.session.sessionId))).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+});
+
+it('forgets a session Console deleted, so its room starts a new one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-deleted-owner-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const abort = new AbortController();
+  const run = runSharedWatcher(root, config, abort.signal, hosts.supervision, control);
+  try {
+    await eventually(() => streams.length === 1);
+    await control.forget(owner.sessionId);
+    await expect(stat(owner.sessionRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  const sessions = (await SharedWatchAssignments.open(root)).sessions();
+  const fresh = sessions.at(-1)!.session.sessionId;
+  expect(fresh).not.toBe(owner.sessionId);
+  expect(hosts.to(owner.sessionRoot)).toEqual([]);
+  expect(published.at(-1)).toEqual({ [fresh]: 'room' });
+  expect(hosts.to(join(root, fresh))).toMatchObject([
     { type: 'room', handoff: { messageId: 'message-2' } },
   ]);
 });
