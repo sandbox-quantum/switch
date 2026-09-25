@@ -7,6 +7,7 @@ import { filesController } from './core/fs/controller';
 import { locationsController } from './core/locations/controller';
 import { localSwitchServerController } from './core/managed-switch-server/controller';
 import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
+import { onboardingController } from './core/onboarding/controller';
 import { providersController } from './core/providers/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
@@ -39,6 +40,7 @@ export const rpcRouter = createRPCRouter({
   switchServers: switchServersController,
   agentTypes: agentTypesController,
   workspaces: workspacesController,
+  onboarding: onboardingController,
   localSwitchServer: localSwitchServerController,
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,

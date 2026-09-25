@@ -324,6 +324,9 @@ export const remoteHostView = {
   // No titlebar slot: the page header already names the host and repeats the
   // alias underneath it, so a third copy in the title bar was only noise.
   MainPanel: RemoteHostMainPanel,
+  // A host is somewhere agents run, not something a server owns: its page says
+  // the same things with no server registered as with ten.
+  worksWithoutServer: true,
   canActivate: (params: unknown): GuardResult => {
     // Params can come from a snapshot written by an older build, so validate
     // rather than trust: a view with no host to show has nothing to render.
