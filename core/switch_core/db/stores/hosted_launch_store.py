@@ -1,20 +1,56 @@
-from datetime import UTC, datetime
-from typing import cast
+from __future__ import annotations
 
-from sqlalchemy import case, select, text, update
+import hashlib
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
+
+from sqlalchemy import case, exists, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import (
     Agent,
+    ApprovalRequest,
     HostedLaunch,
     HostedOperation,
+    ProviderConnection,
     require_tenant_id,
 )
 from switch_core.db.stores.agent_store import AgentStore
 
+if TYPE_CHECKING:
+    from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+    from switch_core.bridges.agent.protocol.hosted_workers import IdleReport
+
 
 class HostedLaunchConflict(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class IdleEvidence:
+    """Whether a launch is busy, why, and the report an idle verdict rests on."""
+
+    busy: bool
+    reasons: list[str]
+    report: IdleReport | None
+
+
+def capability_hash(capability: str) -> str:
+    return hashlib.sha256(capability.encode()).hexdigest()
+
+
+async def lock_launch(session: AsyncSession, launch_id: str) -> None:
+    """The per-launch advisory lock every lifecycle, relay and attach step takes."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"hosted-launch:{require_tenant_id()}:{launch_id}"},
+    )
+
+
+UNCONFIRMED_CLAIM_EXPIRY = timedelta(minutes=5)
 
 
 class HostedLaunchStore:
@@ -122,11 +158,144 @@ class HostedLaunchStore:
                 updated_at=datetime.now(UTC),
             )
         )
-
-    async def idle_busy(self, session: AsyncSession, launch: HostedLaunch) -> bool:
-        raise NotImplementedError(
-            "Idle auto-stop needs session activity from the worker; WP3 replaces the removed SdkSession lease check."
+        await session.execute(
+            update(HostedOperation)
+            .where(
+                HostedOperation.tenant_id == require_tenant_id(),
+                HostedOperation.launch_id == launch_id,
+                HostedOperation.state == "claimed",
+                HostedOperation.updated_at
+                < datetime.now(UTC) - UNCONFIRMED_CLAIM_EXPIRY,
+            )
+            .values(
+                state="unknown",
+                error="The worker did not confirm the outcome. Inspect the session before issuing another operation.",
+                updated_at=datetime.now(UTC),
+            )
         )
+
+    async def locked(
+        self, session: AsyncSession, launch_id: str
+    ) -> HostedLaunch | None:
+        await lock_launch(session, launch_id)
+        return await session.get(
+            HostedLaunch, (require_tenant_id(), launch_id), populate_existing=True
+        )
+
+    def issue_worker_capability(self, launch: HostedLaunch, secret_key: str) -> str:
+        """The worker capability for the launch's current revision.
+
+        The same bytes for every call at one revision, so a lost `prepare`
+        response costs nothing; a new revision mints new ones and overwrites
+        the old, so at most one is ever valid. The caller commits.
+        """
+        if (
+            launch.worker_capability_revision == launch.revision
+            and launch.worker_capability_encrypted is not None
+        ):
+            return decrypt_token(launch.worker_capability_encrypted, secret_key)
+        capability = secrets.token_urlsafe(32)
+        launch.worker_capability_encrypted = encrypt_token(capability, secret_key)
+        launch.worker_capability_hash = capability_hash(capability)
+        launch.worker_capability_revision = launch.revision
+        return capability
+
+    @staticmethod
+    def capability_matches(launch: HostedLaunch, capability: str) -> bool:
+        """Whether `capability` is the one minted for the launch's current revision.
+
+        Launch state and owner membership are the caller's to check alongside.
+        """
+        return (
+            launch.worker_capability_hash is not None
+            and launch.worker_capability_revision == launch.revision
+            and secrets.compare_digest(
+                launch.worker_capability_hash, capability_hash(capability)
+            )
+        )
+
+    async def queued_operation_ids(
+        self, session: AsyncSession, launch: HostedLaunch
+    ) -> list[str]:
+        return list(
+            await session.scalars(
+                select(HostedOperation.id)
+                .where(
+                    HostedOperation.tenant_id == require_tenant_id(),
+                    HostedOperation.launch_id == launch.id,
+                    HostedOperation.launch_revision == launch.revision,
+                    HostedOperation.state == "queued",
+                )
+                .order_by(HostedOperation.created_at)
+            )
+        )
+
+    async def credential_revision(
+        self, session: AsyncSession, launch: HostedLaunch
+    ) -> str | None:
+        """The owner's provider credential revision, as the credential route reports it."""
+        connection = await session.get(
+            ProviderConnection,
+            (
+                require_tenant_id(),
+                launch.owner_id,
+                launch.spec.get("provider", "claude"),
+            ),
+            populate_existing=True,
+        )
+        return None if connection is None else str(connection.verified_at)
+
+    async def idle_evidence(
+        self,
+        session: AsyncSession,
+        launch: HostedLaunch,
+        registry: ConnectionRegistry,
+    ) -> IdleEvidence:
+        """What Core knows about whether the launch's worker is doing anything.
+
+        Read under the launch lock. Busy wins on any single signal, and a
+        missing or stale report is a signal: the controller stops a VM only on
+        evidence. The wake mailbox (D3) joins these conditions with its table.
+        """
+        reasons: list[str] = []
+        report = (
+            registry.fresh_idle_report(launch.agent_id, launch.id, launch.revision)
+            if launch.agent_id
+            else None
+        )
+        if report is None:
+            reasons.append("no_fresh_report")
+        else:
+            if report.busy:
+                reasons.append("report_busy")
+            if report.relays_through < launch.relay_seq:
+                reasons.append("relays_unacknowledged")
+        if launch.agent_id and registry.relays.mutating_pending(
+            launch.agent_id, launch.id
+        ):
+            reasons.append("relay_pending")
+        if await session.scalar(
+            select(
+                exists().where(
+                    HostedOperation.tenant_id == require_tenant_id(),
+                    HostedOperation.launch_id == launch.id,
+                    HostedOperation.launch_revision == launch.revision,
+                    HostedOperation.state.in_(["queued", "claimed"]),
+                )
+            )
+        ):
+            reasons.append("operation_pending")
+        if launch.agent_id and await session.scalar(
+            select(
+                exists().where(
+                    ApprovalRequest.tenant_id == require_tenant_id(),
+                    ApprovalRequest.agent_id == launch.agent_id,
+                    ApprovalRequest.state == "open",
+                )
+            )
+        ):
+            reasons.append("approval_open")
+        return IdleEvidence(busy=bool(reasons), reasons=reasons, report=report)
 
     async def note_addressed(
         self, session: AsyncSession, launch_id: str
@@ -136,12 +305,7 @@ class HostedLaunchStore:
         Takes the same lock as the lifecycle and controller routes. The caller
         commits.
         """
-        tenant_id = require_tenant_id()
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"hosted-launch:{tenant_id}:{launch_id}"},
-        )
-        launch = await session.get(HostedLaunch, (tenant_id, launch_id))
+        launch = await self.locked(session, launch_id)
         if launch is None:
             return None
         now = datetime.now(UTC)

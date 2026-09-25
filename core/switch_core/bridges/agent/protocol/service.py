@@ -1221,6 +1221,8 @@ class ProtocolService:
         room_id: str,
         content: str,
         thread_id: str | None = None,
+        *,
+        extra_content: dict[str, object] | None = None,
     ) -> str:
         """Send a message to a room. Returns event_id.
 
@@ -1247,6 +1249,7 @@ class ProtocolService:
             content,
             thread_root_id=thread_root_id,
             metered=True,
+            extra_content=extra_content,
         )
         if event_id is None:
             raise ValueError("Failed to send message")

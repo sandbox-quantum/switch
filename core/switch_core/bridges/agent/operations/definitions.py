@@ -31,6 +31,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ConnectionError_,
     evicted_session_warning,
 )
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
@@ -273,6 +274,14 @@ async def connect_to_room(
         bridge: CollaborationBridge | None = None
         if room_model.bridge_id:
             bridge = await session.get(CollaborationBridge, room_model.bridge_id)
+
+    if hosted_launch_of(agent.metadata_) is not None:
+        key = session_key()
+        caller_connection = protocol.connections.get(key) if key else None
+        if caller_connection is None or caller_connection.worker is None:
+            raise PermissionError(
+                "hosted_worker_only: only the agent's attached cloud worker may claim rooms"
+            )
 
     profile = IntegrationProfile(**agent.integration_profile)
     instructions = build_room_instructions(

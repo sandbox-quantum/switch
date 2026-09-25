@@ -243,9 +243,14 @@ async def prepare(
         launch.state = "provisioning"
         launch.error = None
         launch.updated_at = datetime.now(UTC)
+        worker_capability = HostedLaunchStore().issue_worker_capability(
+            launch, config.jwt_secret_key
+        )
         await session.commit()
         return {
             "agent_id": agent.id,
+            "revision": launch.revision,
+            "worker_capability": worker_capability,
             "provider_kind": connection.kind,
             "switch_credentials": {
                 "env": {
@@ -326,13 +331,17 @@ async def observe(
             or "The cloud worker could not start. Retry after checking provider access and server capacity."
         )
     else:
-        listening = (
-            any(
-                (connection.spawn_capable or not launch.spec["auto_session"])
-                for connection in protocol.connections.for_agent(launch.agent_id)
-            )
+        worker = (
+            protocol.connections.attached_worker(launch.agent_id)
             if launch.agent_id
-            else False
+            else None
+        )
+        listening = (
+            worker is not None
+            and worker.worker is not None
+            and worker.worker.launch_id == launch.id
+            and worker.worker.launch_revision == launch.revision
+            and (worker.spawn_capable or not launch.spec["auto_session"])
         )
         launch.state = (
             "ready" if body.state == "running" and listening else "provisioning"
@@ -354,10 +363,17 @@ async def observe(
                 config.hosted_idle_stop_minutes == 0 or not launch.spec["auto_session"]
             ):
                 pass
-            elif await HostedLaunchStore().idle_busy(session, launch):
+            elif (
+                evidence := await HostedLaunchStore().idle_evidence(
+                    session, launch, protocol.connections
+                )
+            ).busy:
                 launch.active_at = now
-            elif now - launch.active_at >= timedelta(
-                minutes=config.hosted_idle_stop_minutes
+            elif (
+                now - launch.active_at
+                >= timedelta(minutes=config.hosted_idle_stop_minutes)
+                and evidence.report is not None
+                and evidence.report.received_at > launch.active_at
             ):
                 launch.desired_state = "stopped"
                 launch.state = "stopping"
@@ -402,4 +418,6 @@ async def observe(
     if launch.state != previous_state:
         launch.updated_at = datetime.now(UTC)
     await session.commit()
+    if launch.agent_id:
+        protocol.connections.supersede(launch.agent_id, launch.revision)
     return summary(launch)

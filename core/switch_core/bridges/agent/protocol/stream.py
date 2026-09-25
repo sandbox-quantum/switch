@@ -166,6 +166,9 @@ async def _event_stream(
         resync[0] = True
     try:
         yield _frame("connection_state", _connection_state(conn))
+        # A worker's `worker_attached` comes before any gap or buffered event.
+        for event, data in conn.worker_frames.drain():
+            yield _frame(event, data)
 
         # A cursor ahead of everything we hold is a cursor from a previous
         # life of this process: the buffer is in memory, so a restart resets
@@ -286,6 +289,10 @@ async def _event_stream(
                 registry.close(conn.id, HEARTBEAT_LAPSED)
                 yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
+
+            if conn.worker_frames:
+                for event, data in conn.worker_frames.drain():
+                    yield _frame(event, data)
 
             if conn.session_commands:
                 relayed = list(conn.session_commands)
@@ -426,6 +433,7 @@ async def _event_stream(
             # and the clear would otherwise wait for the keepalive timeout.
             if (
                 conn.session_commands
+                or conn.worker_frames
                 or conn.released_rooms
                 or outcomes
                 or resync[0]

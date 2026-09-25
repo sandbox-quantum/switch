@@ -9,6 +9,9 @@ from fastapi.responses import JSONResponse
 from switch_core.bridges.agent.api.activity_routes import router as activity_router
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.hosted_routes import router as hosted_router
+from switch_core.bridges.agent.api.hosted_worker_routes import (
+    router as hosted_worker_router,
+)
 from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
@@ -139,6 +142,7 @@ def create_agent_bridge_app(
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
+    app.include_router(hosted_worker_router, prefix="/agents", tags=["hosted"])
     app.include_router(hosted_router, tags=["hosted"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
