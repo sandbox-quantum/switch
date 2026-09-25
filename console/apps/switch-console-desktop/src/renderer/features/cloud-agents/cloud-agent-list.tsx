@@ -1,17 +1,18 @@
 import type { Session } from '@switch-console/shared/session-v1';
-import { useMutation } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Cloud, MessageSquare, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
 import { SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { cloudAgentState } from './cloud-agent-state';
+import { cloudOperationAttempts, startAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
 import { useCloudAgents } from './use-cloud-agents';
 
@@ -57,20 +58,29 @@ const CloudAgentRow = observer(function CloudAgentRow({ agent }: { agent: CloudA
   const groupKey = `cloud:${agent.key}`;
   const expanded = sidebarStore.isGroupExpanded(groupKey);
   const label = cloudAgentState(agent)?.label;
-  const start = useMutation({
-    mutationFn: async () => {
-      const sessionId = crypto.randomUUID();
-      await rpc.sdkHost.cloudSessionOperation(agent.key, sessionId, 'start');
-      return sessionId;
-    },
-    onSuccess: (sessionId) =>
-      navigate('cloudSession', {
-        agentKey: agent.key,
-        sessionId,
-        name: `${agent.launch.name} · Session ${sessionId.slice(0, 8)}`,
-      }),
-  });
+  const queryClient = useQueryClient();
+  const [startError, setStartError] = useState<string | null>(null);
+  const attemptKey = startAttemptKey(agent.key);
+  const attempt = cloudOperationAttempts.get(attemptKey);
+  const openSession = (sessionId: string) =>
+    navigate('cloudSession', {
+      agentKey: agent.key,
+      sessionId,
+      name: `${agent.launch.name} · Session ${sessionId.slice(0, 8)}`,
+    });
+  const start = async () => {
+    setStartError(null);
+    const result = await cloudOperationAttempts.run(attemptKey, agent.key, 'start', null);
+    if (!result) return;
+    if (result.outcome.state === 'applied') openSession(result.sessionId);
+    else if (result.outcome.state === 'failed') setStartError(result.outcome.message);
+    else void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+  };
   const sessions = (agent.sessions ?? []).filter((session) => !session.retired);
+  const unconfirmed =
+    attempt?.status === 'unknown'
+      ? sessions.find((session) => session.sessionId === attempt.sessionId)
+      : undefined;
   return (
     <div>
       <div className="group/row flex items-center">
@@ -96,16 +106,49 @@ const CloudAgentRow = observer(function CloudAgentRow({ agent }: { agent: CloudA
             aria-label={`New session on ${agent.launch.name}`}
             title="New session"
             className="rounded p-1 text-foreground-muted hover:text-foreground disabled:opacity-50"
-            disabled={start.isPending}
-            onClick={() => start.mutate()}
+            disabled={attempt?.status === 'pending'}
+            onClick={() => void start()}
           >
             <Plus className="size-3.5" />
           </button>
         )}
       </div>
-      {start.error && (
+      {startError && (
         <div role="alert" className="px-7 py-1 text-xs text-foreground-destructive">
-          The session could not be started: {String(start.error)}
+          The session could not be started: {startError}
+        </div>
+      )}
+      {attempt?.status === 'unknown' && (
+        <div
+          role="status"
+          className="flex items-center gap-2 px-7 py-1 text-xs text-foreground-muted"
+        >
+          <span className="min-w-0">
+            {unconfirmed
+              ? 'The new session was not confirmed, but it exists.'
+              : `Not yet known whether the new session started. ${attempt.message ?? ''}`}
+          </span>
+          {unconfirmed ? (
+            <button
+              type="button"
+              className="shrink-0 underline hover:text-foreground"
+              onClick={() => {
+                cloudOperationAttempts.settle(attemptKey);
+                openSession(attempt.sessionId);
+              }}
+            >
+              Open
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="shrink-0 underline hover:text-foreground"
+              title="Asks again for the same session, so it cannot start a second one."
+              onClick={() => void start()}
+            >
+              Check again
+            </button>
+          )}
         </div>
       )}
       {expanded && (

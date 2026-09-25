@@ -6,7 +6,11 @@ import {
 } from '@switch-console/agent-providers';
 import type { Attachment } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { gatewayFetch, gatewayRequest } from '@main/core/switch-servers/gateway-client';
+import {
+  GatewayError,
+  gatewayFetch,
+  gatewayRequest,
+} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import {
   type CloudAgent,
@@ -14,6 +18,7 @@ import {
   type CloudLaunch,
   cloudLaunchSchema,
   type CloudOperation,
+  type CloudOperationOutcome,
   cloudOperationSchema,
   parseCloudAgentKey,
 } from '@shared/core/cloud-agents/cloud-agents';
@@ -157,58 +162,86 @@ export async function wakeCloudAgent(agentId: string): Promise<CloudLaunch> {
   );
 }
 
-export class CloudOperationFailedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CloudOperationFailedError';
-  }
+const OPERATION_WAIT_MS = 180_000;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-const OPERATION_WAIT_MS = 180_000;
+/** A refusal the server answered, so it holds no operation for this request. */
+function isDefiniteRefusal(error: unknown): error is GatewayError {
+  return (
+    error instanceof GatewayError &&
+    (error.kind === 'unauthorized' ||
+      (error.kind === 'http' && error.status !== undefined && error.status < 500))
+  );
+}
 
 /**
  * Ask the worker to start a new session (`start`) or run an existing one
- * again (`restart`), and wait until it says it has.
+ * again (`restart`), and wait until it says it has. `operationId` is the
+ * attempt's identity: after an `unknown` outcome, ask again with the same id
+ * and the server returns the operation it already holds instead of queueing
+ * another. A start's id is its session id.
  */
 export async function runCloudSessionOperation(
   agentId: string,
   sessionId: string,
+  operationId: string,
   action: 'start' | 'restart'
-): Promise<CloudOperation> {
+): Promise<CloudOperationOutcome> {
+  if (action === 'start' && operationId !== sessionId)
+    throw new Error('A cloud session start is identified by its session id.');
   const { serverId, requestId } = launchOf(agentId);
   const server = await serverOf(serverId);
-  const id = action === 'start' ? sessionId : crypto.randomUUID();
-  let operation = cloudOperationSchema.parse(
-    await (
-      await gatewayFetch(server, launchPath(requestId, '/sessions'), {
-        authenticated: true,
-        method: 'POST',
-        body: { id, session_id: sessionId, action },
-      })
-    ).json()
-  );
-  const deadline = Date.now() + OPERATION_WAIT_MS;
-  while (operation.state === 'queued' || operation.state === 'claimed') {
-    if (Date.now() >= deadline)
-      throw new CloudOperationFailedError(
-        `The cloud worker has not confirmed the session ${action} yet. Check the session before trying again.`
-      );
-    await delay(1000);
+  let operation: CloudOperation;
+  try {
     operation = cloudOperationSchema.parse(
       await (
-        await gatewayFetch(server, launchPath(requestId, `/sessions/${encodeURIComponent(id)}`), {
+        await gatewayFetch(server, launchPath(requestId, '/sessions'), {
           authenticated: true,
+          method: 'POST',
+          body: { id: operationId, session_id: sessionId, action },
         })
       ).json()
     );
+  } catch (error) {
+    if (isDefiniteRefusal(error))
+      return { state: 'failed', message: error.detail ?? error.message };
+    return {
+      state: 'unknown',
+      message: `The server did not confirm the session ${action}: ${errorMessage(error)}`,
+    };
   }
+  const deadline = Date.now() + OPERATION_WAIT_MS;
+  try {
+    while (operation.state === 'queued' || operation.state === 'claimed') {
+      if (Date.now() >= deadline)
+        return {
+          state: 'unknown',
+          message: `The cloud worker has not confirmed the session ${action} yet.`,
+        };
+      await delay(1000);
+      operation = cloudOperationSchema.parse(
+        await (
+          await gatewayFetch(
+            server,
+            launchPath(requestId, `/sessions/${encodeURIComponent(operationId)}`),
+            { authenticated: true }
+          )
+        ).json()
+      );
+    }
+  } catch (error) {
+    return {
+      state: 'unknown',
+      message: `The session ${action} could not be followed: ${errorMessage(error)}`,
+    };
+  }
+  if (operation.state === 'applied') return { state: 'applied' };
   if (operation.state === 'failed')
-    throw new CloudOperationFailedError(operation.error ?? `The session ${action} failed.`);
-  if (operation.state !== 'applied')
-    throw new CloudOperationFailedError(
-      `The outcome of the session ${action} is unknown. Check the session before trying again.`
-    );
-  return operation;
+    return { state: 'failed', message: operation.error ?? `The session ${action} failed.` };
+  return { state: 'unknown', message: `The outcome of the session ${action} is unknown.` };
 }
 
 /** Stage a file on the session's worker for the next message to name. */

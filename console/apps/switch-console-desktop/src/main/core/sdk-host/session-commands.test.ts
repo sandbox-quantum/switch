@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   running: true,
   hydrate: vi.fn(async () => {}),
   cloud: { request: vi.fn() },
-  cloudOperation: vi.fn(async () => ({})),
+  cloudOperation: vi.fn(async () => ({ state: 'applied' })),
 }));
 const { Unavailable, Failed } = vi.hoisted(() => ({
   Unavailable: class extends Error {},
@@ -156,7 +156,12 @@ it('sends a cloud command through the relay and restarts a parked cloud session 
     'session',
     expect.objectContaining({ type: 'command' })
   );
-  expect(mocks.cloudOperation).toHaveBeenCalledWith('cloud:server:launch', 'session', 'restart');
+  expect(mocks.cloudOperation).toHaveBeenCalledWith(
+    'cloud:server:launch',
+    'session',
+    expect.any(String),
+    'restart'
+  );
   expect(mocks.hydrate).not.toHaveBeenCalled();
   expect(mocks.local.request).not.toHaveBeenCalled();
 });

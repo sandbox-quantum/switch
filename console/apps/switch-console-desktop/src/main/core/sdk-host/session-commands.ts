@@ -87,9 +87,15 @@ export async function submitSessionCommand(
       throw error;
   }
   try {
-    if (isCloudAgent(agentId))
-      await runCloudSessionOperation(agentId, command.sessionId, 'restart');
-    else await hydrateSession(command.sessionId);
+    if (isCloudAgent(agentId)) {
+      const outcome = await runCloudSessionOperation(
+        agentId,
+        command.sessionId,
+        crypto.randomUUID(),
+        'restart'
+      );
+      if (outcome.state !== 'applied') throw new Error(outcome.message);
+    } else await hydrateSession(command.sessionId);
   } catch (error) {
     throw new Error(
       `The session is not running and could not be started again: ${error instanceof Error ? error.message : String(error)}`
