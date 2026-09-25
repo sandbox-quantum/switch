@@ -8,6 +8,7 @@ import {
   SwitchEventStream,
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
+import { type CommandStatus, commandStatusSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -188,22 +189,12 @@ function controlOf(command: SessionCommand): {
   };
 }
 
-const commandStatusSchema = z.object({
-  status: z.enum(['accepted', 'dispatched', 'applied', 'rejected', 'unknown']),
-  code: z.string().nullable(),
-  message: z.string().nullable(),
-});
-type RecordedStatus = z.infer<typeof commandStatusSchema>;
-
 /**
  * The last status the session's host recorded for a command, from its event
  * journal; null when it recorded none. Read when the host's answer was lost,
  * since the host may have carried the command out before it went.
  */
-async function recordedStatus(
-  sessionId: string,
-  commandId: string
-): Promise<RecordedStatus | null> {
+async function recordedStatus(sessionId: string, commandId: string): Promise<CommandStatus | null> {
   let text: string;
   try {
     text = await readFile(join(sharedSessionRoot(sessionId), 'events.jsonl'), 'utf8');
@@ -211,10 +202,8 @@ async function recordedStatus(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
-  const record = z.object({
-    body: commandStatusSchema.extend({ type: z.literal('command.status'), commandId: z.string() }),
-  });
-  let found: RecordedStatus | null = null;
+  const record = z.object({ body: commandStatusSchema });
+  let found: CommandStatus | null = null;
   // The last line may still be being written by a host that is running.
   for (const line of text.split('\n').slice(0, -1)) {
     const parsed = record.safeParse(JSON.parse(line));
@@ -754,7 +743,7 @@ export async function runSharedWatcher(
       const refused = (why: string) => `I couldn't ${action}: ${why}`;
       const unconfirmed = (why: string) =>
         `I couldn't confirm whether I managed to ${action}: ${why} Check my session in Switch Console before asking again.`;
-      const fromStatus = (recorded: RecordedStatus): string | null =>
+      const fromStatus = (recorded: CommandStatus): string | null =>
         recorded.status === 'applied'
           ? null
           : recorded.status === 'rejected'
