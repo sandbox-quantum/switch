@@ -440,6 +440,22 @@ async def test_expiry_by_state(mailbox):
         ("$held", "expired"),
         ("$accepted", "started_before_expiry"),
     }
+    async with factory() as session:
+        owed = await store.owed_notices(session, 100)
+    assert {(n.message_id, n.reason) for n in owed} == {
+        ("$never", "expired"),
+        ("$reclaimed", "expired_uncertain"),
+        ("$offered", "expired_uncertain"),
+        ("$held", "expired"),
+        ("$accepted", "started_before_expiry"),
+    }
+    async with factory() as session:
+        await store.notice_posted(
+            session, AGENT, "room-1", "expired_uncertain", ["$reclaimed", "$offered"]
+        )
+        await session.commit()
+        remaining = await store.owed_notices(session, 100)
+    assert {n.message_id for n in remaining} == {"$never", "$held", "$accepted"}
 
 
 async def test_tombstone_survives_expiry_and_prune(mailbox):

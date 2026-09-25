@@ -660,3 +660,115 @@ async def test_remove_deletes_the_mailbox(mailbox_app):
     )
     assert removed.status_code == 200, removed.text
     assert await rows(app) == {}
+
+
+def fail_first_send(app) -> None:
+    """The homeserver refuses the next notice once, then takes them again."""
+    send = app.service.send_message
+    failures = [RuntimeError("homeserver unreachable")]
+
+    async def flaky(*args: Any, **kwargs: Any) -> None:
+        if failures:
+            raise failures.pop()
+        await send(*args, **kwargs)
+
+    app.service.send_message = flaky
+
+
+async def owed(app) -> dict[tuple[str, str], str | None]:
+    async with app.factory() as session:
+        found = await session.execute(
+            select(
+                HostedWakeMailbox.room_id,
+                HostedWakeMailbox.message_id,
+                HostedWakeMailbox.notice_owed,
+            ).where(HostedWakeMailbox.tenant_id == require_tenant_id())
+        )
+        return {(room, message): notice for room, message, notice in found}
+
+
+async def add_row(app, message_id: str, **values: Any) -> None:
+    now = datetime.now(UTC)
+    async with app.factory() as session:
+        session.add(
+            HostedWakeMailbox(
+                agent_id=app.agent_id,
+                room_id=app.rooms[0],
+                message_id=message_id,
+                launch_id=app.request_id,
+                thread_id="$thread",
+                event={},
+                addressed_at=now,
+                updated_at=now,
+                expires_at=now + timedelta(hours=24),
+                **values,
+            )
+        )
+        await session.commit()
+
+
+async def assert_retried_once(app, key: tuple[str, str], body: str) -> None:
+    assert app.sent == []
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    assert [(room, thread) for room, thread, _ in app.sent] == [(key[0], "$thread")]
+    assert body in app.sent[0][2]
+    assert (await owed(app))[key] is None
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    assert len(app.sent) == 1
+
+
+async def test_stop_notice_failed_send_is_retried_by_upkeep(mailbox_app):
+    app = mailbox_app
+    await add_row(app, "$m1")
+    fail_first_send(app)
+    await stop(app)
+    key = (app.rooms[0], "$m1")
+    assert await rows(app) == {key: "cancelled"}
+    assert await owed(app) == {key: "stopped"}
+    await assert_retried_once(app, key, "stopped before I processed")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason", "body"),
+    [
+        ("cancelled", "stopped", "stopped before I processed"),
+        ("admitted", "started_before_stop", "already started processing"),
+    ],
+)
+async def test_ack_notice_failed_send_is_retried_by_upkeep(
+    mailbox_app, outcome, reason, body
+):
+    app = mailbox_app
+    await add_row(
+        app, "$m1", state="cancel_requested", cancel_reason="stopped", ever_offered=True
+    )
+    await attach(app)
+    fail_first_send(app)
+    key = (app.rooms[0], "$m1")
+    acked = await ack(app, attached_conn(app), (*key, outcome))
+    assert acked.status_code == 200, acked.text
+    assert await rows(app) == {key: outcome}
+    assert await owed(app) == {key: reason}
+    # A repeated ack finds the row terminal and owes nothing new.
+    await ack(app, attached_conn(app), (*key, outcome))
+    await assert_retried_once(app, key, body)
+
+
+async def test_expiry_notice_failed_send_is_retried_by_upkeep(mailbox_app):
+    app = mailbox_app
+    await add_row(app, "$m1")
+    await set_launch(app, desired_state="stopped", state="stopped", sleeping=True)
+    async with app.factory() as session:
+        row = await session.get(
+            HostedWakeMailbox,
+            (require_tenant_id(), app.agent_id, app.rooms[0], "$m1"),
+        )
+        assert row is not None
+        row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    fail_first_send(app)
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    key = (app.rooms[0], "$m1")
+    assert await rows(app) == {key: "expired"}
+    assert await owed(app) == {key: "expired"}
+    await assert_retried_once(app, key, "could not process this message in time")

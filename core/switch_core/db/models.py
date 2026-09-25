@@ -462,12 +462,22 @@ class HostedWakeMailbox(TenantScoped, Base):
         CheckConstraint(
             "origin IN ('live', 'cutover')", name="ck_hosted_wake_mailbox_origin"
         ),
+        CheckConstraint(
+            "notice_owed IS NULL OR notice_owed IN ('stopped', 'expired', 'expired_uncertain', 'started_before_stop', 'started_before_expiry')",
+            name="ck_hosted_wake_mailbox_notice_owed",
+        ),
         Index(
             "ix_hosted_wake_mailbox_agent_state",
             "tenant_id",
             "agent_id",
             "state",
             "addressed_at",
+        ),
+        Index(
+            "ix_hosted_wake_mailbox_notice_owed",
+            "tenant_id",
+            "addressed_at",
+            postgresql_where=text("notice_owed IS NOT NULL"),
         ),
     )
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -478,6 +488,8 @@ class HostedWakeMailbox(TenantScoped, Base):
     event: Mapped[dict] = mapped_column(JSONB, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     cancel_reason: Mapped[str | None] = mapped_column(Text)
+    #: The room notice this row's terminal move owes, until one is posted.
+    notice_owed: Mapped[str | None] = mapped_column(Text)
     ever_offered: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
