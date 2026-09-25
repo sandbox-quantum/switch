@@ -291,6 +291,14 @@ more easily than it charts a nested object. They count **configured** bridges,
 whether or not each is currently connected — which is up is process state, and
 `bridge_connected` / `bridge_disconnected` are how that is reported.
 
+**What counts as a message.** Every durable event is a row in the message log:
+arrivals, tool- and LLM-call reports and task transitions sit beside the
+conversation. The message counts, the turn counts and every "interacted" figure
+above (`user_active_*`, `room_active_*`, `agent_active_7d`) read only what a
+participant *said*: chat messages, and commands a person typed on a platform.
+The automatic notice Switch posts under an agent's name when it cannot take a
+request is excluded as well — the agent did not say it.
+
 **Turns rather than senders.** A turn is one message classified by who sent the
 message *before* it in the same room. That is the only way to tell an agent
 answering a person from two agents talking among themselves: a sender-only count
@@ -322,7 +330,7 @@ deployments installed after this ships — see
 | Event | Emitted when | Extra properties |
 |---|---|---|
 | `deployment_installed` | the deployment id is generated on an empty database | — |
-| `first_connector_added` | any bridge first reaches connected | `bridge_platform` |
+| `first_connector_added` | the first bridge a **person** added reaches connected | `bridge_platform` |
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
 | `first_room_active` | that room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
@@ -351,8 +359,25 @@ telemetry is switched off does not emit it later as though it had just happened.
 | `bridge_platform` | platform |
 | `seconds_since_install` | number |
 | `seconds_since_configured` | number — configuration saved to first connect |
-| `is_first_connector` | boolean |
+| `is_preconfigured` | boolean — registered by the deployment's setup step, not a person |
+| `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
+
+**Preconfigured connectors.** The standalone stack, the Helm chart and every
+Console-managed local server run a setup step that registers the bundled
+Mattermost seconds after install. That connector reports `is_preconfigured:
+true`, is never `is_first_connector`, and never claims `first_connector_added`
+— so that milestone is the first connector a person added, not the deployment
+booting. Filter `connector_added` on `is_preconfigured = false` to measure
+onboarding. A bundled connector registered before the flag existed is marked
+on the setup step's next run; if it first connects before that, its one
+`connector_added` reports `false`.
+
+**`seconds_since_configured` is not setup time for an old connector.** The
+event fires on the first connect *seen with telemetry on*. A connector that
+already existed when telemetry was switched on reports its whole age on its
+first connect afterwards. Deployments that predate telemetry send `-1` in
+`seconds_since_install`, so filtering to `>= 0` drops most of them.
 
 `seconds_since_configured` and `failed_attempts_before_success` are what answer
 "is one platform too hard". Elapsed time from install mostly measures when
@@ -441,11 +466,22 @@ that as `false` would misfile a lookup failure as a failed setup.
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 
-**`agent_session_started`** — `known_agent_type`. Deliberately nothing about
-*how* the session was started: the server sees an authenticated connection
-whether a person launched it or Switch Console spawned it, and a property that
-takes the same value on every emission is a dimension that cannot segment
-anything.
+**`agent_session_started`** — `known_agent_type`. An agent *coming online*: its
+first live connection, not a session a person began. Sessions share their
+agent's one connection, held by Switch Console or a remote host's sidecar, so
+this fires when that connection opens and not again when a session starts on
+it. Deliberately nothing about *how*: the server cannot tell, and a property
+that takes the same value on every emission cannot segment anything.
+
+**`session_started`** — `start_source` (`user` \| `room` \| `automation` \|
+`unknown`), `known_agent_type`. A coding-agent session starting, reported once
+by the host that runs it when the session is new — never on a resume. The
+launcher stamps `start_source`: `user` is a person starting one in Switch
+Console, `room` the agent being addressed in a room, `automation` Console's
+local automation API. `unknown` is a launcher that said nothing, reported
+rather than dropped so an unstamped launch path is a visible gap. "Sessions a
+person started" is `start_source = user`. It is the launcher's claim, not proof
+a person clicked, and hosts older than this report nothing.
 
 **`agent_session_ended`** — `duration_seconds` (number), `reason` (`normal` \|
 `heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). No runtime: the
@@ -688,6 +724,9 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `agent_session_ended` — kill an agent and wait for the heartbeat sweep
   (a few seconds). Reported through a listener on the registry, so every path
   that closes a connection reports, not just the sweep.
+- `session_started` — `POST /agent-sessions/{id}/started` from a session host
+  (`bridges/agent/api/activity_routes.py`). A repeat for the same agent and
+  session emits nothing, across restarts.
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 
@@ -695,7 +734,8 @@ Two things to set up first, or a third of the list cannot fire at all:
   `outcome: failure` when it cannot; try bad credentials.
 - `connector_added` — the *first* successful connect for that bridge, ever.
   Restarting a working bridge correctly emits nothing.
-- `first_connector_added` — the first connector on the deployment.
+- `first_connector_added` — the first connector a person added on the
+  deployment. The bundled Mattermost the setup step registers never claims it.
 - `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
   one (`restart`), or a live bridge crashing.
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check
@@ -740,7 +780,8 @@ reason.
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.
 - `connector_configured` — the bridge row being written, which is not the same
-  as it connecting. Many of these and few `bridge_connected` is a deployment
+  as it connecting. `is_preconfigured` separates the setup step's own
+  connector from one a person added. Many of these and few `bridge_connected` is a deployment
   whose setup is failing, and only the pair shows it.
 - `server_connector_registered` / `server_connector_removed`.
 

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { SessionLinks } from './session-channel';
+import { owedSessionStart, type HostStartSource } from './session-start';
 import type { SharedHostConfig } from './shared-config';
 
 const roots: string[] = [];
@@ -56,6 +57,7 @@ async function fixture() {
     watcher: false,
     restart: true,
     supervision: detachedSupervision(entrypoint),
+    startSource: null as HostStartSource | null,
   };
 }
 it('refuses to replace missing conversation state with a fresh session', async () => {
@@ -223,4 +225,60 @@ it('stops the hosts it supervises in-process when closed, and starts no more', a
   await expect(
     supervision.start({ root, configPath: join(root, 'config.json'), watcher: false })
   ).rejects.toThrow('shutting down');
+});
+
+/** Launches that start nothing, so what is written to the root can be read. */
+const inert = {
+  build: 'test',
+  links: null,
+  start: async () => {},
+  stop: async () => {},
+};
+
+it('records how a session started when the launch creates it', async () => {
+  const input = await fixture();
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    supervision: inert,
+    startSource: 'user',
+  });
+
+  expect(await owedSessionStart(input.root)).toBe('user');
+});
+
+it('records a launcher that said nothing as unknown rather than not at all', async () => {
+  const input = await fixture();
+  await ensureSharedProcess({ ...input, resuming: false, restart: false, supervision: inert });
+
+  expect(await owedSessionStart(input.root)).toBe('unknown');
+});
+
+it('records nothing for a session that already existed', async () => {
+  const input = await fixture();
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    supervision: inert,
+    startSource: 'room',
+  });
+
+  expect(await owedSessionStart(input.root)).toBeNull();
+});
+
+it('records nothing for a watcher, which is not a session', async () => {
+  const input = await fixture();
+  await ensureSharedProcess({
+    ...input,
+    resuming: false,
+    restart: false,
+    watcher: true,
+    supervision: inert,
+    startSource: 'room',
+  });
+
+  expect(await owedSessionStart(input.root)).toBeNull();
 });

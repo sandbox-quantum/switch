@@ -92,6 +92,7 @@ async function main(): Promise<void> {
           watcher: mode === '--ensure-watch',
           restart: mode === '--restart',
           supervision: detachedSupervision(process.argv[1]!),
+          startSource: null,
         })
       )
     );
@@ -130,6 +131,7 @@ async function main(): Promise<void> {
         watcher: false,
         restart: input.restart,
         supervision,
+        startSource: input.startSource ?? null,
       });
     };
     // Console's "Reconnect to room" reaches the watcher through the control port.

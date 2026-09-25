@@ -149,6 +149,22 @@ it('delivers the initial prompt on a relaunch that did not create the host', asy
   expect(mocks.persist.mock.calls.map((call) => call[1].state)).toEqual(['pending', 'submitted']);
 });
 
+it('hands the host how a new session started, so it can tell Switch', async () => {
+  await runtime().start(session, false, 'Say hello', 'user');
+
+  expect(mocks.runHost).toHaveBeenCalledWith(expect.any(String), expect.anything(), {
+    resuming: false,
+    restart: false,
+    startSource: 'user',
+  });
+});
+
+it('hands the host no start source for a caller that gave none', async () => {
+  await runtime().start(session, true);
+
+  expect(mocks.runHost.mock.calls[0][2]).toMatchObject({ startSource: null });
+});
+
 it('accepts a host that awaits an explicit reset decision and holds the initial prompt', async () => {
   mocks.snapshot.mockResolvedValue({
     session: {

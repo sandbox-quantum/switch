@@ -1,3 +1,4 @@
+import type { HostStartSource } from '@switch-console/agent-providers';
 import type { Session } from '@shared/core/sessions/sessions';
 
 export interface AgentRuntimeProvider {
@@ -5,7 +6,17 @@ export interface AgentRuntimeProvider {
   /** The session's host came up after all, so a failed start no longer stands. */
   hostCameUp?(): void;
   restart(session: Session): Promise<void>;
-  start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void>;
+  /**
+   * `startSource` is how a new session came to start, which its host reports
+   * to Switch once; null for a session that is not new or a caller that
+   * cannot say.
+   */
+  start(
+    session: Session,
+    isResuming?: boolean,
+    initialPrompt?: string,
+    startSource?: HostStartSource | null
+  ): Promise<void>;
   /**
    * Release the Console view while execution continues on the host.
    */

@@ -13,6 +13,7 @@ import {
   type SessionLinks,
   type SessionRequest,
 } from './session-channel';
+import { hostStartSources, type HostStartSource } from './session-start';
 import {
   type PlaceOutcome,
   type WatcherControl,
@@ -39,7 +40,15 @@ const clientMessageSchema = z.union([
   z.object({ id: z.number().int(), unsubscribe: z.string().min(1) }),
   z.object({
     id: z.number().int(),
-    ensure: z.object({ config: z.unknown(), resuming: z.boolean(), restart: z.boolean() }),
+    ensure: z.object({
+      config: z.unknown(),
+      resuming: z.boolean(),
+      restart: z.boolean(),
+      // Beside the config rather than in it: a sidecar older than Console
+      // parses the config strictly and would refuse the session over a key it
+      // does not know, but drops one here. Absent from an older Console.
+      startSource: z.enum(hostStartSources).nullable().optional(),
+    }),
   }),
   /** Console's "Reconnect to room": move a room's messages to this session. */
   z.object({
@@ -60,6 +69,7 @@ export type EnsureSession = (input: {
   config: unknown;
   resuming: boolean;
   restart: boolean;
+  startSource?: HostStartSource | null;
 }) => Promise<unknown>;
 
 /** How long a request waits for the session's host to be ready. */
@@ -315,7 +325,12 @@ export class ControlClient {
     return this.call({ sessionId, request });
   }
 
-  ensure(input: { config: unknown; resuming: boolean; restart: boolean }): Promise<unknown> {
+  ensure(input: {
+    config: unknown;
+    resuming: boolean;
+    restart: boolean;
+    startSource: HostStartSource | null;
+  }): Promise<unknown> {
     return this.call({ ensure: input });
   }
 

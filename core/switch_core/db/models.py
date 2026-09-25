@@ -1150,6 +1150,13 @@ class CollaborationBridge(TenantScoped, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    # Registered by the deployment's own setup step — the bundled Mattermost —
+    # rather than by a person. Telemetry reads it so that "time to first
+    # connector" measures a person connecting their platform, not a
+    # deployment booting.
+    preconfigured: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

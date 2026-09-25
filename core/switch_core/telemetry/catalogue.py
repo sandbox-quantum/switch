@@ -172,7 +172,7 @@ _SNAPSHOT_COUNTS = (
     "agent_other_count",
     # Connections, not distinct agents: an agent may hold several. No
     # "sessions started today" — nothing durable records one, so it could only
-    # be an in-process tally a restart resets. `agent_session_started` covers it.
+    # be an in-process tally a restart resets. `session_started` covers it.
     "session_live_count",
     "connector_slack_count",
     "connector_mattermost_count",
@@ -222,6 +222,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
+    # The first connector a person added. One the setup step registered itself
+    # never claims it, or the bundled Mattermost would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -299,9 +301,20 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "registration_path": one_of("bootstrap", "personal_key", "gateway", "other"),
         "has_parent": BOOLEAN,
     },
-    # No "start source": the server sees an authenticated connection whether a
-    # person launched the session or Console spawned it.
+    # An agent coming online: its first live connection. No "start source": the
+    # server sees an authenticated connection whether a person launched the
+    # session or Console spawned it. `session_started` is the one that says.
     "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    # A coding-agent session starting, as its host reports it once, when the
+    # session is new. `start_source` is what the launcher stamped on it: `user`
+    # a person starting one in Console, `room` the agent being addressed in a
+    # room, `automation` Console's local automation API, and `unknown` a
+    # launcher that said nothing — reported rather than dropped, so a launch
+    # path nobody stamped shows up as a gap instead of as no sessions.
+    "session_started": {
+        "start_source": one_of("user", "room", "automation", "unknown"),
+        "known_agent_type": KNOWN_AGENT_TYPE,
+    },
     # No runtime: the connection registry is the only thing that knows a
     # session ended and it holds none. Starts carry it.
     "agent_session_ended": {
@@ -314,6 +327,11 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "seconds_since_install": NUMBER,
         "seconds_since_configured": NUMBER,
+        # Registered by the deployment's setup step (the bundled Mattermost)
+        # rather than by a person. Filter these out to measure onboarding.
+        "is_preconfigured": BOOLEAN,
+        # The first connector a person added: never true for a preconfigured
+        # one, and a preconfigured one already running does not make it false.
         "is_first_connector": BOOLEAN,
         "failed_attempts_before_success": NUMBER,
     },
@@ -376,7 +394,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "server_connector_removed": {"connector_kind": one_of("opencode", "other")},
     # Configured, not connected. Many of these and few `bridge_connected` is a
     # deployment whose setup is failing.
-    "connector_configured": {"bridge_platform": BRIDGE_PLATFORM},
+    "connector_configured": {
+        "bridge_platform": BRIDGE_PLATFORM,
+        "is_preconfigured": BOOLEAN,
+    },
     "invitation_sent": {},
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {

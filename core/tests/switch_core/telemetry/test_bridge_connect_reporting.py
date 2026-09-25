@@ -23,6 +23,7 @@ both unaffected by telemetry being added.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -67,6 +68,7 @@ def _service_with_telemetry(
     *,
     callback_port: int = 0,
     client_store: Any = None,
+    installed_at: datetime | None = None,
 ) -> tuple[CollaborationBridgeLifecycleService, _RecordingSink]:
     sink = _RecordingSink()
     telemetry = TelemetryService(
@@ -77,6 +79,7 @@ def _service_with_telemetry(
         version=None,
         environment=None,
         session_factory=session_factory,
+        installed_at=installed_at,
     )
     config = MagicMock()
     config.gateway_public_url = "https://gw.example"
