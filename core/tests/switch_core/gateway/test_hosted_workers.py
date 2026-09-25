@@ -621,11 +621,10 @@ async def test_gateway_cancel_with_teardown_and_immediate_reply(
             )
         )
         frames: list[dict[str, Any]] = []
-        for _ in range(1000):
+        deadline = loop.time() + 5
+        while not frames and loop.time() < deadline:
             frames += [d for e, d in conn.worker_frames.drain() if e == "relay"]
-            if frames:
-                break
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.001)
         assert len(frames) == 1
         if stage == "awaiting_reply":
             for _ in range(20):
