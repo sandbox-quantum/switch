@@ -289,6 +289,44 @@ async def test_cutover_decides_items_that_are_not_room_messages(mailbox_app):  #
     assert await mailbox(app) == []
 
 
+async def test_an_import_into_a_session_awaiting_a_reset_says_it_waits(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    room = app.rooms[0]
+    conn = await ready(app)
+    elsewhere = {
+        **room_record(room, "$m3", room_pending=True, host=None, failure_notified=True),
+        "session_id": "other-session",
+    }
+    response = await upload(
+        app,
+        conn,
+        [
+            {"kind": "reset_pending", "session_id": "watcher-placeholder"},
+            room_record(
+                room, "$m1", room_pending=True, host=None, failure_notified=True
+            ),
+            room_record(
+                room, "$m2", room_pending=True, host=None, failure_notified=False
+            ),
+            elsewhere,
+        ],
+    )
+    assert response.status_code == 200, response.text
+
+    decided = {
+        item.message_id: item.disposition
+        for item in await items(app)
+        if item.kind == "room_message"
+    }
+    assert decided == {"$m1": "import", "$m2": "import", "$m3": "import"}
+    bodies = sorted(body for _, _, body in app.sent)
+    assert len(bodies) == 3
+    waiting = [body for body in bodies if "cannot continue" in body]
+    assert len(waiting) == 2
+    assert all("!reset @" in body for body in waiting)
+    assert sum("will process this message now" in body for body in bodies) == 1
+
+
 def test_decide_room_message_prefers_the_strongest_evidence():
     records = [
         RoomMessageRecord(

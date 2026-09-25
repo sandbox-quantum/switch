@@ -63,6 +63,7 @@ CutoverNoticeReason = Literal[
     "cutover_unrecoverable",
     "cutover_interrupted",
     "cutover_run_now",
+    "conversation",
 ]
 
 _HOST_RANK: dict[str | None, int] = {
@@ -525,7 +526,22 @@ _NOTICE_REASONS: dict[str, CutoverNoticeReason] = {
 
 
 async def owed_notices(session: AsyncSession, agent_id: str) -> list[CutoverNotice]:
-    """The agent's cutover notices not yet posted, oldest item first."""
+    """The agent's cutover notices not yet posted, oldest item first.
+
+    An import into a session whose reset was interrupted does not run now:
+    the host holds it until someone decides the reset, so the room is told
+    that, not that it will run.
+    """
+    awaiting_reset = set(
+        await session.scalars(
+            select(HostedCutoverItem.session_id).where(
+                HostedCutoverItem.tenant_id == require_tenant_id(),
+                HostedCutoverItem.agent_id == agent_id,
+                HostedCutoverItem.kind == "reset_pending",
+                HostedCutoverItem.session_id.is_not(None),
+            )
+        )
+    )
     items = await session.scalars(
         select(HostedCutoverItem)
         .where(
@@ -538,9 +554,10 @@ async def owed_notices(session: AsyncSession, agent_id: str) -> list[CutoverNoti
                     ("uncertain", "unrecoverable", "interrupted")
                 ),
                 (HostedCutoverItem.disposition == "import")
-                & (
+                & or_(
                     HostedCutoverItem.evidence["worker"]["failure_notified"].astext
-                    == "true"
+                    == "true",
+                    HostedCutoverItem.session_id.in_(awaiting_reset),
                 ),
             ),
         )
@@ -562,7 +579,9 @@ async def owed_notices(session: AsyncSession, agent_id: str) -> list[CutoverNoti
                 message_id=item.message_id,
                 request_id=request_id,
                 thread_id=item.thread_id,
-                reason=_NOTICE_REASONS[item.disposition],
+                reason="conversation"
+                if item.disposition == "import" and item.session_id in awaiting_reset
+                else _NOTICE_REASONS[item.disposition],
             )
         )
     return notices

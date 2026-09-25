@@ -1217,6 +1217,14 @@ A `failure-notified` message that is imported gets one more notice (reason
 `upgrade`): "will run now, after the upgrade", so the earlier failure notice
 is not the last word.
 
+An import into a session that also has a `reset_pending` item does not run
+now: the host holds room messages until the reset is decided. Every such
+import, failure-notified or not, gets the `conversation` notice instead,
+which says it waits and who acts: anyone in the room with `!reset @agent`,
+or the owner with Start a fresh conversation in Switch Console. It is keyed
+like the worker's own `conversation` notice, so a message #538 already told
+this is not told again.
+
 **Imported commands never meet the old host's dedupe record.** Main's host
 accepts a command id it has seen only if the command is identical, and
 otherwise returns the old status or `IDEMPOTENCY_CONFLICT`
