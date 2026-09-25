@@ -13,6 +13,7 @@ from switch_core.bridges.agent.protocol.connections import (
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import WorkerBinding
 from switch_core.bridges.agent.protocol.stream import event_stream
 from switch_core.db.models import User
 from switch_core.gateway.agent_sessions import router
@@ -44,7 +45,10 @@ def _watcher(registry: ConnectionRegistry, *, speaks: int, scope: str = "all"):
         expected_generation=None,
     )
     stream = event_stream(
-        conn=conn, registry=registry, buffer=EventBuffer(sequence_base=0), approvals=None
+        conn=conn,
+        registry=registry,
+        buffer=EventBuffer(sequence_base=0),
+        approvals=None,
     )
     return conn, stream
 
@@ -76,7 +80,7 @@ async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
         await anext(stream)  # connection_state
         waiting = asyncio.create_task(anext(stream))
         await asyncio.sleep(0.05)
-        assert registry.relay_session_command(AGENT, FRAME) is True
+        assert registry.relay_session_command(AGENT, FRAME, worker_only=False) is True
         text = (await asyncio.wait_for(waiting, 5)).decode()
         assert "event: session_command\n" in text
         assert json.loads(text.split("data: ", 1)[1]) == FRAME
@@ -95,7 +99,7 @@ async def test_a_command_nobody_can_take_is_not_relayed(speaks, scope) -> None:
     registry = ConnectionRegistry()
     conn, stream = _watcher(registry, speaks=speaks, scope=scope)
     conn.stream_attached = True
-    assert registry.relay_session_command(AGENT, FRAME) is False
+    assert registry.relay_session_command(AGENT, FRAME, worker_only=False) is False
     assert conn.session_commands == []
     await stream.aclose()
 
@@ -111,3 +115,22 @@ async def test_switch_does_not_answer_where_an_agents_sessions_are(
     )
     async with _client(session_factory, registry, owner) as client:
         assert (await client.get("/agent-sessions/room-health")).status_code == 404
+
+
+async def test_a_worker_only_command_skips_every_connection_but_the_worker() -> None:
+    registry = ConnectionRegistry()
+    plain, plain_stream = _watcher(registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION)
+    plain.stream_attached = True
+    assert registry.relay_session_command(AGENT, FRAME, worker_only=True) is False
+    worker, worker_stream = _watcher(
+        registry, speaks=SESSION_COMMAND_PROTOCOL_REVISION, scope="single"
+    )
+    worker.stream_attached = True
+    registry.bind_worker(
+        worker, WorkerBinding("launch-1", 1, "boot-a", "instance-a"), {}
+    )
+    assert registry.relay_session_command(AGENT, FRAME, worker_only=True) is True
+    assert worker.session_commands == [FRAME]
+    assert plain.session_commands == []
+    await plain_stream.aclose()
+    await worker_stream.aclose()

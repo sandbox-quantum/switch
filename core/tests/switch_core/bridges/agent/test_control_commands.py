@@ -7,14 +7,18 @@ from typing import Any
 import pytest
 
 import switch_core.bridges.agent.commands as commands
-from switch_core.bridges.agent.commands import _check_control_target, _cmd_reset
+from switch_core.bridges.agent.commands import (
+    _check_control_target,
+    _cmd_interrupt,
+    _cmd_reset,
+)
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.events import CommandEvent
 
 
-def _event() -> CommandEvent:
+def _event(command: str = "reset") -> CommandEvent:
     return CommandEvent(
-        command="reset",
+        command=command,
         args="",
         user_id="@u:server",
         user_name="louisa",
@@ -40,14 +44,31 @@ def _client(
     enqueue: list[Any],
     placed: str | None = None,
     relayed: list[Any] | None = None,
+    hosted: bool = False,
+    woke: list[Any] | None = None,
 ) -> SimpleNamespace:
     """Minimal AgentClient stand-in for _dispatch_control_command."""
 
     agent = SimpleNamespace(
         id="agent-1",
+        tenant_id="tenant-1",
         name="cc",
-        integration_profile={"command_capabilities": {"reset": command_level}},
+        metadata_={"hosted_launch_id": "launch-1"} if hosted else {},
+        integration_profile={
+            "command_capabilities": {
+                "reset": command_level,
+                "interrupt": command_level,
+            }
+        },
     )
+
+    async def _note_hosted_addressed(noted: Any) -> None:
+        assert woke is not None
+        woke.append(noted.id)
+
+    def _relay(_agent: str, frame: Any, *, worker_only: bool) -> bool:
+        assert worker_only is hosted
+        return relayed is not None and (relayed.append(frame) or True)
 
     async def _fresh_agent(_session: Any) -> SimpleNamespace:
         return agent
@@ -74,6 +95,8 @@ def _client(
         _fresh_agent=_fresh_agent,
         _resolve_room_meta=_resolve_room_meta,
         session_factory=_session_factory,
+        tenant_id="tenant-1",
+        _note_hosted_addressed=_note_hosted_addressed,
         _agent_session_store=SimpleNamespace(),
         _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
         # Presence unions the heartbeat rows with the live connections
@@ -81,9 +104,7 @@ def _client(
         _connections=SimpleNamespace(
             live_connection_ids=lambda: set(),
             session_in_room=lambda _agent, _room: placed,
-            relay_session_command=lambda _agent, frame: (
-                relayed is not None and (relayed.append(frame) or True)
-            ),
+            relay_session_command=_relay,
         ),
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: enqueue.append((a, k))),
     )
@@ -360,3 +381,163 @@ def test_an_interrupt_names_the_current_turn() -> None:
         requester_name="louisa",
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
+
+
+def _patch_launch(monkeypatch: pytest.MonkeyPatch, launch: Any) -> None:
+    class _Session:
+        async def get(self, _model: Any, key: Any) -> Any:
+            assert key == ("tenant-1", "launch-1")
+            return launch
+
+    @asynccontextmanager
+    async def _tenant_session(_factory: Any, tenant_id: str) -> Any:
+        assert tenant_id == "tenant-1"
+        yield _Session()
+
+    monkeypatch.setattr(commands, "tenant_session", _tenant_session)
+
+
+async def _no_surface(*_a: Any) -> str:
+    return "slack"
+
+
+@pytest.mark.asyncio
+async def test_reset_of_a_sleeping_hosted_agent_wakes_it_and_queues_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    woke: list[Any] = []
+    enqueue: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    _patch_launch(monkeypatch, SimpleNamespace(sleeping=True))
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=enqueue,
+            hosted=True,
+            woke=woke,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert woke == ["agent-1"]
+    assert enqueue == []
+    assert reply.bodies == [
+        "The cloud worker is waking up. The reset was not queued. Wait until the "
+        "agent is back (usually about a minute), then send !reset @cc again to "
+        "start a fresh conversation."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reset_whose_worker_went_away_after_placement_still_wakes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    woke: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands, "_room_surface", _no_surface)
+    _patch_launch(monkeypatch, SimpleNamespace(sleeping=True))
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=[],
+            placed="session-1",
+            hosted=True,
+            woke=woke,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert woke == ["agent-1"]
+    assert "waking up" in reply.bodies[-1]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_of_a_sleeping_hosted_agent_does_not_wake_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    woke: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    _patch_launch(monkeypatch, SimpleNamespace(sleeping=True))
+
+    await _cmd_interrupt(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=[],
+            hosted=True,
+            woke=woke,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("interrupt"),
+        False,
+    )
+
+    assert woke == []
+    assert "asleep" in reply.bodies[-1]
+
+
+@pytest.mark.asyncio
+async def test_an_awake_hosted_agent_relays_to_its_worker_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands, "_room_surface", _no_surface)
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+            hosted=True,
+            woke=[],
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert len(relayed) == 1
+    assert reply.bodies[-1].startswith("Resetting my session")
+
+
+@pytest.mark.asyncio
+async def test_an_awake_hosted_agent_with_no_worker_is_told_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    woke: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands, "_room_surface", _no_surface)
+    _patch_launch(monkeypatch, SimpleNamespace(sleeping=False))
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=[],
+            placed="session-1",
+            hosted=True,
+            woke=woke,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert woke == []
+    assert "controller is not connected" in reply.bodies[-1]

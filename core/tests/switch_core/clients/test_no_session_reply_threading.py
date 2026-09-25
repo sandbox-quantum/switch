@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -84,6 +85,7 @@ def _fake_self(
         _gate_addressed=_gate_addressed,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
+        _note_hosted_addressed=AsyncMock(return_value=None),
         _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
         send_message=send_message,
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: None),

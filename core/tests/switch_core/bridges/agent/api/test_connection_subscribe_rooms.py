@@ -54,6 +54,7 @@ class _Protocol:
 
 class _Agent:
     id = AGENT_ID
+    metadata_ = None
 
 
 def _open(protocol: _Protocol, scope: str, connection_id: str) -> Any:

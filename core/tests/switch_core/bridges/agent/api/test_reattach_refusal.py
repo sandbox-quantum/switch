@@ -60,8 +60,9 @@ def _attach(protocol: _Protocol) -> Any:
 async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
     return await poll_events(
         AGENT_ID,
-        SimpleNamespace(id=AGENT_ID),  # type: ignore[arg-type]
+        SimpleNamespace(id=AGENT_ID, metadata_=None),  # type: ignore[arg-type]
         protocol,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
         accept="text/event-stream",
         connection_id=CONN_ID,
         protocol_version=PROTOCOL_VERSION,

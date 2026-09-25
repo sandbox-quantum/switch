@@ -73,6 +73,7 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "agent_id": AGENT_ID,
         "agent": _agent(),
         "protocol": protocol,
+        "config": None,
         "timeout": 0,
         "accept": None,
         "connection_id": None,

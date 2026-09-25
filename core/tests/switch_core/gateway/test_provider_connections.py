@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     HostedLaunch,
@@ -18,7 +19,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.provider_connections import router
 from switch_core.providers.claude_verifier import ClaudeVerificationError
 from switch_core.providers.credentials import validate_provider_credential
@@ -55,6 +56,9 @@ async def connection_app(session_factory):
             yield session
 
     app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
+        connections=ConnectionRegistry()
+    )
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(
         jwt_secret_key="synthetic-encryption-test-key",

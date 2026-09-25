@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
     ProviderConnection,
@@ -19,6 +20,7 @@ from switch_core.db.stores.provider_connection_store import ProviderConnectionSt
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_config,
+    get_protocol,
     get_session,
     get_session_factory,
 )
@@ -57,6 +59,9 @@ async def verification_app(session_factory, tmp_path):
             yield session
 
     app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
+        connections=ConnectionRegistry()
+    )
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(

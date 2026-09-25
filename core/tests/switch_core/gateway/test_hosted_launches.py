@@ -8,12 +8,13 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import HostedLaunch, HostedOperation, User, require_tenant_id
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.hosted_launches import router
 from switch_core.providers.claude_verifier import ClaudeVerificationError
 
@@ -62,6 +63,9 @@ async def launch_app(session_factory, monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_config] = lambda: config
+    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
+        connections=ConnectionRegistry()
+    )
     access = AsyncMock(
         return_value={
             "installations": [

@@ -57,7 +57,9 @@ def _event(index: int) -> AgentEvent:
 
 
 def test_events_dropped_for_overflow_are_counted(registry):
-    buffer = EventBuffer(max_events_per_agent=3, retention_seconds=3600, sequence_base=0)
+    buffer = EventBuffer(
+        max_events_per_agent=3, retention_seconds=3600, sequence_base=0
+    )
     for index in range(6):
         buffer.enqueue("agent-1", "room-1", _event(index))
 
@@ -70,7 +72,9 @@ def test_events_dropped_for_overflow_are_counted(registry):
 
 def test_events_dropped_for_retention_are_counted_separately(registry):
     """An agent that cannot keep up and one that was away are different faults."""
-    buffer = EventBuffer(max_events_per_agent=1000, retention_seconds=-1, sequence_base=0)
+    buffer = EventBuffer(
+        max_events_per_agent=1000, retention_seconds=-1, sequence_base=0
+    )
     buffer.enqueue("agent-1", "room-1", _event(0))
     buffer.enqueue("agent-1", "room-1", _event(1))
 
@@ -80,7 +84,9 @@ def test_events_dropped_for_retention_are_counted_separately(registry):
 
 
 def test_nothing_is_counted_when_nothing_is_dropped(registry):
-    buffer = EventBuffer(max_events_per_agent=100, retention_seconds=3600, sequence_base=0)
+    buffer = EventBuffer(
+        max_events_per_agent=100, retention_seconds=3600, sequence_base=0
+    )
     buffer.enqueue("agent-1", "room-1", _event(0))
 
     assert _counts(registry, "switch.agent.events_dropped") == {}

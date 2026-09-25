@@ -407,7 +407,12 @@ def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:
         session_factory=session_factory,
         agent_store=SimpleNamespace(
             get=_returning(
-                SimpleNamespace(id=AGENT, name="agent-1", integration_profile=profile)
+                SimpleNamespace(
+                    id=AGENT,
+                    name="agent-1",
+                    integration_profile=profile,
+                    metadata_=None,
+                )
             )
         ),
         room_store=SimpleNamespace(

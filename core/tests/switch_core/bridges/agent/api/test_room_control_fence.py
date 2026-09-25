@@ -84,6 +84,7 @@ def _request(room_id: str, generation: int | None) -> ConnectionSubscribeRequest
 
 class _Agent:
     id = AGENT_ID
+    metadata_ = None
 
 
 async def _call(

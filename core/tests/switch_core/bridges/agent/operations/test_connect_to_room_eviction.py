@@ -65,7 +65,9 @@ class _RecordingSessionStore:
 
 def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> Any:
     room = SimpleNamespace(id=ROOM, name="Room One", description="A room")
-    agent = SimpleNamespace(id=AGENT, name="agent-one", integration_profile=_PROFILE)
+    agent = SimpleNamespace(
+        id=AGENT, name="agent-one", integration_profile=_PROFILE, metadata_=None
+    )
     room_model = SimpleNamespace(id=ROOM, name="Room One", bridge_id=None)
 
     @asynccontextmanager

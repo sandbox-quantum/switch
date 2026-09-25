@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -11,9 +12,19 @@ from fastapi import FastAPI
 from sqlalchemy import func, select, text
 
 from switch_core.bridges.agent.api.hosted_routes import router as worker_router
+from switch_core.bridges.agent.api.hosted_worker_routes import (
+    router as hosted_worker_router,
+)
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_config as get_worker_config
+from switch_core.bridges.agent.dependencies import get_protocol as get_worker_protocol
 from switch_core.bridges.agent.dependencies import get_session as get_worker_session
+from switch_core.bridges.agent.protocol.connections import (
+    ClientDeclaration,
+    Connection,
+    ConnectionRegistry,
+)
+from switch_core.bridges.agent.protocol.hosted_workers import IdleReport, WorkerBinding
 from switch_core.bridges.agent.protocol.service import AgentExistsError
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
@@ -30,6 +41,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -40,6 +52,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import launch_by_id, router
 from switch_core.gateway.hosted_launches import router as launch_router
+from switch_core.gateway.hosted_relay import router as relay_router
 from switch_core.providers.github_installation import (
     GitHubInstallationCredentials,
     RepositoryCredential,
@@ -114,7 +127,8 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         )
         await session.commit()
     service = make_service(session_factory)
-    service.connections = SimpleNamespace(for_agent=lambda _: [])
+    service.connections = ConnectionRegistry()
+    service.event_buffer = SimpleNamespace(boot=1, remove=Mock())
     service.config.hosted_idle_stop_minutes = 0
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
@@ -129,7 +143,9 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     app.state.github_connections = SimpleNamespace(client_id="synthetic-app")
     app.include_router(router)
     app.include_router(worker_router)
+    app.include_router(hosted_worker_router, prefix="/agents")
     app.include_router(launch_router)
+    app.include_router(relay_router)
     settings_path = tmp_path / "controller.json"
     settings_path.write_text(
         json.dumps({**settings.model_dump(mode="json"), "token": TOKEN})
@@ -158,6 +174,7 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: service.config
     app.dependency_overrides[get_protocol] = lambda: service
+    app.dependency_overrides[get_worker_protocol] = lambda: service
     issue = AsyncMock(
         return_value=RepositoryCredential(
             "SYNTHETIC-REPOSITORY",
@@ -182,6 +199,53 @@ async def controller_app(session_factory, monkeypatch, tmp_path):
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
     ) as client:
         yield client, request_id, agent_id, service, session_factory, settings
+
+
+def attach_worker(
+    service,
+    agent_id: str,
+    request_id: str,
+    *,
+    revision: int = 1,
+    boot_id: str = "boot-a",
+    connection_id: str | None = None,
+) -> Connection:
+    conn = service.connections.open(
+        agent_id=agent_id,
+        connection_id=connection_id or str(uuid4()),
+        scope="all",
+        delivery_filter="all",
+        spawn_capable=True,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=7, accepts=1),
+        expected_generation=None,
+    )
+    service.connections.bind_worker(
+        conn, WorkerBinding(request_id, revision, boot_id, "instance-a"), {}
+    )
+    return conn
+
+
+def fence(conn: Connection) -> dict:
+    return {"connection_id": conn.id, "generation": conn.stream_generation}
+
+
+def report_idle(service, conn: Connection, *, busy: bool = False, seq: int = 1) -> None:
+    assert conn.worker is not None
+    service.connections.record_idle_report(
+        conn,
+        IdleReport(
+            report_seq=seq,
+            relays_through=0,
+            busy=busy,
+            reasons=[],
+            sessions={},
+            launch_revision=conn.worker.launch_revision,
+            generation=conn.stream_generation,
+            received_monotonic=time.monotonic(),
+            received_at=datetime.now(UTC),
+        ),
+    )
 
 
 async def test_controller_requires_its_own_credential(controller_app):
@@ -228,7 +292,7 @@ async def test_prepare_registers_once_and_does_not_create_a_room(controller_app)
 
 
 async def test_running_vm_is_not_ready_without_the_watcher(controller_app):
-    client, request_id, _, service, _, _ = controller_app
+    client, request_id, service_agent_id, service, _, _ = controller_app
     headers = {"Authorization": "Bearer " + TOKEN}
     first = await client.post(
         f"/hosted-controller/{request_id}/observation",
@@ -236,7 +300,7 @@ async def test_running_vm_is_not_ready_without_the_watcher(controller_app):
         json={"state": "running", "revision": 1},
     )
     assert first.json()["state"] == "provisioning"
-    service.connections.for_agent = lambda _: [SimpleNamespace(spawn_capable=True)]
+    attach_worker(service, service_agent_id, request_id)
     ready = await client.post(
         f"/hosted-controller/{request_id}/observation",
         headers=headers,
@@ -282,11 +346,12 @@ async def test_prepare_reports_a_name_taken_during_provisioning(
 
 
 async def test_worker_claim_is_durable_and_stale_claim_is_not_replayed(controller_app):
-    client, request_id, _, _, factory, _ = controller_app
+    client, request_id, agent_id, service, factory, _ = controller_app
     await client.post(
         f"/hosted-controller/{request_id}/prepare",
         headers={"Authorization": "Bearer " + TOKEN},
     )
+    conn = attach_worker(service, agent_id, request_id)
     operation_id = str(uuid4())
     async with factory() as session:
         session.add(
@@ -299,24 +364,142 @@ async def test_worker_claim_is_durable_and_stale_claim_is_not_replayed(controlle
             )
         )
         await session.commit()
-    claim = await client.post("/hosted/operations/claim")
+    claim_path = f"/hosted/operations/{operation_id}/claim"
+    claim = await client.post(claim_path, json=fence(conn))
+    assert claim.status_code == 200, claim.text
     assert claim.json()["id"] == operation_id
     assert claim.json()["state"] == "claimed"
-    assert (await client.post("/hosted/operations/claim")).json() is None
+    second = await client.post(claim_path, json=fence(conn))
+    assert second.status_code == 409
     async with factory() as session:
         row = await session.get(HostedOperation, (require_tenant_id(), operation_id))
+        assert row.claimed_by == f"1:{conn.id}:{conn.stream_generation}"
+        assert row.claimed_boot_id == "boot-a"
         row.updated_at = datetime.now(UTC) - timedelta(minutes=6)
         await session.commit()
-    assert (await client.post("/hosted/operations/claim")).json() is None
     async with factory() as session:
+        await HostedLaunchStore().fail_stale_operations(session, request_id, 1)
+        await session.commit()
         row = await session.get(HostedOperation, (require_tenant_id(), operation_id))
         assert row.state == "unknown"
     assert (
         await client.post(
             f"/hosted/operations/{operation_id}/result",
-            json={"state": "applied", "error": None},
+            json={**fence(conn), "state": "applied", "error": None},
         )
     ).status_code == 409
+
+
+async def _queued_operation(factory, request_id: str, revision: int = 1) -> str:
+    operation_id = str(uuid4())
+    async with factory() as session:
+        session.add(
+            HostedOperation(
+                id=operation_id,
+                launch_id=request_id,
+                launch_revision=revision,
+                session_id=str(uuid4()),
+                action="start",
+            )
+        )
+        await session.commit()
+    return operation_id
+
+
+async def test_operation_claim_is_refused_to_a_non_worker(controller_app):
+    client, request_id, agent_id, service, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    operation_id = await _queued_operation(factory, request_id)
+    plain = service.connections.open(
+        agent_id=agent_id,
+        connection_id=str(uuid4()),
+        scope="all",
+        delivery_filter="all",
+        spawn_capable=True,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=7, accepts=1),
+        expected_generation=None,
+    )
+    refused = await client.post(
+        f"/hosted/operations/{operation_id}/claim", json=fence(plain)
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["code"] == "hosted_worker_only"
+    worker = attach_worker(service, agent_id, request_id)
+    stale = {**fence(worker), "generation": worker.stream_generation + 1}
+    refused = await client.post(f"/hosted/operations/{operation_id}/claim", json=stale)
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "generation_changed"
+
+
+async def test_lost_result_is_reposted_from_a_later_generation(controller_app):
+    client, request_id, agent_id, service, factory, _ = controller_app
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    operation_id = await _queued_operation(factory, request_id)
+    conn = attach_worker(service, agent_id, request_id)
+    claimed = await client.post(
+        f"/hosted/operations/{operation_id}/claim", json=fence(conn)
+    )
+    assert claimed.status_code == 200
+    reattached = attach_worker(service, agent_id, request_id, connection_id=conn.id)
+    result_path = f"/hosted/operations/{operation_id}/result"
+    body = {**fence(reattached), "state": "applied", "error": None}
+    first = await client.post(result_path, json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()["state"] == "applied"
+    again = await client.post(result_path, json=body)
+    assert again.status_code == 200
+    other_boot = attach_worker(
+        service, agent_id, request_id, connection_id=conn.id, boot_id="boot-b"
+    )
+    refused = await client.post(
+        result_path, json={**fence(other_boot), "state": "applied", "error": None}
+    )
+    assert refused.status_code == 409
+
+
+async def test_operation_insert_rings_the_worker(controller_app, monkeypatch):
+    client, request_id, agent_id, service, factory, _ = controller_app
+    monkeypatch.setattr(
+        "switch_core.gateway.hosted_launches.OPERATION_RERING_SECONDS", 0.01
+    )
+    await client.post(
+        f"/hosted-controller/{request_id}/prepare",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    async with factory() as session:
+        launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
+        launch.state = "ready"
+        await session.commit()
+    conn = attach_worker(service, agent_id, request_id)
+    conn.worker_frames.drain()
+    body = {"id": str(uuid4()), "session_id": str(uuid4()), "action": "start"}
+    created = await client.post(f"/hosted-launches/{request_id}/sessions", json=body)
+    assert created.status_code == 202, created.text
+    assert created.json()["state"] == "queued"
+    again = await client.post(f"/hosted-launches/{request_id}/sessions", json=body)
+    assert again.json()["id"] == body["id"]
+    other = await client.post(
+        f"/hosted-launches/{request_id}/sessions",
+        json={**body, "id": str(uuid4())},
+    )
+    assert other.status_code == 409
+    await asyncio.sleep(0.2)
+    rings = [data for event, data in conn.worker_frames.drain() if event == "operation"]
+    assert rings and all(data == {"id": body["id"]} for data in rings)
+    assert len(rings) <= 1 + 2 * 6
+    claimed = await client.post(
+        f"/hosted/operations/{body['id']}/claim", json=fence(conn)
+    )
+    assert claimed.status_code == 200
+    await asyncio.sleep(0.1)
+    assert not [e for e, _ in conn.worker_frames.drain() if e == "operation"]
 
 
 async def test_provider_refresh_and_revocation_are_owner_bound(controller_app):
@@ -341,7 +524,6 @@ async def test_provider_refresh_and_revocation_are_owner_bound(controller_app):
         launch.desired_state = "deleted"
         await session.commit()
     assert (await client.post("/hosted/provider-credential")).status_code == 403
-    assert (await client.post("/hosted/operations/claim")).status_code == 403
     assert (await client.post("/hosted/github-credential")).status_code == 403
 
 
@@ -414,16 +596,17 @@ async def test_running_observation_does_not_undo_requested_stop(controller_app):
     assert result.json()["state"] == "stopping"
 
 
-async def _idle_ready(controller_app, *, minutes: int, **spec) -> None:
-    _, request_id, _, service, factory, _ = controller_app
+async def _idle_ready(controller_app, *, minutes: int, **spec) -> Connection:
+    _, request_id, agent_id, service, factory, _ = controller_app
     service.config.hosted_idle_stop_minutes = minutes
-    service.connections.for_agent = lambda _: [SimpleNamespace(spawn_capable=True)]
+    conn = attach_worker(service, agent_id, request_id)
     async with factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
         launch.spec = {**launch.spec, **spec}
         launch.state = "ready"
         launch.active_at = datetime.now(UTC) - timedelta(minutes=31)
         await session.commit()
+    return conn
 
 
 async def _observe_running(controller_app) -> dict:
@@ -451,8 +634,28 @@ async def test_worker_without_auto_session_is_never_idle_stopped(controller_app)
 
 async def test_idle_stop_refuses_to_guess_whether_a_worker_is_idle(controller_app):
     await _idle_ready(controller_app, minutes=30)
-    with pytest.raises(NotImplementedError, match="WP3"):
-        await _observe_running(controller_app)
+    result = await _observe_running(controller_app)
+    assert result["state"] == "ready"
+    assert result["sleeping"] is False
+
+
+async def test_idle_stop_on_fresh_idle_report(controller_app):
+    service = controller_app[3]
+    conn = await _idle_ready(controller_app, minutes=30)
+    report_idle(service, conn)
+    result = await _observe_running(controller_app)
+    assert result["state"] == "stopping"
+    assert result["sleeping"] is True
+    assert service.connections.get(conn.id) is None
+
+
+async def test_busy_idle_report_renews_activity(controller_app):
+    service = controller_app[3]
+    conn = await _idle_ready(controller_app, minutes=30)
+    report_idle(service, conn, busy=True)
+    result = await _observe_running(controller_app)
+    assert result["state"] == "ready"
+    assert result["sleeping"] is False
 
 
 async def test_preparation_does_not_hold_launch_lock_during_github_call(
@@ -671,13 +874,14 @@ async def test_local_registration_cannot_take_a_reserved_cloud_name(controller_a
 async def test_operations_from_an_earlier_worker_are_not_claimed_or_completed(
     controller_app, state
 ):
-    client, request_id, _, _, factory, _ = controller_app
+    client, request_id, agent_id, service, factory, _ = controller_app
     assert (
         await client.post(
             f"/hosted-controller/{request_id}/prepare",
             headers={"Authorization": "Bearer " + TOKEN},
         )
     ).status_code == 200
+    conn = attach_worker(service, agent_id, request_id, revision=2)
     operation_id = str(uuid4())
     async with factory() as session:
         launch = await session.get(HostedLaunch, (require_tenant_id(), request_id))
@@ -693,12 +897,18 @@ async def test_operations_from_an_earlier_worker_are_not_claimed_or_completed(
             )
         )
         await session.commit()
-    assert (await client.post("/hosted/operations/claim")).json() is None
+    claim = await client.post(
+        f"/hosted/operations/{operation_id}/claim", json=fence(conn)
+    )
+    assert claim.status_code == 409
     response = await client.post(
         f"/hosted/operations/{operation_id}/result",
-        json={"state": "applied", "error": None},
+        json={**fence(conn), "state": "applied", "error": None},
     )
     assert response.status_code == 409
+    async with factory() as session:
+        await HostedLaunchStore().fail_stale_operations(session, request_id, 2)
+        await session.commit()
     async with factory() as session:
         row = await session.get(HostedOperation, (require_tenant_id(), operation_id))
         assert row.state == ("unknown" if state == "claimed" else "failed")

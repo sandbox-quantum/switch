@@ -37,6 +37,7 @@ class _Protocol:
 class _Agent:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
+        self.metadata_: dict[str, str] | None = None
 
 
 def _open(

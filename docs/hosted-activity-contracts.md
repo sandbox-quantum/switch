@@ -1036,7 +1036,7 @@ revision, credential}` with `Cache-Control: no-store`.
 `SessionAuthority`, which is gone. It is replaced by an agent-authenticated
 `POST /agents/{agent_id}/room-notices`
 `{connection_id, generation, room_id, message_id, thread_id, reason}`, with
-reasons `startup | delivery | conversation | capacity | stopped | expired |
+reasons `startup | delivery | conversation | capacity | auto_start_off | stopped | expired |
 cancelled | revoked | upgrade`:
 
 - Authorization equals `post_message`'s for this agent (the agent's client is
