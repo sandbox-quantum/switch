@@ -5,7 +5,12 @@ import { dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { buildSharedHostConfig } from './build-shared-config';
 import { readCutoverManifest, readStateVersion } from './cutover-manifest';
-import { legacySessionsBase, PreflightBlockedError, runHostedPreflight } from './hosted-preflight';
+import {
+  checkHostedPreflight,
+  legacySessionsBase,
+  PreflightBlockedError,
+  runHostedPreflight,
+} from './hosted-preflight';
 import type { SharedHostConfig } from './shared-config';
 
 const AGENT = 'agent-placeholder';
@@ -15,11 +20,14 @@ const ROOM = '!room:example.test';
 const JOIN = `room_join:${'0'.repeat(64)}`;
 
 let root: string;
+let scratch: string;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'hosted-preflight-'));
+  scratch = await mkdtemp(join(tmpdir(), 'hosted-preflight-scratch-'));
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+  await rm(scratch, { recursive: true, force: true });
 });
 
 function config(sessionId: string, env: Record<string, string>, ids: string): SharedHostConfig {
@@ -354,4 +362,36 @@ it('only stamps the layout version on a volume with nothing to migrate', async (
 it('refuses a volume from a newer worker', async () => {
   await put(join(root, 'state-version.json'), { version: 2 });
   await expect(runHostedPreflight(root, candidate())).rejects.toThrow('newer');
+});
+
+it('checks a copy of a volume and answers the manifest its first boot will upload', async () => {
+  await legacyVolume();
+  const before = await snapshot();
+  const checked = await checkHostedPreflight(root, join(scratch, 'check'));
+  expect(await snapshot()).toEqual(before);
+  expect(await exists(join(scratch, 'check'))).toBe(false);
+
+  await runHostedPreflight(root, candidate());
+  expect(checked).toEqual({ manifest: await readCutoverManifest(root) });
+});
+
+it('checks a volume that would block and names the file on the volume', async () => {
+  await legacyVolume();
+  const events = join(sessionRoot(SESSION), 'events.jsonl');
+  await writeFile(events, `${await readFile(events, 'utf8')}{"contractVersion":1}\n`);
+  const before = await snapshot();
+  expect(await checkHostedPreflight(root, join(scratch, 'check'))).toMatchObject({
+    blocked: { step: 'sessions', file: events, line: 3 },
+  });
+  expect(await snapshot()).toEqual(before);
+});
+
+it('checks a volume with nothing to migrate as an empty manifest', async () => {
+  const checked = await checkHostedPreflight(root, join(scratch, 'check'));
+  expect(checked).toEqual({
+    manifest: {
+      manifest_sha256: createHash('sha256').update('[]').digest('hex'),
+      items: [],
+    },
+  });
 });

@@ -2,6 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { runHostedBootstrap } from './hosted-bootstrap';
+import { checkHostedPreflight } from './hosted-preflight';
 import { runGitHubCli, runGitHubCredentialHelper } from './hosted-github';
 import { superviseSharedHost } from './supervisor';
 import { runCredentialVerification } from './verify-credential';
@@ -9,6 +10,17 @@ import { runCredentialVerification } from './verify-credential';
 async function main(): Promise<void> {
   if (process.argv[2] === '--verify-credential') {
     await runCredentialVerification();
+    return;
+  }
+  if (process.argv[2] === '--preflight-check') {
+    const [stateDirectory, scratchDirectory, ...rest] = process.argv.slice(3);
+    if (!stateDirectory || !scratchDirectory || rest.length)
+      throw new Error(
+        'Usage: switch-hosted-bootstrap --preflight-check <absolute-state-directory> <absolute-scratch-directory>'
+      );
+    const result = await checkHostedPreflight(stateDirectory, scratchDirectory);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if ('blocked' in result) process.exitCode = 2;
     return;
   }
   if (process.argv[2] === '--github-cli') {
