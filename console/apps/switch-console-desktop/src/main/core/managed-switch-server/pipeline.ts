@@ -399,8 +399,17 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // reads it. Another account may have started, updated or reset the stack
   // since this one last did, and the version check below reads the `.env`
   // compose would use — which has to be the stack's, not a stale copy.
-  if (plan.kind === 'adopt' && plan.stack.source === 'published') {
-    await host.writeFile(ENV_FILE_NAME, plan.stack.raw, 0o600);
+  if (plan.kind === 'adopt') {
+    if (plan.stack.source === 'published') {
+      await host.writeFile(ENV_FILE_NAME, plan.stack.raw, 0o600);
+    }
+    // An account that has never joined the stack has no compose file of its
+    // own, and what runs before the start rewrites it — the backup an upgrade
+    // takes above all — addresses the stack through one. A published stack is
+    // past the Matrix line, so this build's file serves it.
+    if ((await host.readFile(COMPOSE_FILE_NAME)) === null) {
+      await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
+    }
   }
 
   onMessage('Checking the deployed version…');
@@ -490,11 +499,19 @@ export type ConnectStackOptions = {
  * Stop and Restart work from here afterwards. A stack this account started
  * before settings were shared is published, so the next person can join too.
  *
- * Anything short of a running stack whose settings this account can read is
- * reported rather than worked around: a stopped stack is for Start, and
- * nothing here ever makes new credentials.
+ * Anything short of a running stack at this build's switch-core, whose
+ * settings this account can read, is reported rather than worked around: a
+ * stopped or older stack is for Start, and nothing here ever makes new
+ * credentials.
  */
-export async function connectStack(opts: ConnectStackOptions): Promise<ConnectRemoteServerResult> {
+/** What joining found: joined, a reason it could not, or a stack at an older
+ * switch-core than this build pins — which this Console cannot use as it is,
+ * and which the caller brings up to date as a start. */
+export type ConnectStackResult =
+  | ConnectRemoteServerResult
+  | { kind: 'behind'; deployed: string; expected: string };
+
+export async function connectStack(opts: ConnectStackOptions): Promise<ConnectStackResult> {
   const { host, ref, serverName, onMessage, signal } = opts;
   const shared = host.sharedState;
   if (shared === null) {
@@ -533,6 +550,26 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectRe
       break;
   }
   if (!stack.running) return { kind: 'not-running' };
+  // Joined as it is only at this build's own switch-core. An older one cannot
+  // serve this Console, and bringing it up to date is an update for everyone
+  // using it, which the caller runs as a start. A newer one has migrated its
+  // database past anything this build can run.
+  const drift =
+    stack.env.version === null
+      ? null
+      : classifyVersionDrift(stack.env.version, COMPATIBLE_SWITCH_VERSION);
+  if (drift?.direction === 'upgrade') {
+    return { kind: 'behind', deployed: drift.deployed, expected: drift.expected };
+  }
+  if (drift?.direction === 'downgrade') {
+    return {
+      kind: 'error',
+      message:
+        `The Switch server on ${host.label} runs switch-core ${drift.deployed}, newer than the ` +
+        `${drift.expected} this Console runs, so this Console cannot use it. Update Switch ` +
+        `Console, then connect.`,
+    };
+  }
 
   onMessage('Preparing this account’s copy of the server’s settings…');
   const settings = await adoptRunningStack(host, stack);

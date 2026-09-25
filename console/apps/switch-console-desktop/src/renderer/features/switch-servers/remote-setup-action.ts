@@ -9,8 +9,16 @@ import type { RemoteStackProbe } from '@shared/core/managed-switch-server/manage
 export type RemoteSetupAction =
   /** Not looked at yet, or being looked at. */
   | { kind: 'checking' }
-  /** A running stack this account can read: join it, touching nothing. */
-  | { kind: 'connect'; deployedVersion: string | null; shared: boolean }
+  /** A running stack this account can read: join it, touching nothing — or,
+   * when `updatesTo` is set, bring it up to this build's switch-core first,
+   * since this Console cannot use it as it is. That update is for everyone
+   * using it. */
+  | {
+      kind: 'connect';
+      deployedVersion: string | null;
+      shared: boolean;
+      updatesTo: string | null;
+    }
   /** Start a stack — `existing` when one is set up but stopped, whose data and
    * credentials the start keeps; otherwise a new one. */
   | { kind: 'start'; existing: boolean }
@@ -29,9 +37,22 @@ export function remoteSetupAction(
     case 'absent':
       return { kind: 'start', existing: false };
     case 'present':
-      return probe.running
-        ? { kind: 'connect', deployedVersion: probe.deployedVersion, shared: probe.shared }
-        : { kind: 'start', existing: true };
+      if (!probe.running) return { kind: 'start', existing: true };
+      if (probe.drift?.direction === 'downgrade') {
+        return {
+          kind: 'blocked',
+          title: `The server on ${hostLabel} is newer than this Console`,
+          detail:
+            `It runs switch-core ${probe.drift.deployed}, and this Console runs ` +
+            `${probe.drift.expected}, so it cannot use it. Update Switch Console, then connect.`,
+        };
+      }
+      return {
+        kind: 'connect',
+        deployedVersion: probe.deployedVersion,
+        shared: probe.shared,
+        updatesTo: probe.drift?.direction === 'upgrade' ? probe.drift.expected : null,
+      };
     case 'unshared':
       return {
         kind: 'blocked',

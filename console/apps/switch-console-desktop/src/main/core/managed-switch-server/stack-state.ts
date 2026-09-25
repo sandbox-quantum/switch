@@ -1,4 +1,5 @@
 import { log } from '@main/lib/logger';
+import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import type { RemoteStackProbe } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   ENV_FILE_NAME,
@@ -6,6 +7,7 @@ import {
   STACK_STATE_LABEL,
   STACK_STATE_VOLUME_SUFFIX,
 } from './constants';
+import { classifyVersionDrift } from './deployed-version';
 import { readStackEnv, type StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
 
@@ -455,6 +457,10 @@ export function probeFromStack(hostLabel: string, stack: StackOnHost): RemoteSta
         running: stack.running,
         deployedVersion: stack.env.version,
         shared: stack.published,
+        drift:
+          stack.env.version === null
+            ? null
+            : classifyVersionDrift(stack.env.version, COMPATIBLE_SWITCH_VERSION),
       };
     case 'unshared':
       return {

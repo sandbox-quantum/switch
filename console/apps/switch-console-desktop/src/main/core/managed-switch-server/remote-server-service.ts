@@ -46,7 +46,14 @@ import {
   upgradeState,
 } from './managed-upgrade';
 import { remoteServerStateDir } from './paths';
-import { adoptRunningStack, connectStack, resetStack, startStack, stopStack } from './pipeline';
+import {
+  adoptRunningStack,
+  type ConnectStackResult,
+  connectStack,
+  resetStack,
+  startStack,
+  stopStack,
+} from './pipeline';
 import { clearPorts } from './ports';
 import { clearSecrets } from './secrets';
 import {
@@ -669,13 +676,13 @@ export class RemoteServerService {
    * started one is — it owns the forward.
    */
   connect(sshHost: string, serverName: string): Promise<ConnectRemoteServerResult> {
-    return this.track(sshHost, () => this.runConnect(sshHost, serverName));
+    return this.track(sshHost, async () => {
+      const result = await this.runConnect(sshHost, serverName);
+      return result.kind === 'behind' ? this.connectByUpdating(sshHost, serverName) : result;
+    });
   }
 
-  private async runConnect(
-    sshHost: string,
-    serverName: string
-  ): Promise<ConnectRemoteServerResult> {
+  private async runConnect(sshHost: string, serverName: string): Promise<ConnectStackResult> {
     if (this.busy.has(sshHost)) {
       return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
     }
@@ -714,7 +721,11 @@ export class RemoteServerService {
         return result;
       }
       host.dispose();
-      if (result.kind === 'not-running' || result.kind === 'absent') {
+      if (result.kind === 'behind') {
+        this.setStatus(sshHost, {
+          message: `Updating the server from switch-core ${result.deployed} to ${result.expected}…`,
+        });
+      } else if (result.kind === 'not-running' || result.kind === 'absent') {
         this.setStatus(sshHost, { phase: 'stopped', message: null });
       } else if (result.kind === 'docker-unavailable') {
         this.setStatus(sshHost, { phase: 'error', message: null, error: result.detail });
@@ -731,6 +742,41 @@ export class RemoteServerService {
     } finally {
       this.busy.delete(sshHost);
       this.startAborts.delete(sshHost);
+    }
+  }
+
+  /**
+   * Join a stack that runs an older switch-core than this build pins, which
+   * this Console cannot use as it is, by updating it. That is a start — from
+   * the stack's own settings, with its database backed up first — and, like
+   * any start on a shared host, an update for everyone using it, which the
+   * connect step says before it is clicked.
+   */
+  private async connectByUpdating(
+    sshHost: string,
+    serverName: string
+  ): Promise<ConnectRemoteServerResult> {
+    const result = await this.beginStart(sshHost, serverName, true);
+    switch (result.kind) {
+      case 'started':
+        return {
+          kind: 'connected',
+          serverId: result.serverId,
+          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+        };
+      case 'docker-unavailable':
+      case 'error':
+        return result;
+      case 'version-downgrade':
+        return {
+          kind: 'error',
+          message: switchVersionDowngradeMessage(result.deployed, result.expected),
+        };
+      case 'matrix-migration-failed':
+        return {
+          kind: 'error',
+          message: matrixMigrationFailedMessage(result.deployed, result.expected),
+        };
     }
   }
 

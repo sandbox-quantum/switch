@@ -11,17 +11,66 @@ describe('remoteSetupAction', () => {
     expect(
       remoteSetupAction(
         'vm-1',
-        { kind: 'present', running: true, deployedVersion: '0.27.0', shared: false },
+        { kind: 'present', running: true, deployedVersion: '0.27.0', shared: false, drift: null },
         false
       )
-    ).toEqual({ kind: 'connect', deployedVersion: '0.27.0', shared: false });
+    ).toEqual({ kind: 'connect', deployedVersion: '0.27.0', shared: false, updatesTo: null });
+  });
+
+  it('says that joining an older stack updates it, since this Console cannot use it as it is', () => {
+    expect(
+      remoteSetupAction(
+        'vm-1',
+        {
+          kind: 'present',
+          running: true,
+          deployedVersion: '0.27.0',
+          shared: true,
+          drift: { deployed: '0.27.0', expected: '0.28.0', direction: 'upgrade' },
+        },
+        false
+      )
+    ).toEqual({ kind: 'connect', deployedVersion: '0.27.0', shared: true, updatesTo: '0.28.0' });
+  });
+
+  it('offers nothing on a stack newer than this Console, and says to update the Console', () => {
+    const action = remoteSetupAction(
+      'vm-1',
+      {
+        kind: 'present',
+        running: true,
+        deployedVersion: '0.29.0',
+        shared: true,
+        drift: { deployed: '0.29.0', expected: '0.28.0', direction: 'downgrade' },
+      },
+      false
+    );
+
+    expect(action).toMatchObject({ kind: 'blocked' });
+    expect(action.kind === 'blocked' && action.detail).toMatch(/Update Switch Console/);
+  });
+
+  it('joins a stack whose version cannot be compared as it is', () => {
+    expect(
+      remoteSetupAction(
+        'vm-1',
+        {
+          kind: 'present',
+          running: true,
+          deployedVersion: 'dev-checkout',
+          shared: true,
+          drift: { deployed: 'dev-checkout', expected: '0.28.0', direction: 'unknown' },
+        },
+        false
+      )
+    ).toMatchObject({ kind: 'connect', updatesTo: null });
   });
 
   it('offers to start a stopped stack, keeping what it has', () => {
     expect(
       remoteSetupAction(
         'vm-1',
-        { kind: 'present', running: false, deployedVersion: '0.27.0', shared: true },
+        { kind: 'present', running: false, deployedVersion: '0.27.0', shared: true, drift: null },
         false
       )
     ).toEqual({ kind: 'start', existing: true });

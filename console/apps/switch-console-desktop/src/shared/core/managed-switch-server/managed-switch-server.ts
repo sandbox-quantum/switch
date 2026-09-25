@@ -304,8 +304,15 @@ export type StackRegister = {
 export type RemoteStackProbe =
   | { kind: 'absent' }
   /** A stack whose settings this account can read. `shared` is false for one
-   * this account started before settings were shared; connecting shares it. */
-  | { kind: 'present'; running: boolean; deployedVersion: string | null; shared: boolean }
+   * this account started before settings were shared; connecting shares it.
+   * `drift` compares the version its settings name with this build's pin. */
+  | {
+      kind: 'present';
+      running: boolean;
+      deployedVersion: string | null;
+      shared: boolean;
+      drift: SwitchVersionDrift | null;
+    }
   | { kind: 'unshared'; running: boolean; ownerDir: string | null; message: string }
   | { kind: 'incomplete'; running: boolean; missing: string[] }
   | { kind: 'unreadable'; reason: string }

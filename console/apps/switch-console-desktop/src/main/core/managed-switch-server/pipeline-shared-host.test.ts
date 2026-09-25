@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as AppIdentity from '@shared/app-identity';
+import type * as DeployedVersion from './deployed-version';
 import type * as EnvFile from './env-file';
 import type { StackEnv } from './env-file';
 import type { ServerHost } from './host/types';
@@ -49,14 +50,15 @@ vi.mock('./stack-state', () => ({
   withdrawPublishedEnv: withdrawPublishedEnvMock,
   unsharedStackMessage: (host: string, dir: string | null) => `unshared ${host} ${dir}`,
 }));
-vi.mock('./deployed-version', () => ({
+vi.mock('./deployed-version', async (importOriginal) => ({
+  ...(await importOriginal<typeof DeployedVersion>()),
   readDeployedVersion: readDeployedVersionMock,
-  classifyVersionDrift: () => null,
 }));
 vi.mock('./compose', () => ({ composeUp: composeUpMock, composeDown: composeDownMock }));
 vi.mock('./health', () => ({ waitForHealth: waitForHealthMock }));
+const prepareUpgradeMock = vi.hoisted(() => vi.fn(async () => null));
 vi.mock('./managed-upgrade', () => ({
-  prepareUpgrade: vi.fn(async () => null),
+  prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: vi.fn(),
 }));
 vi.mock('./bundled-compose', () => ({ bundledComposeYaml: () => 'services: {}' }));
@@ -173,6 +175,39 @@ beforeEach(() => {
 });
 
 describe('starting a shared stack', () => {
+  it('gives an account that never joined the stack a compose file before the upgrade backup reads it', async () => {
+    // Found on a real host: a second account updating a stack it had never
+    // joined had no compose file, and the backup refused to run without one.
+    inspectStackMock.mockResolvedValue(present({}, { version: '0.10.0' }));
+    const { host, writeFile } = sharedHost();
+
+    expect(await startStack(startOptions(host))).toMatchObject({ kind: 'started' });
+
+    const composeWrite = writeFile.mock.calls.findIndex(
+      ([path]) => path === 'standalone-docker-compose.yml'
+    );
+    expect(composeWrite).toBeGreaterThanOrEqual(0);
+    expect(writeFile.mock.invocationCallOrder[composeWrite]).toBeLessThan(
+      prepareUpgradeMock.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('leaves the compose file an account already has for the start to rewrite', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host, writeFile, readFile } = sharedHost();
+    readFile.mockImplementation(async (path) =>
+      path === 'standalone-docker-compose.yml' ? 'services: { older: {} }' : null
+    );
+
+    await startStack(startOptions(host));
+
+    const composeWrites = writeFile.mock.calls.filter(
+      ([path]) => path === 'standalone-docker-compose.yml'
+    );
+    // Once, by the start itself, after the backup.
+    expect(composeWrites).toHaveLength(1);
+  });
+
   it('runs the host’s stack with the host’s settings, not this desktop’s', async () => {
     inspectStackMock.mockResolvedValue(present());
     const { host } = sharedHost();
@@ -218,7 +253,8 @@ describe('starting a shared stack', () => {
 
     await startStack(startOptions(host));
 
-    expect(order.slice(0, 2)).toEqual(['write .env PUBLISHED_ENV', 'version check']);
+    expect(order.indexOf('write .env PUBLISHED_ENV')).toBe(0);
+    expect(order.indexOf('version check')).toBeGreaterThan(0);
   });
 
   it('leaves the working dir alone when that is where the settings were read from', async () => {
@@ -424,6 +460,42 @@ describe('connecting to a shared stack', () => {
 
     expect(writeFile).not.toHaveBeenCalledWith('standalone-docker-compose.yml', expect.anything());
     expect(writeFile).toHaveBeenCalledWith('.env', 'PUBLISHED_ENV\n', 0o600);
+  });
+
+  it('sends an older stack to be updated, touching nothing: this Console cannot use it as it is', async () => {
+    inspectStackMock.mockResolvedValue(present({}, { version: '0.10.0' }));
+    const { host, writeFile, establishNetworking } = sharedHost();
+
+    expect(await connectStack(connectOptions(host))).toEqual({
+      kind: 'behind',
+      deployed: '0.10.0',
+      expected: '0.11.0',
+    });
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(establishNetworking).not.toHaveBeenCalled();
+    expect(storeSecretsMock).not.toHaveBeenCalled();
+    expect(composeUpMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stack newer than this Console, saying to update the Console', async () => {
+    inspectStackMock.mockResolvedValue(present({}, { version: '0.12.0' }));
+    const { host, writeFile, establishNetworking } = sharedHost();
+
+    const result = await connectStack(connectOptions(host));
+
+    expect(result).toMatchObject({ kind: 'error' });
+    expect(result.kind === 'error' && result.message).toMatch(
+      /runs switch-core 0\.12\.0, newer than the 0\.11\.0 this Console runs.*Update Switch Console/
+    );
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(establishNetworking).not.toHaveBeenCalled();
+  });
+
+  it('joins a stack whose version cannot be compared as it is', async () => {
+    inspectStackMock.mockResolvedValue(present({}, { version: 'dev-checkout' }));
+    const { host } = sharedHost();
+
+    expect((await connectStack(connectOptions(host))).kind).toBe('connected');
   });
 
   it('sends a stopped stack to Start, touching nothing', async () => {

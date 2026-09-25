@@ -567,7 +567,14 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
     !starting &&
     !hostBlocked &&
     (action?.kind === 'connect' || action?.kind === 'start');
-  const primaryLabel = running ? 'Done' : joining ? 'Connect' : 'Start';
+  const updating = action?.kind === 'connect' && action.updatesTo !== null;
+  const primaryLabel = running
+    ? 'Done'
+    : joining
+      ? updating
+        ? 'Update and connect'
+        : 'Connect'
+      : 'Start';
   const onPrimary = () => {
     if (running) onDone(sshHost ? (store.statusFor(sshHost).serverId ?? null) : null);
     else if (sshHost && joining) void store.connect(sshHost, name.trim());
@@ -720,7 +727,13 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
           </Button>
         )}
         <ConfirmButton onClick={onPrimary} disabled={!running && !canAct}>
-          {starting ? (joining ? 'Connecting…' : 'Starting…') : primaryLabel}
+          {starting
+            ? updating
+              ? 'Updating…'
+              : joining
+                ? 'Connecting…'
+                : 'Starting…'
+            : primaryLabel}
         </ConfirmButton>
       </DialogFooter>
     </>
@@ -757,8 +770,9 @@ function RemoteStackNotice({
             {action.deployedVersion ? ` (switch-core ${action.deployedVersion})` : ''}
           </AlertTitle>
           <AlertDescription>
-            Connecting adds it to this Console without restarting it, so anyone already using it
-            carries on undisturbed.
+            {action.updatesTo === null
+              ? 'Connecting adds it to this Console without restarting it, so anyone already using it carries on undisturbed.'
+              : `This Console needs switch-core ${action.updatesTo}, so connecting updates it — for everyone who uses it. Its database is backed up first, and it restarts once, keeping its rooms, agents and data.`}
             {!action.shared &&
               ' It was set up before servers could be shared; connecting shares it, so others with access to the host can connect too.'}
           </AlertDescription>

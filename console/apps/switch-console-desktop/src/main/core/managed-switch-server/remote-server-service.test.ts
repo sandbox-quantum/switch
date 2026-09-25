@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as AppIdentity from '@shared/app-identity';
 import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
+import type * as DeployedVersion from './deployed-version';
 import type * as ManagedUpgrade from './managed-upgrade';
 import type { StackOnHost } from './stack-state';
 import type * as StackState from './stack-state';
@@ -17,6 +19,7 @@ const onReachability = vi.hoisted(() => vi.fn());
 const createRemoteServerHost = vi.hoisted(() => vi.fn());
 const inspectStack = vi.hoisted(() => vi.fn<() => Promise<StackOnHost>>());
 const connectStack = vi.hoisted(() => vi.fn());
+const startStack = vi.hoisted(() => vi.fn());
 const adoptRunningStack = vi.hoisted(() => vi.fn());
 const listManagedServers = vi.hoisted(() => vi.fn());
 const getRemoteManagedServer = vi.hoisted(() => vi.fn());
@@ -46,10 +49,14 @@ vi.mock('./stack-state', async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
   inspectStack,
 }));
+vi.mock('@shared/app-identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof AppIdentity>()),
+  COMPATIBLE_SWITCH_VERSION: '0.11.0',
+}));
 vi.mock('./pipeline', () => ({
   connectStack,
   adoptRunningStack,
-  startStack: vi.fn(),
+  startStack,
   stopStack: vi.fn(),
   resetStack: vi.fn(),
 }));
@@ -75,7 +82,10 @@ vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error:
 vi.mock('./paths', () => ({ remoteServerStateDir: (slug: string) => `/user-data/remote/${slug}` }));
 vi.mock('./secrets', () => ({ clearSecrets }));
 vi.mock('./ports', () => ({ clearPorts }));
-vi.mock('./deployed-version', () => ({ readVersionStatus }));
+vi.mock('./deployed-version', async (importOriginal) => ({
+  ...(await importOriginal<typeof DeployedVersion>()),
+  readVersionStatus,
+}));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry }));
 vi.mock('./console-register', () => ({ writeRecord, readRegister }));
 vi.mock('./managed-upgrade', async (importOriginal) => ({
@@ -176,6 +186,48 @@ describe('connect', () => {
       })
     );
     expect(writeRecord).toHaveBeenCalledExactlyOnceWith(host, 'connected');
+  });
+
+  it('joins an older stack by updating it, since this Console cannot use it as it is', async () => {
+    const joining = fakeHost();
+    const starting = fakeHost();
+    createRemoteServerHost.mockResolvedValueOnce(joining).mockResolvedValueOnce(starting);
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    startStack.mockResolvedValue({ kind: 'started', serverId: 'srv-1', telemetryEnabled: false });
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toEqual({
+      kind: 'connected',
+      serverId: 'srv-1',
+      deployedVersion: '0.11.0',
+    });
+
+    // The update is a start from the stack's own settings, made the active
+    // server the way a Connect click does.
+    expect(startStack).toHaveBeenCalledWith(
+      expect.objectContaining({ host: starting, serverName: 'Team server', activate: true })
+    );
+    expect(joining.dispose).toHaveBeenCalledOnce();
+    expect(starting.dispose).not.toHaveBeenCalled();
+    expect(service.getStatus('vm-1')).toMatchObject({ phase: 'running', serverId: 'srv-1' });
+    // What others see is what happened: the stack was started again.
+    expect(writeRecord).toHaveBeenCalledExactlyOnceWith(starting, 'started');
+  });
+
+  it('reports an update that failed while joining as the reason it could not join', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    connectStack.mockResolvedValue({ kind: 'behind', deployed: '0.10.0', expected: '0.11.0' });
+    startStack.mockResolvedValue({
+      kind: 'error',
+      message: 'The server did not become healthy in time.',
+    });
+    const service = await loadService();
+
+    expect(await service.connect('vm-1', 'Team server')).toEqual({
+      kind: 'error',
+      message: 'The server did not become healthy in time.',
+    });
+    expect(service.getStatus('vm-1').phase).toBe('error');
   });
 
   it('leaves a stopped stack stopped, for Start, and lets the host go', async () => {
@@ -583,6 +635,7 @@ describe('probe', () => {
       running: true,
       deployedVersion: '0.11.0',
       shared: true,
+      drift: null,
     });
     expect(JSON.stringify(probe)).not.toContain('admin-pw');
     expect(host.dispose).toHaveBeenCalledOnce();
