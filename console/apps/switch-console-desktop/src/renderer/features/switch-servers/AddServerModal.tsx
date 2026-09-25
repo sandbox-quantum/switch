@@ -19,7 +19,7 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { StepPager } from '@renderer/lib/ui/step-pager';
+import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -90,6 +90,16 @@ const _stepsAreExhaustive: AddServerStepName extends Step ? true : never = true;
 const _stepsAreComplete: Step extends AddServerStepName ? true : never = true;
 void _stepsAreExhaustive;
 void _stepsAreComplete;
+
+/**
+ * How many steps connecting to a server someone else runs takes: choose that
+ * path, point at the server, sign in, then say which messaging account is you.
+ *
+ * The chooser is step 1 but carries no counter — the other two paths it leads
+ * to are not four steps, and a count shown before the choice would promise a
+ * length that depends on what is clicked next.
+ */
+const CONNECT_STEPS = 4;
 
 /**
  * Add a Switch server: run one here, run one on a host you have onboarded, or
@@ -229,6 +239,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       <LinkAccountsStep
         serverId={connected.id}
         serverName={connected.name}
+        step={CONNECT_STEPS}
+        of={CONNECT_STEPS}
         onDone={() => finish(connected.id)}
       />
     );
@@ -294,7 +306,6 @@ function ChooseStep({
           Cancel
         </Button>
       </DialogFooter>
-      <StepPager pageName="Add a server" onBack={null} onNext={null} />
     </>
   );
 }
@@ -361,11 +372,6 @@ const LocalSetupStep = observer(function LocalSetupStep({
   const dockerReady = docker?.available ?? false;
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
-
-  // The pager's back arrow only ever repeats the footer's Back, so the two read
-  // one const. Held shut while the stack comes up: leaving mid-install abandons
-  // a Docker start with nothing watching it.
-  const goBack = onBack && !starting ? onBack : null;
 
   const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
@@ -443,8 +449,8 @@ const LocalSetupStep = observer(function LocalSetupStep({
         )}
       </DialogContentArea>
       <DialogFooter>
-        {goBack ? (
-          <Button variant="outline" onClick={goBack}>
+        {onBack && !starting ? (
+          <Button variant="outline" onClick={onBack}>
             Back
           </Button>
         ) : (
@@ -456,7 +462,6 @@ const LocalSetupStep = observer(function LocalSetupStep({
           {starting ? 'Starting…' : primaryLabel}
         </ConfirmButton>
       </DialogFooter>
-      <StepPager pageName="Set up a server" onBack={goBack} onNext={null} />
     </>
   );
 });
@@ -546,10 +551,6 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
 
   const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
   const canStart = !!sshHost && name.trim().length > 0 && dockerReady && !starting && !hostBlocked;
-  // One const for the footer's Back and the pager's back arrow, which only
-  // repeats it. Shut while the stack comes up, for the same reason as the
-  // local page: an abandoned Docker start has nothing watching it.
-  const goBack = starting ? null : onBack;
   const primaryLabel = running ? 'Done' : status?.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
     if (running) onDone(sshHost ? (store.statusFor(sshHost).serverId ?? null) : null);
@@ -683,8 +684,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
         )}
       </DialogContentArea>
       <DialogFooter>
-        {goBack ? (
-          <Button variant="outline" onClick={goBack}>
+        {!starting ? (
+          <Button variant="outline" onClick={onBack}>
             Back
           </Button>
         ) : (
@@ -696,7 +697,6 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
           {starting ? 'Starting…' : primaryLabel}
         </ConfirmButton>
       </DialogFooter>
-      <StepPager pageName="Set up on a remote host" onBack={goBack} onNext={null} />
     </>
   );
 });
@@ -795,16 +795,15 @@ const ExternalServerStep = observer(function ExternalServerStep({
     onSuccess();
   }, [isValid, isEdit, savedId, trimmedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
 
-  // The footer's Back and the pager's back arrow are the same move, so they
-  // read one const. Shut while the form is submitting: the write registers a
-  // server, and stepping off it mid-way leaves one behind with no page on it.
-  const goBack = onBack && !submitting ? onBack : null;
-
   return (
     <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>{isEdit ? 'Edit connection' : 'Connect to an existing server'}</DialogTitle>
-      </DialogHeader>
+      {isEdit ? (
+        <DialogHeader showCloseButton={false}>
+          <DialogTitle>Edit connection</DialogTitle>
+        </DialogHeader>
+      ) : (
+        <WizardStepHeader title="Connect to an existing server" step={2} of={CONNECT_STEPS} />
+      )}
       <DialogContentArea className="pt-0">
         <FieldGroup>
           {!isEdit && (
@@ -844,20 +843,13 @@ const ExternalServerStep = observer(function ExternalServerStep({
         </FieldGroup>
       </DialogContentArea>
       <DialogFooter>
-        <Button
-          variant="outline"
-          onClick={goBack ?? onClose}
-          disabled={onBack !== undefined && goBack === null}
-        >
+        <Button variant="outline" onClick={onBack ?? onClose}>
           {onBack ? 'Back' : 'Cancel'}
         </Button>
         <ConfirmButton onClick={() => void handleSubmit()} disabled={!isValid || submitting}>
           {submitting ? (savedId ? 'Saving…' : 'Adding…') : savedId ? 'Save changes' : 'Add server'}
         </ConfirmButton>
       </DialogFooter>
-      {/* Editing a connection is one dialog rather than a flow, and a pager on
-          it would invent pages either side that do not exist. */}
-      {!isEdit && <StepPager pageName="Connect to a server" onBack={goBack} onNext={null} />}
     </>
   );
 });
@@ -891,14 +883,9 @@ const SignInStep = observer(function SignInStep({
     if (await signIn.signInWithPassword()) onSignedIn();
   };
 
-  // One const for the footer's Back and the pager's back arrow that repeats it.
-  const goBack = signIn.submitting ? null : onBack;
-
   return (
     <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>Sign in to {server.name}</DialogTitle>
-      </DialogHeader>
+      <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
       <DialogContentArea className="pt-0">
         <ServerSignInFields
           signIn={signIn}
@@ -908,7 +895,7 @@ const SignInStep = observer(function SignInStep({
         />
       </DialogContentArea>
       <DialogFooter>
-        <Button variant="outline" onClick={onBack} disabled={goBack === null}>
+        <Button variant="outline" onClick={onBack} disabled={signIn.submitting}>
           Back
         </Button>
         {canUsePassword ? (
@@ -930,7 +917,6 @@ const SignInStep = observer(function SignInStep({
           )
         )}
       </DialogFooter>
-      <StepPager pageName="Sign in" onBack={goBack} onNext={null} />
     </>
   );
 });

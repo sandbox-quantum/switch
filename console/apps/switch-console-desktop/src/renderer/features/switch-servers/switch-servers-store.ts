@@ -1,7 +1,7 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type {
@@ -10,13 +10,6 @@ import type {
   SwitchServer,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
-
-/**
- * How long the first read of the server list may take before the window says so
- * instead of staying blank. Generous: this is local IPC, so anything near it is
- * already a handler that is not coming back.
- */
-const LIST_READ_DEADLINE_MS = 10_000;
 
 /**
  * Renderer store for the Switch-server integration. Holds the registered
@@ -70,41 +63,9 @@ export class SwitchServersStore {
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
   errorDetail: string | null = null;
-  /**
-   * The list read's own failure, as opposed to {@link error}, which every
-   * action in this store writes — adding a server, renaming one, signing out.
-   *
-   * The shell decides what fills the window from this. Reading `error` there
-   * would put the whole window into its failure shape because a rename went
-   * wrong. Set only when a read fails and cleared only when one succeeds:
-   * clearing it as a retry starts would take the failure page off screen — and
-   * the retry button with it — for as long as the retry ran.
-   */
-  listError: string | null = null;
-  /** Diagnostics for the failure in {@link listError}. */
-  listErrorDetail: string | null = null;
-  /**
-   * Whether this install holds nothing at all — no server, no location, no
-   * agent. Read alongside the list, because the shell decides between the
-   * first-run page and the workspace from it and an empty server list is not
-   * the same question: removing a server keeps its agents and says so, and
-   * those agents plus the sessions running in them are still something to show.
-   *
-   * False until the first read lands; `loaded` is what separates that from an
-   * install that really is empty.
-   */
-  installIsEmpty = false;
-  /** The read in flight, so callers arriving together share one. Nothing renders it. */
-  initInFlight: Promise<void> | null = null;
-  /**
-   * Which read is allowed to write. Bumped by each new read and by the deadline
-   * below, so a read that has been given up on cannot land later and overwrite
-   * the answer of the one that replaced it. Nothing renders it.
-   */
-  private listReadGeneration = 0;
 
   constructor() {
-    makeAutoObservable(this, { initInFlight: false });
+    makeAutoObservable(this);
   }
 
   /** Headline and detail as one string, for the modals that have a single slot. */
@@ -185,48 +146,20 @@ export class SwitchServersStore {
     return this.authConfigInFlight.has(serverId);
   }
 
-  /**
-   * Read the server list, once however many callers ask for it.
-   *
-   * The shell and the sidebar both ask on the first frame, and so does every
-   * panel that needs a server list to draw. They share the read in flight
-   * rather than making the same round-trip several times over; a caller
-   * arriving after it settles starts a fresh one, so this never hands back a
-   * stale answer to someone refreshing after a change of their own.
-   */
-  init(): Promise<void> {
-    if (this.initInFlight) return this.initInFlight;
-    // Only if it is still ours: a read given up on below is unhooked while it
-    // is still running, and its eventual settling must not unhook the read that
-    // replaced it.
-    const read = this.readServers().finally(() => {
-      if (this.initInFlight === read) this.initInFlight = null;
-    });
-    this.initInFlight = read;
-    return read;
-  }
-
-  private async readServers(): Promise<void> {
-    const generation = ++this.listReadGeneration;
+  async init(): Promise<void> {
     runInAction(() => {
       this.loadingServers = true;
       this.error = null;
       this.errorDetail = null;
     });
-    const deadline = setTimeout(() => this.giveUpOnListRead(generation), LIST_READ_DEADLINE_MS);
     try {
-      const [servers, installIsEmpty] = await Promise.all([
+      const [servers] = await Promise.all([
         rpc.switchServers.listServers(),
-        rpc.onboarding.installIsEmpty(),
         workspacesStore.refresh(),
       ]);
-      if (generation !== this.listReadGeneration) return;
       runInAction(() => {
         this.servers = servers;
-        this.installIsEmpty = installIsEmpty;
         this.loaded = true;
-        this.listError = null;
-        this.listErrorDetail = null;
       });
       // A page restored onto a server that has since been deleted can only be
       // judged once the list is known, and startup restores navigation before
@@ -235,44 +168,12 @@ export class SwitchServersStore {
       await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
-      if (generation !== this.listReadGeneration) return;
-      const { headline, detail } = this.setError(cause, 'Could not load your Switch servers.');
-      runInAction(() => {
-        this.listError = headline;
-        this.listErrorDetail = detail;
-      });
+      this.setError(cause, 'Could not load your Switch servers.');
     } finally {
-      clearTimeout(deadline);
-      if (generation === this.listReadGeneration) {
-        runInAction(() => {
-          this.loadingServers = false;
-        });
-      }
+      runInAction(() => {
+        this.loadingServers = false;
+      });
     }
-  }
-
-  /**
-   * Stop waiting on a read that has not answered.
-   *
-   * Before the first one lands the shell has nothing to draw, so a handler that
-   * never settles leaves a blank, inert window with no way to say anything went
-   * wrong and no way to ask again. Saying so is the whole point: the read is
-   * abandoned rather than cancelled — it cannot be cancelled — and the
-   * generation bump is what stops it landing later on top of the retry's
-   * answer.
-   *
-   * Only before the first success. Once there is a list in hand, a slow refresh
-   * is not a reason to take the app away from someone using it.
-   */
-  private giveUpOnListRead(generation: number): void {
-    if (generation !== this.listReadGeneration || this.loaded) return;
-    this.listReadGeneration += 1;
-    this.initInFlight = null;
-    runInAction(() => {
-      this.loadingServers = false;
-      this.listError = 'Could not load your Switch servers.';
-      this.listErrorDetail = `Nothing came back after ${LIST_READ_DEADLINE_MS / 1000} seconds.`;
-    });
   }
 
   /**
@@ -626,17 +527,13 @@ export class SwitchServersStore {
    * shared boundary rather than carrying whatever was thrown. The fallback is
    * per-action: the store knows which request failed, and the failure itself
    * usually does not.
-   *
-   * Returns what it wrote, for the one caller that also keeps the failure in a
-   * slot of its own.
    */
-  private setError(cause: unknown, fallback: string): FailureDescription {
+  private setError(cause: unknown, fallback: string): void {
     const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
       this.error = headline;
       this.errorDetail = detail;
     });
-    return { headline, detail };
   }
 }
 
