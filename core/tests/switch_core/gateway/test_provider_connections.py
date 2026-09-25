@@ -1,0 +1,368 @@
+import json
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from sqlalchemy import select
+
+from switch_core.crypto import decrypt_token
+from switch_core.db.models import (
+    HostedLaunch,
+    ProviderConnection,
+    Tenant,
+    User,
+    require_tenant_id,
+)
+from switch_core.db.stores.provider_connection_store import ProviderConnectionStore
+from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.provider_connections import router
+from switch_core.providers.claude_verifier import ClaudeVerificationError
+from switch_core.providers.credentials import validate_provider_credential
+from switch_core.tenant_context import tenant_scope
+
+
+@pytest.fixture
+async def connection_app(session_factory):
+    async with session_factory() as session:
+        first = User(
+            id="first",
+            name="First",
+            email="first@example.com",
+            role="user",
+            password_hash="unused",
+        )
+        second = User(
+            id="second",
+            name="Second",
+            email="second@example.com",
+            role="user",
+            password_hash="unused",
+        )
+        session.add_all([first, second, Tenant(id="other", slug="other", name="Other")])
+        await session.commit()
+    identity = {"user": first}
+    app = FastAPI()
+    app.include_router(router, prefix="/provider-connections")
+    verifier = AsyncMock()
+    app.state.claude_verifier = verifier
+
+    async def sessions():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[get_current_user] = lambda: identity["user"]
+    app.dependency_overrides[get_config] = lambda: SimpleNamespace(
+        jwt_secret_key="synthetic-encryption-test-key",
+        hosted_provider_verification_enabled=False,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    ) as client:
+        yield client, identity, verifier, session_factory, app
+
+
+async def test_save_is_encrypted_scoped_and_survives_new_request(connection_app):
+    client, identity, verifier, factory, _ = connection_app
+    credential = "sk-ant-api-SYNTHETIC-PLACEHOLDER"
+    response = await client.put(
+        "/provider-connections/claude",
+        json={"kind": "api-key", "credential": credential},
+    )
+    assert response.status_code == 200
+    assert credential not in response.text
+    verifier.verify.assert_awaited_once_with("api-key", credential)
+    async with factory() as session:
+        row = await ProviderConnectionStore().get(session, "first")
+        assert row.encrypted_credential != credential
+        assert (
+            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
+            == credential
+        )
+    assert (await client.get("/provider-connections/claude")).json()[
+        "status"
+    ] == "connected"
+    identity["user"] = SimpleNamespace(id="second")
+    assert (await client.get("/provider-connections/claude")).json() == {
+        "status": "not_connected"
+    }
+    await client.delete("/provider-connections/claude")
+    identity["user"] = SimpleNamespace(id="first")
+    with tenant_scope("other"):
+        assert (await client.get("/provider-connections/claude")).json() == {
+            "status": "not_connected"
+        }
+        await client.delete("/provider-connections/claude")
+    assert (await client.get("/provider-connections/claude")).json()[
+        "status"
+    ] == "connected"
+    assert (await client.delete("/provider-connections/claude")).status_code == 204
+    assert (await client.get("/provider-connections/claude")).json()[
+        "status"
+    ] == "not_connected"
+
+
+async def test_failed_replacement_preserves_previous_connection(connection_app):
+    client, _, verifier, _, _ = connection_app
+    assert (
+        await client.put(
+            "/provider-connections/claude",
+            json={
+                "kind": "setup-token",
+                "credential": "sk-ant-oat-SYNTHETIC-PLACEHOLDER",
+            },
+        )
+    ).status_code == 200
+    verifier.verify.side_effect = ClaudeVerificationError(
+        "Claude could not complete the check."
+    )
+    result = await client.put(
+        "/provider-connections/claude",
+        json={"kind": "api-key", "credential": "sk-ant-api-SYNTHETIC-REPLACEMENT"},
+    )
+    assert result.status_code == 422
+    assert "SYNTHETIC" not in result.text
+    assert (await client.get("/provider-connections/claude")).json()[
+        "kind"
+    ] == "setup-token"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"kind": "wrong", "credential": "PRIVATE-PLACEHOLDER"},
+        {"kind": "api-key", "credential": "sk-ant-oat-PRIVATE-PLACEHOLDER"},
+        {"kind": "setup-token", "credential": ["PRIVATE-PLACEHOLDER"]},
+        {"kind": "api-key", "credential": "sk-ant-api-PRIVATE PLACEHOLDER"},
+    ],
+)
+async def test_bad_input_never_echoes_secret(connection_app, body):
+    client, _, verifier, _, _ = connection_app
+    result = await client.put("/provider-connections/claude", json=body)
+    assert result.status_code == 400
+    assert "PRIVATE" not in result.text
+    verifier.verify.assert_not_awaited()
+
+
+async def test_disabled_verifier_and_oversize_body(connection_app):
+    client, _, _, _, app = connection_app
+    result = await client.put("/provider-connections/claude", content="x" * 21000)
+    assert result.status_code == 413
+    app.state.claude_verifier = None
+    assert (await client.get("/provider-connections/claude")).status_code == 503
+
+
+async def test_provider_table_enforces_rls(rls_harness):
+    async with rls_harness.owner() as session:
+        session.add_all(
+            [
+                User(
+                    id="owner",
+                    name="Owner",
+                    email="owner@example.com",
+                    role="user",
+                    password_hash="unused",
+                ),
+                Tenant(id="tenant-a", slug="tenant-a", name="A"),
+                Tenant(id="tenant-b", slug="tenant-b", name="B"),
+            ]
+        )
+        await session.commit()
+    with tenant_scope("tenant-a"):
+        async with rls_harness.restricted() as session:
+            await ProviderConnectionStore().save(
+                session, "owner", "api-key", "synthetic-ciphertext", datetime.now(UTC)
+            )
+            await session.commit()
+    with tenant_scope("tenant-b"):
+        async with rls_harness.restricted() as session:
+            assert (
+                await session.execute(select(ProviderConnection))
+            ).scalars().all() == []
+
+
+async def test_simultaneous_connection_changes_fail_without_waiting(connection_app):
+    client, _, verifier, factory, _ = connection_app
+    async with factory() as session:
+        await ProviderConnectionStore().lock_user(session, "first")
+        result = await client.put(
+            "/provider-connections/claude",
+            json={"kind": "api-key", "credential": "sk-ant-api-SYNTHETIC-PLACEHOLDER"},
+        )
+        assert result.status_code == 409
+        assert (await client.delete("/provider-connections/claude")).status_code == 409
+        verifier.verify.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "provider,kind,credential",
+    [
+        ("codex", "api-key", "SYNTHETIC-PLACEHOLDER"),
+        ("codex", "auth-json", '{"tokens":{"access_token":"SYNTHETIC-PLACEHOLDER"}}'),
+        ("cursor", "api-key", "SYNTHETIC-PLACEHOLDER"),
+        (
+            "opencode",
+            "auth-json",
+            '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}',
+        ),
+        ("antigravity", "auth-json", '{"access_token":"SYNTHETIC-PLACEHOLDER"}'),
+    ],
+)
+async def test_other_provider_credentials_remain_unverified_until_worker_checks_them(
+    connection_app, provider, kind, credential
+):
+    client, identity, _, factory, _ = connection_app
+    url = f"/provider-connections/{provider}"
+    response = await client.put(url, json={"kind": kind, "credential": credential})
+    assert response.status_code == 200
+    assert response.json()["status"] == "configured"
+    assert "SYNTHETIC" not in response.text
+    async with factory() as session:
+        row = await session.get(
+            ProviderConnection, (require_tenant_id(), "first", provider)
+        )
+        assert row is not None
+        assert row.encrypted_credential != credential
+        assert (
+            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
+            == credential
+        )
+    identity["user"] = SimpleNamespace(id="second")
+    assert (await client.get(url)).json() == {"status": "not_connected"}
+    await client.delete(url)
+    identity["user"] = SimpleNamespace(id="first")
+    with tenant_scope("other"):
+        assert (await client.get(url)).json() == {"status": "not_connected"}
+        await client.delete(url)
+    assert (await client.get(url)).json()["status"] == "configured"
+    assert (await client.delete(url)).status_code == 204
+    assert (await client.get(url)).json() == {"status": "not_connected"}
+
+
+@pytest.mark.parametrize(
+    "provider,kind,credential",
+    [
+        ("cursor", "auth-json", '{"PRIVATE":"PLACEHOLDER"}'),
+        ("opencode", "api-key", "PRIVATE-PLACEHOLDER"),
+        ("codex", "auth-json", "PRIVATE-INVALID-JSON"),
+        ("codex", "api-key", "PRIVATE PLACEHOLDER"),
+        ("antigravity", "auth-json", "[]"),
+    ],
+)
+async def test_other_provider_invalid_credentials_are_not_echoed(
+    connection_app, provider, kind, credential
+):
+    client, _, _, _, _ = connection_app
+    response = await client.put(
+        f"/provider-connections/{provider}",
+        json={"kind": kind, "credential": credential},
+    )
+    assert response.status_code == 400
+    assert "PRIVATE" not in response.text
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+async def test_disconnect_stops_only_owners_workers_for_that_provider(
+    connection_app, provider
+):
+    client, _, _, factory, _ = connection_app
+    async with factory() as session:
+        session.add_all(
+            [
+                HostedLaunch(
+                    id="matching",
+                    name="matching",
+                    owner_id="first",
+                    spec={"provider": provider},
+                    state="ready",
+                ),
+                HostedLaunch(
+                    id="other-owner",
+                    name="other-owner",
+                    owner_id="second",
+                    spec={"provider": provider},
+                    state="ready",
+                ),
+                HostedLaunch(
+                    id="other-provider",
+                    name="other-provider",
+                    owner_id="first",
+                    spec={"provider": "cursor"},
+                    state="ready",
+                ),
+            ]
+        )
+        await session.commit()
+    assert (await client.delete(f"/provider-connections/{provider}")).status_code == 204
+    async with factory() as session:
+        matching = await session.get(HostedLaunch, (require_tenant_id(), "matching"))
+        assert matching.state == "error"
+        assert matching.revision == 2
+        assert "disconnected" in matching.error
+        for key in ["other-owner", "other-provider"]:
+            assert (
+                await session.get(HostedLaunch, (require_tenant_id(), key))
+            ).state == "ready"
+
+
+async def test_opencode_stores_only_its_own_login(connection_app):
+    client, _, _, factory, _ = connection_app
+    response = await client.put(
+        "/provider-connections/opencode",
+        json={
+            "kind": "auth-json",
+            "credential": '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"},"other":{"key":"MUST-STAY-LOCAL"}}',
+        },
+    )
+    assert response.status_code == 200
+    async with factory() as session:
+        row = await session.get(
+            ProviderConnection, (require_tenant_id(), "first", "opencode")
+        )
+        assert (
+            decrypt_token(row.encrypted_credential, "synthetic-encryption-test-key")
+            == '{"opencode":{"type":"api","key":"SYNTHETIC-PLACEHOLDER"}}'
+        )
+
+
+async def test_deeply_nested_auth_is_a_client_error(connection_app):
+    client, _, _, _, _ = connection_app
+    response = await client.put(
+        "/provider-connections/opencode",
+        json={
+            "kind": "auth-json",
+            "credential": "[" * 2000 + "0" + "]" * 2000,
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "url", ["https://console.example.test", "https://console.example.test/"]
+)
+def test_opencode_account_url_is_preserved(url):
+    credential = {
+        "format": "switch-opencode-console-v1",
+        "organization": "example",
+        "account": {
+            "id": "example",
+            "email": "account@example.test",
+            "url": url,
+            "access_token": "SYNTHETIC",
+            "refresh_token": "SYNTHETIC",
+            "token_expiry": None,
+            "time_created": 0,
+            "time_updated": 0,
+        },
+    }
+    saved = validate_provider_credential(
+        "opencode", "auth-json", json.dumps(credential)
+    )
+    assert json.loads(saved)["account"]["url"] == url
+    credential["account"]["url"] = "http://console.example.test"
+    with pytest.raises(ValueError, match="Sign in to OpenCode"):
+        validate_provider_credential("opencode", "auth-json", json.dumps(credential))

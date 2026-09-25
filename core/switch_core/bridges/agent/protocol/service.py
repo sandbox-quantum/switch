@@ -69,6 +69,7 @@ from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
+    HostedLaunch,
     Message,
     MessageAttachment,
     Model,
@@ -339,6 +340,7 @@ class ProtocolService:
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
         registration_path: str = "other",
+        reserved_agent_id: str | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -414,7 +416,22 @@ class ProtocolService:
         newly_registered = False
 
         async with self.session_factory() as session:
+            await self.agent_store.lock_name(session, name)
+            reservation = await session.scalar(
+                select(HostedLaunch).where(
+                    HostedLaunch.tenant_id == tenant_id,
+                    HostedLaunch.name == name,
+                )
+            )
+            if reservation is not None and reservation.agent_id != reserved_agent_id:
+                raise AgentExistsError(
+                    "A cloud launch already reserves this agent name."
+                )
             existing = await self.agent_store.get_by_name(session, name)
+            if reserved_agent_id is not None and existing is not None:
+                raise AgentExistsError(
+                    "The reserved cloud identity cannot overwrite an agent."
+                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
@@ -457,6 +474,7 @@ class ProtocolService:
             else:
                 agent_id = await self._create_agent(
                     session=session,
+                    reserved_agent_id=reserved_agent_id,
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
@@ -597,6 +615,7 @@ class ProtocolService:
         self,
         *,
         session: AsyncSession,
+        reserved_agent_id: str | None,
         name: str,
         description: str,
         icon_url: str | None,
@@ -634,6 +653,7 @@ class ProtocolService:
         )
 
         agent = Agent(
+            **({"id": reserved_agent_id} if reserved_agent_id is not None else {}),
             name=name,
             description=description,
             icon_url=icon_url,

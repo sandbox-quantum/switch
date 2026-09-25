@@ -1,0 +1,176 @@
+from datetime import UTC, datetime
+from typing import cast
+
+from sqlalchemy import case, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from switch_core.db.models import (
+    Agent,
+    HostedLaunch,
+    HostedOperation,
+    require_tenant_id,
+)
+from switch_core.db.stores.agent_store import AgentStore
+
+
+class HostedLaunchConflict(Exception):
+    pass
+
+
+class HostedLaunchStore:
+    async def reserve(
+        self,
+        session: AsyncSession,
+        *,
+        request_id: str,
+        owner_id: str,
+        name: str,
+        spec: dict,
+        capacity: int,
+        owner_capacity: int,
+        agent_ids: list[str],
+    ) -> HostedLaunch:
+        tenant_id = require_tenant_id()
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"hosted-launches:{tenant_id}"},
+        )
+        await AgentStore().lock_name(session, name)
+        existing = await session.get(HostedLaunch, (tenant_id, request_id))
+        if existing:
+            if (
+                existing.owner_id != owner_id
+                or existing.name != name
+                or existing.spec != spec
+            ):
+                raise HostedLaunchConflict(
+                    "This launch request was already used for different agent details."
+                )
+            return existing
+        if await session.scalar(
+            select(Agent.id).where(Agent.tenant_id == tenant_id, Agent.name == name)
+        ):
+            raise HostedLaunchConflict("An agent already uses this name.")
+        launches = list(
+            (
+                await session.scalars(
+                    select(HostedLaunch).where(HostedLaunch.tenant_id == tenant_id)
+                )
+            ).all()
+        )
+        if any(launch.name == name for launch in launches):
+            raise HostedLaunchConflict(
+                "A cloud launch already reserves this agent name."
+            )
+        active = [launch for launch in launches if launch.state != "deleted"]
+        if sum(launch.owner_id == owner_id for launch in active) >= owner_capacity:
+            raise HostedLaunchConflict(
+                "Your cloud agent limit has been reached. Remove a stopped worker before creating another."
+            )
+        if len(active) >= capacity:
+            raise HostedLaunchConflict(
+                "Cloud agent capacity is full. Contact your server administrator."
+            )
+        used = {launch.agent_id for launch in launches}
+        agent_id = next((value for value in agent_ids if value not in used), None)
+        if agent_id is None:
+            raise HostedLaunchConflict(
+                "No cloud worker identity is available. Removed workers retain their disk and identity until an administrator retires the retained data and adds a replacement assignment."
+            )
+        launch = HostedLaunch(
+            id=request_id,
+            owner_id=owner_id,
+            name=name,
+            spec=spec,
+            state="queued",
+            agent_id=agent_id,
+        )
+        session.add(launch)
+        await session.flush()
+        return launch
+
+    async def owned(
+        self, session: AsyncSession, request_id: str, owner_id: str
+    ) -> HostedLaunch | None:
+        return cast(
+            HostedLaunch | None,
+            await session.scalar(
+                select(HostedLaunch).where(
+                    HostedLaunch.tenant_id == require_tenant_id(),
+                    HostedLaunch.id == request_id,
+                    HostedLaunch.owner_id == owner_id,
+                )
+            ),
+        )
+
+    async def fail_stale_operations(
+        self, session: AsyncSession, launch_id: str, revision: int
+    ) -> None:
+        await session.execute(
+            update(HostedOperation)
+            .where(
+                HostedOperation.tenant_id == require_tenant_id(),
+                HostedOperation.launch_id == launch_id,
+                HostedOperation.launch_revision != revision,
+                HostedOperation.state.in_(["queued", "claimed"]),
+            )
+            .values(
+                state=case(
+                    (HostedOperation.state == "claimed", "unknown"), else_="failed"
+                ),
+                error="The worker changed before this operation was confirmed. Inspect the session if the outcome is unknown.",
+                updated_at=datetime.now(UTC),
+            )
+        )
+
+    async def idle_busy(self, session: AsyncSession, launch: HostedLaunch) -> bool:
+        raise NotImplementedError(
+            "Idle auto-stop needs session activity from the worker; WP3 replaces the removed SdkSession lease check."
+        )
+
+    async def note_addressed(
+        self, session: AsyncSession, launch_id: str
+    ) -> HostedLaunch | None:
+        """Record that the launch's agent was addressed, waking it if idle-stopped.
+
+        Takes the same lock as the lifecycle and controller routes. The caller
+        commits.
+        """
+        tenant_id = require_tenant_id()
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"hosted-launch:{tenant_id}:{launch_id}"},
+        )
+        launch = await session.get(HostedLaunch, (tenant_id, launch_id))
+        if launch is None:
+            return None
+        now = datetime.now(UTC)
+        if (
+            launch.sleeping
+            and launch.desired_state == "stopped"
+            and launch.state != "error"
+        ):
+            launch.desired_state = "running"
+            launch.state = "queued"
+            launch.revision += 1
+            await self.fail_stale_operations(session, launch.id, launch.revision)
+            launch.error = None
+            launch.active_at = now
+            launch.updated_at = now
+        elif launch.desired_state not in {"stopped", "deleted"}:
+            launch.active_at = now
+        return launch
+
+
+def is_waking(launch: HostedLaunch) -> bool:
+    return (
+        launch.sleeping
+        and launch.desired_state == "running"
+        and launch.state
+        in {
+            "queued",
+            "provisioning",
+            "stopping",
+            "stopped",
+        }
+    )
