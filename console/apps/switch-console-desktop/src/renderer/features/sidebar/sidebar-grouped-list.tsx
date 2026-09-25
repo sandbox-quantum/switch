@@ -3,6 +3,7 @@ import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
 import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
+import { useCloudAgents } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -12,6 +13,7 @@ import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { AgentTree } from './agent-tree';
 import { RoomTree } from './room-tree';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
+import { sidebarEmptyState } from './sidebar-empty-state';
 import { refreshSidebarRoomState } from './sidebar-tree-data';
 
 /**
@@ -85,22 +87,16 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     };
   }, []);
 
-  // Agent filters narrowing everything away is only an empty *agent* list. The
-  // room view lists rooms, which are still there, and reports its own filters
-  // being too narrow itself.
-  const showFilterEmptyState =
-    sidebarStore.grouping !== 'room' &&
-    sidebarStore.hasActiveFilters &&
-    sidebarStore.filteredLocations.length === 0;
-
-  // A server with nothing on it yet left the panel blank, which reads as the
-  // list having failed to load rather than as there being nothing to list.
-  const showEmptyState =
-    !showFilterEmptyState &&
-    !sidebarStore.hasActiveFilters &&
-    switchServersStore.activeServerId !== null &&
-    sidebarStore.orderedLocations.length === 0 &&
-    switchRoomsStore.listedRoomsInActiveScope.length === 0;
+  const cloudAgents = useCloudAgents(switchServersStore.activeServerId);
+  const emptyState = sidebarEmptyState({
+    grouping: sidebarStore.grouping,
+    hasActiveFilters: sidebarStore.hasActiveFilters,
+    filteredLocationCount: sidebarStore.filteredLocations.length,
+    activeServerId: switchServersStore.activeServerId,
+    locationCount: sidebarStore.orderedLocations.length,
+    roomCount: switchRoomsStore.listedRoomsInActiveScope.length,
+    cloudAgentCount: cloudAgents.data?.length ?? 0,
+  });
 
   return (
     <div
@@ -108,9 +104,9 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
       className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto px-2 pt-0 pb-3"
     >
       <RoomStateDisclosure />
-      {showFilterEmptyState ? (
+      {emptyState === 'no-filter-match' ? (
         <p className="px-2 py-3 text-xs text-foreground-muted">No agents match filters</p>
-      ) : showEmptyState ? (
+      ) : emptyState === 'empty' ? (
         <p className="px-2 py-3 text-xs text-foreground-muted">
           No sessions running on this server.
         </p>
