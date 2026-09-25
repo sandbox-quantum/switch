@@ -41,6 +41,7 @@ function sessionLabel(session: Session): string {
 export const CloudAgentList = observer(function CloudAgentList() {
   const serverId = switchServersStore.activeServerId;
   const agents = useCloudAgents(serverId);
+  if (switchRoomsStore.serversNotSignedIn.some((server) => server.id === serverId)) return null;
   if (agents.error)
     return (
       <div role="alert" className="px-3 py-2 text-xs text-foreground-destructive">

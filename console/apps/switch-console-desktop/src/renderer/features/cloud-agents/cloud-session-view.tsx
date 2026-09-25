@@ -1,5 +1,6 @@
 import { SessionChatClient } from '@switch-console/shared/session-v1';
 import { Cloud } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
 import { useMemo, type ReactNode } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { SessionV1Chat } from '@renderer/features/sessions/components/transcript/session-v1-chat';
@@ -34,7 +35,7 @@ function CloudSessionTitlebar() {
 }
 
 /** The launch's state over the transcript while its worker cannot be asked. */
-function CloudWorkerStatus({ agentKey }: { agentKey: string }) {
+const CloudWorkerStatus = observer(function CloudWorkerStatus({ agentKey }: { agentKey: string }) {
   const agents = useCloudAgents(parseCloudAgentKey(agentKey)?.serverId ?? null);
   const agent = agents.data?.find((each) => each.key === agentKey);
   if (agents.error)
@@ -59,7 +60,7 @@ function CloudWorkerStatus({ agentKey }: { agentKey: string }) {
       />
     </div>
   ) : null;
-}
+});
 
 function CloudSessionPanel() {
   const { params } = useParams('cloudSession');
