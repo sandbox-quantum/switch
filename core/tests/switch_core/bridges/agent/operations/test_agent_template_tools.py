@@ -154,9 +154,10 @@ def test_a_team_template_becomes_a_room_with_the_chosen_agents():
     assert "agents" not in doc
     assert doc["room"]["agents"] == ["claude-code.alice", "claude-code.bob"]
     assert doc["kickoff"] == "@claude-code.alice say hello to @claude-code.bob."
-    # Console-only params do not reach the server.
-    assert set(doc["params"]) == {"team"}
-    assert inputs == {"team": "red"}
+    # Every value is filled in and checked here, and the Console-only
+    # provider never reaches the server.
+    assert "params" not in doc
+    assert inputs == {}
 
 
 def test_an_unfilled_slot_is_refused_with_the_console_message():
@@ -462,7 +463,7 @@ def test_a_team_template_with_a_group_fills_every_room():
     assert lobby["kickoff"] == "@claude-code.alice welcome people."
     assert work["agents"] == ["claude-code.alice", "claude-code.bob"]
     assert work["kickoff"] == "@claude-code.bob start, and tell @claude-code.alice."
-    assert inputs == {"team": "blue"}
+    assert inputs == {}
 
 
 @pytest.mark.asyncio
@@ -569,3 +570,43 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
                 content=None,
                 visibility=None,
             )
+
+
+SLOTTED_ROOM = """\
+params:
+  code: {{ type: string, pattern: "[a-z]+", default: {default} }}
+  size: {{ type: number, min: 1, max: 5, default: {size} }}
+agents:
+  - name: worker
+    instructions: Work.
+room:
+  name: "{{code}}"
+  description: "Room of {{size}}"
+  agents: [worker]
+"""
+
+
+def test_values_filled_early_are_checked_as_the_server_would():
+    with pytest.raises(ValueError, match="does not match the pattern"):
+        room_document(SLOTTED_ROOM.format(default="BAD", size=2), {"worker": "b"}, {})
+    with pytest.raises(ValueError, match="above the maximum"):
+        room_document(SLOTTED_ROOM.format(default="ok", size=9), {"worker": "b"}, {})
+
+
+def test_a_string_input_that_looks_like_a_number_stays_a_string():
+    document, _ = room_document(
+        SLOTTED_ROOM.format(default="ok", size=2), {"worker": "b"}, {"code": "abc"}
+    )
+    assert yaml.safe_load(document)["room"]["name"] == "abc"
+    template = SLOTTED_ROOM.format(default="ok", size=2).replace(
+        'pattern: "[a-z]+", ', ""
+    )
+    document, _ = room_document(template, {"worker": "b"}, {"code": 123})
+    assert yaml.safe_load(document)["room"]["name"] == "123"
+
+
+def test_an_undeclared_input_is_still_an_error():
+    with pytest.raises(ValueError, match="Undeclared input"):
+        room_document(
+            SLOTTED_ROOM.format(default="ok", size=2), {"worker": "b"}, {"nope": 1}
+        )

@@ -19,9 +19,16 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import yaml
+from pydantic import ValidationError
 
 from switch_core.agent_refusals import AgentRefused
-from switch_core.rooms_yaml import CONSOLE_PARAM_TYPES, PLACEHOLDER_RE, interpolate
+from switch_core.rooms_yaml import (
+    CONSOLE_PARAM_TYPES,
+    PLACEHOLDER_RE,
+    ParamSpec,
+    coerce_param,
+    interpolate,
+)
 
 TemplateKind = Literal["room", "group", "agent"]
 
@@ -73,15 +80,27 @@ def agent_slots(text: str) -> list[AgentSlot]:
     ]
 
 
-def _param_defaults(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
-    """The values a slot name can be read with before the server resolves
-    the document: what was given, else a plain (non-list) default."""
+def _known_values(data: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+    """The values that can be filled in before the server sees the document:
+    each given input, else each plain (non-list) default, checked and coerced
+    exactly as the server would. A chain or a value nobody gave is left for
+    the server to resolve."""
+    try:
+        declared = {
+            name: ParamSpec.model_validate(spec)
+            for name, spec in (data.get("params") or {}).items()
+        }
+    except ValidationError as e:
+        raise ValueError(f"Invalid param spec: {e}") from e
+    undeclared = set(inputs) - set(declared)
+    if undeclared:
+        raise ValueError(f"Undeclared input(s): {', '.join(sorted(undeclared))}")
     values: dict[str, Any] = {}
-    for name, spec in (data.get("params") or {}).items():
-        if isinstance(spec, dict) and not isinstance(spec.get("default"), list):
-            if spec.get("default") is not None:
-                values[name] = spec["default"]
-    values.update({k: v for k, v in inputs.items() if v is not None})
+    for name, spec in declared.items():
+        if inputs.get(name) is not None:
+            values[name] = coerce_param(inputs[name], spec, name)
+        elif spec.default is not None and not isinstance(spec.default, list):
+            values[name] = coerce_param(spec.default, spec, name)
     return values
 
 
@@ -129,7 +148,7 @@ def room_document(
     if not agents:
         return text, inputs
 
-    values = _param_defaults(data, inputs)
+    values = _known_values(data, inputs)
     replacements: dict[str, str] = {}
     unfilled: list[str] = []
     for agent in agents:
@@ -178,13 +197,7 @@ def room_document(
         if not (isinstance(spec, dict) and spec.get("type") in CONSOLE_PARAM_TYPES)
     }
     still_used = _placeholders(room_part, set())
-    # Given inputs keep their params, so the server still checks them against
-    # the param's pattern and bounds.
-    params = {
-        name: spec
-        for name, spec in declared.items()
-        if name in still_used or name in inputs
-    }
+    params = {name: spec for name, spec in declared.items() if name in still_used}
     run_inputs = {k: v for k, v in inputs.items() if k in params}
 
     pattern = _name_pattern(list(replacements))

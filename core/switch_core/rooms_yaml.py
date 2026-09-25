@@ -197,7 +197,7 @@ class ParamSpec(BaseModel):
         return self
 
 
-def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
+def coerce_param(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
     if t == "string":
@@ -267,9 +267,9 @@ def resolve_params(
     missing: list[str] = []
     for name, spec in declared.items():
         if name in inputs and inputs[name] is not None:
-            resolved[name] = _coerce(inputs[name], spec, name)
+            resolved[name] = coerce_param(inputs[name], spec, name)
         elif spec.default is not None and not isinstance(spec.default, list):
-            resolved[name] = _coerce(spec.default, spec, name)
+            resolved[name] = coerce_param(spec.default, spec, name)
         elif spec.is_required:
             missing.append(name)
         elif spec.type == "string":
