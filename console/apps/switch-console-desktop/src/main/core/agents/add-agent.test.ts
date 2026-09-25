@@ -1,5 +1,6 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readAgentConfigFile } from './agent-config-file';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 const inspectRemoteDir = vi.hoisted(() => vi.fn());
@@ -134,6 +135,22 @@ function credsOf(fs: PluginFs, slug: string): Promise<Record<string, string>> {
 }
 
 describe('addAgent', () => {
+  it('persists SDK model defaults in the config used by session startup', async () => {
+    h.state.repoAgents = null;
+    await addAgent(
+      params({
+        providerId: 'antigravity',
+        providerConfig: {
+          version: '2',
+          providerId: 'antigravity',
+          values: { model: 'model-a' },
+        },
+      })
+    );
+    expect(await readAgentConfigFile(h.state.workspace!, 'codex-hoot')).toMatchObject({
+      settings: { model: 'model-a' },
+    });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     h.state.nameTaken = false;

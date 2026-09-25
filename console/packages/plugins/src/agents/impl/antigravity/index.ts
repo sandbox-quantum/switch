@@ -65,6 +65,17 @@ export const plugin = definePlugin(
 );
 
 export const provider = registerPluginBehavior(plugin, {
+  sessions: {
+    configFields: () => [
+      {
+        key: 'model',
+        label: 'Model',
+        type: 'text',
+        catalogue: { kind: 'model' },
+        help: 'Used for new sessions. Leave blank to use the Antigravity default.',
+      },
+    ],
+  },
   prompt: {
     buildCommand: () => {
       throw new Error('Antigravity runs through the ACP session host.');

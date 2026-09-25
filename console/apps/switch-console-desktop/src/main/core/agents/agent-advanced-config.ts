@@ -17,23 +17,23 @@ import { getAgentById } from './getAgentById';
  * once at spawn and so cannot reach a running session, but it is no longer
  * where the values live.
  *
- * A provider with neither has no advanced configuration and the section renders
- * nothing.
+ * SDK session defaults can also be passed directly, without a generated profile.
  */
 
 /** The fields this provider exposes, from whichever surface it keeps them in. */
 export function getAgentAdvancedFields(providerId: AgentProviderId): RepoAgentField[] {
   const behavior = getPlugin(providerId).behavior;
+  if (behavior.sessions?.configFields) return behavior.sessions.configFields();
   const definitionFields = behavior.repoAgents?.attributeFields();
   if (definitionFields) return definitionFields;
   return behavior.mcp?.launchProfileFields?.() ?? [];
 }
 
 /** Where a provider keeps its per-agent settings. */
-export type AgentAdvancedSurface = 'definition' | 'launch-profile' | 'none';
+export type AgentAdvancedSurface = 'definition' | 'launch-profile' | 'session' | 'none';
 
 /**
- * Which of the two surfaces a provider uses, for a caller that has to treat them
+ * Which settings surface a provider uses, for a caller that has to treat them
  * differently — the renderer offers a restart only for a launch profile, which is
  * read once at spawn and so cannot reach a session already running.
  *
@@ -43,6 +43,7 @@ export type AgentAdvancedSurface = 'definition' | 'launch-profile' | 'none';
  */
 export function getAgentAdvancedSurface(providerId: AgentProviderId): AgentAdvancedSurface {
   const behavior = getPlugin(providerId).behavior;
+  if (behavior.sessions?.configFields) return 'session';
   if (behavior.repoAgents?.attributeFields()) return 'definition';
   if (behavior.mcp?.launchProfileFields) return 'launch-profile';
   return 'none';
@@ -71,8 +72,7 @@ export async function updateAgentAdvancedConfig(params: {
   const agent = await getAgentById(params.agentId);
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
 
-  const behavior = getPlugin(agent.providerId).behavior;
-  if (!behavior.repoAgents && !behavior.mcp?.launchProfileFields) {
+  if (getAgentAdvancedSurface(agent.providerId) === 'none') {
     throw new Error(`Agent ${params.agentId} has no editable advanced configuration.`);
   }
 
