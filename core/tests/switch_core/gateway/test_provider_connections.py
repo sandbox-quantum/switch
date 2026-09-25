@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -270,10 +270,14 @@ async def test_other_provider_invalid_credentials_are_not_echoed(
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-async def test_disconnect_stops_only_owners_workers_for_that_provider(
+async def test_disconnect_rings_owners_workers_to_revoke_without_superseding(
     connection_app, provider
 ):
-    client, _, _, factory, _ = connection_app
+    client, _, _, factory, app = connection_app
+    registry = Mock(spec=ConnectionRegistry)
+    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace(
+        connections=registry
+    )
     async with factory() as session:
         session.add_all(
             [
@@ -281,6 +285,7 @@ async def test_disconnect_stops_only_owners_workers_for_that_provider(
                     id="matching",
                     name="matching",
                     owner_id="first",
+                    agent_id="matching-agent",
                     spec={"provider": provider},
                     state="ready",
                 ),
@@ -288,6 +293,7 @@ async def test_disconnect_stops_only_owners_workers_for_that_provider(
                     id="other-owner",
                     name="other-owner",
                     owner_id="second",
+                    agent_id="other-owner-agent",
                     spec={"provider": provider},
                     state="ready",
                 ),
@@ -295,6 +301,7 @@ async def test_disconnect_stops_only_owners_workers_for_that_provider(
                     id="other-provider",
                     name="other-provider",
                     owner_id="first",
+                    agent_id="other-provider-agent",
                     spec={"provider": "cursor"},
                     state="ready",
                 ),
@@ -302,15 +309,16 @@ async def test_disconnect_stops_only_owners_workers_for_that_provider(
         )
         await session.commit()
     assert (await client.delete(f"/provider-connections/{provider}")).status_code == 204
+    registry.ring_worker.assert_called_once_with(
+        "matching-agent", "credential", {"revision": None}
+    )
+    registry.supersede.assert_not_called()
     async with factory() as session:
-        matching = await session.get(HostedLaunch, (require_tenant_id(), "matching"))
-        assert matching.state == "error"
-        assert matching.revision == 2
-        assert "disconnected" in matching.error
-        for key in ["other-owner", "other-provider"]:
-            assert (
-                await session.get(HostedLaunch, (require_tenant_id(), key))
-            ).state == "ready"
+        for key in ["matching", "other-owner", "other-provider"]:
+            launch = await session.get(HostedLaunch, (require_tenant_id(), key))
+            assert launch.state == "ready"
+            assert launch.revision == 1
+            assert launch.error is None
 
 
 async def test_opencode_stores_only_its_own_login(connection_app):

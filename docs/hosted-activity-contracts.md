@@ -1026,7 +1026,10 @@ revision, credential}` with `Cache-Control: no-store`.
 
 - **Doorbell**: a change to the owner's `provider_connections` row
   (`verified_at` moves, or the row is deleted) sends `credential {revision}`
-  to the attached worker. The frame carries no secret.
+  to the attached worker. The frame carries no secret. A delete sends
+  `revision: null` and nothing else: the launch keeps its state and revision,
+  so the worker is not failed or superseded — it stays attached, stops its
+  hosts on the `revoked` fetch, and idle-stops like any quiet worker.
 - **Fetch**: on the doorbell, on each attach, and whenever
   `credential_revision` in an idle-report response differs from the one
   applied. The 2 s poll *(#538)* goes.

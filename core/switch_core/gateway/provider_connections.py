@@ -18,7 +18,6 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionBusy,
     ProviderConnectionStore,
@@ -124,12 +123,14 @@ async def ring_credential_change(
     registry: ConnectionRegistry,
     user_id: str,
     provider: str,
-    revision: str,
+    revision: str | None,
 ) -> None:
     """Tell the owner's attached workers on this provider to fetch a new credential.
 
     A doorbell only: the frame carries the revision, never the secret. A lost
-    one is caught up by the next idle-report response.
+    one is caught up by the next idle-report response. A disconnect rings with
+    no revision; the worker's fetch then reads `revoked`, and it stops every
+    host but stays attached.
     """
     agent_ids = await session.scalars(
         select(HostedLaunch.agent_id).where(
@@ -145,45 +146,6 @@ async def ring_credential_change(
         registry.ring_worker(agent_id, "credential", {"revision": revision})
 
 
-async def mark_disconnected_workers(
-    session: AsyncSession, user_id: str, provider: str
-) -> list[tuple[str, int]]:
-    """Fail the owner's running workers on this provider; the caller commits.
-
-    Returns each bumped launch's agent and new revision, which the caller
-    evicts after the commit.
-    """
-    changed = await session.execute(
-        update(HostedLaunch)
-        .where(
-            HostedLaunch.tenant_id == require_tenant_id(),
-            HostedLaunch.owner_id == user_id,
-            HostedLaunch.desired_state == "running",
-            func.coalesce(HostedLaunch.spec["provider"].astext, "claude") == provider,
-        )
-        .values(
-            state="error",
-            error="The provider was disconnected. Reconnect it, then retry this worker.",
-            revision=HostedLaunch.revision + 1,
-            updated_at=datetime.now(UTC),
-        )
-        .returning(HostedLaunch.id, HostedLaunch.revision, HostedLaunch.agent_id)
-    )
-    bumped = []
-    for launch_id, revision, agent_id in changed.all():
-        await HostedLaunchStore().fail_stale_operations(session, launch_id, revision)
-        if agent_id is not None:
-            bumped.append((agent_id, revision))
-    return bumped
-
-
-def supersede_workers(
-    registry: ConnectionRegistry, bumped: list[tuple[str, int]]
-) -> None:
-    for agent_id, revision in bumped:
-        registry.supersede(agent_id, revision)
-
-
 @router.delete("/claude", status_code=204)
 async def disconnect_claude(
     user: Annotated[User, Depends(get_current_user)],
@@ -196,9 +158,8 @@ async def disconnect_claude(
     except ProviderConnectionBusy as error:
         raise HTTPException(409, str(error)) from None
     await store.delete(session, user.id)
-    bumped = await mark_disconnected_workers(session, user.id, "claude")
     await session.commit()
-    supersede_workers(protocol.connections, bumped)
+    await ring_credential_change(session, protocol.connections, user.id, "claude", None)
     return Response(status_code=204)
 
 
@@ -343,7 +304,6 @@ async def disconnect_other_provider(
             ),
         )
     )
-    bumped = await mark_disconnected_workers(session, user.id, provider)
     await session.commit()
-    supersede_workers(protocol.connections, bumped)
+    await ring_credential_change(session, protocol.connections, user.id, provider, None)
     return Response(status_code=204)
