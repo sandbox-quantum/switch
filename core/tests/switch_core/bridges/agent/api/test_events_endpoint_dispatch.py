@@ -7,6 +7,7 @@ coexist — but the dispatch itself is easy to break silently, hence these.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,15 +15,19 @@ import pytest
 from fastapi import HTTPException
 from starlette.responses import StreamingResponse
 
+from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     ClientDeclaration,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.sink import TelemetryRecord
 
 AGENT_ID = "agent-1"
 
@@ -346,3 +351,72 @@ class TestDeclaringARoomAtOpenTakesOver:
         assert claimant is not None
         assert claimant.id == "supervisor"
         assert "room-1" not in incumbent.rooms
+
+
+class _RecordingSink:
+    def __init__(self) -> None:
+        self.sent: list[TelemetryRecord] = []
+
+    async def send(self, record: TelemetryRecord) -> None:
+        self.sent.append(record)
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestOpeningAStreamReportsASession:
+    """Through the endpoint, not the reporter. Whether a connection is new is
+    decided here, so a gate that never opens silences both session events
+    while every test of the reporter alone stays green."""
+
+    def _reporting(self) -> tuple[_Protocol, TelemetryService, _RecordingSink]:
+        sink = _RecordingSink()
+        service = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=True,
+            client_id="11111111-1111-1111-1111-111111111111",
+            service_name="switch-core",
+            version="1.0.0",
+            environment=None,
+        )
+        protocol = _Protocol()
+        protocol.sessions = SessionReporter(service, protocol.connections)
+        protocol.connections.set_close_listener(protocol.sessions.on_close)
+        return protocol, service, sink
+
+    async def test_a_new_connection_reports_a_session_start(self) -> None:
+        protocol, service, sink = self._reporting()
+
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_a_reattach_to_the_same_connection_is_not_another_start(
+        self,
+    ) -> None:
+        protocol, service, sink = self._reporting()
+
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+
+    async def test_closing_the_only_connection_ends_the_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The end is reported only for a connection the start was reported
+        on, so a start that never fires takes the end down with it."""
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0)
+        protocol, service, sink = self._reporting()
+
+        await _call(protocol, accept="text/event-stream", connection_id="c1")
+        protocol.connections.close("c1", HEARTBEAT_LAPSED)
+        await asyncio.sleep(0.01)
+        await service.aclose()
+
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_session_ended",
+        ]
