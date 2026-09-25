@@ -41,7 +41,8 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.rooms_yaml import GroupSpec
+from switch_core.rooms_yaml import GroupSpec, template_json_schema
+from switch_core.template_guide import TEMPLATE_GUIDE
 
 logger = logging.getLogger(__name__)
 
@@ -1830,6 +1831,22 @@ async def _require_agents_exist(names: list[str]) -> None:
 def _agent_templates() -> AgentTemplates:
     protocol = get_protocol()
     return AgentTemplates(TemplateStore(), max_bytes=protocol.config.template_max_bytes)
+
+
+@operation
+async def get_template_guide() -> dict[str, Any]:
+    """How to write a template: the language, and the schema this server
+    checks documents against.
+
+    Read it before writing a document for ``create_room_from_yaml`` or
+    ``save_template``. ``guide`` explains the keys, params, placeholders and
+    kickoff with an example; ``schema`` is the JSON Schema of the room and
+    group documents the server accepts.
+
+    Returns:
+        ``{guide, schema}``.
+    """
+    return {"guide": TEMPLATE_GUIDE, "schema": template_json_schema()}
 
 
 @operation

@@ -24,8 +24,10 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.definitions import (
+    create_room_from_yaml,
     delete_template,
     get_template,
+    get_template_guide,
     list_templates,
     run_template,
     save_template,
@@ -634,3 +636,27 @@ room:
     assert set(doc["params"]) == {"target", "helper"}
     assert doc["room"]["description"] == "Work in {target}"
     assert inputs == {"target": "nowhere", "helper": "claude-code.bob"}
+
+
+@pytest.mark.asyncio
+async def test_the_guide_describes_the_language_and_the_example_in_it_is_valid(tools):
+    result = await _as(tools["agent_id"], get_template_guide)
+
+    assert "## Params" in result["guide"]
+    assert result["schema"]
+    # The guide's own example is a document the server accepts. This test
+    # server has no messaging app, which `users:` needs, so that line goes.
+    example = (
+        result["guide"]
+        .split("## Example\n\n", 1)[1]
+        .replace("[reviewer]", '["claude-code.alice"]')
+        .replace("@reviewer", "@claude-code.alice")
+        .replace('  users: ["{$creator}"]\n', "")
+    )
+    created = await _as(
+        tools["agent_id"],
+        create_room_from_yaml,
+        yaml=example,
+        inputs={"topic": "billing"},
+    )
+    assert created["room_name"] == "billing review"

@@ -810,6 +810,7 @@ failure-mode tools are covered in the sections just above.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group.
 - `create_room_from_yaml` — provision a room or group from a YAML template.
+- `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.
 - `run_template`: create the rooms a saved template describes.

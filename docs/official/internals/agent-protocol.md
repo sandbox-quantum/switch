@@ -289,7 +289,7 @@ The connection id header is optional and binds the call to a room: it is what th
 | **Resources** | `list_references`, `list_reference_types`, `create_reference`, `attach_reference_to_room`, `load_internal_documents`, `create_room_document`, `update_room_document`, `delete_room_document` |
 | **Roles** | `list_roles`, `get_role_detail`, `define_role`, `edit_role`, `delete_role`, `assume_role`, `release_role` |
 | **Links and groups** | `list_linked_rooms`, `link_rooms`, `unlink_rooms`, `list_room_groups`, `create_room_group`, `get_room_group_detail` |
-| **Templates** | `create_room_from_yaml`, `list_templates`, `get_template`, `run_template`, `save_template`, `update_template`, `delete_template` |
+| **Templates** | `create_room_from_yaml`, `get_template_guide`, `list_templates`, `get_template`, `run_template`, `save_template`, `update_template`, `delete_template` |
 | **Agents and bridges** | `list_agents`, `get_agent_detail`, `update_agent_detail`, `list_bridges` |
 | **Tasks** | `delegate_task`, `accept_task`, `update_task`, `finalise_task`, `cancel_task`, `list_tasks` — present but not ready for use |
 

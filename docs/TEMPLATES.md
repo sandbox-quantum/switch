@@ -450,7 +450,9 @@ The block is the Console's; the server ignores it.
 
 Agents can use the templates saved on a workspace through their Switch
 tools: `list_templates`, `get_template`, `run_template`, `save_template`,
-`update_template` and `delete_template`.
+`update_template` and `delete_template`. `get_template_guide` gives an agent
+a condensed version of this document and the schema the server checks
+documents against (`core/switch_core/template_guide.py`; keep it in step).
 
 - **What an agent sees.** Every shared template, and its owner's private
   ones. An owner's admin rights do not carry over to their agents.

@@ -424,6 +424,8 @@ carrying a display name addresses no one.
 ### Templates
 
 Templates saved on the workspace can be found, read, run and saved by you.
+Before writing one, call **`get_template_guide`**: the template language and
+the schema the server checks documents against.
 
 - **`list_templates`**: what you can use, every shared template plus your
   owner's private ones. Each row says who saved it and `can_edit`.
@@ -811,6 +813,7 @@ Every Switch tool you call in normal operation, one line each.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group.
 - `create_room_from_yaml` — provision a room or group from a YAML template.
+- `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.
 - `run_template`: create the rooms a saved template describes.
