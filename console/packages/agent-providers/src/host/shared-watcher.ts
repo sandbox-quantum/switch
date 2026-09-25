@@ -20,11 +20,16 @@ import {
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { SessionPlacements } from './placements';
 import { roomInputId } from './room-inbox';
-import { type SessionRequest, SessionUnavailableError } from './session-channel';
+import {
+  SessionHostFailedError,
+  type SessionRequest,
+  SessionUnavailableError,
+} from './session-channel';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, readWatchFlags } from './watch-flags';
 import {
+  announceStartFailure,
   type PlaceOutcome,
   sessionToolAnswerer,
   type WatcherControl,
@@ -118,6 +123,14 @@ const HOST_START_MS = 120000;
 
 /** How often a room still waiting for an owner says so again. */
 const HELD_DISCLOSURE_MS = 30000;
+
+/** The thread a room message was posted in, or null for a top-level one. */
+function threadOf(event: unknown): string | null {
+  const parsed = z
+    .object({ payload: z.object({ thread_id: z.string().min(1).nullish() }) })
+    .safeParse(event);
+  return parsed.success ? (parsed.data.payload.thread_id ?? null) : null;
+}
 
 function sessionIdFor(agentId: string, roomId: string, messageId: string): string {
   const bytes = createHash('sha256')
@@ -556,6 +569,22 @@ export async function runSharedWatcher(
     unbind.push(
       links.answer(agentId, sessionToolAnswerer({ identity, connectionId, placements, publish }))
     );
+    // A host coming up — started from Console after it failed, say — takes
+    // the messages that waited for it.
+    unbind.push(
+      links.onReady((readyRoot) => {
+        for (const [sessionId, entry] of pumps) {
+          if (sharedSessionRoot(sessionId) !== readyRoot) continue;
+          announced.delete(sessionId);
+          if (entry.failed === null) continue;
+          console.warn(
+            `Session ${sessionId} is running again; handing it the ${entry.queue.length} room message(s) that waited for it.`
+          );
+          entry.failed = null;
+          pump(entry.config);
+        }
+      })
+    );
     unbind.push(
       links.onExit((_root, exited) => {
         if (!exited || exited.agentId !== agentId) return;
@@ -613,16 +642,54 @@ export async function runSharedWatcher(
       }
     };
     /**
+     * The failure each session's room was last told about, so a session that
+     * keeps failing the same way says so once. Forgotten when its host next
+     * comes up.
+     */
+    const announced = new Map<string, string>();
+    const announce = async (config: SharedHostConfig, event: Handoff, failure: string) => {
+      const sessionId = config.session.sessionId;
+      if (announced.get(sessionId) === failure) return;
+      announced.set(sessionId, failure);
+      try {
+        // Switch answers the call from where it holds the session placed.
+        await publish();
+        await announceStartFailure({
+          identity,
+          connectionId,
+          session: config.session,
+          root: sharedSessionRoot(sessionId),
+          cwd: config.start.input.cwd,
+          threadId: threadOf(event.event),
+          failure,
+        });
+      } catch (error) {
+        console.error(
+          `Could not tell room ${event.roomId} that session ${sessionId} failed to start (${failure}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    };
+    /**
      * Per session, the messages handed to it and not yet acknowledged, sent
      * down the IPC pipe one at a time and in order. Each is parked in the
      * journal first and released on the host's acknowledgement, so one this
      * controller dies holding is routed again when it restarts.
+     *
+     * `failed` is set when the host stopped on a failure it recorded: the
+     * messages stay queued and the host is not started again until something
+     * changes — another room message for it, or its host coming up because
+     * somebody started it from Console.
      */
-    const pumps = new Map<string, { queue: Handoff[]; running: boolean }>();
+    const pumps = new Map<
+      string,
+      { queue: Handoff[]; running: boolean; failed: string | null; config: SharedHostConfig }
+    >();
     const pump = (config: SharedHostConfig) => {
       const sessionId = config.session.sessionId;
       const entry = pumps.get(sessionId)!;
-      if (entry.running) return;
+      if (entry.running || entry.failed !== null) return;
       entry.running = true;
       void (async () => {
         const sessionRoot = sharedSessionRoot(sessionId);
@@ -638,6 +705,14 @@ export async function runSharedWatcher(
             pending = pending.then(() => assignments.released(event));
             await pending;
           } catch (error) {
+            if (error instanceof SessionHostFailedError) {
+              entry.failed = error.failure;
+              console.error(
+                `Session ${sessionId} could not start: ${error.failure} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
+              );
+              void announce(config, event, error.failure);
+              break;
+            }
             if (!(error instanceof SessionUnavailableError)) throw error;
             // Not running, or it stopped before it answered: start it again
             // and hand the message over once it is back.
@@ -664,10 +739,20 @@ export async function runSharedWatcher(
       const sessionId = config.session.sessionId;
       const sessionRoot = sharedSessionRoot(sessionId);
       if (!waiting) await assignments.park(event, false);
-      const entry = pumps.get(sessionId) ?? { queue: [], running: false };
+      const entry = pumps.get(sessionId) ?? { queue: [], running: false, failed: null, config };
       pumps.set(sessionId, entry);
-      if (!entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId))
-        entry.queue.push(event);
+      entry.config = config;
+      const fresh = !entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId);
+      if (fresh) entry.queue.push(event);
+      // A host that failed to start is tried once more for each new message,
+      // since whatever stopped it may have been fixed since.
+      if (entry.failed !== null) {
+        if (!fresh) return true;
+        console.warn(
+          `Room ${event.roomId} addressed the agent again; starting session ${sessionId} again after it failed (${entry.failed}).`
+        );
+        entry.failed = null;
+      }
       if (!links.ready(sessionRoot)) await launch(config);
       pump(config);
       return true;

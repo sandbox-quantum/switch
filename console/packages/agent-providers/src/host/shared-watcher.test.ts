@@ -108,7 +108,7 @@ function sessionHosts() {
         const { id, request } = message as { id: number; request: SessionRequest };
         requests.push({ root, request });
         setImmediate(() => {
-          if (hosts.drop) child.emit('exit', 1, null);
+          if (hosts.drop) child.emit('exit', null, 'SIGKILL');
           else child.emit('message', { kind: 'reply', id, ok: true, value: null });
         });
         return true;

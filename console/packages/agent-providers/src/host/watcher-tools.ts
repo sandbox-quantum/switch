@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   type CallerContext,
+  callOperation,
   loadOperations,
   SESSION_SELECTOR_HEADERS,
   SwitchToolCatalog,
@@ -127,6 +128,76 @@ export function sessionToolAnswerer(deps: {
     if (ask.name === 'connect_to_room') return connect(caller, catalog, ask.arguments);
     return catalog.call(await context(caller), ask.name, ask.arguments);
   };
+}
+
+function resultText(result: ToolResult): string {
+  return result.content.map((part) => part.text).join('\n');
+}
+
+/**
+ * Tells a room that the session started to answer it could not start, and
+ * why: as the agent, in the thread the message came from, and addressed to
+ * the agent's owner, who is the one able to fix what stopped it (a provider
+ * CLI that is not signed in, say). Raises when the room could not be told.
+ *
+ * The call is made as the session, so Switch must already know the room is
+ * placed with it.
+ */
+export async function announceStartFailure(input: {
+  identity: SwitchIdentity;
+  connectionId: string;
+  session: { sessionId: string; hostId: string; epoch: string };
+  root: string;
+  cwd: string;
+  threadId: string | null;
+  failure: string;
+}): Promise<void> {
+  const ctx: CallerContext = {
+    identity: input.identity,
+    connectionId: input.connectionId,
+    selector: {
+      [SESSION_SELECTOR_HEADERS.sessionId]: input.session.sessionId,
+      [SESSION_SELECTOR_HEADERS.hostId]: input.session.hostId,
+      [SESSION_SELECTOR_HEADERS.epoch]: input.session.epoch,
+    },
+    room: null,
+    mediaDir: join(input.root, 'media'),
+    cwd: input.cwd,
+    deadConnection: (operation) =>
+      `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
+  };
+  const thread = input.threadId ? { thread_id: input.threadId } : {};
+  const detail = await callOperation(ctx, 'get_agent_detail', {
+    agent_id: input.identity.agentId,
+  });
+  const owner = detail.isError ? null : detail.structuredContent?.owner_name;
+  if (typeof owner === 'string' && owner) {
+    const targeted = await callOperation(ctx, 'send_targeted_message', {
+      body: `I couldn't start a session, and it needs you to fix it: ${input.failure} Then address me again.`,
+      target_names: [owner],
+      ...thread,
+    });
+    if (!targeted.isError) return;
+    console.warn(
+      `Could not address this agent's owner (${owner}) about session ${input.session.sessionId} failing to start: ${resultText(targeted)}. Telling the room without addressing them.`
+    );
+    const posted = await callOperation(ctx, 'post_message', {
+      body: `I couldn't start a session, and my owner (${owner}) needs to fix it: ${input.failure} Then address me again.`,
+      ...thread,
+    });
+    if (posted.isError) throw new Error(resultText(posted));
+    return;
+  }
+  console.warn(
+    `Could not find this agent's owner to tell about session ${input.session.sessionId} failing to start${
+      detail.isError ? ` (${resultText(detail)})` : ''
+    }. Telling the room without addressing them.`
+  );
+  const posted = await callOperation(ctx, 'post_message', {
+    body: `I couldn't start a session, and my owner needs to fix it: ${input.failure} Then address me again.`,
+    ...thread,
+  });
+  if (posted.isError) throw new Error(resultText(posted));
 }
 
 /** What moving a room to a session did. */

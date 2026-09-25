@@ -1,6 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SessionUnavailableError, sharedSessionRoot } from '@switch-console/agent-providers';
+import {
+  SessionHostFailedError,
+  SessionUnavailableError,
+  sharedSessionRoot,
+} from '@switch-console/agent-providers';
 import { snapshotSchema, type ServerEvent, type Snapshot } from '@switch-console/shared/session-v1';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -10,6 +14,7 @@ import {
   sessionTranscriptEventChannel,
   sessionTranscriptResetChannel,
 } from '@shared/core/sessions/sessionEvents';
+import { recordRemoteHostFailure } from './host-failures';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
 import { syncSdkSessionActivity } from './session-activity';
@@ -90,7 +95,8 @@ async function recordedSnapshot(agentId: string, sessionId: string, local: boole
   try {
     return await currentSnapshot(agentId, sessionId);
   } catch (error) {
-    if (!(error instanceof JournalUnavailableError)) throw error;
+    if (!(error instanceof JournalUnavailableError || error instanceof SessionHostFailedError))
+      throw error;
   }
   return local
     ? localJournalSnapshot(sharedSessionRoot(sessionId))
@@ -111,8 +117,10 @@ export async function openTranscript(agentId: string, sessionId: string): Promis
           forward(sessionId, event)
         )
       : await withSidecar(agentId, async (client) => {
-          const unsubscribe = await client.subscribe(sessionId, (event) =>
-            forward(sessionId, event)
+          const unsubscribe = await client.subscribe(
+            sessionId,
+            (event) => forward(sessionId, event),
+            (failure) => recordRemoteHostFailure(sessionId, failure)
           );
           // Events recorded while the connection is down never arrive, so the
           // windows showing the session reload it rather than carry on with a gap.

@@ -5,6 +5,7 @@ import {
 } from './session-commands';
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
+import { recordRemoteHostFailure } from './host-failures';
 import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
@@ -15,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  SessionHostFailedError,
   sharedConfigSchema,
   sharedSessionRoot,
   type SharedHostConfig,
@@ -135,6 +137,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     const previousEpoch = restart ? await journalEpoch(session.agentId, session.id) : null;
     let root: string;
     let readFailure: () => Promise<unknown>;
+    recordRemoteHostFailure(session.id, null);
     this.startupStage = restart
       ? 'Stopping the previous process and starting its replacement…'
       : 'Starting the session process…';
@@ -218,6 +221,8 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         )
           break;
       } catch (error) {
+        if (error instanceof SessionHostFailedError)
+          throw new Error(`Shared SDK host failed: ${error.failure}`);
         if (Date.now() + 500 >= deadline) throw error;
         // No journal yet is the host not having started, which is the wait itself.
         const notYet = error instanceof JournalUnavailableError;
@@ -480,10 +485,7 @@ export async function buildSharedHostConfig(
       // others take it as system context. Codex has no skill tool, so a skill
       // file would be read with a shell command that needs approval.
       skill: provider === 'opencode' ? SWITCH_SKILL_FILE : '',
-      context: [
-        provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
-        specialization.instructions,
-      ]
+      context: [provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT, specialization.instructions]
         .filter(Boolean)
         .join('\n\n'),
     },
