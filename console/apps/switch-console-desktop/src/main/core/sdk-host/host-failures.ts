@@ -1,4 +1,5 @@
 import { sharedSessionRoot } from '@switch-console/agent-providers';
+import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { localSessionLinks } from './local-host';
 
 /**
@@ -17,4 +18,20 @@ export function recordRemoteHostFailure(sessionId: string, failure: string | nul
 /** Why the session's host last stopped on a failure, or null if it has not since it last started. */
 export function hostFailure(sessionId: string): string | null {
   return localSessionLinks.failure(sharedSessionRoot(sessionId)) ?? remote.get(sessionId) ?? null;
+}
+
+/**
+ * Where the session's startup is, as the open session view shows it: Console's
+ * own start while it runs or once it failed, and otherwise a failure the
+ * session's host recorded — which is also how a session the room watcher
+ * started, and Console did not, shows that it could not start.
+ */
+export function sessionStartupStatus(
+  sessionId: string
+): { status: 'starting' | 'ready' | 'error'; message: string | null } | null {
+  const started = sessionRuntimeManager.getAgent(sessionId)?.startupStatus?.() ?? null;
+  if (started && started.status !== 'ready') return started;
+  const failure = hostFailure(sessionId);
+  if (failure !== null) return { status: 'error', message: `Shared SDK host failed: ${failure}` };
+  return started;
 }
