@@ -45,6 +45,16 @@ export const cloudOperationSchema = z.object({
 });
 export type CloudOperation = z.infer<typeof cloudOperationSchema>;
 
+/**
+ * Where a start or restart ended. `unknown` means the server may hold the
+ * operation: ask again with the same id, which the server dedupes, rather
+ * than a new one.
+ */
+export type CloudOperationOutcome =
+  | { state: 'applied' }
+  | { state: 'failed'; message: string }
+  | { state: 'unknown'; message: string };
+
 /** Why a cloud agent's sessions could not be read, with the relay's code. */
 export type CloudRelayProblem = {
   code: string;

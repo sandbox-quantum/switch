@@ -14,6 +14,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { parseCloudAgentKey } from '@shared/core/cloud-agents/cloud-agents';
 import { cloudAgentState } from './cloud-agent-state';
+import { cloudOperationAttempts, restartAttemptKey } from './cloud-operation-attempts';
 import { CloudProblem } from './cloud-problem';
 import { useCloudAgents } from './use-cloud-agents';
 
@@ -80,7 +81,18 @@ const CloudSessionPanel = observer(function CloudSessionPanel() {
         hostState={agent ? cloudAgentState(agent) : null}
         stopHost={() => rpc.sdkHost.stop(params.agentKey, params.sessionId)}
         restartHost={async () => {
-          await rpc.sdkHost.cloudSessionOperation(params.agentKey, params.sessionId, 'restart');
+          const result = await cloudOperationAttempts.run(
+            restartAttemptKey(params.agentKey, params.sessionId),
+            params.agentKey,
+            'restart',
+            params.sessionId
+          );
+          if (!result) throw new Error('This session is already restarting.');
+          if (result.outcome.state === 'unknown')
+            throw new Error(
+              `${result.outcome.message} Restart again to check: it asks for the same restart, not another.`
+            );
+          if (result.outcome.state === 'failed') throw new Error(result.outcome.message);
         }}
       />
     </div>
