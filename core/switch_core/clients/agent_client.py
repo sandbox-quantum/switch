@@ -345,7 +345,9 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
-        await self.send_message(room.room_id, greeting, format="markdown")
+        await self.send_message(
+            room.room_id, greeting, format="markdown", metered=False
+        )
 
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """Forget the room's events, everywhere this agent could still read them.
@@ -857,7 +859,11 @@ class AgentClient(ClientBase[ClientConfig]):
         """Post a command result as this agent (an agent-owned command like
         `!run-cmd` answers in the agent's own voice, not as a system message)."""
         await self.send_message(
-            room_id, body, format=format, thread_root_id=thread_root_id
+            room_id,
+            body,
+            format=format,
+            thread_root_id=thread_root_id,
+            metered=False,
         )
 
     async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
@@ -1126,7 +1132,9 @@ class AgentClient(ClientBase[ClientConfig]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        await self.send_message(room.room_id, "Working on it.", format="markdown")
+        await self.send_message(
+            room.room_id, "Working on it.", format="markdown", metered=False
+        )
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
@@ -1359,6 +1367,7 @@ class AgentClient(ClientBase[ClientConfig]):
             mentions=[event.sender],
             thread_root_id=thread_root_id,
             extra_content={AUTO_REPLY_FLAG: True},
+            metered=False,
         )
 
     def _args_tag_my_name(self, text: str) -> bool:

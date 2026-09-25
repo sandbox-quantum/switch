@@ -4,70 +4,75 @@ import { agentsStore } from './agents-store';
 
 vi.mock('@renderer/lib/ipc', () => ({ rpc: {} }));
 
-function agent(locationId: string, serverId: string | null, name: string): Agent {
-  return { locationId, serverId, name } as Agent;
+function agent(locationId: string, workspaceId: string | null, name: string): Agent {
+  return { locationId, workspaceId, name } as Agent;
 }
 
 /**
  * The premise these cover: a directory can hold agents registered against
- * several Switch servers at once, so "which server does this directory belong
+ * several workspaces at once, so "which workspace does this directory belong
  * to" has no single answer and must not be asked (CHOO-2044).
  */
-describe('AgentsStore server scoping', () => {
+describe('AgentsStore workspace scoping', () => {
   afterEach(() => {
     agentsStore.byLocation.clear();
-    agentsStore.optimisticServerByLocation.clear();
+    agentsStore.optimisticWorkspaceByLocation.clear();
   });
 
-  it('returns only the agents belonging to the given server', () => {
+  it('returns only the agents belonging to the given workspace', () => {
     agentsStore.byLocation.set('shared', [
-      agent('shared', 'server-1', 'a'),
-      agent('shared', 'server-2', 'b'),
+      agent('shared', 'ws-1', 'a'),
+      agent('shared', 'ws-2', 'b'),
       agent('shared', null, 'unlinked'),
     ]);
 
-    expect(agentsStore.agentsOnServerAtLocation('shared', 'server-1').map((a) => a.name)).toEqual([
+    expect(agentsStore.agentsInWorkspaceAtLocation('shared', 'ws-1').map((a) => a.name)).toEqual([
       'a',
     ]);
-    expect(agentsStore.agentsOnServerAtLocation('shared', 'server-2').map((a) => a.name)).toEqual([
+    expect(agentsStore.agentsInWorkspaceAtLocation('shared', 'ws-2').map((a) => a.name)).toEqual([
       'b',
     ]);
-    expect(agentsStore.agentsOnServerAtLocation('shared', 'server-3')).toEqual([]);
+    expect(agentsStore.agentsInWorkspaceAtLocation('shared', 'ws-3')).toEqual([]);
   });
 
-  it('reports a shared directory as present on every server it has agents on', () => {
+  /**
+   * Two workspaces on the same server are still two scopes: the sidebar shows
+   * one of them at a time, so a directory present in both must answer for each
+   * separately rather than for the server they share.
+   */
+  it('separates two workspaces that live on the same server', () => {
     agentsStore.byLocation.set('shared', [
-      agent('shared', 'server-1', 'a'),
-      agent('shared', 'server-2', 'b'),
+      agent('shared', 'ws-1', 'a'),
+      agent('shared', 'ws-2', 'b'),
     ]);
 
-    expect(agentsStore.locationHasAgentsOnServer('shared', 'server-1')).toBe(true);
-    expect(agentsStore.locationHasAgentsOnServer('shared', 'server-2')).toBe(true);
-    expect(agentsStore.locationHasAgentsOnServer('shared', 'server-3')).toBe(false);
-    expect(agentsStore.serverIdsForLocation('shared').sort()).toEqual(['server-1', 'server-2']);
+    expect(agentsStore.locationHasAgentsInWorkspace('shared', 'ws-1')).toBe(true);
+    expect(agentsStore.locationHasAgentsInWorkspace('shared', 'ws-2')).toBe(true);
+    expect(agentsStore.locationHasAgentsInWorkspace('shared', 'ws-3')).toBe(false);
+    expect(agentsStore.workspaceIdsForLocation('shared').sort()).toEqual(['ws-1', 'ws-2']);
   });
 
   it('keeps a just-created location in scope before its agent row lands', () => {
-    agentsStore.noteLocationServer('fresh', 'server-1');
+    agentsStore.noteLocationWorkspace('fresh', 'ws-1');
 
-    expect(agentsStore.locationHasAgentsOnServer('fresh', 'server-1')).toBe(true);
-    expect(agentsStore.locationHasAgentsOnServer('fresh', 'server-2')).toBe(false);
-    expect(agentsStore.serverIdsForLocation('fresh')).toEqual(['server-1']);
+    expect(agentsStore.locationHasAgentsInWorkspace('fresh', 'ws-1')).toBe(true);
+    expect(agentsStore.locationHasAgentsInWorkspace('fresh', 'ws-2')).toBe(false);
+    expect(agentsStore.workspaceIdsForLocation('fresh')).toEqual(['ws-1']);
   });
 
   it('ignores the optimistic note once real agents exist', () => {
-    agentsStore.noteLocationServer('shared', 'server-9');
-    agentsStore.byLocation.set('shared', [agent('shared', 'server-1', 'a')]);
+    agentsStore.noteLocationWorkspace('shared', 'ws-9');
+    agentsStore.byLocation.set('shared', [agent('shared', 'ws-1', 'a')]);
 
-    expect(agentsStore.serverIdsForLocation('shared')).toEqual(['server-1']);
-    expect(agentsStore.locationHasAgentsOnServer('shared', 'server-9')).toBe(false);
+    expect(agentsStore.workspaceIdsForLocation('shared')).toEqual(['ws-1']);
+    expect(agentsStore.locationHasAgentsInWorkspace('shared', 'ws-9')).toBe(false);
   });
 
-  it('treats a location with only unlinked agents as on no server', () => {
+  it('treats a location with only unlinked agents as in no workspace', () => {
     agentsStore.byLocation.set('orphan', [agent('orphan', null, 'a')]);
 
-    expect(agentsStore.serverIdsForLocation('orphan')).toEqual([]);
-    expect(agentsStore.locationHasAgentsOnServer('orphan', 'server-1')).toBe(false);
+    expect(agentsStore.workspaceIdsForLocation('orphan')).toEqual([]);
+    expect(agentsStore.locationHasAgentsInWorkspace('orphan', 'ws-1')).toBe(false);
   });
 });
 
@@ -82,13 +87,13 @@ describe('AgentsStore server scoping', () => {
 describe('resolving the agent a location route is about', () => {
   afterEach(() => {
     agentsStore.byLocation.clear();
-    agentsStore.optimisticServerByLocation.clear();
+    agentsStore.optimisticWorkspaceByLocation.clear();
   });
 
   it('picks the named agent out of a shared directory', () => {
     agentsStore.byLocation.set('dir', [
-      agent('dir', 'server-1', 'charlie'),
-      agent('dir', 'server-1', 'delta'),
+      agent('dir', 'ws-1', 'charlie'),
+      agent('dir', 'ws-1', 'delta'),
     ]);
 
     expect(agentsStore.agentAtLocation('dir', 'charlie')?.name).toBe('charlie');
@@ -97,22 +102,22 @@ describe('resolving the agent a location route is about', () => {
 
   it('resolves an unnamed route when the directory holds exactly one agent', () => {
     // Nothing to choose between, so there is nothing to get wrong.
-    agentsStore.byLocation.set('dir', [agent('dir', 'server-1', 'charlie')]);
+    agentsStore.byLocation.set('dir', [agent('dir', 'ws-1', 'charlie')]);
 
     expect(agentsStore.agentAtLocation('dir', undefined)?.name).toBe('charlie');
   });
 
   it('refuses to guess between several agents', () => {
     agentsStore.byLocation.set('dir', [
-      agent('dir', 'server-1', 'charlie'),
-      agent('dir', 'server-1', 'delta'),
+      agent('dir', 'ws-1', 'charlie'),
+      agent('dir', 'ws-1', 'delta'),
     ]);
 
     expect(agentsStore.agentAtLocation('dir', undefined)).toBeNull();
   });
 
   it('is null for a name that is not there, rather than the first agent', () => {
-    agentsStore.byLocation.set('dir', [agent('dir', 'server-1', 'charlie')]);
+    agentsStore.byLocation.set('dir', [agent('dir', 'ws-1', 'charlie')]);
 
     expect(agentsStore.agentAtLocation('dir', 'nobody')).toBeNull();
   });

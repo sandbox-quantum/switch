@@ -18,16 +18,20 @@ from switch_core.bridges.agent.dependencies import get_session_factory
 from switch_core.db.models import Agent, ApprovalRequest
 from switch_core.session_activity.service import (
     MAX_DETAIL_CHARS,
+    MAX_MODEL_CHARS,
+    MAX_MODELS_PER_TURN,
     MAX_OPTIONS,
     MAX_QUESTION_OPTIONS,
     MAX_QUESTIONS,
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
+    MAX_TOKENS,
     ApprovalOption,
     Decision,
     Question,
     QuestionOption,
     SessionActivityService,
+    TokenSpend,
 )
 
 router = APIRouter(prefix="/agent-sessions")
@@ -35,6 +39,15 @@ Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factor
 AuthenticatedAgent = Annotated[Agent, Depends(get_agent_from_scope)]
 
 _Id = Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class TokenUsageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(max_length=MAX_MODEL_CHARS)
+    input_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    output_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    cache_read_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    cache_write_tokens: int = Field(ge=0, le=MAX_TOKENS)
 
 
 class ActivityReport(BaseModel):
@@ -53,6 +66,10 @@ class ActivityReport(BaseModel):
     thread_id: _Id | None
     message_id: _Id | None
     occurred_at: datetime
+    # Hosts that predate usage reporting do not send it.
+    usage: list[TokenUsageIn] = Field(
+        default_factory=list, max_length=MAX_MODELS_PER_TURN
+    )
 
 
 class OptionIn(BaseModel):
@@ -152,6 +169,16 @@ async def report_activity(
         thread_id=body.thread_id,
         message_id=body.message_id,
         occurred_at=body.occurred_at,
+        usage=[
+            TokenSpend(
+                model=u.model,
+                input_tokens=u.input_tokens,
+                output_tokens=u.output_tokens,
+                cache_read_tokens=u.cache_read_tokens,
+                cache_write_tokens=u.cache_write_tokens,
+            )
+            for u in body.usage
+        ],
     )
     return ActivityReceipt(recorded=recorded)
 

@@ -6,7 +6,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -22,6 +22,7 @@ from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
 )
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
@@ -47,6 +48,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
     get_system_session,
+    get_usage_store,
     get_user_store,
 )
 from switch_core.gateway.schemas import (
@@ -59,6 +61,7 @@ from switch_core.gateway.schemas import (
     SessionUserResponse,
     TenantCreateRequest,
     TenantMembershipResponse,
+    UsageTotalResponse,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -427,6 +430,44 @@ async def create_invitation(
     await session.commit()
     emit_safely(current_telemetry(), "invitation_sent", {})
     return InvitationCreateResponse(token=token, **_invitation_fields(invitation))
+
+
+@router.get("/tenants/{tenant_id}/usage")
+async def get_usage(
+    tenant_id: str,
+    since: Annotated[datetime, Query()],
+    until: Annotated[datetime, Query()],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    usage_store: Annotated[UsageStore, Depends(get_usage_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> list[UsageTotalResponse]:
+    """The bound tenant's usage per metric, consumer and model over `[since, until)`.
+
+    `owner`/`admin` only. Usage is counted in whole UTC hours, so `since` is
+    widened to the start of its hour. Both bounds must carry a timezone: a
+    naive time would be read in the server's zone and quietly shift the window.
+    """
+    _require_bound_tenant(tenant_id)
+    if since.tzinfo is None or until.tzinfo is None:
+        raise HTTPException(
+            status_code=400, detail="since and until must include a timezone offset"
+        )
+    if since >= until:
+        raise HTTPException(status_code=400, detail="since must be before until")
+    totals = await usage_store.totals(
+        session, tenant_id=tenant_id, since=since, until=until
+    )
+    return [
+        UsageTotalResponse(
+            metric=t.metric,
+            client_id=t.client_id,
+            client_name=t.client_name,
+            client_type=t.client_type,
+            model=t.model,
+            amount=t.amount,
+        )
+        for t in totals
+    ]
 
 
 @router.get("/tenants/{tenant_id}/invitations")

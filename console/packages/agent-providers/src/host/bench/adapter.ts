@@ -292,6 +292,7 @@ export function createBenchAdapter(): ProviderAdapter {
           type: 'turn.completed',
           turnId: input.turnId,
           outcome,
+          usage: [],
           ...(message ? { message } : {}),
         });
       })();

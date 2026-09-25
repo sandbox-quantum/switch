@@ -26,6 +26,7 @@ export type {
   ProviderRuntimeEventType,
   RequestType,
   SessionStatus,
+  TokenUsage,
   TurnOutcome,
   UserInputAnswers,
   UserInputQuestion,

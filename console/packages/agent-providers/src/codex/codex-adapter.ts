@@ -19,6 +19,7 @@ import type {
   ProviderRuntimeEvent,
   RequestType,
   SessionStatus,
+  TokenUsage,
   TurnOutcome,
   UserInputAnswers,
   UserInputQuestion,
@@ -29,6 +30,7 @@ import {
   noopLogger,
   type ProviderLogger,
 } from '../transport/stdio-json-rpc';
+import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
 import { featureArgs, mcpServerConfigArgs } from './config-args';
 import { mapCodexItem } from './item-mapping';
 import {
@@ -37,6 +39,8 @@ import {
   CODEX_SERVER_NOTIFICATIONS,
   CODEX_SERVER_REQUESTS,
   type CodexAskForApproval,
+  type CodexThreadTokenUsageUpdatedNotification,
+  type CodexTokenUsageBreakdown,
   type CodexCommandExecutionApprovalParams,
   type CodexDeltaNotification,
   type CodexErrorNotification,
@@ -104,6 +108,15 @@ interface CodexSessionState {
   deltaBuffers: Map<string, string>;
   stopping: boolean;
   exited: boolean;
+  /**
+   * Codex reports one running total for the thread and never names the
+   * model, so a turn's spend is the difference from the last report,
+   * attributed to the model selected at the time (empty for the default).
+   * A resumed thread's total includes everything spent before this process
+   * opened it, so counting starts from the first report less its last call.
+   */
+  usage: CumulativeUsage;
+  unreportedUsage: TokenUsage[];
 }
 
 interface ThreadModeConfig {
@@ -260,6 +273,8 @@ export class CodexAdapter implements ProviderAdapter {
       deltaBuffers: new Map(),
       stopping: false,
       exited: false,
+      usage: new CumulativeUsage(),
+      unreportedUsage: [],
     };
     this.sessions.set(input.sessionId, state);
     this.registerHandlers(state);
@@ -559,6 +574,23 @@ export class CodexAdapter implements ProviderAdapter {
       });
     });
 
+    client.onNotification(CODEX_SERVER_NOTIFICATIONS.threadTokenUsageUpdated, (params) => {
+      const payload = params as CodexThreadTokenUsageUpdatedNotification;
+      if (!this.isOwnThread(state, payload.threadId)) return;
+      const { total, last } = payload.tokenUsage;
+      if (!state.usage.started) {
+        state.usage.startFrom(
+          new Map([['', subtractCodexUsage(codexCounts(total), codexCounts(last))]])
+        );
+      }
+      const spent = state.usage.advance(new Map([['', codexCounts(total)]]));
+      const model = state.model ?? '';
+      state.unreportedUsage = mergeUsage(
+        state.unreportedUsage,
+        spent.map((entry) => ({ ...entry, model }))
+      );
+    });
+
     client.onNotification(CODEX_SERVER_NOTIFICATIONS.turnStarted, (params) => {
       const payload = params as CodexTurnNotification;
       if (!this.isOwnThread(state, payload.threadId)) return;
@@ -614,6 +646,7 @@ export class CodexAdapter implements ProviderAdapter {
         turnId,
         outcome,
         ...(message ? { message } : {}),
+        usage: this.takeUsage(state),
         raw: { source: CODEX_SERVER_NOTIFICATIONS.turnCompleted, payload },
       });
     });
@@ -866,6 +899,12 @@ export class CodexAdapter implements ProviderAdapter {
     this.finishSession(state, reason);
   }
 
+  private takeUsage(state: CodexSessionState): TokenUsage[] {
+    const usage = state.unreportedUsage;
+    state.unreportedUsage = [];
+    return usage;
+  }
+
   private finishSession(state: CodexSessionState, reason: string): void {
     state.compaction?.reject(new Error(reason));
     if (state.exited) return;
@@ -878,6 +917,7 @@ export class CodexAdapter implements ProviderAdapter {
         turnId,
         outcome: state.stopping ? 'interrupted' : 'error',
         message: reason,
+        usage: this.takeUsage(state),
       });
     }
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
@@ -913,4 +953,22 @@ export class CodexAdapter implements ProviderAdapter {
 
 export function createCodexAdapter(options: CodexAdapterOptions = {}): CodexAdapter {
   return new CodexAdapter(options);
+}
+
+function codexCounts(breakdown: CodexTokenUsageBreakdown): UsageCounts {
+  return {
+    inputTokens: breakdown.inputTokens - breakdown.cachedInputTokens,
+    outputTokens: breakdown.outputTokens,
+    cacheReadTokens: breakdown.cachedInputTokens,
+    cacheWriteTokens: breakdown.cacheWriteInputTokens ?? 0,
+  };
+}
+
+function subtractCodexUsage(total: UsageCounts, last: UsageCounts): UsageCounts {
+  return {
+    inputTokens: Math.max(0, total.inputTokens - last.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - last.outputTokens),
+    cacheReadTokens: Math.max(0, total.cacheReadTokens - last.cacheReadTokens),
+    cacheWriteTokens: Math.max(0, total.cacheWriteTokens - last.cacheWriteTokens),
+  };
 }

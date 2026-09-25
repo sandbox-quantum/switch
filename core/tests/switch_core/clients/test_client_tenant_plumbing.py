@@ -47,6 +47,7 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -59,6 +60,7 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
         config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
         room_store=RoomStore(),
         message_store=MessageStore(),
+        usage_store=UsageStore(),
         media_store=MediaStore(),
         listener=MagicMock(),
         invites=InviteBus(),

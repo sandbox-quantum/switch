@@ -37,10 +37,12 @@ import type {
   ItemStatus,
   ProviderItem,
   ProviderRuntimeEvent,
+  TokenUsage,
   TurnOutcome,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { CumulativeUsage, mergeUsage } from '../usage';
 import {
   approvalContent,
   isRecord,
@@ -209,6 +211,13 @@ interface SessionState {
   streamMessageId: string | null;
   stopping: boolean;
   exited: boolean;
+  /**
+   * The SDK's per-model totals run for the whole query, so a turn's spend is
+   * the difference from the last result. Anything spent between turns
+   * (compaction) lands on the next turn to end rather than being dropped.
+   */
+  usage: CumulativeUsage;
+  unreportedUsage: TokenUsage[];
 }
 
 /** An async iterable the adapter pushes into for the life of the session. */
@@ -424,6 +433,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       streamMessageId: null,
       stopping: false,
       exited: false,
+      usage: new CumulativeUsage(),
+      unreportedUsage: [],
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -669,6 +680,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleMessage(session: SessionState, message: SDKMessage): void {
+    if (message.type === 'result') this.recordUsage(session, message);
     if (session.compaction) {
       if (message.type === 'system' && message.subtype === 'compact_boundary')
         session.compaction.boundary = true;
@@ -869,6 +881,27 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
+  private recordUsage(session: SessionState, result: SDKResultMessage): void {
+    const totals = new Map(
+      Object.entries(result.modelUsage ?? {}).map(([model, counts]) => [
+        model,
+        {
+          inputTokens: counts.inputTokens,
+          outputTokens: counts.outputTokens,
+          cacheReadTokens: counts.cacheReadInputTokens,
+          cacheWriteTokens: counts.cacheCreationInputTokens,
+        },
+      ])
+    );
+    session.unreportedUsage = mergeUsage(session.unreportedUsage, session.usage.advance(totals));
+  }
+
+  private takeUsage(session: SessionState): TokenUsage[] {
+    const usage = session.unreportedUsage;
+    session.unreportedUsage = [];
+    return usage;
+  }
+
   private handleResult(session: SessionState, result: SDKResultMessage): void {
     const turn = session.turn;
     if (!turn) return;
@@ -902,6 +935,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId: turn.turnId,
       outcome,
       ...(message ? { message } : {}),
+      usage: this.takeUsage(session),
       raw: { source: 'claude', payload: result },
     });
     this.emit(session, { type: 'session.state.changed', status: 'ready' });
@@ -1061,6 +1095,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         turnId: turn.turnId,
         outcome: 'interrupted',
         message: reason,
+        usage: this.takeUsage(session),
       });
     }
 

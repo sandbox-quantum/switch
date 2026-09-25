@@ -668,6 +668,58 @@ it('keeps running room messages while Switch cannot take its reports', async () 
   }
 });
 
+it('reports what an ended turn spent on its row, and the row alone to a server that predates it', async () => {
+  const host = await start({ rooms: true });
+  const spent = [
+    { model: 'big', inputTokens: 10, outputTokens: 2, cacheReadTokens: 300, cacheWriteTokens: 0 },
+  ];
+  const ended = () =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { kind: string; status: string }).kind === 'turn' &&
+        (c.body as { status: string }).status === 'completed'
+    );
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'First') });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: spent,
+    });
+    await vi.waitFor(() => expect(ended()).toHaveLength(1), { timeout: 5000 });
+    expect(ended()[0]!.body).toMatchObject({
+      usage: [
+        {
+          model: 'big',
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_read_tokens: 300,
+          cache_write_tokens: 0,
+        },
+      ],
+    });
+
+    host.switchCore.state.refusesUsage = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'Second') });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(2), { timeout: 5000 });
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[1]!.turnId,
+      outcome: 'completed',
+      usage: spent,
+    });
+    await vi.waitFor(() => expect(ended()).toHaveLength(3), { timeout: 5000 });
+    expect(ended()[1]!.body).toHaveProperty('usage');
+    expect(ended()[2]!.body).not.toHaveProperty('usage');
+    expect(ended()[2]!.body).toMatchObject({ turn_id: host.turns[1]!.turnId });
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {

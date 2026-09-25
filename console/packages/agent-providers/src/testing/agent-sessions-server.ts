@@ -11,11 +11,12 @@ export type AgentSessionsCall = { method: string; path: string; body: unknown };
  * test) is what `GET /agent-sessions/approvals/outcomes` returns. `server`
  * never sees those calls, so a test counting its own requests is unaffected.
  * Setting `state.unavailable` answers every such call with 503, as an
- * unreachable Switch would.
+ * unreachable Switch would, and `state.refusesUsage` refuses an activity row
+ * carrying usage with 422, as a server that predates it does.
  */
 export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
   const calls: AgentSessionsCall[] = [];
-  const state = { outcomes, unavailable: false };
+  const state = { outcomes, unavailable: false, refusesUsage: false };
   vi.stubGlobal('fetch', async (url: string, options: RequestInit = {}) => {
     const path = new URL(url).pathname;
     if (!path.includes('/agent-sessions/')) return server(url, options);
@@ -30,7 +31,12 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
       const listed = state.outcomes;
       return Response.json(listed);
     }
-    if (path.endsWith('/activity')) return Response.json({ recorded: true });
+    if (path.endsWith('/activity')) {
+      const body = calls.at(-1)!.body as Record<string, unknown>;
+      if (state.refusesUsage && 'usage' in body)
+        return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
+      return Response.json({ recorded: true });
+    }
     return Response.json({});
   });
   return { calls, state };

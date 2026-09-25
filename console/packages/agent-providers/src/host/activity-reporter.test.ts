@@ -24,6 +24,7 @@ const origin: Origin = {
   messageId: 'sw_asked',
 };
 const originOf = (turnId: string) => (turnId === 'turn' ? origin : null);
+const noUsage = () => [];
 const OCCURRED = '2026-09-24T12:00:00.000Z';
 
 function event(sequence: number, body: ServerEvent['body']): ServerEvent {
@@ -80,7 +81,7 @@ const placed = { room_id: 'room-1', thread_id: 'sw_asked', message_id: 'sw_asked
 
 it('reports the turn itself as a row revised by event sequence, placed where it was asked', async () => {
   const lines = await reporter();
-  expect(rows(lines.reports(event(4, turn('running')), originOf))).toEqual([
+  expect(rows(lines.reports(event(4, turn('running')), originOf, noUsage))).toEqual([
     {
       turn_id: 'turn',
       item_id: 'turn',
@@ -96,10 +97,33 @@ it('reports the turn itself as a row revised by event sequence, placed where it 
   ]);
 });
 
+it("carries an ended turn's usage on its row, and nothing on a turn still running", async () => {
+  const lines = await reporter();
+  const spent = [
+    { model: 'big', inputTokens: 10, outputTokens: 2, cacheReadTokens: 300, cacheWriteTokens: 0 },
+  ];
+  const usageOf = (turnId: string) => (turnId === 'turn' ? spent : []);
+  expect(rows(lines.reports(event(1, turn('running')), originOf, usageOf))[0]).not.toHaveProperty(
+    'usage'
+  );
+  expect(rows(lines.reports(event(2, turn('completed')), originOf, usageOf))[0]?.usage).toEqual([
+    {
+      model: 'big',
+      input_tokens: 10,
+      output_tokens: 2,
+      cache_read_tokens: 300,
+      cache_write_tokens: 0,
+    },
+  ]);
+  expect(rows(lines.reports(event(3, turn('error')), originOf, noUsage))[0]).not.toHaveProperty(
+    'usage'
+  );
+});
+
 it('places a turn in its origin thread when it has one', async () => {
   const lines = await reporter();
   const [row] = rows(
-    lines.reports(event(1, turn('queued')), () => ({ ...origin, threadId: 'sw_thread' }))
+    lines.reports(event(1, turn('queued')), () => ({ ...origin, threadId: 'sw_thread' }), noUsage)
   );
   expect(row).toMatchObject({ room_id: 'room-1', thread_id: 'sw_thread', message_id: 'sw_asked' });
 });
@@ -134,7 +158,7 @@ it('reports every message and tool item, streamed parts included, as its own row
           text: 'more',
         })
       ),
-    ].flatMap((e) => lines.reports(e, originOf))
+    ].flatMap((e) => lines.reports(e, originOf, noUsage))
   );
   expect(
     reported.map((row) => [row.item_id, row.kind, row.revision, row.status, row.title, row.text])
@@ -151,7 +175,11 @@ it('reports every message and tool item, streamed parts included, as its own row
 it('truncates long titles and texts', async () => {
   const lines = await reporter();
   const [row] = rows(
-    lines.reports(event(1, item({ title: 't'.repeat(600), text: 'x'.repeat(9000) })), originOf)
+    lines.reports(
+      event(1, item({ title: 't'.repeat(600), text: 'x'.repeat(9000) })),
+      originOf,
+      noUsage
+    )
   );
   expect(Array.from(row!.title)).toHaveLength(500);
   expect(row!.title.endsWith('…')).toBe(true);
@@ -168,7 +196,7 @@ it('reports a notice in the running turn, and in a turn that just ended', async 
     event(4, turn('error')),
     event(5, notice('The turn failed')),
     event(6, notice('Model changed')),
-  ].flatMap((e) => lines.reports(e, originOf));
+  ].flatMap((e) => lines.reports(e, originOf, noUsage));
   const notices = rows(reported).filter((row) => row.kind === 'notice');
   expect(notices).toEqual([
     {
@@ -190,7 +218,7 @@ it('reports a notice in the running turn, and in a turn that just ended', async 
 it('knows the running turn after a restart from the events it already reported', async () => {
   const lines = await reporter();
   lines.catchUp([event(1, turn('running'))]);
-  expect(rows(lines.reports(event(2, notice('Still going')), originOf))).toMatchObject([
+  expect(rows(lines.reports(event(2, notice('Still going')), originOf, noUsage))).toMatchObject([
     { turn_id: 'turn', item_id: 'notice:2' },
   ]);
 });
@@ -214,7 +242,8 @@ it('opens an approval with its options and closes it when it settles', async () 
         },
       },
     }),
-    originOf
+    originOf,
+    noUsage
   );
   expect(opened).toEqual([
     {
@@ -243,7 +272,8 @@ it('opens an approval with its options and closes it when it settles', async () 
         commandId: null,
         result: null,
       }),
-      originOf
+      originOf,
+      noUsage
     )
   ).toEqual([{ kind: 'approval.close', requestId: 'permission' }]);
 });
@@ -278,7 +308,8 @@ it('opens questions with every question and its options', async () => {
         },
       },
     }),
-    originOf
+    originOf,
+    noUsage
   );
   expect(opened).toEqual([
     {

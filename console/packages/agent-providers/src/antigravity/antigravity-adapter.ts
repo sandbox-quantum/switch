@@ -582,7 +582,13 @@ export class AntigravityAdapter implements ProviderAdapter {
       }
     this.cancelApprovals(state);
     state.turn = null;
-    this.emit(state, { type: 'turn.completed', turnId, outcome, ...(message ? { message } : {}) });
+    this.emit(state, {
+      type: 'turn.completed',
+      turnId,
+      outcome,
+      ...(message ? { message } : {}),
+      usage: [],
+    });
     if (!state.turn)
       this.emit(state, {
         type: 'session.state.changed',
@@ -627,6 +633,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         turnId: input.turnId,
         outcome: 'error',
         message: reason,
+        usage: [],
       });
     this.sessions.delete(id);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });

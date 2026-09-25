@@ -20,15 +20,18 @@ import type {
   ProviderRuntimeEvent,
   RequestType,
   SessionStatus,
+  TokenUsage,
   TurnOutcome,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { CumulativeUsage } from '../usage';
 import { buildConfigFile, parseModelId, permissionRulesFor } from './config';
 import type { OpencodeSkill } from './server';
 import {
   createHttpTransport,
   type OpencodeEvent,
+  type OpencodeMessage,
   type OpencodePermissionReply,
   type OpencodeSessionTransport,
   type OpencodeTransport,
@@ -91,6 +94,18 @@ interface SessionRecord {
   suppressAbortError: boolean;
   interrupting: boolean;
   messageRoles: Map<string, string>;
+  /**
+   * The latest token count of every assistant message, keyed by message id.
+   * OpenCode updates a message's count as it streams, so the per-model sums
+   * only grow and a turn's spend is their growth since the last turn ended.
+   */
+  messageUsage: Map<string, TokenUsage>;
+  /**
+   * Sessions OpenCode spawned under this one for subagents. Their events are
+   * otherwise ignored, but what they spend is this session's spend.
+   */
+  childSessions: Set<string>;
+  usage: CumulativeUsage;
   partTypes: Map<string, string>;
   emittedText: Map<string, string>;
   items: Map<string, ProviderItem>;
@@ -173,6 +188,9 @@ export class OpencodeAdapter implements ProviderAdapter {
       transport,
       stopping: false,
       exited: false,
+      messageUsage: new Map(),
+      childSessions: new Set(),
+      usage: new CumulativeUsage(),
       awaitingBusy: false,
       suppressAbortError: false,
       interrupting: false,
@@ -443,7 +461,18 @@ export class OpencodeAdapter implements ProviderAdapter {
   private async handleEvent(record: SessionRecord, event: OpencodeEvent): Promise<void> {
     const properties = (event as { properties?: Record<string, unknown> }).properties ?? {};
     const sessionId = properties['sessionID'];
-    if (typeof sessionId === 'string' && sessionId !== record.nativeSessionId) return;
+    if (event.type === 'session.created' || event.type === 'session.updated') {
+      const parentId = event.properties.info.parentID;
+      if (parentId === record.nativeSessionId || (parentId && record.childSessions.has(parentId))) {
+        record.childSessions.add(event.properties.info.id);
+      }
+    }
+    if (typeof sessionId === 'string' && sessionId !== record.nativeSessionId) {
+      if (record.childSessions.has(sessionId) && event.type === 'message.updated') {
+        this.recordMessageUsage(record, event.properties.info);
+      }
+      return;
+    }
 
     switch (event.type) {
       case 'session.status':
@@ -452,9 +481,12 @@ export class OpencodeAdapter implements ProviderAdapter {
       case 'session.idle':
         this.handleStatus(record, 'idle', event);
         return;
-      case 'message.updated':
-        record.messageRoles.set(event.properties.info.id, event.properties.info.role);
+      case 'message.updated': {
+        const info = event.properties.info;
+        record.messageRoles.set(info.id, info.role);
+        this.recordMessageUsage(record, info);
         return;
+      }
       case 'message.part.updated':
         this.handlePart(record, event.properties.part, event);
         return;
@@ -740,6 +772,35 @@ export class OpencodeAdapter implements ProviderAdapter {
     record.awaitingBusy = false;
   }
 
+  private recordMessageUsage(record: SessionRecord, info: OpencodeMessage): void {
+    if (info.role !== 'assistant') return;
+    record.messageUsage.set(info.id, {
+      model: `${info.providerID}/${info.modelID}`,
+      inputTokens: info.tokens.input,
+      outputTokens: info.tokens.output + info.tokens.reasoning,
+      cacheReadTokens: info.tokens.cache.read,
+      cacheWriteTokens: info.tokens.cache.write,
+    });
+  }
+
+  private takeUsage(record: SessionRecord): TokenUsage[] {
+    const totals = new Map<string, Omit<TokenUsage, 'model'>>();
+    for (const { model, ...counts } of record.messageUsage.values()) {
+      const sum = totals.get(model) ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      sum.inputTokens += counts.inputTokens;
+      sum.outputTokens += counts.outputTokens;
+      sum.cacheReadTokens += counts.cacheReadTokens;
+      sum.cacheWriteTokens += counts.cacheWriteTokens;
+      totals.set(model, sum);
+    }
+    return record.usage.advance(totals);
+  }
+
   private completeTurn(
     record: SessionRecord,
     turnId: string,
@@ -767,6 +828,7 @@ export class OpencodeAdapter implements ProviderAdapter {
         type: 'turn.completed',
         outcome,
         ...(message !== undefined ? { message } : {}),
+        usage: this.takeUsage(record),
       },
       turnId,
       raw

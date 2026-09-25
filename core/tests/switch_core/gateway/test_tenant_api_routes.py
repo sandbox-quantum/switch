@@ -33,12 +33,14 @@ from switch_core.db.models import (
     Invitation,
     Tenant,
     TenantMember,
+    UsageMetric,
     User,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
@@ -89,6 +91,7 @@ def _app(
     app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()
+    app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         client_lifecycle or _FakeClientLifecycle(session_factory)
@@ -1120,3 +1123,122 @@ class TestMemberRoutes:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")
 
         assert response.status_code == 403
+
+
+def _window() -> dict[str, str]:
+    now = datetime.now(UTC)
+    return {
+        "since": (now - timedelta(hours=1)).isoformat(),
+        "until": (now + timedelta(hours=1)).isoformat(),
+    }
+
+
+class TestUsageRoute:
+    async def _spend(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tenant_id: str,
+        amount: int,
+    ) -> None:
+        async with tenant_session(session_factory, tenant_id) as session:
+            await UsageStore().record(
+                session,
+                tenant_id=tenant_id,
+                metric=UsageMetric.MESSAGES,
+                client_id=f"client-of-{tenant_id}",
+                model="",
+                amount=amount,
+            )
+            await session.commit()
+
+    async def test_an_admin_sees_their_workspaces_usage_only(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        await self._spend(session_factory, TENANT_A, 3)
+        await self._spend(session_factory, TENANT_B, 40)
+        user_id = await _make_member(
+            session_factory, name="usage-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(user_id, "usage-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/usage", params=_window())
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {
+                "metric": "messages",
+                "client_id": f"client-of-{TENANT_A}",
+                "client_name": None,
+                "client_type": None,
+                "model": "",
+                "amount": 3,
+            }
+        ]
+
+    async def test_a_plain_member_cannot_read_usage(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="usage-member", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "usage-member@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/usage", params=_window())
+
+        assert response.status_code == 403
+
+    async def test_an_admin_of_a_cannot_read_bs_usage(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        user_id = await _make_member(
+            session_factory, name="usage-snoop", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(user_id, "usage-snoop@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_B}/usage", params=_window())
+
+        assert response.status_code == 403
+
+    async def test_a_window_without_a_timezone_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="usage-naive", tenant_id=TENANT_A, role="owner"
+        )
+        token = _token(user_id, "usage-naive@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(
+                f"/tenants/{TENANT_A}/usage",
+                params={"since": "2026-01-01T00:00:00", "until": "2026-01-02T00:00:00"},
+            )
+
+        assert response.status_code == 400
+        assert "timezone" in response.json()["detail"]
+
+    async def test_an_empty_window_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="usage-empty", tenant_id=TENANT_A, role="owner"
+        )
+        token = _token(user_id, "usage-empty@example.invalid", TENANT_A)
+        window = _window()
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(
+                f"/tenants/{TENANT_A}/usage",
+                params={"since": window["until"], "until": window["since"]},
+            )
+
+        assert response.status_code == 400

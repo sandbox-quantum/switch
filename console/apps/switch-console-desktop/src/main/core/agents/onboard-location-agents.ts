@@ -8,7 +8,8 @@ import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { findServerByEndpoint, getServer } from '@main/core/switch-servers/servers-store';
-import { requireSoleWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { Agent } from '@shared/core/agents/agents';
@@ -85,6 +86,8 @@ async function resolveIdentity(
   description: string | null,
   ctx: {
     server: SwitchServer;
+    /** The workspace the agents are being onboarded into; every gateway call here is scoped to it. */
+    workspaceId: string;
     workdir: WorkdirFs;
     credsByName: Map<string, { switchAgentId: string | null; apiEndpoint: string | null }>;
     dir: string;
@@ -92,11 +95,15 @@ async function resolveIdentity(
 ): Promise<{ ok: true; identity: ResolvedIdentity } | { ok: false; error: OnboardAgentError }> {
   const creds = ctx.credsByName.get(name);
   if (creds?.switchAgentId && creds.apiEndpoint) {
+    const switchAgentId = creds.switchAgentId;
     try {
-      if (await agentExistsOnServer(ctx.server, creds.switchAgentId)) {
+      const exists = await withWorkspaceSession(ctx.workspaceId, (target) =>
+        agentExistsOnServer(target, switchAgentId)
+      );
+      if (exists) {
         return {
           ok: true,
-          identity: { switchAgentId: creds.switchAgentId, apiEndpoint: creds.apiEndpoint },
+          identity: { switchAgentId, apiEndpoint: creds.apiEndpoint },
         };
       }
     } catch (cause) {
@@ -125,20 +132,22 @@ async function resolveIdentity(
 
   // No usable credentials — adopt: mint a fresh identity and write its creds,
   // keeping the existing definition file untouched.
-  const registered = await registerAgentIdentity(ctx.server, {
-    name,
-    description: description ?? `Claude Code agent ${name}`,
-    repoDir: ctx.dir,
-    autoSession: true,
-    // This path onboards `.claude/agents/*.md` definitions, so the identity is a
-    // Claude Code one by construction.
-    agentType: knownAgentTypeForProvider('claude'),
-    // Nobody is at a form to choose one, so it starts with the avatar its name
-    // generates — the same picture it would be shown with anyway.
-    iconUrl: agentAvatarUrlForName(name),
-    // The definition file carries no human label, so there is none to adopt.
-    displayName: null,
-  });
+  const registered = await withWorkspaceSession(ctx.workspaceId, (target) =>
+    registerAgentIdentity(target, {
+      name,
+      description: description ?? `Claude Code agent ${name}`,
+      repoDir: ctx.dir,
+      autoSession: true,
+      // This path onboards `.claude/agents/*.md` definitions, so the identity is a
+      // Claude Code one by construction.
+      agentType: knownAgentTypeForProvider('claude'),
+      // Nobody is at a form to choose one, so it starts with the avatar its name
+      // generates — the same picture it would be shown with anyway.
+      iconUrl: agentAvatarUrlForName(name),
+      // The definition file carries no human label, so there is none to adopt.
+      displayName: null,
+    })
+  );
   if (registered.kind !== 'created') {
     const message = 'message' in registered ? registered.message : '';
     return {
@@ -197,7 +206,7 @@ export async function onboardLocationAgents(
     name: params.locationName ?? basenameFromAnyPath(params.dir) ?? params.providerId,
   });
 
-  const targetWorkspace = await requireSoleWorkspaceForServer(params.serverId);
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
   const existing = new Set(
     (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
   );
@@ -236,6 +245,7 @@ export async function onboardLocationAgents(
     for (const def of selected) {
       const resolved = await resolveIdentity(def.name, def.description, {
         server,
+        workspaceId: targetWorkspace.id,
         workdir,
         credsByName,
         dir: params.dir,

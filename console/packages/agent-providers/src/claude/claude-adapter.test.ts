@@ -482,6 +482,80 @@ describe('ClaudeAdapter event translation', () => {
   });
 });
 
+function modelUsage(input: number, output: number, cacheRead = 0, cacheWrite = 0) {
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheWrite,
+    webSearchRequests: 0,
+    costUSD: 0,
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  };
+}
+
+describe('ClaudeAdapter token usage', () => {
+  it("reports each turn's share of the session's running totals, per model", async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    const query = sdk.latest();
+
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'one' });
+    const [first] = await query.waitForSent(1);
+    query.emit(
+      resultMessage([String(first?.uuid)], {
+        modelUsage: { opus: modelUsage(100, 20, 1000, 50), haiku: modelUsage(5, 1) },
+      })
+    );
+    const one = await recorder.waitFor('turn.completed', (e) => e.turnId === 'turn-1', 1_000);
+    expect(one.usage).toEqual([
+      {
+        model: 'opus',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 1000,
+        cacheWriteTokens: 50,
+      },
+      { model: 'haiku', inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ]);
+
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-2', text: 'two' });
+    const sent = await query.waitForSent(2);
+    query.emit(
+      resultMessage([String(sent[1]?.uuid)], {
+        modelUsage: { opus: modelUsage(130, 25, 1500, 50), haiku: modelUsage(5, 1) },
+      })
+    );
+    const two = await recorder.waitFor('turn.completed', (e) => e.turnId === 'turn-2', 1_000);
+    expect(two.usage).toEqual([
+      {
+        model: 'opus',
+        inputTokens: 30,
+        outputTokens: 5,
+        cacheReadTokens: 500,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
+  it('counts spend from a result that did not close the turn', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'count' });
+    const query = sdk.latest();
+    const [first] = await query.waitForSent(1);
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-2', text: 'stop' });
+    const sent = await query.waitForSent(2);
+
+    query.emit(resultMessage([String(first?.uuid)], { modelUsage: { opus: modelUsage(10, 1) } }));
+    query.emit(resultMessage([String(sent[1]?.uuid)], { modelUsage: { opus: modelUsage(25, 3) } }));
+
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.usage).toEqual([
+      { model: 'opus', inputTokens: 25, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ]);
+  });
+});
+
 describe('ClaudeAdapter turn attribution', () => {
   it('opens a turn on send and closes it on the matching result', async () => {
     const { sdk, adapter, recorder } = await startSession();

@@ -326,7 +326,7 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   await host.command(message('queued'));
   await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
-    emit({ type: 'turn.completed', turnId: 'active', outcome: 'interrupted' });
+    emit({ type: 'turn.completed', turnId: 'active', outcome: 'interrupted', usage: [] });
     emit({ type: 'session.exited', reason: 'Stopped' });
   });
   expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
@@ -337,6 +337,28 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });
 
+it('knows what a turn spent from the moment it reads as ended, and after a restart', async () => {
+  const { host, emit, root } = await start('claude');
+  const spent = [
+    { model: 'big', inputTokens: 10, outputTokens: 2, cacheReadTokens: 300, cacheWriteTokens: 0 },
+  ];
+  await host.command(message('spender'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  const seenWhenEnded: unknown[] = [];
+  host.onPublished((event) => {
+    if (event.body.type === 'turn.upsert' && event.body.status === 'completed')
+      seenWhenEnded.push(host.usageOf(event.body.turnId));
+  });
+  emit({ type: 'turn.completed', turnId: 'spender', outcome: 'completed', usage: spent });
+  await vi.waitFor(() => expect(seenWhenEnded).toEqual([spent]));
+  await host.shutdown();
+  const next = setup('claude');
+  const recovered = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.usageOf('spender')).toEqual(spent);
+  expect(recovered.usageOf('never-ran')).toEqual([]);
+});
+
 it('resets into a new epoch and native conversation while retaining history', async () => {
   const { host, adapter, emit, root } = await start('claude');
   await host.command(message('old-turn'));
@@ -344,7 +366,7 @@ it('resets into a new epoch and native conversation while retaining history', as
   // Completed only after the provider reported the turn started, or its late
   // start would put the turn back to running.
   await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
-  emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed' });
+  emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed', usage: [] });
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   // The turn reads completed a moment before the session reads ready again,
   // and a reset is refused until it does.
@@ -743,7 +765,7 @@ it('requires an explicit fresh reset when the provider cannot resume the saved c
   // Completed only after the provider reported the turn started, or its late
   // start would put the turn back to running.
   await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
-  emit({ type: 'turn.completed', turnId: 'answered', outcome: 'completed' });
+  emit({ type: 'turn.completed', turnId: 'answered', outcome: 'completed', usage: [] });
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
   await host.shutdown();
