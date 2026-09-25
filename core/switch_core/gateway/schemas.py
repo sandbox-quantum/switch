@@ -468,6 +468,9 @@ class BridgeDetail(BaseModel):
     status: str
     agent_greetings_enabled: bool
     is_default: bool
+    # Registered by the deployment's own setup step rather than by a person.
+    # See `BridgeCreateRequest.preconfigured`.
+    preconfigured: bool
     room_count: int
     created_at: str
     # Link that opens this bridge's workspace in its messaging app, built by
@@ -503,6 +506,9 @@ class BridgeUpdateRequest(BaseModel):
     # a field it did not mention.
     agent_greetings_enabled: bool | None = None
     channel_creation_enabled: bool | None = None
+    # See `BridgeCreateRequest.preconfigured`. Settable afterwards so the setup
+    # step can mark a connection it registered before the field existed.
+    preconfigured: bool | None = None
     # Merged over the stored config, not substituted for it, so changing one
     # setting does not mean re-sending the platform's secrets. The merged
     # result is validated against the bridge type's schema before it is kept,
@@ -535,6 +541,11 @@ class BridgeCreateRequest(BaseModel):
     # to keep existing callers behaving as they did; registration rejects it
     # for a platform that cannot, rather than storing a claim it cannot honour.
     channel_creation_enabled: bool = True
+    # Registered by the deployment's own setup step rather than by a person.
+    # Set by the headless standalone bootstrap for the Mattermost it bundles,
+    # so onboarding telemetry measures a person connecting their platform
+    # rather than the deployment booting. Everyone else leaves it off.
+    preconfigured: bool = False
 
 
 class IdentityClaimant(BaseModel):

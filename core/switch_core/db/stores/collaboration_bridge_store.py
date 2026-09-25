@@ -105,6 +105,16 @@ class CollaborationBridgeStore:
         await session.flush()
         return bridge
 
+    async def set_preconfigured(
+        self, session: AsyncSession, bridge_id: str, preconfigured: bool
+    ) -> CollaborationBridge:
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        bridge.preconfigured = preconfigured
+        await session.flush()
+        return bridge
+
     async def merge_connection_config(
         self, session: AsyncSession, bridge_id: str, changes: dict[str, object]
     ) -> CollaborationBridge:

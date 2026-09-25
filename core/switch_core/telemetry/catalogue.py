@@ -222,6 +222,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
+    # The first connector a person added. One the setup step registered itself
+    # never claims it, or the bundled Mattermost would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -314,6 +316,11 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "seconds_since_install": NUMBER,
         "seconds_since_configured": NUMBER,
+        # Registered by the deployment's setup step (the bundled Mattermost)
+        # rather than by a person. Filter these out to measure onboarding.
+        "is_preconfigured": BOOLEAN,
+        # The first connector a person added: never true for a preconfigured
+        # one, and a preconfigured one already running does not make it false.
         "is_first_connector": BOOLEAN,
         "failed_attempts_before_success": NUMBER,
     },
@@ -376,7 +383,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "server_connector_removed": {"connector_kind": one_of("opencode", "other")},
     # Configured, not connected. Many of these and few `bridge_connected` is a
     # deployment whose setup is failing.
-    "connector_configured": {"bridge_platform": BRIDGE_PLATFORM},
+    "connector_configured": {
+        "bridge_platform": BRIDGE_PLATFORM,
+        "is_preconfigured": BOOLEAN,
+    },
     "invitation_sent": {},
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {

@@ -255,6 +255,18 @@ def register_bridge(client: httpx.Client) -> str:
                     f"/gateway/collaborations/{bridge_id}/default"
                 ).raise_for_status()
                 print(f"Set Mattermost bridge as default: {bridge_id}")
+            # And mark it as the deployment's own, for a bridge registered
+            # before the flag existed. Telemetry leaves a preconfigured
+            # connector out of onboarding: it came up because the deployment
+            # booted, not because anybody connected anything. A server that
+            # predates the flag does not list it, and is left alone rather
+            # than sent a field it would ignore.
+            if bridge.get("preconfigured") is False:
+                client.patch(
+                    f"/gateway/collaborations/{bridge_id}",
+                    json={"preconfigured": True},
+                ).raise_for_status()
+                print(f"Marked Mattermost bridge as preconfigured: {bridge_id}")
             # Same reason: a bridge registered before callbacks existed
             # would otherwise keep drawing cards with no buttons on them,
             # and the only cure would be editing a connection field by
@@ -300,6 +312,9 @@ def register_bridge(client: httpx.Client) -> str:
             # The bundled Mattermost is the deployment's own chat, so it is
             # what rooms should bridge to when the caller names nothing.
             "set_as_default": True,
+            # Registered by this step, not by a person, so it is not counted
+            # as anyone connecting a platform.
+            "preconfigured": True,
         },
     )
     resp.raise_for_status()

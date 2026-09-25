@@ -330,7 +330,7 @@ deployments installed after this ships — see
 | Event | Emitted when | Extra properties |
 |---|---|---|
 | `deployment_installed` | the deployment id is generated on an empty database | — |
-| `first_connector_added` | any bridge first reaches connected | `bridge_platform` |
+| `first_connector_added` | the first bridge a **person** added reaches connected | `bridge_platform` |
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
 | `first_room_active` | that room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
@@ -359,8 +359,25 @@ telemetry is switched off does not emit it later as though it had just happened.
 | `bridge_platform` | platform |
 | `seconds_since_install` | number |
 | `seconds_since_configured` | number — configuration saved to first connect |
-| `is_first_connector` | boolean |
+| `is_preconfigured` | boolean — registered by the deployment's setup step, not a person |
+| `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
+
+**Preconfigured connectors.** The standalone stack, the Helm chart and every
+Console-managed local server run a setup step that registers the bundled
+Mattermost seconds after install. That connector reports `is_preconfigured:
+true`, is never `is_first_connector`, and never claims `first_connector_added`
+— so that milestone is the first connector a person added, not the deployment
+booting. Filter `connector_added` on `is_preconfigured = false` to measure
+onboarding. A bundled connector registered before the flag existed is marked
+on the setup step's next run; if it first connects before that, its one
+`connector_added` reports `false`.
+
+**`seconds_since_configured` is not setup time for an old connector.** The
+event fires on the first connect *seen with telemetry on*. A connector that
+already existed when telemetry was switched on reports its whole age on its
+first connect afterwards. Deployments that predate telemetry send `-1` in
+`seconds_since_install`, so filtering to `>= 0` drops most of them.
 
 `seconds_since_configured` and `failed_attempts_before_success` are what answer
 "is one platform too hard". Elapsed time from install mostly measures when
@@ -703,7 +720,8 @@ Two things to set up first, or a third of the list cannot fire at all:
   `outcome: failure` when it cannot; try bad credentials.
 - `connector_added` — the *first* successful connect for that bridge, ever.
   Restarting a working bridge correctly emits nothing.
-- `first_connector_added` — the first connector on the deployment.
+- `first_connector_added` — the first connector a person added on the
+  deployment. The bundled Mattermost the setup step registers never claims it.
 - `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
   one (`restart`), or a live bridge crashing.
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check
@@ -748,7 +766,8 @@ reason.
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.
 - `connector_configured` — the bridge row being written, which is not the same
-  as it connecting. Many of these and few `bridge_connected` is a deployment
+  as it connecting. `is_preconfigured` separates the setup step's own
+  connector from one a person added. Many of these and few `bridge_connected` is a deployment
   whose setup is failing, and only the pair shows it.
 - `server_connector_registered` / `server_connector_removed`.
 
