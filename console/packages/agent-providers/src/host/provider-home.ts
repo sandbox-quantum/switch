@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile, symlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export async function optionalText(path: string): Promise<string | null> {
@@ -39,6 +39,7 @@ export async function linkSkills(source: string, destination: string): Promise<v
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
+  await mkdir(destination, { recursive: true });
   for (const entry of entries) {
     if (entry === 'switch') continue;
     await linkHomeAsset(join(source, entry), join(destination, entry));

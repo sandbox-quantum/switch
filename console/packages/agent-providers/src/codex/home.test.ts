@@ -68,3 +68,18 @@ it('removes a Switch skill file an earlier build left in the session home', asyn
   await prepareCodexSessionHome(input);
   await expect(stat(join(home, 'skills/switch'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+it('links the user’s own Codex skills into a session home that has no skills folder yet', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const sourceHome = join(root, 'source');
+  await mkdir(join(sourceHome, 'skills', '.system'), { recursive: true });
+  await writeFile(join(sourceHome, 'skills', '.system', 'SKILL.md'), 'system skill');
+  const home = await prepareCodexSessionHome({
+    root: join(root, 'sessions'),
+    sessionId: 'session',
+    sourceHome,
+    config: '',
+  });
+  expect(await readFile(join(home, 'skills', '.system', 'SKILL.md'), 'utf8')).toBe('system skill');
+});
