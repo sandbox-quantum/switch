@@ -35,6 +35,11 @@ vi.mock('@main/core/sessions/operations/hydrateSession', () => ({
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
 vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
+vi.mock('./cloud-control', () => ({
+  isCloudAgent: () => false,
+  cloudControl: vi.fn(),
+  runCloudSessionOperation: vi.fn(),
+}));
 vi.mock('./sidecar-control', () => ({ withSidecar: mocks.withSidecar }));
 vi.mock('./session-activity', () => ({ syncSdkSessionActivity: vi.fn(async () => {}) }));
 vi.mock('./host-journal', () => ({

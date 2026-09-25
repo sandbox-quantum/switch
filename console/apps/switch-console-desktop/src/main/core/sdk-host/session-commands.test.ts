@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   sshHost: null as string | null,
   running: true,
   hydrate: vi.fn(async () => {}),
+  cloud: { request: vi.fn() },
+  cloudOperation: vi.fn(async () => ({})),
 }));
 const { Unavailable, Failed } = vi.hoisted(() => ({
   Unavailable: class extends Error {},
@@ -24,6 +26,11 @@ vi.mock('@main/core/agents/agent-location', () => ({
   getAgentLocation: async () => ({ sshHost: mocks.sshHost }),
 }));
 vi.mock('./local-host', () => ({ localSessionLinks: mocks.local }));
+vi.mock('./cloud-control', () => ({
+  isCloudAgent: (agentId: string) => agentId.startsWith('cloud:'),
+  cloudControl: async () => mocks.cloud,
+  runCloudSessionOperation: mocks.cloudOperation,
+}));
 vi.mock('./sidecar-control', () => ({
   withSidecar: async (_agentId: string, call: (client: unknown) => unknown) => call(mocks.sidecar),
 }));
@@ -138,4 +145,18 @@ it('starts a session whose host failed again when the user sends it something', 
     .mockResolvedValueOnce(applied);
   expect(await submitSessionCommand('agent', command)).toEqual(applied);
   expect(mocks.hydrate).toHaveBeenCalledWith('session');
+});
+
+it('sends a cloud command through the relay and restarts a parked cloud session there', async () => {
+  mocks.cloud.request
+    .mockRejectedValueOnce(new Unavailable('The session host is not running.'))
+    .mockResolvedValueOnce(applied);
+  expect(await submitSessionCommand('cloud:server:launch', command)).toEqual(applied);
+  expect(mocks.cloud.request).toHaveBeenCalledWith(
+    'session',
+    expect.objectContaining({ type: 'command' })
+  );
+  expect(mocks.cloudOperation).toHaveBeenCalledWith('cloud:server:launch', 'session', 'restart');
+  expect(mocks.hydrate).not.toHaveBeenCalled();
+  expect(mocks.local.request).not.toHaveBeenCalled();
 });

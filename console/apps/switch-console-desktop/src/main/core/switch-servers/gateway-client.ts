@@ -145,10 +145,15 @@ async function resolveAuthCookie(server: SwitchServer): Promise<string> {
   throw new GatewayError('unauthorized', 'Not signed in to this Switch server.');
 }
 
-async function gatewayFetch(
+/**
+ * One authenticated call to the gateway, answered with whatever it returned:
+ * a refusal is the caller's to read, and a streaming body is left open. Only
+ * a rejected session is raised, as for every gateway call.
+ */
+export async function gatewayRequest(
   server: SwitchServer,
   path: string,
-  options: FetchOptions
+  options: FetchOptions & { signal: AbortSignal }
 ): Promise<Response> {
   // A remote-managed server's gateway is only reachable through the SSH forward.
   // Once the host is known unreachable the forward is dead, so a fetch can only
@@ -181,7 +186,7 @@ async function gatewayFetch(
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         // We attach the cookie explicitly; don't let the runtime manage a jar.
         redirect: 'manual',
-        signal: AbortSignal.timeout(30_000),
+        signal: options.signal,
       });
     } catch (cause) {
       throw new GatewayError(
@@ -208,6 +213,18 @@ async function gatewayFetch(
   if (response.status === 401) {
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
+  return response;
+}
+
+export async function gatewayFetch(
+  server: SwitchServer,
+  path: string,
+  options: FetchOptions
+): Promise<Response> {
+  const response = await gatewayRequest(server, path, {
+    ...options,
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new GatewayError(

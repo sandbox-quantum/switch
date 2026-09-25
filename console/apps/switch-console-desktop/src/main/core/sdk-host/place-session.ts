@@ -1,6 +1,7 @@
 import type { PlaceOutcome } from '@switch-console/agent-providers';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { cloudControl, isCloudAgent } from './cloud-control';
 import { localWatcherControl } from './local-host';
 import { withSidecar } from './sidecar-control';
 
@@ -16,6 +17,7 @@ export async function placeSession(
   sessionId: string,
   roomId: string
 ): Promise<PlaceOutcome> {
+  if (isCloudAgent(agentId)) return (await cloudControl(agentId)).place(sessionId, roomId);
   const agent = await getAgentById(agentId);
   if (!agent?.switchAgentId) throw new Error('This agent is not linked to Switch.');
   if (!(await getAgentLocation(agent)).sshHost)

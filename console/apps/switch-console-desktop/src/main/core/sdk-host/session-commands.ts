@@ -14,6 +14,7 @@ import {
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
+import { cloudControl, isCloudAgent, runCloudSessionOperation } from './cloud-control';
 import { localSessionLinks } from './local-host';
 import { withSidecar } from './sidecar-control';
 
@@ -21,9 +22,9 @@ import { withSidecar } from './sidecar-control';
  * Commands for a shared session, sent to its host directly.
  *
  * A local session's host is Console's child; a remote one's is a child of
- * the agent's sidecar, which Console reaches over SSH. Either way the command
- * goes down the host's IPC pipe and the host answers with what it recorded.
- * Switch is not involved. A host that parked itself after sitting idle is
+ * the agent's sidecar, which Console reaches over SSH, or of a cloud worker,
+ * reached through its Switch server's relay. Either way the command goes down
+ * the host's IPC pipe and the host answers with what it recorded. A host that parked itself after sitting idle is
  * started again and the command sent once it is back.
  */
 
@@ -49,6 +50,7 @@ export async function askHost(
   sessionId: string,
   request: SessionRequest
 ): Promise<unknown> {
+  if (isCloudAgent(agentId)) return (await cloudControl(agentId)).request(sessionId, request);
   if (await isLocal(agentId)) {
     const root = sharedSessionRoot(sessionId);
     // Waits for a host that is starting, not for one nothing is running.
@@ -85,7 +87,9 @@ export async function submitSessionCommand(
       throw error;
   }
   try {
-    await hydrateSession(command.sessionId);
+    if (isCloudAgent(agentId))
+      await runCloudSessionOperation(agentId, command.sessionId, 'restart');
+    else await hydrateSession(command.sessionId);
   } catch (error) {
     throw new Error(
       `The session is not running and could not be started again: ${error instanceof Error ? error.message : String(error)}`

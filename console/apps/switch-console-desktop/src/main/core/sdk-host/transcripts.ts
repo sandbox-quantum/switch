@@ -14,6 +14,7 @@ import {
   sessionTranscriptEventChannel,
   sessionTranscriptResetChannel,
 } from '@shared/core/sessions/sessionEvents';
+import { cloudControl, isCloudAgent } from './cloud-control';
 import { recordRemoteHostFailure } from './host-failures';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
@@ -24,8 +25,8 @@ import { withSidecar } from './sidecar-control';
 /**
  * A shared session's transcript, pushed to the windows showing it.
  *
- * The session's host is a child of Console (local) or of the agent's sidecar
- * (remote). Its snapshot is asked for over the host's IPC pipe, and every
+ * The session's host is a child of Console (local), of the agent's sidecar
+ * (remote) or of a cloud worker (reached through its Switch server). Its snapshot is asked for over the host's IPC pipe, and every
  * event it records arrives on that pipe and is forwarded as it happens. A
  * session that is not running is read from its journal, and picks up live
  * again when its host starts, since the host goes on numbering the same
@@ -90,15 +91,18 @@ export async function currentSnapshot(agentId: string, sessionId: string): Promi
   }
 }
 
+type Place = 'local' | 'remote' | 'cloud';
+
 /** The session as last recorded: from its host if it runs, else its journal. */
-async function recordedSnapshot(agentId: string, sessionId: string, local: boolean) {
+async function recordedSnapshot(agentId: string, sessionId: string, place: Place) {
   try {
     return await currentSnapshot(agentId, sessionId);
   } catch (error) {
     if (!(error instanceof JournalUnavailableError || error instanceof SessionHostFailedError))
       throw error;
   }
-  return local
+  if (place === 'cloud') return (await cloudControl(agentId)).journal(sessionId);
+  return place === 'local'
     ? localJournalSnapshot(sharedSessionRoot(sessionId))
     : (await hostJournals.tail(agentId, sessionId)).snapshot();
 }
@@ -108,42 +112,66 @@ async function recordedSnapshot(agentId: string, sessionId: string, local: boole
  * return its snapshot. Events after the snapshot's `throughSequence` follow on
  * `sessionTranscriptEventChannel`.
  */
+/** A cloud session's live events, relayed by its Switch server from the worker. */
+async function cloudFeed(agentId: string, sessionId: string): Promise<() => void> {
+  const client = await cloudControl(agentId);
+  const unsubscribe = await client.subscribe(
+    sessionId,
+    (event) => forward(sessionId, event),
+    (failure) => recordRemoteHostFailure(sessionId, failure),
+    (reason) => {
+      if (open.get(sessionId)?.close !== close) return;
+      open.delete(sessionId);
+      events.emit(sessionTranscriptResetChannel, { sessionId, reason }, sessionId);
+    }
+  );
+  const close = () => unsubscribe();
+  return close;
+}
+
 export async function openTranscript(agentId: string, sessionId: string): Promise<Snapshot> {
-  const local = await isLocal(agentId);
+  const place: Place = isCloudAgent(agentId)
+    ? 'cloud'
+    : (await isLocal(agentId))
+      ? 'local'
+      : 'remote';
   let entry = open.get(sessionId);
   if (!entry) {
-    const close = local
-      ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
-          forward(sessionId, event)
-        )
-      : await withSidecar(agentId, async (client) => {
-          const unsubscribe = await client.subscribe(
-            sessionId,
-            (event) => forward(sessionId, event),
-            (failure) => recordRemoteHostFailure(sessionId, failure)
-          );
-          // Events recorded while the connection is down never arrive, so the
-          // windows showing the session reload it rather than carry on with a gap.
-          const offClose = client.onClose((error) => {
-            if (open.get(sessionId)?.close !== close) return;
-            open.delete(sessionId);
-            events.emit(
-              sessionTranscriptResetChannel,
-              { sessionId, reason: error.message },
-              sessionId
-            );
-          });
-          const close = () => {
-            offClose();
-            unsubscribe();
-          };
-          return close;
-        });
+    const close =
+      place === 'cloud'
+        ? await cloudFeed(agentId, sessionId)
+        : place === 'local'
+          ? localSessionLinks.subscribe(sharedSessionRoot(sessionId), (event) =>
+              forward(sessionId, event)
+            )
+          : await withSidecar(agentId, async (client) => {
+              const unsubscribe = await client.subscribe(
+                sessionId,
+                (event) => forward(sessionId, event),
+                (failure) => recordRemoteHostFailure(sessionId, failure)
+              );
+              // Events recorded while the connection is down never arrive, so the
+              // windows showing the session reload it rather than carry on with a gap.
+              const offClose = client.onClose((error) => {
+                if (open.get(sessionId)?.close !== close) return;
+                open.delete(sessionId);
+                events.emit(
+                  sessionTranscriptResetChannel,
+                  { sessionId, reason: error.message },
+                  sessionId
+                );
+              });
+              const close = () => {
+                offClose();
+                unsubscribe();
+              };
+              return close;
+            });
     entry = { viewers: 0, close };
     open.set(sessionId, entry);
   }
   entry.viewers += 1;
-  const snapshot = await recordedSnapshot(agentId, sessionId, local);
+  const snapshot = await recordedSnapshot(agentId, sessionId, place);
   await syncSdkSessionActivity(snapshot.session);
   return snapshot;
 }
