@@ -15,6 +15,7 @@ import {
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -154,6 +155,14 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                     Shared with the room-grouped rows so the two trees cannot
                     disagree about the same agent (CHOO-1682/1809). */}
                 <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
+                {agent.providerId && (
+                  <ProviderIssueIndicator
+                    providerId={agent.providerId}
+                    sshHost={sshHost}
+                    hostReachable={!hostUnreachable}
+                    onOpen={open}
+                  />
+                )}
                 {locationViewKind(location) === 'ready' &&
                   hasSessionError(agent.locationId) &&
                   (hasDiscardableSessionError(agent.locationId) ? (
