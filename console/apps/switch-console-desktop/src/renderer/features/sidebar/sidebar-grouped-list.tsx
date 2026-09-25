@@ -2,6 +2,7 @@ import { AlertTriangle } from 'lucide-react';
 import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
+import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -118,6 +119,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
       ) : (
         <AgentTree />
       )}
+      {sidebarStore.grouping !== 'room' && <CloudAgentList />}
     </div>
   );
 });

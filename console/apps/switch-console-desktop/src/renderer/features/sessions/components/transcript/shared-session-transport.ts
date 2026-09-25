@@ -60,3 +60,20 @@ export function hostJournalTransport(agentId: string): SessionTransport {
       commandStatusSchema.parse(await rpc.sdkHost.sessionCommandStatus(agentId, id, commandId)),
   };
 }
+
+/**
+ * A cloud agent's session: the same host journal as `hostJournalTransport`,
+ * reached through the Switch server's relay to the launch's worker. Files go
+ * up to the worker in chunks and are staged there for the next message.
+ */
+export function cloudSessionTransport(agentKey: string): SessionTransport {
+  return {
+    ...hostJournalTransport(agentKey),
+    uploadAttachment: (id, file) =>
+      rpc.sdkHost.cloudUploadAttachment(agentKey, id, {
+        name: file.name,
+        mimeType: file.mimeType,
+        data: file.data,
+      }),
+  };
+}

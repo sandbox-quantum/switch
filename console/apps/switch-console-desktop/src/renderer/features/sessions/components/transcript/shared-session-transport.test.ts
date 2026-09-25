@@ -1,10 +1,11 @@
 import { expect, it, vi } from 'vitest';
-import { hostJournalTransport } from './shared-session-transport';
+import { cloudSessionTransport, hostJournalTransport } from './shared-session-transport';
 
 const ipc = vi.hoisted(() => ({
   transcriptOpen: vi.fn(),
   transcriptClose: vi.fn(),
   sessionSubmit: vi.fn(),
+  cloudUploadAttachment: vi.fn(),
 }));
 const bus = vi.hoisted(() => ({
   listeners: new Map<string, (payload: never) => void>(),
@@ -98,4 +99,26 @@ it('reports a broken live feed so the view reloads the session', () => {
     )
   );
   stop();
+});
+
+it('uploads a cloud session’s attachment to its worker, and reads it as any host journal', async () => {
+  const transport = cloudSessionTransport('cloud:server:launch');
+  const staged = { attachmentId: 'ref', name: 'a.txt', mimeType: 'text/plain', bytes: 2 };
+  ipc.cloudUploadAttachment.mockResolvedValueOnce(staged);
+  await expect(
+    transport.uploadAttachment!('session', {
+      attachmentId: 'local',
+      name: 'a.txt',
+      mimeType: 'text/plain',
+      data: 'aGk=',
+    })
+  ).resolves.toBe(staged);
+  expect(ipc.cloudUploadAttachment).toHaveBeenCalledWith('cloud:server:launch', 'session', {
+    name: 'a.txt',
+    mimeType: 'text/plain',
+    data: 'aGk=',
+  });
+  ipc.transcriptOpen.mockResolvedValueOnce('snapshot');
+  await transport.snapshot('session', null);
+  expect(ipc.transcriptOpen).toHaveBeenLastCalledWith('cloud:server:launch', 'session');
 });
