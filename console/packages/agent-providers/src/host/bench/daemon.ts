@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { AttachmentTransfers } from '../attachment-transfers';
 import { type EnsureSession, serveControl } from '../control';
 import {
   detachedSupervision,
@@ -97,6 +98,8 @@ async function main(): Promise<void> {
     };
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    const transfers = new AttachmentTransfers(resolve(root));
+    await transfers.clear();
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
@@ -106,7 +109,17 @@ async function main(): Promise<void> {
         runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
           stop.abort()
         ),
-        serveControl(resolve(root), links, ensure, control, stop.signal),
+        serveControl(
+          resolve(root),
+          {
+            agentId: config.session.agentId,
+            links,
+            ensure,
+            watcher: control,
+            transfers,
+          },
+          stop.signal
+        ),
       ]);
     } finally {
       await supervision.close();
