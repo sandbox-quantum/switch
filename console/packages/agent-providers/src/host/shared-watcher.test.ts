@@ -1476,12 +1476,15 @@ it('stops starting a session whose host failed, keeps its message, and tells its
     expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
     expect(error.mock.calls.some((call) => String(call[0]).includes(SIGN_IN))).toBe(true);
 
-    // A later message tries once more; the same failure is not announced again.
+    // A later message tries once more, and that message is answered too.
     await streams[0]!.onEvent!(addressed(2, 'room'));
     await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 2);
+    await eventually(
+      () => calls.filter((call) => call.name === 'send_targeted_message').length === 2
+    );
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(2);
-    expect(calls.filter((call) => call.name === 'send_targeted_message')).toHaveLength(1);
+    expect(calls.filter((call) => call.name === 'send_targeted_message')).toHaveLength(2);
 
     // Both messages are still owed.
     expect((await SharedWatchAssignments.open(root)).pending().map((e) => e.messageId)).toEqual([

@@ -575,7 +575,6 @@ export async function runSharedWatcher(
       links.onReady((readyRoot) => {
         for (const [sessionId, entry] of pumps) {
           if (sharedSessionRoot(sessionId) !== readyRoot) continue;
-          announced.delete(sessionId);
           if (entry.failed === null) continue;
           console.warn(
             `Session ${sessionId} is running again; handing it the ${entry.queue.length} room message(s) that waited for it.`
@@ -642,15 +641,15 @@ export async function runSharedWatcher(
       }
     };
     /**
-     * The failure each session's room was last told about, so a session that
-     * keeps failing the same way says so once. Forgotten when its host next
-     * comes up.
+     * The room messages already answered with a start failure: each message
+     * that runs into it is answered once, however often the host is retried.
      */
-    const announced = new Map<string, string>();
+    const announced = new Set<string>();
     const announce = async (config: SharedHostConfig, event: Handoff, failure: string) => {
       const sessionId = config.session.sessionId;
-      if (announced.get(sessionId) === failure) return;
-      announced.set(sessionId, failure);
+      const key = `${sessionId}:${event.roomId}:${event.messageId}`;
+      if (announced.has(key)) return;
+      announced.add(key);
       try {
         // Switch answers the call from where it holds the session placed.
         await publish();
@@ -710,7 +709,8 @@ export async function runSharedWatcher(
               console.error(
                 `Session ${sessionId} could not start: ${error.failure} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
               );
-              void announce(config, event, error.failure);
+              // Answer the newest message: it is the one somebody just sent.
+              void announce(config, entry.queue.at(-1) ?? event, error.failure);
               break;
             }
             if (!(error instanceof SessionUnavailableError)) throw error;
