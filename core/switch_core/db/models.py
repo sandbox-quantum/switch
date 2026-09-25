@@ -376,6 +376,16 @@ class HostedLaunch(TenantScoped, Base):
     active_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    worker_capability_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worker_capability_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    worker_capability_revision: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    relay_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
 
 
 class GitHubIssuedToken(TenantScoped, Base):
@@ -422,6 +432,8 @@ class HostedOperation(TenantScoped, Base):
     action: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     error: Mapped[str | None] = mapped_column(Text)
+    claimed_by: Mapped[str | None] = mapped_column(Text)
+    claimed_boot_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

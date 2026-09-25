@@ -111,13 +111,16 @@ async def _seed_tenant_and_user(connection: AsyncConnection) -> None:
 
 async def _assert_merged_schema(connection: AsyncConnection) -> None:
     _, script = _script_directory()
-    assert script.get_heads() == [_MERGE_REVISION]
+    heads = script.get_heads()
+    assert len(heads) == 1
+    ancestry = {revision.revision for revision in script.walk_revisions("base", heads[0])}
+    assert _MERGE_REVISION in ancestry
     versions = (
         (await connection.execute(text("SELECT version_num FROM alembic_version")))
         .scalars()
         .all()
     )
-    assert versions == [_MERGE_REVISION]
+    assert versions == heads
 
     sdk_tables = (
         (
