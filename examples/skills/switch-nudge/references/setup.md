@@ -26,6 +26,17 @@ Ensure `~/.local/bin` is on the agent host's PATH. Do not overwrite an unrelated
 existing `nudge` command. The launcher resolves its own symlink to find the
 Python helper. It can also be invoked directly as `<skill>/scripts/nudge`.
 
+## Choose a sender identity
+
+Use the configured sender if this host already has a Nudge configuration.
+For initial setup, use an identity specified by the user or host instructions.
+A matching name or credential filename alone does not establish its purpose.
+If you find a candidate, confirm its use with the user before configuring it.
+
+The sender is a Switch identity, not a model session. Its credentials, helper
+process, and timer state must live together on the execution host. The recipient
+can run elsewhere, but rescheduling requires access to that execution host.
+
 ## Create a sender identity
 
 Create a dedicated Switch agent identity, for example `nudge.example`, with
@@ -131,3 +142,13 @@ and 600 on files. Use the same OS user and state
 directory for all control commands. Do not use a saved PID to kill a process.
 To retire the tool, cancel all pending nudges and confirm the worker has exited.
 Revoking the sender's server identity or room membership is a separate action.
+
+## Diagnose a failed connection
+
+If a reminder is `blocked`, read its `error` with `nudge status ID`. A
+`connect_to_room` failure happens before the reminder is sent. Once the worker
+has exited, run `nudge check --room ROOM_ID --target AGENT_NAME` on the same host
+and with the same state directory to reproduce the connection error without
+posting. Check the reported cause, sender identity, server endpoint, and room
+membership. After fixing the cause and checking the room, reschedule with
+`nudge schedule ID --in 60s --retry-after-check`.

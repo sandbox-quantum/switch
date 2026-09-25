@@ -13,6 +13,11 @@ Read [setup](references/setup.md) when configuring a host or registering the sen
 the existing MCP runtime. No Switch server change or model for the sender is
 needed. Keep credentials out of messages, command arguments and control records.
 
+If the host is already configured, use its configured sender. Otherwise use a
+sender identified by the user or host instructions. Do not choose credentials
+based only on an agent name or filename. If you discover a candidate sender,
+confirm that identity with the user before configuring it.
+
 ## Schedule a nudge
 
 Use the installed `nudge` command. If it is not on PATH, run

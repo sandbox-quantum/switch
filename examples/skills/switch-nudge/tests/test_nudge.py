@@ -178,6 +178,17 @@ class NudgeTests(unittest.TestCase):
             w.deliver(self.root, w.read_json(self.root / 'config.json'), Client(), item)
         self.assertEqual(self.item(ident)['state'], 'cancelled')
 
+    def test_tool_error_preserves_cause_and_redacts_credentials(self):
+        client = object.__new__(w.MCP)
+        client.sender_token = 'PLACEHOLDER_SENDER_CREDENTIAL'
+        response = {'isError': True, 'content': [{'type': 'text', 'text':
+            '403: sender is not a room member; PLACEHOLDER_SENDER_CREDENTIAL; Bearer PLACEHOLDER_OTHER'}]}
+        with patch.object(client, 'request', return_value=response):
+            with self.assertRaises(w.NudgeError) as caught:
+                client.tool('connect_to_room', {})
+        self.assertIn('403: sender is not a room member', str(caught.exception))
+        self.assertNotIn('PLACEHOLDER_', str(caught.exception))
+
     def test_refused_target_blocks_without_retry(self):
         ident = self.schedule()
         self.due(ident)

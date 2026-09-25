@@ -106,7 +106,9 @@ class MCP:
     def __init__(self, config):
         # Never inherit the caller's Switch identity, connection or session selector.
         env = {k: v for k, v in os.environ.items() if not k.startswith("SWITCH_")}
-        env.update(credentials(config))
+        sender_credentials = credentials(config)
+        self.sender_token = sender_credentials["SWITCH_API_TOKEN"]
+        env.update(sender_credentials)
         env["SWITCH_CHANNEL_DISABLE_POLL"] = "1"
         self.messages = queue.Queue()
         self.number = 0
@@ -175,7 +177,13 @@ class MCP:
     def tool(self, name, args):
         result = self.request("tools/call", {"name": name, "arguments": args})
         if result.get("isError"):
-            raise NudgeError("Switch tool failed: " + name)
+            details = " ".join(
+                block.get("text", "") for block in result.get("content", [])
+                if block.get("type") == "text" and isinstance(block.get("text"), str)
+            )
+            details = details.replace(self.sender_token, "[redacted]")
+            details = re.sub(r"(?i)bearer\s+[^\s\"']+", "Bearer [redacted]", details)
+            raise NudgeError("Switch tool failed: " + name + (": " + details[:1500] if details else ""))
         structured = result.get("structuredContent")
         if structured is not None:
             return structured
