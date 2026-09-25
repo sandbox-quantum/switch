@@ -10,6 +10,7 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.observability.otlp import MetricPayload
 
 
 @pytest.fixture
@@ -47,8 +48,8 @@ def _app() -> FastAPI:
     return app
 
 
-def _counts(registry: MetricsRegistry) -> dict[tuple, float]:
-    payload = next(p for p in registry.collect() if p.name == HTTP_REQUESTS.name)
+def _counts(payloads: list[MetricPayload]) -> dict[tuple, float]:
+    payload = next(p for p in payloads if p.name == HTTP_REQUESTS.name)
     return {
         tuple(sorted(point.attributes.items())): point.value
         for point in payload.numbers
@@ -60,7 +61,7 @@ def test_a_path_parameter_does_not_become_a_series(registry):
         for room_id in ("a", "b", "c"):
             client.get(f"/rooms/{room_id}")
 
-    counts = _counts(registry)
+    counts = _counts(registry.collect())
     # Three requests, one series: keyed by the template, not the id.
     assert len(counts) == 1
     assert next(iter(counts.values())) == 3.0
@@ -76,7 +77,7 @@ def test_an_unmatched_path_is_folded_into_one_bucket(registry):
         for index in range(5):
             client.get(f"/nope/{index}")
 
-    counts = _counts(registry)
+    counts = _counts(registry.collect())
     # Otherwise an unauthenticated 404 loop mints a series per request.
     assert len(counts) == 1
     attributes = dict(next(iter(counts)))
@@ -88,7 +89,7 @@ def test_a_mounted_route_keeps_its_prefix(registry):
     with TestClient(_app()) as client:
         client.get("/gateway/rooms")
 
-    routes = {dict(key)["route"] for key in _counts(registry)}
+    routes = {dict(key)["route"] for key in _counts(registry.collect())}
     # The gateway's /rooms and the bridge's /rooms are different routes and
     # must not be counted as one.
     assert routes == {"/gateway/rooms"}
@@ -98,17 +99,17 @@ def test_an_unhandled_exception_is_still_counted(registry):
     client = TestClient(_app(), raise_server_exceptions=False)
     client.get("/boom")
 
-    counts = _counts(registry)
+    counts = _counts(registry.collect())
     attributes = dict(next(iter(counts)))
     assert attributes["route"] == "/boom"
     assert attributes["status_class"] == "5xx"
 
 
-def _timeout_count(registry: MetricsRegistry) -> float:
-    payloads = [p for p in registry.collect() if p.name == DB_POOL_TIMEOUTS.name]
-    if not payloads:
+def _timeout_count(payloads: list[MetricPayload]) -> float:
+    matching = [p for p in payloads if p.name == DB_POOL_TIMEOUTS.name]
+    if not matching:
         return 0.0
-    return sum(point.value for point in payloads[0].numbers)
+    return sum(point.value for point in matching[0].numbers)
 
 
 def test_a_pool_checkout_timeout_is_counted(registry):
@@ -116,19 +117,22 @@ def test_a_pool_checkout_timeout_is_counted(registry):
     client.get("/pool-timeout")
 
     # Counted as a 5xx like any failure, and separately as the pool timeout it
-    # was — the signal a peak at the pool ceiling only implies.
-    counts = _counts(registry)
+    # was — the signal a peak at the pool ceiling only implies. Both readings
+    # come from one collection: `collect()` drains and resets, so a second call
+    # would find the counters already taken.
+    payloads = registry.collect()
+    counts = _counts(payloads)
     attributes = dict(next(iter(counts)))
     assert attributes["route"] == "/pool-timeout"
     assert attributes["status_class"] == "5xx"
-    assert _timeout_count(registry) == 1.0
+    assert _timeout_count(payloads) == 1.0
 
 
 def test_an_ordinary_error_is_not_counted_as_a_pool_timeout(registry):
     client = TestClient(_app(), raise_server_exceptions=False)
     client.get("/boom")
 
-    assert _timeout_count(registry) == 0.0
+    assert _timeout_count(registry.collect()) == 0.0
 
 
 def test_duration_is_recorded_per_route(registry):
@@ -171,14 +175,18 @@ def test_an_inner_route_sharing_the_mounts_name_keeps_its_prefix(registry):
     with TestClient(app) as client:
         client.get("/gateway/gatewayish")
 
-    assert {dict(key)["route"] for key in _counts(registry)} == {"/gateway/gatewayish"}
+    assert {dict(key)["route"] for key in _counts(registry.collect())} == {
+        "/gateway/gatewayish"
+    }
 
 
 def test_an_unmounted_route_is_not_given_a_prefix(registry):
     with TestClient(_app()) as client:
         client.get("/rooms/a")
 
-    assert {dict(key)["route"] for key in _counts(registry)} == {"/rooms/{room_id}"}
+    assert {dict(key)["route"] for key in _counts(registry.collect())} == {
+        "/rooms/{room_id}"
+    }
 
 
 def test_a_long_poll_is_counted_but_not_timed(registry):
@@ -260,7 +268,7 @@ def test_mcp_traffic_is_labelled_rather_than_unmatched(registry):
     with TestClient(app) as client:
         client.post("/mcp/")
 
-    counted = {dict(key)["route"] for key in _counts(registry)}
+    counted = {dict(key)["route"] for key in _counts(registry.collect())}
     assert counted == {"/mcp"}
 
 
