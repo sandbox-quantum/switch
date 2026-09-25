@@ -270,6 +270,7 @@ class Gateway:
         }[provider]
         deployment = {
             "version": 1,
+            "revision": prepared["revision"],
             "session": {
                 "sessionId": "watcher-" + prepared["agent_id"],
                 "agentId": prepared["agent_id"],

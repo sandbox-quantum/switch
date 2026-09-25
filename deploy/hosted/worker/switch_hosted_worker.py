@@ -372,6 +372,7 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
         value,
         {
             "version",
+            "revision",
             "session",
             "provider",
             "workspacePath",
@@ -385,6 +386,9 @@ def _validate_deployment(value: Any, config: WorkerConfig) -> dict[str, Any]:
     )
     if value["version"] != 1:
         raise WorkerError("Hosted deployment version is unsupported.")
+    revision = value["revision"]
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise WorkerError("Hosted deployment revision is invalid.")
     session = _strict(
         value["session"],
         {"sessionId", "agentId"},

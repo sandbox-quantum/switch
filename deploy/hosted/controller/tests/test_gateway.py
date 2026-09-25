@@ -23,6 +23,7 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
     }
     prepared = {
         "agent_id": "agent-1",
+        "revision": 1,
         "provider_kind": "setup-token",
         "provider_credential": "SYNTHETIC-PROVIDER",
         "switch_credentials": {"env": {}},
@@ -75,6 +76,7 @@ def test_launch_retry_reuses_the_assignment_and_reservation(tmp_path):
     deployment = saved[request_id]["deployment"]
     assert saved[request_id]["assignment"]["dataVolumeId"] == "vol-0123456789abcdef0"
     assert deployment["watch"] is True
+    assert deployment["revision"] == 1
     assert "room" not in deployment
     assert "mcpRuntime" not in deployment
     assert deployment["workerCapabilityPath"] == "/run/switch-hosted/secrets/worker-capability"

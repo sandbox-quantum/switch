@@ -65,6 +65,7 @@ async function fixture(): Promise<{
   );
   const spec: HostedDeploymentSpec = {
     version: 1,
+    revision: 3,
     session: { sessionId: 'session-id', agentId: 'agent-id' },
     provider: {
       kind: 'claude',
@@ -392,6 +393,59 @@ it('rejects a changed deployment spec and a tampered saved launch configuration'
   await expect(prepareHostedDeployment(input.state, input.spec)).rejects.toThrow(
     'does not match its deployment specification'
   );
+});
+
+it('adopts a newer revision with a changed spec and keeps the session identity and homes', async () => {
+  const input = await fixture();
+  input.spec.provider.definition = { name: 'helper', content: 'first definition' };
+  const first = await prepareHostedDeployment(input.state, input.spec);
+  const definition = join(input.workspace, '.claude', 'agents', 'helper.md');
+  await mkdir(join(input.workspace, '.claude', 'agents'), { recursive: true });
+  await writeFile(definition, 'first definition');
+  const retained = join(first.root, 'provider-home', 'claude', 'retained');
+  await writeFile(retained, 'kept');
+  const revised: HostedDeploymentSpec = {
+    ...input.spec,
+    revision: 4,
+    watch: false,
+    provider: {
+      ...input.spec.provider,
+      model: { id: 'model-next' },
+      context: 'Revised instructions.',
+      definition: { name: 'helper', content: 'revised definition' },
+    },
+  };
+  const second = await prepareHostedDeployment(input.state, revised);
+  expect(second.config.session.hostId).toBe(first.config.session.hostId);
+  expect(second.config.session.epoch).toBe(first.config.session.epoch);
+  expect(second.config.roomConnection?.connectionId).toBe(
+    first.config.roomConnection?.connectionId
+  );
+  expect(second.config).not.toEqual(first.config);
+  expect(JSON.parse(await readFile(join(second.root, 'config.json'), 'utf8'))).toEqual(
+    second.config
+  );
+  const plan = JSON.parse(await readFile(join(second.root, 'hosted-deployment.json'), 'utf8'));
+  expect(plan.spec).toEqual(revised);
+  expect(await readFile(definition, 'utf8')).toBe('revised definition');
+  expect(await readFile(retained, 'utf8')).toBe('kept');
+  expect(JSON.parse(await readFile(join(second.root, 'watch.json'), 'utf8')).spawn).toBe(false);
+  // The same revision is settled again; a changed spec at it is still refused.
+  await expect(prepareHostedDeployment(input.state, revised)).resolves.toBeDefined();
+  await expect(prepareHostedDeployment(input.state, { ...revised, watch: true })).rejects.toThrow(
+    'differs from the saved state'
+  );
+});
+
+it('refuses a deployment older than the saved revision', async () => {
+  const input = await fixture();
+  await prepareHostedDeployment(input.state, input.spec);
+  await expect(
+    prepareHostedDeployment(input.state, { ...input.spec, revision: 2 })
+  ).rejects.toThrow('revision 2 is older than the saved revision 3');
+  await expect(
+    prepareHostedDeployment(input.state, { ...input.spec, revision: 2, watch: false })
+  ).rejects.toThrow('older than the saved revision');
 });
 
 it('wires the shared daemon to the supervisor and forwards shutdown', async () => {

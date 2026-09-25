@@ -62,6 +62,7 @@ def config() -> worker.WorkerConfig:
 def deployment() -> dict:
     return {
         "version": 1,
+        "revision": 3,
         "session": {"sessionId": "session-1", "agentId": "agent-1"},
         "provider": {
             "kind": "claude",
@@ -220,6 +221,13 @@ class WorkerTests(unittest.TestCase):
         document["deployment"]["workerCapabilityPath"] = "/tmp/worker-capability"
         with self.assertRaisesRegex(worker.WorkerError, "capability path is not fixed"):
             worker.parse_secret_document(json.dumps(document), config())
+
+    def test_deployment_revision_must_be_a_positive_integer(self):
+        for revision in [0, True, "3", None]:
+            document = json.loads(secret())
+            document["deployment"]["revision"] = revision
+            with self.assertRaisesRegex(worker.WorkerError, "revision is invalid"):
+                worker.parse_secret_document(json.dumps(document), config())
 
     def test_runtime_config_has_no_bundled_mcp_runtime(self):
         assignment = {

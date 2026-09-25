@@ -43,6 +43,8 @@ const identifier = z.string().min(1).max(200);
 export const hostedDeploymentSpecSchema = z
   .strictObject({
     version: z.literal(1),
+    /** The launch revision this deployment was issued for. */
+    revision: z.number().int().positive(),
     session: z.strictObject({ sessionId: identifier, agentId: identifier }),
     provider: z.strictObject({
       kind: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity']),
@@ -337,6 +339,48 @@ export interface PreparedHostedDeployment {
   logRedactions: string[];
 }
 
+/**
+ * Write the deployment's agent definition into the workspace. A definition
+ * already there must match unless the deployment moved to a newer revision,
+ * which replaces it.
+ */
+async function writeDefinition(spec: HostedDeploymentSpec, replace: boolean): Promise<void> {
+  if (!spec.provider.definition) return;
+  const directory = join(spec.workspacePath, '.claude', 'agents');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!isWithin(await realpath(spec.workspacePath), await realpath(directory)))
+    throw new Error('Cloud agent definition directory must stay inside the workspace.');
+  const path = join(directory, `${spec.provider.definition.name}.md`);
+  if (replace) {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(spec.provider.definition.content);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, path);
+    return;
+  }
+  try {
+    const file = await open(path, 'wx', 0o600);
+    try {
+      await file.writeFile(spec.provider.definition.content);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    if (
+      !isWithin(await realpath(spec.workspacePath), await realpath(path)) ||
+      (await readFile(path, 'utf8')) !== spec.provider.definition.content
+    )
+      throw new Error('The saved cloud agent definition differs from the deployment.');
+  }
+}
+
 export async function prepareHostedDeployment(
   stateDirectory: string,
   spec: HostedDeploymentSpec
@@ -480,21 +524,34 @@ export async function prepareHostedDeployment(
       plan = await loadPlan(planPath);
     }
   }
-  if (!sameValue(plan.spec, spec))
-    throw new Error(
-      'Hosted deployment specification differs from the saved state; review the saved assignment before starting a different deployment.'
-    );
   if (!plan.config.roomConnection)
     throw new Error('Saved hosted deployment state is missing its room connection.');
   const expectedConfig = structuredClone(candidate.config);
   expectedConfig.session.hostId = plan.config.session.hostId;
   expectedConfig.session.epoch = plan.config.session.epoch;
   expectedConfig.roomConnection!.connectionId = plan.config.roomConnection.connectionId;
+  const configPath = join(root, CONFIG_FILE);
+  if (spec.revision < plan.spec.revision)
+    throw new Error(
+      `Hosted deployment revision ${spec.revision} is older than the saved revision ${plan.spec.revision}.`
+    );
+  if (spec.revision > plan.spec.revision) {
+    // The plan is the commit point: a crash before it is replaced repeats this revision.
+    const revised = { version: 1 as const, spec, config: expectedConfig };
+    await writeDefinition(spec, true);
+    await replaceJson(configPath, revised.config);
+    await replaceJson(planPath, revised);
+    await syncDirectory(root);
+    plan = revised;
+  }
+  if (!sameValue(plan.spec, spec))
+    throw new Error(
+      'Hosted deployment specification differs from the saved state; review the saved assignment before starting a different deployment.'
+    );
   if (!sameValue(plan.config, expectedConfig))
     throw new Error(
       'Saved hosted deployment configuration does not match its deployment specification.'
     );
-  const configPath = join(root, CONFIG_FILE);
   try {
     const saved = await loadConfig(configPath);
     if (!sameValue(saved, plan.config))
@@ -586,29 +643,7 @@ export async function runHostedBootstrap(
         spec.github.repository,
         prepared.providerEnvironment
       );
-    if (spec.provider.definition) {
-      const directory = join(spec.workspacePath, '.claude', 'agents');
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      if (!isWithin(await realpath(spec.workspacePath), await realpath(directory)))
-        throw new Error('Cloud agent definition directory must stay inside the workspace.');
-      const path = join(directory, `${spec.provider.definition.name}.md`);
-      try {
-        const file = await open(path, 'wx', 0o600);
-        try {
-          await file.writeFile(spec.provider.definition.content);
-          await file.sync();
-        } finally {
-          await file.close();
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        if (
-          !isWithin(await realpath(spec.workspacePath), await realpath(path)) ||
-          (await readFile(path, 'utf8')) !== spec.provider.definition.content
-        )
-          throw new Error('The saved cloud agent definition differs from the deployment.');
-      }
-    }
+    await writeDefinition(spec, false);
     await dependencies.supervise({
       root: prepared.root,
       executable: process.execPath,

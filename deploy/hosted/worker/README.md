@@ -84,6 +84,7 @@ shape:
   },
   "deployment": {
     "version": 1,
+    "revision": 1,
     "session": {
       "sessionId": "server-session-id",
       "agentId": "server-agent-id"
@@ -118,7 +119,10 @@ shape:
 `provider.model`, `provider.definition` and `github` are the only optional
 deployment fields, matching the hosted bootstrap. `workerCapability` is the
 capability Switch issued for the launch's current revision: 16 to 4096
-printable ASCII characters without whitespace. It is never logged. A provider credential is a nonempty single-line string of at
+printable ASCII characters without whitespace. It is never logged. `deployment.revision`
+is that launch revision. The bootstrap keeps the deployment it first saved while
+the revision stays the same, adopts a newer revision's deployment (keeping the
+session identity and provider homes), and refuses an older one. A provider credential is a nonempty single-line string of at
 most 16 KiB. The Switch endpoint must be HTTPS without URL credentials, query
 or fragment. IDs, generation, volume, executable and all fixed paths are
 cross-checked before any secret is handed to the unprivileged process.
