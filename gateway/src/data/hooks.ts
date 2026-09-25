@@ -2,9 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type AgentDetail,
   type AgentSummary,
-  type Budget,
-  type CurrentTenant,
-  type UsageTotal,
   type ApiKeyDetail,
   type BridgeDetail,
   type BridgeTypeInfo,
@@ -31,9 +28,6 @@ import {
   fetchAgent,
   fetchAgents,
   fetchApiKeys,
-  fetchBudgets,
-  fetchCurrentTenant,
-  fetchUsage,
   fetchAllExternalUsers,
   fetchBridges,
   fetchBridgeTypes,
@@ -351,27 +345,6 @@ export function useTemplates(
   const fetcher = useCallback(
     () => fetchTemplates({ q, kind, owner_id }),
     [q, kind, owner_id],
-  );
-  return useQuery(fetcher);
-}
-
-export function useCurrentTenant(): UseQueryResult<CurrentTenant> {
-  return useQuery(fetchCurrentTenant);
-}
-
-export function useBudgets(tenantId: string): UseQueryResult<Budget[]> {
-  const fetcher = useCallback(() => fetchBudgets(tenantId), [tenantId]);
-  return useQuery(fetcher);
-}
-
-export function useUsage(
-  tenantId: string,
-  since: Date,
-  until: Date,
-): UseQueryResult<UsageTotal[]> {
-  const fetcher = useCallback(
-    () => fetchUsage(tenantId, since, until),
-    [tenantId, since, until],
   );
   return useQuery(fetcher);
 }

@@ -14,13 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
-from switch_core.db.models import (
-    Invitation,
-    Tenant,
-    TenantMember,
-    User,
-    require_tenant_id,
-)
+from switch_core.db.models import Invitation, Tenant, TenantMember, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -40,7 +34,6 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
-    get_tenant_is_admin,
     get_tenant_is_owner,
     is_tenant_member,
     list_tenant_memberships,
@@ -68,7 +61,6 @@ from switch_core.gateway.schemas import (
     BudgetCreateRequest,
     BudgetResponse,
     BudgetUpdateRequest,
-    CurrentTenantResponse,
     InvitationAcceptRequest,
     InvitationCreateRequest,
     InvitationCreateResponse,
@@ -220,33 +212,6 @@ async def list_tenants(
     the others — see `list_tenant_memberships`.
     """
     return await list_tenant_memberships(session_factory, user_store, user_id)
-
-
-@router.get("/tenants/current")
-async def current_tenant(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> CurrentTenantResponse:
-    """The tenant this request is bound to, and the caller's standing in it.
-
-    A client needs the id for every `/tenants/{tenant_id}/...` path, and the
-    binding is settled server-side (see `_resolve_tenant_id`), so this is the
-    one place it can ask rather than guess from `GET /tenants`.
-    """
-    tenant_id = require_tenant_id()
-    tenant = await session.get(Tenant, tenant_id)
-    role = await user_store.tenant_role(session, tenant_id, user.id)
-    if tenant is None or role is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    return CurrentTenantResponse(
-        id=tenant.id,
-        slug=tenant.slug,
-        name=tenant.name,
-        role=role,
-        administers=is_admin,
-    )
 
 
 _LOCK_NOT_AVAILABLE = "55P03"
