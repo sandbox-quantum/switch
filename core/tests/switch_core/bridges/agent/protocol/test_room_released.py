@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_LAPSED,
+    LAUNCH_SUPERSEDED,
     ROOM_RELEASED_PROTOCOL_REVISION,
     ClientDeclaration,
     Connection,
@@ -16,6 +18,8 @@ from switch_core.bridges.agent.protocol.connections import (
     Released,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import WorkerBinding
+from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.stream import event_stream
 
 AGENT = "agent-1"
@@ -272,3 +276,47 @@ async def test_an_older_client_stream_is_not_sent_room_released() -> None:
         "subscription_changed",
         {"rooms": [], "reason": "subscription updated"},
     ) in frames
+
+
+def test_a_closed_hosted_worker_leaves_no_session_in_its_rooms() -> None:
+    """A sleeping or stopped hosted agent is not present where it last worked.
+
+    Otherwise the agent client reads it as available and the room gets no
+    waking notice, and no unavailable reply after an explicit Stop.
+    """
+    registry = ConnectionRegistry()
+    worker = _open(
+        registry, "worker", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
+    )
+    registry.bind_worker(worker, WorkerBinding("launch-1", 1, "boot-a", "i-a"), {})
+    registry.replace_placements(worker, {"session-1": ROOM_A})
+    assert agents_present_in([AGENT], ROOM_A, registry) == {AGENT}
+
+    registry.supersede(AGENT, 2)
+
+    assert registry.placements(AGENT) == {}
+    assert agents_present_in([AGENT], ROOM_A, registry) == set()
+
+
+def test_closing_a_worker_keeps_placements_made_elsewhere() -> None:
+    registry = ConnectionRegistry()
+    worker = _open(
+        registry, "worker", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
+    )
+    registry.bind_worker(worker, WorkerBinding("launch-1", 1, "boot-a", "i-a"), {})
+    registry.replace_placements(worker, {"session-1": ROOM_A})
+    registry.place_session(AGENT, "session-2", ROOM_B, "mcp-transport")
+
+    registry.close(worker.id, LAUNCH_SUPERSEDED)
+
+    assert registry.placements(AGENT) == {"session-2": ROOM_B}
+
+
+def test_closing_a_local_connection_keeps_its_placements() -> None:
+    registry = ConnectionRegistry()
+    conn = _open(registry, "local", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all")
+    registry.replace_placements(conn, {"session-1": ROOM_A})
+
+    registry.close(conn.id, HEARTBEAT_LAPSED)
+
+    assert registry.placements(AGENT) == {"session-1": ROOM_A}

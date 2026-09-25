@@ -683,6 +683,10 @@ class ConnectionRegistry:
         conn.closure = closure
         conn.stream_attached = False
         conn.idle_report = None
+        if conn.worker is not None:
+            # A hosted worker restates its placements on every attach, and a
+            # sleeping agent must not look present in the rooms it last held.
+            self._drop_placements(conn)
         self.relays.fail_connection(conn.id, None)
         conn.wake.set()
         # `beats` and the age separate the two ways a connection dies, which
@@ -945,6 +949,14 @@ class ConnectionRegistry:
         for room_id in previous_rooms - set(rooms):
             self.release_room(conn, room_id)
         return released
+
+    def _drop_placements(self, conn: Connection) -> None:
+        """Forget every session placement this connection made."""
+        placed = self._session_rooms.get(conn.agent_id, {})
+        owners = self._placement_owners.get(conn.agent_id, {})
+        for session_id in [s for s, owner in owners.items() if owner == conn.id]:
+            placed.pop(session_id, None)
+            owners.pop(session_id, None)
 
     def _unplace(
         self, agent_id: str, session_id: str, room_id: str, *, taker: str
