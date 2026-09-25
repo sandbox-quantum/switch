@@ -91,6 +91,10 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     }
   ) {}
 
+  hostCameUp(): void {
+    if (!this.starting) this.setStartupError(null);
+  }
+
   private setStartupError(error: string | null): void {
     if (this.startupError === error) return;
     this.startupError = error;

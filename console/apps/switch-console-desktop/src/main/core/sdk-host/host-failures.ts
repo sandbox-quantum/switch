@@ -25,19 +25,34 @@ let listening = false;
 function listenForLocalHosts(): void {
   if (listening) return;
   listening = true;
-  const announceRoot = (root: string) => {
+  localSessionLinks.onFailure((root) => {
     const sessionId = sessionsByRoot.get(root);
     if (sessionId) announceSessionIssue(sessionId);
-  };
-  localSessionLinks.onFailure(announceRoot);
-  localSessionLinks.onReady(announceRoot);
+  });
+  localSessionLinks.onReady((root) => {
+    const sessionId = sessionsByRoot.get(root);
+    if (sessionId) hostCameUp(sessionId);
+  });
+}
+
+/**
+ * The session's host is up, so neither an earlier host failure nor Console's
+ * own failed start stands: the room watcher can start a host Console could not.
+ */
+function hostCameUp(sessionId: string): void {
+  sessionRuntimeManager.getAgent(sessionId)?.hostCameUp?.();
+  announceSessionIssue(sessionId);
 }
 
 /** The sidecar said the session's host failed (a message) or came up again (null). */
 export function recordRemoteHostFailure(sessionId: string, failure: string | null): void {
-  if (remote.get(sessionId) === (failure ?? undefined)) return;
-  if (failure === null) remote.delete(sessionId);
-  else remote.set(sessionId, failure);
+  if (failure === null) {
+    remote.delete(sessionId);
+    hostCameUp(sessionId);
+    return;
+  }
+  if (remote.get(sessionId) === failure) return;
+  remote.set(sessionId, failure);
   announceSessionIssue(sessionId);
 }
 

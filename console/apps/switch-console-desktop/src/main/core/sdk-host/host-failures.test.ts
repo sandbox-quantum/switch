@@ -81,3 +81,26 @@ it('tells the sidebar when a session it asked about fails or comes back', () => 
   expect(mocks.emit).toHaveBeenCalledTimes(1);
   expect(sessionIssue('remote-watched')).toMatch(/Not signed in\.$/);
 });
+
+it("drops a failed start once the room watcher brings the session's host up", () => {
+  let error: string | null = 'Shared SDK host failed: Sign in first.';
+  mocks.runtime.mockReturnValue({
+    startupStatus: () => ({ status: error ? 'error' : 'ready', message: error }),
+    hostCameUp: () => {
+      error = null;
+    },
+  });
+  expect(sessionIssue('restarted-session')).toMatch(/Sign in first\.$/);
+  const child = new EventEmitter();
+  localSessionLinks.attach(
+    sharedSessionRoot('restarted-session'),
+    child as unknown as ChildProcess
+  );
+  child.emit('message', { kind: 'ready' });
+  expect(sessionIssue('restarted-session')).toBeNull();
+  expect(mocks.emit).toHaveBeenCalledWith(
+    expect.anything(),
+    { sessionId: 'restarted-session' },
+    'restarted-session'
+  );
+});
