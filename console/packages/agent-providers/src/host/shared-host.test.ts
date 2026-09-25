@@ -5,11 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { ProviderAdapter, TurnAttachment } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  type ProviderAdapter,
+  type TurnAttachment,
+} from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { connectParent } from './session-channel';
-import { runSharedHost, sessionBusy } from './shared-host';
+import { RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
 const roots: string[] = [];
@@ -77,6 +81,7 @@ function fakeParent() {
 }
 
 type Harness = {
+  base: string;
   root: string;
   adapter: ProviderAdapter;
   emit: (event: Record<string, unknown>) => void;
@@ -95,11 +100,15 @@ async function start(
     ask?: 'approval' | 'questions';
     parkAfterMs?: number;
     resettable?: boolean;
+    /** The directory of an earlier host of this session, to restart it there. */
+    base?: string;
+    /** The provider cannot resume the saved conversation. */
+    unresumable?: boolean;
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
-  const base = await mkdtemp(join(tmpdir(), 'shared-host-test-'));
-  roots.push(base);
+  const base = opts.base ?? (await mkdtemp(join(tmpdir(), 'shared-host-test-')));
+  if (!opts.base) roots.push(base);
   const root = join(base, 'session');
   const stop = new AbortController();
   const turns: Harness['turns'] = [];
@@ -122,7 +131,13 @@ async function start(
       userInput: true,
       modelSwitchInSession: false,
     },
-    startSession: vi.fn(async () => {
+    startSession: vi.fn(async (input) => {
+      if (opts.unresumable && input.resume)
+        throw new ProviderConversationUnavailableError(
+          'claude',
+          'session',
+          'No saved conversation'
+        );
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
       return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
@@ -235,6 +250,7 @@ async function start(
     timeout: 5000,
   });
   return {
+    base,
     root,
     adapter,
     emit,
@@ -765,21 +781,13 @@ it('says a session is busy for each thing that keeps it from parking, and idle o
       requests: requests.map((state) => ({ state })),
     }) as unknown as Snapshot;
   expect(
-    sessionBusy(
-      snapshot({ status: 'ready' }, ['completed'], ['answered']),
-      { resetDecisionPending: false },
-      0
-    )
+    sessionBusy(snapshot({ status: 'ready' }, ['completed'], ['answered']), 'none', 0)
   ).toEqual({
     busy: false,
     reasons: [],
   });
   expect(
-    sessionBusy(
-      snapshot({ status: 'running' }, ['running', 'running'], ['open']),
-      { resetDecisionPending: true },
-      3
-    )
+    sessionBusy(snapshot({ status: 'running' }, ['running', 'running'], ['open']), 'holding', 3)
   ).toEqual({
     busy: true,
     reasons: [
@@ -789,8 +797,75 @@ it('says a session is busy for each thing that keeps it from parking, and idle o
       { kind: 'room_pending', count: 3 },
     ],
   });
-  expect(
-    sessionBusy(snapshot({ status: 'starting' }, [], []), { resetDecisionPending: false }, 0)
-      .reasons
-  ).toEqual([{ kind: 'turn_starting', count: 1 }]);
+  expect(sessionBusy(snapshot({ status: 'starting' }, [], []), 'none', 0).reasons).toEqual([
+    { kind: 'turn_starting', count: 1 },
+  ]);
+  expect(sessionBusy(snapshot({ status: 'error' }, [], []), 'ended', 2)).toEqual({
+    busy: false,
+    reasons: [],
+  });
 });
+
+it('stops holding its worker awake for a reset decision after the bound, and keeps the decision and its input', async () => {
+  const lastBusy = (host: Harness) =>
+    host.parent.sent.filter((m) => m.kind === 'busy').at(-1) as unknown as
+      | { busy: boolean; reasons: { kind: string; count: number }[] }
+      | undefined;
+  const first = await start({ rooms: true });
+  await first.parent.ask({ type: 'room', handoff: roomMessage(1, 'Answer once') });
+  await vi.waitFor(() => expect(first.turns).toHaveLength(1), { timeout: 5000 });
+  first.emit({
+    type: 'turn.completed',
+    turnId: first.turns[0]!.turnId,
+    outcome: 'completed',
+    usage: [],
+  });
+  await vi.waitFor(() => expect(lastBusy(first)?.busy).toBe(false), { timeout: 5000 });
+  expect(await first.stop()).toBeNull();
+  // Each host is its own process, whose exit frees its ownership for the next.
+  const exited = () => rm(join(first.root, 'shared-owner.lock'));
+  await exited();
+
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const waiting = await start({ rooms: true, base: first.base, unresumable: true });
+    await waiting.parent.ask({ type: 'room', handoff: roomMessage(2, 'Held for the decision') });
+    const held = {
+      busy: true,
+      reasons: [
+        { kind: 'reset_waiting', count: 1 },
+        { kind: 'room_pending', count: 1 },
+      ],
+    };
+    await vi.waitFor(() => expect(lastBusy(waiting)).toMatchObject(held), { timeout: 5000 });
+
+    vi.setSystemTime(Date.now() + RESET_HOLD_MS - 1000);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(lastBusy(waiting)).toMatchObject(held);
+
+    vi.setSystemTime(Date.now() + 2000);
+    await vi.waitFor(() => expect(lastBusy(waiting)).toMatchObject({ busy: false, reasons: [] }), {
+      timeout: 5000,
+    });
+    expect(waiting.turns).toHaveLength(0);
+    expect(await waiting.stop()).toBeNull();
+    await exited();
+
+    const woken = await start({ rooms: true, base: first.base, unresumable: true });
+    try {
+      await vi.waitFor(() => expect(lastBusy(woken)).toMatchObject(held), { timeout: 5000 });
+      const reset = await woken.parent.ask({
+        type: 'command',
+        requesterName: null,
+        command: relayed('current', 'fresh', { type: 'session.reset' }),
+      });
+      expect(reset).toMatchObject({ ok: true, value: { commandId: 'fresh', status: 'applied' } });
+      await vi.waitFor(() => expect(woken.turns).toHaveLength(1), { timeout: 5000 });
+      expect(woken.turns[0]!.text).toContain('Held for the decision');
+    } finally {
+      expect(await woken.stop()).toBeNull();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+}, 30000);
