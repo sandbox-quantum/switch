@@ -29,7 +29,6 @@ describe('buildEnvFile', () => {
     namespace: 'sandbox-quantum',
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
-    sessionDemo: false,
     telemetryEnabled: false,
   });
   const vars = Object.fromEntries(
