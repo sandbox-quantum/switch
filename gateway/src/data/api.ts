@@ -982,6 +982,8 @@ export interface Session {
   tenants: TenantMembership[];
   state: SessionStateName;
   can_create_workspace: boolean;
+  // Whether an invitation naming an e-mail is sent there by this server.
+  invite_email_enabled: boolean;
 }
 
 /** The signed-in session, or null when nobody is signed in. Any other
@@ -1045,9 +1047,12 @@ export interface Invitation {
   created_at: string;
 }
 
+export type EmailDelivery = "sent" | "not_configured" | "failed" | "not_requested";
+
 export interface CreatedInvitation extends Invitation {
   // The plaintext token, returned once, at creation, and never again.
   token: string;
+  email_delivery: EmailDelivery;
 }
 
 export interface CreateInvitationInput {

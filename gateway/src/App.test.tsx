@@ -16,6 +16,7 @@ function session(overrides: Partial<Session>): Session {
     tenants: [],
     state: "needs_workspace",
     can_create_workspace: true,
+    invite_email_enabled: false,
     ...overrides,
   };
 }

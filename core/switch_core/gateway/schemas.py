@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.collaboration.models import BridgeInstallLink
@@ -707,6 +707,9 @@ class SessionStateResponse(BaseModel):
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
     can_create_workspace: bool
+    # Whether an invitation addressed to an e-mail is sent there, or only
+    # minted for the admin to share.
+    invite_email_enabled: bool
 
 
 class InvitationCreateRequest(BaseModel):
@@ -719,6 +722,26 @@ class InvitationCreateRequest(BaseModel):
     # A year is well beyond any legitimate invitation's life.
     expires_in_hours: int = Field(default=168, gt=0, le=8760)
     uses_remaining: int = Field(default=1, ge=1)
+
+    @field_validator("email")
+    @classmethod
+    def _address_shaped(cls, value: str | None) -> str | None:
+        # Not full RFC 5322: enough that what is stored, compared against a
+        # signed-in account and put in a To header is one plausible address.
+        if value is None:
+            return None
+        address = value.strip().lower()
+        local, at, domain = address.partition("@")
+        if (
+            not at
+            or not local
+            or "." not in domain
+            or "@" in domain
+            or len(address) > 320
+            or any(c.isspace() or not c.isprintable() for c in address)
+        ):
+            raise ValueError("Not an e-mail address")
+        return address
 
 
 class InvitationAcceptRequest(BaseModel):
@@ -743,6 +766,11 @@ class InvitationCreateResponse(InvitationDetail):
     # The plaintext token. Present only here — see
     # `InvitationStore.create`, which is the one call that can hand it back.
     token: str
+    # What happened to the e-mail, so the admin knows whether to share the
+    # link themselves: "not_requested" when the invitation names no address,
+    # "not_configured" when this server has no mail relay, "failed" when the
+    # relay refused or could not be reached, "sent" otherwise.
+    email_delivery: Literal["sent", "not_configured", "failed", "not_requested"]
 
 
 class MemberDetail(BaseModel):

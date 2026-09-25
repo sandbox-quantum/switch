@@ -167,6 +167,46 @@ on workspace routes until they pick one with `POST /tenants/{id}/switch`. If
 `GATEWAY_TENANT_CHOICE_ENABLED` (`switchCore.tenantChoiceEnabled`) is set, they
 get a 409 listing the workspaces instead.
 
+### Invitation e-mails
+
+A workspace admin can invite someone by e-mail address from the Workspace
+page. With an SMTP relay configured, Switch sends that person an e-mail with a
+link. They open it, sign in (or sign up through the provider), accept, and are
+a member of the workspace. Any relay that speaks SMTP works: Amazon SES's SMTP
+interface, Postmark, SendGrid, or your own.
+
+| Variable | Helm value | Meaning |
+| --- | --- | --- |
+| `GATEWAY_SMTP_HOST` | `switchCore.smtp.host` (and `smtp.enabled: true`) | the relay; setting it turns e-mail on |
+| `GATEWAY_SMTP_PORT` | `switchCore.smtp.port` | default 587 |
+| `GATEWAY_SMTP_TLS` | `switchCore.smtp.tls` | `starttls` (default, port 587), `tls` (port 465), or `none` for a relay on a trusted network |
+| `GATEWAY_SMTP_USERNAME` / `GATEWAY_SMTP_PASSWORD` | `switchCore.smtp.username` / `secrets.gatewaySmtpPassword` | set both or neither |
+| `GATEWAY_SMTP_FROM` | `switchCore.smtp.from` | the From address, e.g. `Switch <invites@your-domain>` |
+| `GATEWAY_INVITE_EMAILS_PER_DAY` | `switchCore.smtp.emailsPerDayPerWorkspace` | default 50 |
+
+The link points at `FRONTEND_BASE_URL` (`switchCore.frontendBaseUrl`), which is
+required once a host is set. The server refuses to start without it, rather
+than building links from whatever `Host` header a request arrived with. The
+token travels in the link's fragment (`/invite#token=…`), which browsers do
+not send to servers, so it stays out of access logs.
+
+The invitation is created whether or not the e-mail goes out, and the admin
+always sees what happened:
+
+- **Sent**: "Invitation e-mailed to …". The link is shown as well.
+- **No relay configured**: the invitation is created, the dashboard says no
+  e-mail was sent and shows the link to share, and the server logs a warning.
+- **The relay refused or could not be reached**: the same, with the error in
+  the server log.
+
+An invitation addressed to an e-mail can be accepted only by someone signed in
+with that address. Each workspace may send at most
+`GATEWAY_INVITE_EMAILS_PER_DAY` addressed invitations in 24 hours; past that
+the dashboard asks the admin to try tomorrow or share a link. This matters
+with `open` sign-up, where anyone can own a workspace and would otherwise be
+able to use your relay to mail any address. Operators are exempt, and link
+invitations are not counted.
+
 ## Setting up WorkOS as the provider
 
 This is the part that will otherwise burn an afternoon. WorkOS exposes two

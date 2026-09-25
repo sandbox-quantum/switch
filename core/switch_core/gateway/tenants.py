@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
@@ -46,11 +46,18 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_invitation_store,
+    get_invite_mailer,
     get_protocol,
     get_session,
     get_session_factory,
     get_system_session,
     get_user_store,
+)
+from switch_core.gateway.invite_mail import (
+    InviteEmail,
+    InviteEmailFailed,
+    InviteMailer,
+    invite_link,
 )
 from switch_core.gateway.schemas import (
     InvitationAcceptRequest,
@@ -433,18 +440,40 @@ async def create_invitation(
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
     is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    mailer: Annotated[InviteMailer | None, Depends(get_invite_mailer)],
 ) -> InvitationCreateResponse:
     """Mint an invitation to the bound tenant. `owner`/`admin` only.
 
     An `owner` invitation is owner-only: minting one is granting ownership
     with a step of indirection, so it answers to the same gate the direct
     grant does (`_require_owner`).
+
+    An invitation naming an e-mail is also sent there when a relay is
+    configured. The e-mail is a convenience on top of the link, not a
+    condition of the invitation: when it cannot go out the invitation still
+    stands, and `email_delivery` tells the admin to share the link instead.
     """
     _require_bound_tenant(tenant_id)
     if req.role not in TENANT_MEMBER_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
     if req.role == "owner":
         _require_owner(is_owner, "invite another owner")
+    if req.email is not None and mailer is not None and user.role != "admin":
+        sent_today = await invitation_store.count_addressed_since(
+            session, datetime.now(UTC) - timedelta(days=1)
+        )
+        if sent_today >= config.gateway_invite_emails_per_day:
+            await session.commit()
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "This workspace has sent its daily limit of "
+                    f"{config.gateway_invite_emails_per_day} invitation e-mails; "
+                    "try again tomorrow, or create an invitation without an "
+                    "e-mail and share the link"
+                ),
+            )
 
     expires_at = datetime.now(UTC) + timedelta(hours=req.expires_in_hours)
     invitation, token = await invitation_store.create(
@@ -455,9 +484,63 @@ async def create_invitation(
         uses_remaining=req.uses_remaining,
         created_by=user.id,
     )
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None
     await session.commit()
-    emit_safely(current_telemetry(), "invitation_sent", {})
-    return InvitationCreateResponse(token=token, **_invitation_fields(invitation))
+
+    delivery = await _deliver_invitation(
+        mailer,
+        config,
+        invitation,
+        token,
+        workspace_name=tenant.name,
+        inviter_name=user.name,
+    )
+    emit_safely(current_telemetry(), "invitation_sent", {"delivery": delivery})
+    return InvitationCreateResponse(
+        token=token, email_delivery=delivery, **_invitation_fields(invitation)
+    )
+
+
+async def _deliver_invitation(
+    mailer: InviteMailer | None,
+    config: SwitchConfig,
+    invitation: Invitation,
+    token: str,
+    *,
+    workspace_name: str,
+    inviter_name: str,
+) -> Literal["sent", "not_configured", "failed", "not_requested"]:
+    if invitation.email is None:
+        return "not_requested"
+    if mailer is None:
+        logger.warning(
+            "Invitation %s to tenant %s names an e-mail, but no SMTP relay is "
+            "configured (GATEWAY_SMTP_HOST); nothing was sent",
+            invitation.id,
+            invitation.tenant_id,
+        )
+        return "not_configured"
+    assert config.frontend_base_url is not None
+    try:
+        await mailer.send_invitation(
+            InviteEmail(
+                to=invitation.email,
+                link=invite_link(config.frontend_base_url, token),
+                workspace_name=workspace_name,
+                inviter_name=inviter_name,
+                role=invitation.role,
+                expires_at=invitation.expires_at,
+            )
+        )
+    except InviteEmailFailed:
+        logger.exception(
+            "Invitation %s to tenant %s was created but its e-mail was not sent",
+            invitation.id,
+            invitation.tenant_id,
+        )
+        return "failed"
+    return "sent"
 
 
 @router.get("/tenants/{tenant_id}/invitations")

@@ -134,7 +134,10 @@ def _tenants_app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 
 
 def _session_app(
-    session_factory: async_sessionmaker[AsyncSession], *, signup_mode: str
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    signup_mode: str,
+    invite_email_enabled: bool = False,
 ) -> FastAPI:
     """A route-scoped app for `GET /auth/session`, stubbed as `_app` is."""
 
@@ -151,6 +154,7 @@ def _session_app(
         jwt_secret_key=_SECRET,
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
+        invite_email_enabled=invite_email_enabled,
     )
     return app
 
@@ -368,9 +372,15 @@ class TestSessionStateEndpoint:
         token: str,
         *,
         signup_mode: str,
+        invite_email_enabled: bool = False,
     ) -> httpx.Response:
         async with _client(
-            _session_app(session_factory, signup_mode=signup_mode), token
+            _session_app(
+                session_factory,
+                signup_mode=signup_mode,
+                invite_email_enabled=invite_email_enabled,
+            ),
+            token,
         ) as client:
             return await client.get("/auth/session")
 
@@ -472,6 +482,22 @@ class TestSessionStateEndpoint:
 
         assert body["state"] == "needs_workspace"
         assert body["can_create_workspace"] is False
+
+    async def test_it_says_whether_invitations_are_e_mailed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user_with_memberships(
+            session_factory, name="mailer", tenant_ids=[TENANT_B]
+        )
+        token = create_jwt(user_id, "mailer@example.invalid", "user", _SECRET, None)
+
+        off = await self._get(session_factory, token, signup_mode="open")
+        on = await self._get(
+            session_factory, token, signup_mode="open", invite_email_enabled=True
+        )
+
+        assert off.json()["invite_email_enabled"] is False
+        assert on.json()["invite_email_enabled"] is True
 
     async def test_an_unauthenticated_caller_is_401(
         self, session_factory: async_sessionmaker[AsyncSession]

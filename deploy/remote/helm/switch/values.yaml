@@ -102,6 +102,9 @@ secrets:
   mattermostUserPassword: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # SMTP relay password for invitation e-mails (required when
+  # switchCore.smtp.enabled and switchCore.smtp.username is set).
+  gatewaySmtpPassword: ""
   # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
   # than beside the other observability settings because the documented use for
   # it is a collector's API key, and every other credential in this chart comes
@@ -237,6 +240,26 @@ switchCore:
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
+  # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
+  # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
+  # anything that speaks SMTP). Off, the invitation is still created and the
+  # admin is told to share the link themselves. Requires frontendBaseUrl, which
+  # the link in the e-mail points at.
+  smtp:
+    enabled: false
+    host: ""
+    # 587 with starttls, 465 with tls; none is for a relay on a trusted network.
+    port: 587
+    tls: starttls
+    # Leave empty for a relay that needs no login; set it and
+    # secrets.gatewaySmtpPassword otherwise.
+    username: ""
+    # The From address, e.g. "Switch <invites@your-domain>".
+    from: ""
+    # Addressed invitations one workspace may send per 24 hours. With sign-up
+    # open anyone can own a workspace, so this keeps the relay from being used
+    # to mail arbitrary addresses. Operators are exempt.
+    emailsPerDayPerWorkspace: 50
   # The distributed Slack app: the one a customer installs into their workspace
   # by clicking a button, as opposed to an app an operator registers themselves
   # and pastes a bot token for. Off unless you have registered such an app and

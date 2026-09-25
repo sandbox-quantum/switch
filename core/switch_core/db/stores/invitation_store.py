@@ -157,6 +157,19 @@ class InvitationStore:
         )
         return list(result.scalars().all())
 
+    async def count_addressed_since(
+        self, session: AsyncSession, since: datetime
+    ) -> int:
+        """How many of the bound tenant's invitations named an e-mail and were
+        minted after `since` — the measure the daily e-mail cap is kept on.
+        Per tenant through the policy, like `list_for_tenant`."""
+        result = await session.execute(
+            select(func.count())
+            .select_from(Invitation)
+            .where(Invitation.email.is_not(None), Invitation.created_at > since)
+        )
+        return int(result.scalar_one())
+
     async def revoke(self, session: AsyncSession, invitation_id: str) -> Invitation:
         invitation = await session.get(Invitation, invitation_id)
         if invitation is None:

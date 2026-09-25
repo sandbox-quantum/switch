@@ -233,6 +233,15 @@ three together take the workspace.
 `uses_remaining`, `revoked_at`, `created_by`, and a hash of the token rather
 than the token. Expiry and revocation are not optional.
 
+**An addressed invitation is also e-mailed, when the deployment has a relay.**
+The e-mail is delivery on top of the invitation, not a condition of it: the
+invitation is minted first and stands if sending fails or no relay is
+configured, and the create response reports which of those happened so the
+admin can share the link instead. Only the plaintext token in that one
+response can build the link, so a resend is a revoke and a new invitation. A
+per-workspace daily cap on addressed invitations keeps self-service sign-up
+from turning the relay into a way to mail arbitrary addresses.
+
 **Accepting runs in its own tenant-bound session.** The request session is
 already stamped with the caller's current workspace; inserting a membership for
 a different one on it is refused by the policy, and rebinding it raises. This

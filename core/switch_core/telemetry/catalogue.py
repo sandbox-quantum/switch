@@ -377,7 +377,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # Configured, not connected. Many of these and few `bridge_connected` is a
     # deployment whose setup is failing.
     "connector_configured": {"bridge_platform": BRIDGE_PLATFORM},
-    "invitation_sent": {},
+    "invitation_sent": {
+        "delivery": one_of("sent", "not_configured", "failed", "not_requested")
+    },
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {
         "bridge_platform": BRIDGE_PLATFORM,

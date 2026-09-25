@@ -45,6 +45,11 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.invite_mail import (
+    InviteEmail,
+    InviteEmailFailed,
+    InviteMailer,
+)
 from switch_core.gateway.tenants import router as tenants_router
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -78,6 +83,19 @@ class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
         raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
 
 
+class _RecordingMailer:
+    def __init__(self) -> None:
+        self.sent: list[InviteEmail] = []
+
+    async def send_invitation(self, invite: InviteEmail) -> None:
+        self.sent.append(invite)
+
+
+class _FailingMailer:
+    async def send_invitation(self, invite: InviteEmail) -> None:
+        raise InviteEmailFailed("relay refused the message")
+
+
 def _fake_protocol() -> SimpleNamespace:
     return SimpleNamespace(
         api_key_cache=SimpleNamespace(
@@ -93,6 +111,8 @@ def _app(
     client_lifecycle: object | None = None,
     max_workspaces_per_user: int = 3,
     signup_mode: str = "default_tenant",
+    mailer: InviteMailer | None = None,
+    invite_emails_per_day: int = 50,
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -108,6 +128,7 @@ def _app(
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
+    app.dependency_overrides[gw_deps.get_invite_mailer] = lambda: mailer
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         client_lifecycle or _FakeClientLifecycle(session_factory)
     )
@@ -117,6 +138,8 @@ def _app(
         gateway_tenant_choice_enabled=False,
         gateway_max_workspaces_per_user=max_workspaces_per_user,
         gateway_signup_mode=signup_mode,
+        gateway_invite_emails_per_day=invite_emails_per_day,
+        frontend_base_url="https://switch.example.com/",
     )
     return app
 
@@ -1258,3 +1281,157 @@ class TestMemberRoutes:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")
 
         assert response.status_code == 403
+
+
+class TestInvitationEmail:
+    """An invitation naming an address is e-mailed there when a relay is
+    configured, and stands whether or not the e-mail goes out — the response
+    says which, so the admin knows when to share the link themselves."""
+
+    async def _owner(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str
+    ) -> str:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_A, role="owner"
+        )
+        return _token(user_id, f"{name}@example.invalid", TENANT_A)
+
+    async def _invite(self, app: FastAPI, token: str, body: dict) -> httpx.Response:
+        async with _client(app, token) as client:
+            return await client.post(f"/tenants/{TENANT_A}/invitations", json=body)
+
+    async def test_an_addressed_invitation_is_e_mailed_with_its_link(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "sender")
+        mailer = _RecordingMailer()
+
+        response = await self._invite(
+            _app(session_factory, mailer=mailer),
+            token,
+            {"role": "admin", "email": "  New.Person@Example.com "},
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["email_delivery"] == "sent"
+        assert body["email"] == "new.person@example.com"
+        [sent] = mailer.sent
+        assert sent.to == "new.person@example.com"
+        assert sent.link == f"https://switch.example.com/invite#token={body['token']}"
+        assert sent.workspace_name == TENANT_A
+        assert sent.inviter_name == "sender"
+        assert sent.role == "admin"
+
+    async def test_without_a_relay_the_invitation_stands_and_says_so(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        token = await self._owner(session_factory, "no-relay")
+
+        with caplog.at_level("WARNING", logger="switch_core.gateway.tenants"):
+            response = await self._invite(
+                _app(session_factory), token, {"email": "someone@example.com"}
+            )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["email_delivery"] == "not_configured"
+        assert "no SMTP relay is configured" in caplog.text
+        async with tenant_session(session_factory, TENANT_A) as scoped:
+            [invitation] = await InvitationStore().list_for_tenant(scoped)
+            assert invitation.email == "someone@example.com"
+
+    async def test_a_failed_send_still_leaves_a_usable_invitation(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "unlucky")
+        app = _app(session_factory, mailer=_FailingMailer())
+
+        response = await self._invite(app, token, {"email": "invitee@example.invalid"})
+
+        assert response.status_code == 201, response.text
+        assert response.json()["email_delivery"] == "failed"
+
+        await _make_tenant(session_factory, TENANT_B)
+        invitee_id = await _make_member(
+            session_factory, name="invitee", tenant_id=TENANT_B, role="member"
+        )
+        async with _client(
+            app, _token(invitee_id, "invitee@example.invalid", TENANT_B)
+        ) as client:
+            accepted = await client.post(
+                "/invitations/accept", json={"token": response.json()["token"]}
+            )
+        assert accepted.status_code == 200, accepted.text
+
+    async def test_a_link_invitation_sends_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "linker")
+        mailer = _RecordingMailer()
+
+        response = await self._invite(
+            _app(session_factory, mailer=mailer), token, {"role": "member"}
+        )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["email_delivery"] == "not_requested"
+        assert mailer.sent == []
+
+    @pytest.mark.parametrize(
+        "email", ["not-an-address", "a@b", "two@@example.com", "sp ace@example.com"]
+    )
+    async def test_something_that_is_not_an_address_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession], email: str
+    ) -> None:
+        token = await self._owner(session_factory, "typist")
+
+        response = await self._invite(
+            _app(session_factory, mailer=_RecordingMailer()), token, {"email": email}
+        )
+
+        assert response.status_code == 422
+
+    async def test_the_daily_cap_refuses_before_minting_anything(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        token = await self._owner(session_factory, "prolific")
+        mailer = _RecordingMailer()
+        app = _app(session_factory, mailer=mailer, invite_emails_per_day=2)
+
+        for n in range(2):
+            ok = await self._invite(app, token, {"email": f"p{n}@example.com"})
+            assert ok.status_code == 201, ok.text
+        link = await self._invite(app, token, {"role": "member"})
+        over = await self._invite(app, token, {"email": "p2@example.com"})
+
+        assert link.status_code == 201, "link invitations are not capped"
+        assert over.status_code == 429
+        assert "daily limit" in over.json()["detail"]
+        assert len(mailer.sent) == 2
+        async with tenant_session(session_factory, TENANT_A) as scoped:
+            assert len(await InvitationStore().list_for_tenant(scoped)) == 3
+
+    async def test_an_operator_is_not_capped(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        async with session_factory() as session:
+            operator = User(
+                name="operator", email="operator@example.invalid", role="admin"
+            )
+            session.add(operator)
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id=TENANT_A, user_id=operator.id, role="owner")
+            )
+            await session.commit()
+            operator_id = operator.id
+        token = _token(operator_id, "operator@example.invalid", TENANT_A)
+        app = _app(session_factory, mailer=_RecordingMailer(), invite_emails_per_day=1)
+
+        for n in range(2):
+            response = await self._invite(app, token, {"email": f"o{n}@example.com"})
+            assert response.status_code == 201, response.text

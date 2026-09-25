@@ -1,4 +1,4 @@
-import type { Session } from "./api";
+import type { EmailDelivery, Session } from "./api";
 
 /** Which top-level screen the app shows. Pure, so the order of precedence is
  * testable without rendering anything. */
@@ -74,4 +74,37 @@ export function inviteUrl(origin: string, token: string): string {
 export function ownsTenant(session: Session | null): boolean {
   if (session === null) return false;
   return session.user.is_operator || session.tenant?.role === "owner";
+}
+
+export interface DeliveryNotice {
+  severity: "success" | "warning" | "error";
+  text: string;
+}
+
+/** What to tell the admin about the invitation they just created. Every
+ * outcome but "sent" means the person has not heard about it, so the link
+ * is theirs to pass on. */
+export function deliveryNotice(delivery: EmailDelivery, email: string | null): DeliveryNotice {
+  switch (delivery) {
+    case "sent":
+      return {
+        severity: "success",
+        text: `Invitation e-mailed to ${email}. The link below works too; it is shown only once.`,
+      };
+    case "not_configured":
+      return {
+        severity: "warning",
+        text: `No e-mail was sent — this server has no mail set up. Send this link to ${email} yourself; it is shown only once.`,
+      };
+    case "failed":
+      return {
+        severity: "error",
+        text: `Sending the e-mail to ${email} failed. The invitation was created: send this link yourself; it is shown only once.`,
+      };
+    case "not_requested":
+      return {
+        severity: "success",
+        text: "Send this link to the person you are inviting. It is shown only once.",
+      };
+  }
 }

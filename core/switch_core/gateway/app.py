@@ -36,6 +36,7 @@ from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
@@ -74,6 +75,7 @@ def create_gateway_app(
     resource_service: ResourceService,
     protocol: ProtocolService,
     install_service: MessagingInstallService | None,
+    invite_mailer: InviteMailer | None,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -96,6 +98,7 @@ def create_gateway_app(
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
+        invite_mailer=invite_mailer,
         config=config,
     )
 

@@ -16,22 +16,25 @@ import {
 } from "@mui/material";
 import { useCallback, useState } from "react";
 import { type TenantRole, createInvitation } from "../../data/api";
-import { inviteUrl } from "../../data/sessionState";
+import { type DeliveryNotice, deliveryNotice, inviteUrl } from "../../data/sessionState";
 
 interface Props {
   open: boolean;
   tenantId: string;
   isOwner: boolean;
+  emailEnabled: boolean;
   onClose: () => void;
   onCreated: () => void;
 }
 
-/** Invitations are shared as links, not emailed. The token is returned once,
- * at creation, so the link is shown here and nowhere else. */
+/** An invitation naming an address is e-mailed when the server has mail set
+ * up; either way the token is returned once, at creation, so the link is
+ * shown here and nowhere else — alongside what happened to the e-mail. */
 export default function CreateInvitationDialog({
   open,
   tenantId,
   isOwner,
+  emailEnabled,
   onClose,
   onCreated,
 }: Props) {
@@ -42,6 +45,7 @@ export default function CreateInvitationDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
+  const [notice, setNotice] = useState<DeliveryNotice | null>(null);
   const [copied, setCopied] = useState(false);
 
   const handleClose = useCallback(() => {
@@ -51,6 +55,7 @@ export default function CreateInvitationDialog({
     setUses("1");
     setError(null);
     setLink(null);
+    setNotice(null);
     setCopied(false);
     onClose();
   }, [onClose]);
@@ -66,6 +71,7 @@ export default function CreateInvitationDialog({
         uses_remaining: Number(uses),
       });
       setLink(inviteUrl(window.location.origin, created.token));
+      setNotice(deliveryNotice(created.email_delivery, created.email));
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create the invitation");
@@ -80,6 +86,7 @@ export default function CreateInvitationDialog({
     setCopied(true);
   }, [link]);
 
+  const addressed = email.trim() !== "";
   const roles: TenantRole[] = isOwner ? ["member", "admin", "owner"] : ["member", "admin"];
   const valid =
     Number.isInteger(Number(hours)) && Number(hours) > 0 && Number(hours) <= 8760 &&
@@ -89,11 +96,9 @@ export default function CreateInvitationDialog({
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
       <DialogTitle>Invite to workspace</DialogTitle>
       <DialogContent>
-        {link !== null ? (
+        {link !== null && notice !== null ? (
           <Stack spacing={2} sx={{ pt: 1 }}>
-            <Alert severity="success">
-              Send this link to the person you are inviting. It is shown only once.
-            </Alert>
+            <Alert severity={notice.severity}>{notice.text}</Alert>
             <TextField
               value={link}
               label="Invite link"
@@ -133,7 +138,11 @@ export default function CreateInvitationDialog({
               label="Email (optional)"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              helperText="Only someone signed in with this address can accept. Leave empty for anyone with the link."
+              helperText={
+                emailEnabled
+                  ? "We'll e-mail them the link. Only someone signed in with this address can accept. Leave empty for anyone with the link."
+                  : "E-mail isn't set up on this server, so you'll get a link to send yourself. Only someone signed in with this address can accept. Leave empty for anyone with the link."
+              }
             />
             <Stack direction="row" spacing={2}>
               <TextField
@@ -168,7 +177,7 @@ export default function CreateInvitationDialog({
               disabled={submitting || !valid}
               startIcon={submitting ? <CircularProgress size={16} /> : undefined}
             >
-              Create link
+              {emailEnabled && addressed ? "Send invitation" : "Create link"}
             </Button>
           </>
         )}

@@ -434,6 +434,7 @@ def describe_session_state(
             workspaces_created=user.workspaces_created,
         )
         is None,
+        invite_email_enabled=config.invite_email_enabled,
     )
 
 

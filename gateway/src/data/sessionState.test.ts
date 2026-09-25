@@ -4,6 +4,7 @@ import {
   appView,
   canAdminTenant,
   clearPendingInvite,
+  deliveryNotice,
   inviteTokenFrom,
   inviteUrl,
   ownsTenant,
@@ -20,6 +21,7 @@ function session(overrides: Partial<Session> = {}): Session {
     tenants: [acme],
     state: "ready",
     can_create_workspace: true,
+    invite_email_enabled: false,
     ...overrides,
   };
 }
@@ -98,5 +100,30 @@ describe("invite tokens", () => {
     expect(readPendingInvite()).toBe("tok");
     clearPendingInvite();
     expect(readPendingInvite()).toBeNull();
+  });
+});
+
+describe("deliveryNotice", () => {
+  it("confirms a sent e-mail", () => {
+    const notice = deliveryNotice("sent", "bo@example.com");
+    expect(notice.severity).toBe("success");
+    expect(notice.text).toContain("e-mailed to bo@example.com");
+  });
+
+  it("says plainly when nothing was sent, and why", () => {
+    const off = deliveryNotice("not_configured", "bo@example.com");
+    expect(off.severity).toBe("warning");
+    expect(off.text).toContain("No e-mail was sent");
+    expect(off.text).toContain("bo@example.com");
+
+    const failed = deliveryNotice("failed", "bo@example.com");
+    expect(failed.severity).toBe("error");
+    expect(failed.text).toContain("failed");
+  });
+
+  it("just hands over the link when no address was given", () => {
+    const notice = deliveryNotice("not_requested", null);
+    expect(notice.severity).toBe("success");
+    expect(notice.text).not.toContain("null");
   });
 });

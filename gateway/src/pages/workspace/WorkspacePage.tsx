@@ -26,7 +26,11 @@ export default function WorkspacePage() {
           isOwner={isOwner}
         />
         {canAdminTenant ? (
-          <InvitationsSection tenantId={tenant.id} isOwner={isOwner} />
+          <InvitationsSection
+            tenantId={tenant.id}
+            isOwner={isOwner}
+            emailEnabled={session.invite_email_enabled}
+          />
         ) : (
           <Alert severity="info">
             Ask a workspace owner or admin to invite someone.
