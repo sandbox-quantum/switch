@@ -33,6 +33,7 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.hosted_workers import (
     HOSTED_PROTOCOL_REVISION,
+    HOSTED_WORKER_ONLY_MESSAGE,
     IDLE_FRESH_FOR_SECONDS,
     IDLE_REPORT_EVERY_SECONDS,
     RELAY_REPLY_ENVELOPE_BYTES,
@@ -64,11 +65,7 @@ def refusal(status: int, code: str, message: str) -> HTTPException:
 
 
 def hosted_worker_only() -> HTTPException:
-    return refusal(
-        403,
-        "hosted_worker_only",
-        "This agent runs on a cloud worker; only its attached worker may do this.",
-    )
+    return refusal(403, "hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
 
 
 def require_worker(

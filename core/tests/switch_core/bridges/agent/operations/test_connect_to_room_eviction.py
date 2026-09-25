@@ -13,12 +13,21 @@ session connects while the first still holds the slot.
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
+from fastapi import FastAPI
+from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
+from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.auth import get_agent_from_scope
+from switch_core.bridges.agent.dependencies import get_protocol, get_session_factory
+from switch_core.bridges.agent.mcp import server as mcp_server
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
@@ -32,6 +41,9 @@ from switch_core.bridges.agent.protocol.connections import (
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import (
+    HOSTED_WORKER_ONLY_MESSAGE,
+)
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -63,10 +75,14 @@ class _RecordingSessionStore:
         self.bindings.append((agent_id, room_id, transport_session_id))
 
 
-def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> Any:
+def _protocol(
+    registry: ConnectionRegistry,
+    store: _RecordingSessionStore,
+    metadata: dict[str, Any] | None = None,
+) -> Any:
     room = SimpleNamespace(id=ROOM, name="Room One", description="A room")
     agent = SimpleNamespace(
-        id=AGENT, name="agent-one", integration_profile=_PROFILE, metadata_=None
+        id=AGENT, name="agent-one", integration_profile=_PROFILE, metadata_=metadata
     )
     room_model = SimpleNamespace(id=ROOM, name="Room One", bridge_id=None)
 
@@ -250,3 +266,56 @@ async def test_a_caller_with_no_live_connection_still_connects(harness: Any) -> 
 
     assert result["warning"] is None
     assert harness.store.bindings == [(AGENT, ROOM, "mcp-transport-session")]
+
+
+HOSTED_WORKER_ONLY = {
+    "code": "hosted_worker_only",
+    "message": HOSTED_WORKER_ONLY_MESSAGE,
+}
+
+
+@pytest.fixture
+def hosted(monkeypatch: pytest.MonkeyPatch):
+    registry = ConnectionRegistry()
+    protocol = _protocol(
+        registry, _RecordingSessionStore(), {"hosted_launch_id": "launch-1"}
+    )
+    init_operations_protocol(protocol)
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    yield SimpleNamespace(registry=registry, protocol=protocol)
+    init_operations_protocol(None)  # type: ignore[arg-type]
+
+
+async def test_a_hosted_agents_non_worker_is_refused_with_a_coded_detail_over_http(
+    hosted: Any,
+) -> None:
+    _open(hosted.registry, "local-console")
+    app = FastAPI()
+    app.include_router(operations_router)
+    app.dependency_overrides[get_agent_from_scope] = lambda: SimpleNamespace(id=AGENT)
+    app.dependency_overrides[get_protocol] = lambda: hosted.protocol
+    app.dependency_overrides[get_session_factory] = lambda: None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    ) as client:
+        response = await client.post(
+            f"/agents/{AGENT}/ops/connect_to_room",
+            json={"room_id": ROOM},
+            headers={"x-switch-connection-id": "local-console"},
+        )
+    assert response.status_code == 403
+    assert response.json()["detail"] == HOSTED_WORKER_ONLY
+
+
+async def test_a_hosted_agents_non_worker_is_refused_with_a_coded_detail_over_mcp(
+    hosted: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "get_http_request",
+        lambda: SimpleNamespace(scope={"agent_id": AGENT}),
+    )
+    async with Client(mcp_server.mcp) as client:
+        with pytest.raises(ToolError) as refused:
+            await client.call_tool("connect_to_room", {"room_id": ROOM})
+    assert json.loads(str(refused.value)) == HOSTED_WORKER_ONLY

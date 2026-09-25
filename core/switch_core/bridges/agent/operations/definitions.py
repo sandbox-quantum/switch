@@ -31,7 +31,11 @@ from switch_core.bridges.agent.protocol.connections import (
     ConnectionError_,
     evicted_session_warning,
 )
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
+from switch_core.bridges.agent.protocol.hosted_workers import (
+    HOSTED_WORKER_ONLY_MESSAGE,
+    CodedPermissionError,
+    hosted_launch_of,
+)
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
@@ -279,9 +283,7 @@ async def connect_to_room(
         key = session_key()
         caller_connection = protocol.connections.get(key) if key else None
         if caller_connection is None or caller_connection.worker is None:
-            raise PermissionError(
-                "hosted_worker_only: only the agent's attached cloud worker may claim rooms"
-            )
+            raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
 
     profile = IntegrationProfile(**agent.integration_profile)
     instructions = build_room_instructions(
