@@ -66,7 +66,7 @@ artifacts:
 
   switch-console:
     description: The desktop app.
-    version: 0.35.0
+    version: 0.36.0
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,7 +78,7 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.27.0
+      switch-core: 0.28.0
 
   agent-runtime:
     description: >-
@@ -92,7 +92,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.8
+    version: 1.9.9
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with
