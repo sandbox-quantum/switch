@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-log = Path(os.environ['WATCH_TEST_LOG'])
+log = Path(os.environ['NUDGE_TEST_LOG'])
 for line in sys.stdin:
     msg = json.loads(line)
     if 'id' not in msg:
@@ -22,13 +22,13 @@ for line in sys.stdin:
                 'connection': os.environ.get('SWITCH_CONNECTION_ID')}) + '\n')
         if tool in ('connect_to_room', 'list_participants'):
             data = {'participants': [
-                {'id': 'watcher-id', 'name': 'watcher', 'type': 'agent', 'status': 'live'},
+                {'id': 'nudge-id', 'name': 'nudge', 'type': 'agent', 'status': 'live'},
                 {'id': 'foreman-id', 'name': 'foreman', 'type': 'agent', 'status': 'live'},
             ], 'warning': None}
         elif tool == 'send_targeted_message':
-            if os.environ.get('WATCH_TEST_FAIL') == 'after_send':
+            if os.environ.get('NUDGE_TEST_FAIL') == 'after_send':
                 sys.exit(0)
-            data = {'event_id': 'event-123', 'target_statuses': {'foreman': os.environ.get('WATCH_TEST_STATUS', 'live')}}
+            data = {'event_id': 'event-123', 'target_statuses': {'foreman': os.environ.get('NUDGE_TEST_STATUS', 'live')}}
         else:
             data = {}
         result = {'content': [{'type': 'text', 'text': json.dumps(data)}]}

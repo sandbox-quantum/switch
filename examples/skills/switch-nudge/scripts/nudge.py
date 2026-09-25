@@ -66,24 +66,6 @@ def database(root):
         fcntl.flock(lock, fcntl.LOCK_EX)
         path = root / "state.json"
         data = read_json(path) if path.exists() else {"version": 2, "nudges": {}}
-        if "watches" in data:
-            if worker_alive(root):
-                raise NudgeError("Stop the legacy watcher worker before migrating this state directory.")
-            atomic_json(root / "watcher-state-backup.json", data)
-            records = {}
-            states = {"waiting": "scheduled", "awaiting_ack": "sent", "stopped": "cancelled",
-                      "sending": "uncertain"}
-            for key, old in data["watches"].items():
-                item = dict(old)
-                item.update(state=states.get(old["state"], old["state"]),
-                            due_at=old.get("next_check_at"), delay=old.get("interval", 600),
-                            revision=1, legacy_expires_at=old.get("expires_at"))
-                for field in ("next_check_at", "interval", "expires_at"):
-                    item.pop(field, None)
-                if item["state"] == "scheduled" and (item.get("legacy_expires_at") or float("inf")) <= time.time():
-                    item["state"] = "expired"
-                records[key] = item
-            data = {"version": 2, "nudges": records}
         if data.get("version") != 2:
             raise NudgeError("Unsupported state version.")
         yield data
@@ -272,9 +254,7 @@ def ensure_worker(root):
 
 
 def default_root():
-    new = Path.home() / '.local/state/switch-nudge'
-    old = Path.home() / '.local/state/switch-watch'
-    return old if not (new / 'config.json').exists() and (old / 'config.json').exists() else new
+    return Path.home() / '.local/state/switch-nudge'
 
 
 def duration(value):
@@ -312,9 +292,6 @@ def deliver(root, config, client, item):
             current = db['nudges'][ident]
             if current['state'] != 'sending' or current['revision'] != revision:
                 return
-            if current.get('legacy_expires_at') and time.time() >= current['legacy_expires_at']:
-                current['state'] = 'expired'
-                return
         args = {'body': message(root, item), 'target_names': [item['target']]}
         if item.get('thread'):
             args['thread_id'] = item['thread']
@@ -343,9 +320,7 @@ def deliver(root, config, client, item):
 
 
 def run_worker(root):
-    # Migrate legacy state before taking the worker lock.
-    with database(root):
-        pass
+    private_dir(root)
     with open(root / 'worker.lock', 'a+') as lock:
         os.chmod(root / 'worker.lock', 0o600)
         try:
@@ -370,9 +345,6 @@ def run_worker(root):
                 with database(root) as db:
                     now = time.time()
                     db['worker']['last_check_at'] = now
-                    for item in db['nudges'].values():
-                        if item['state'] == 'scheduled' and item.get('legacy_expires_at') and item['legacy_expires_at'] <= now:
-                            item['state'] = 'expired'
                     scheduled = [v for v in db['nudges'].values() if v['state'] == 'scheduled']
                     if not scheduled:
                         # Serialize exit with new registrations: a new schedule sees
@@ -504,7 +476,7 @@ def cli(args):
                 raise NudgeError('Unknown nudge ID.')
             if args.room or args.target or args.thread or args.top_level or args.label:
                 raise NudgeError('An existing ID retains its room, target, thread and label. Supply only --in.')
-            if item['state'] in ('cancelled', 'expired'):
+            if item['state'] == 'cancelled':
                 raise NudgeError('This registration ended. Create a new nudge instead.')
             if item['state'] in ('uncertain', 'blocked') and not args.retry_after_check:
                 raise NudgeError('Inspect the room and fix setup first, then use --retry-after-check if another send is needed.')
@@ -527,7 +499,6 @@ def cli(args):
                 raise NudgeError('This target/thread already has a pending nudge: ' + other['id'])
         item.update(state='scheduled', delay=args.delay, due_at=now + args.delay,
                     revision=item['revision'] + 1, error=None, scheduled_at=now)
-        item.pop('legacy_expires_at', None)
         db['nudges'][item['id']] = item
         result = dict(item)
     ensure_worker(root)

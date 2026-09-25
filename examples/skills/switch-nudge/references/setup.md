@@ -2,7 +2,7 @@
 
 Switch Nudge sends one addressed reminder later. A dedicated sender identity
 posts into the chosen thread. The recipient can schedule the same ID again.
-There is no automatic repetition, acknowledgement, renewal or recovery nudge.
+Each scheduled reminder sends once.
 
 Requirements: Python 3.10+, macOS or Linux, and a compatible Switch MCP runtime.
 The default runtime command is `npx --yes @sandboxaq/switch-agent-runtime@0.4.3`,
@@ -26,33 +26,10 @@ Ensure `~/.local/bin` is on the agent host's PATH. Do not overwrite an unrelated
 existing `nudge` command. The launcher resolves its own symlink to find the
 Python helper. It can also be invoked directly as `<skill>/scripts/nudge`.
 
-## Reuse an existing watcher setup
-
-There is no need to rename the existing Switch sender or create new credentials.
-If `~/.local/state/switch-nudge/config.json` is absent and the previous
-`~/.local/state/switch-watch/config.json` exists, Nudge uses the old directory.
-Keep using that directory consistently. A custom `--state-dir` also works.
-
-Stop the old worker before migration. Nudge refuses to convert state while a
-worker holds its lock. On first state access, it saves `watcher-state-backup.json`
-and converts records without posting anything:
-
-- An old pending timer becomes a one-shot nudge at its existing next check time,
-  still subject to its old expiry until explicitly rescheduled.
-- An old reminder awaiting acknowledgement becomes `sent`; nothing is replayed.
-- Stopped and expired registrations stay ended.
-- Interrupted sends become `uncertain` and require inspection.
-
-Rescheduling a migrated ID sets one new due time and removes its legacy lease.
-The old start/ack/touch/renew/stop commands no longer apply. Read the new skill in
-existing agent sessions. Keep historical copies outside discoverable skill folders
-so agents do not choose the retired workflow.
-
-## Create a sender identity if needed
+## Create a sender identity
 
 Create a dedicated Switch agent identity, for example `nudge.example`, with
 LLM-session auto-start disabled. Do not launch an LLM under that identity.
-An existing `watcher` identity works unchanged.
 
 You can use Switch's normal setup or the bundled registration helper:
 
@@ -114,7 +91,7 @@ backticked command to schedule the same ID again. If no command is run, there
 will be no second reminder. Cancel a rescheduled timer with `nudge cancel ID`.
 
 Offline tests cover sender isolation, one-shot delivery, cancellation,
-rescheduling and migration. They do not prove your server's compatibility,
+and rescheduling. They do not prove your server's compatibility,
 addressing policy or model wake-up. Use this small live trial for those checks.
 
 ## Remote execution and recovery
@@ -149,8 +126,8 @@ For a custom state directory, put `--state-dir PATH` before the subcommand.
 The reminder includes that path in its reschedule command. Agents using the same
 OS account share that account's access to the helper.
 
-State lives in `~/.local/state/switch-nudge`, or the reused legacy directory,
-with mode 700 on the directory and 600 on files. Use the same OS user and state
+State lives in `~/.local/state/switch-nudge`, with mode 700 on the directory
+and 600 on files. Use the same OS user and state
 directory for all control commands. Do not use a saved PID to kill a process.
 To retire the tool, cancel all pending nudges and confirm the worker has exited.
 Revoking the sender's server identity or room membership is a separate action.

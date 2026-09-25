@@ -22,15 +22,15 @@ class NudgeTests(unittest.TestCase):
         self.root = Path(self.temp.name) / 'state'
         self.creds = Path(self.temp.name) / 'sender.json'
         self.creds.write_text(json.dumps({'env': {
-            'SWITCH_AGENT_ID': 'watcher-id', 'SWITCH_API_ENDPOINT': 'https://switch.invalid',
+            'SWITCH_AGENT_ID': 'nudge-id', 'SWITCH_API_ENDPOINT': 'https://switch.invalid',
             'SWITCH_API_TOKEN': 'PLACEHOLDER_SENDER_CREDENTIAL'}}))
         self.creds.chmod(0o600)
         self.log = Path(self.temp.name) / 'calls.jsonl'
-        self.env = patch.dict(os.environ, {'WATCH_TEST_LOG': str(self.log),
+        self.env = patch.dict(os.environ, {'NUDGE_TEST_LOG': str(self.log),
             'SWITCH_AGENT_ID': 'foreman-id', 'SWITCH_API_TOKEN': 'PLACEHOLDER_UNRELATED_CREDENTIAL',
             'SWITCH_SESSION_FILE': '/wrong/session', 'SWITCH_CONNECTION_ID': 'wrong-connection'})
         self.env.start()
-        self.call('configure', '--credentials', str(self.creds), '--sender', 'watcher',
+        self.call('configure', '--credentials', str(self.creds), '--sender', 'nudge',
                   '--runtime-json', json.dumps([sys.executable, str(Path(__file__).with_name('fake_mcp.py'))]))
         self.processes = []
 
@@ -88,8 +88,7 @@ class NudgeTests(unittest.TestCase):
         self.assertIn('#1', body)
         self.assertIn('`nudge ', body)
         self.assertIn(f'schedule {ident} --in 15m`', body)
-        self.assertNotIn('Use switch-watch', body)
-        self.assertTrue(all(c['sender'] == 'watcher-id' and c['selector'] is None and c['connection'] is None for c in self.calls()))
+        self.assertTrue(all(c['sender'] == 'nudge-id' and c['selector'] is None and c['connection'] is None for c in self.calls()))
         self.assertNotIn('PLACEHOLDER_SENDER_CREDENTIAL', (self.root / 'state.json').read_text())
 
     def test_reschedule_same_id_sends_second_sequence(self):
@@ -128,7 +127,7 @@ class NudgeTests(unittest.TestCase):
     def test_unknown_send_is_not_retried(self):
         ident = self.schedule()
         self.due(ident)
-        with patch.dict(os.environ, {'WATCH_TEST_FAIL': 'after_send'}):
+        with patch.dict(os.environ, {'NUDGE_TEST_FAIL': 'after_send'}):
             self.launch().wait(timeout=6)
         self.assertEqual(self.item(ident)['state'], 'uncertain')
         self.launch().wait(timeout=6)
@@ -179,24 +178,10 @@ class NudgeTests(unittest.TestCase):
             w.deliver(self.root, w.read_json(self.root / 'config.json'), Client(), item)
         self.assertEqual(self.item(ident)['state'], 'cancelled')
 
-    def test_legacy_records_migrate_without_replaying_old_reminders(self):
-        old = {'watches': {'old': {'id': 'old', 'state': 'awaiting_ack', 'sequence': 2,
-            'room': 'room-1', 'target': 'foreman', 'thread': 'thread-1', 'label': 'Batch A',
-            'interval': 600, 'next_check_at': time.time() - 1, 'expires_at': time.time() + 3600}}}
-        w.atomic_json(self.root / 'state.json', old)
-        self.assertEqual(self.item('old')['state'], 'sent')
-        self.assertTrue((self.root / 'watcher-state-backup.json').exists())
-        self.launch().wait(timeout=6)
-        self.assertEqual(self.calls(), [])
-        with patch.object(w, 'ensure_worker'):
-            self.call('schedule', 'old', '--in', '15m')
-        self.assertEqual(self.item('old')['state'], 'scheduled')
-        self.assertNotIn('legacy_expires_at', self.item('old'))
-
     def test_refused_target_blocks_without_retry(self):
         ident = self.schedule()
         self.due(ident)
-        with patch.dict(os.environ, {'WATCH_TEST_STATUS': 'not_permitted'}):
+        with patch.dict(os.environ, {'NUDGE_TEST_STATUS': 'not_permitted'}):
             self.launch().wait(timeout=6)
         self.assertEqual(self.item(ident)['state'], 'blocked')
 

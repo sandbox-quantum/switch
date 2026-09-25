@@ -9,8 +9,7 @@ Arrange to be nudged later, then end the turn. The helper sends one addressed
 message in a Switch thread. It does not interpret conversation, monitor activity,
 or repeat automatically. If another check is needed, schedule the same ID again.
 
-Read [setup](references/setup.md) when configuring a host, registering the sender,
-or migrating from switch-watch. The helper uses a dedicated Switch sender and
+Read [setup](references/setup.md) when configuring a host or registering the sender. The helper uses a dedicated Switch sender and
 the existing MCP runtime. No Switch server change or model for the sender is
 needed. Keep credentials out of messages, command arguments and control records.
 
@@ -33,8 +32,7 @@ instead of `--thread`; prefer the existing work thread.
 Save the returned ID, host, state directory, due time and purpose in the task's
 persistent context. `status` reports worker health; successful registration does
 not prove delivery. End the turn while waiting rather than sleeping or polling.
-Delays range from 60 seconds to seven days. There is no repeating interval or
-four-hour lease.
+Delays range from 60 seconds to seven days.
 
 ## On receiving a nudge
 
