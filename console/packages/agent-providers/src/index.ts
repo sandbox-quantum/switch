@@ -85,3 +85,5 @@ export type { SharedHostConfig } from './host/shared-config';
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
+export { hostSessions, LIST_SCRIPT } from './host/session-list';
+export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
