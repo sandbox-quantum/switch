@@ -73,6 +73,19 @@ class RelayError(Exception):
         self.status = status
 
 
+HOSTED_WORKER_ONLY_MESSAGE = (
+    "This agent runs on a cloud worker; only its attached worker may do this."
+)
+
+
+class CodedPermissionError(PermissionError):
+    """A refusal every front door renders as the same `{code, message}` object."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(json.dumps({"code": code, "message": message}))
+        self.detail = {"code": code, "message": message}
+
+
 class WorkerBusyError(RelayError):
     def __init__(self) -> None:
         super().__init__(
@@ -455,6 +468,19 @@ class RelayViews:
                 sub.subscribed_generation = generation
                 names.append(name)
         return names
+
+    def subscribe_failed(self, agent_id: str, name: str, error: RelayError) -> None:
+        """Tell every view of a subscription the worker could not be asked, and ask again later."""
+        sub = self._subs.get((agent_id, name))
+        if sub is None:
+            return
+        sub.subscribed_generation = None
+        session_id = None if name == HEALTH_SUBSCRIPTION else name
+        for view in sub.views:
+            view.push(
+                "error",
+                {"sessionId": session_id, "code": error.code, "message": str(error)},
+            )
 
     def deliver(
         self, agent_id: str, generation: int, pushes: list[dict[str, Any]]

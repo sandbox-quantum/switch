@@ -236,7 +236,7 @@ async def relay(
             task.add_done_callback(_dispatches.discard)
             pending = await asyncio.shield(task)
         conn = protocol.connections.get(pending.connection_id)
-        answer = await pending.future
+        answer = await asyncio.shield(pending.future)
     except RelayError as error:
         return relay_error(error, conn)
     return JSONResponse(
@@ -258,7 +258,12 @@ def ask_worker(
     subscription: str,
     on: bool,
 ) -> None:
-    """Subscribe or unsubscribe the worker for Console views; the answer is not awaited."""
+    """Subscribe or unsubscribe the worker for Console views; the answer is not awaited.
+
+    A subscribe the worker's queue cannot take is shown on every view of it and
+    asked again on the next pass. An unsubscribe that cannot be sent is not
+    lost either: the worker's next push for it is answered with `unsubscribe`.
+    """
     try:
         dispatch_read_only(
             protocol,
@@ -268,9 +273,13 @@ def ask_worker(
             SUBSCRIPTION_RELAY_TIMEOUT_MS,
         )
     except RelayError as error:
+        if on:
+            protocol.connections.relay_views.subscribe_failed(
+                conn.agent_id, subscription, error
+            )
+            return
         logger.warning(
-            "Could not %s worker subscription for agent %s: %s",
-            "open" if on else "close",
+            "Could not close worker subscription for agent %s: %s; the worker's next push is refused instead",
             conn.agent_id,
             error.code,
         )

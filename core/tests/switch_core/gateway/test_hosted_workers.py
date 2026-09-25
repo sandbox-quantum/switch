@@ -15,6 +15,7 @@ from switch_core.bridges.agent.api.handlers import connection_placements, poll_e
 from switch_core.bridges.agent.api.schemas import ConnectionPlacementsRequest
 from switch_core.bridges.agent.protocol.connections import TAKEN_OVER
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.hosted_workers import ConsoleView
 from switch_core.db.models import (
     Agent,
     Client,
@@ -23,6 +24,8 @@ from switch_core.db.models import (
     Room,
     require_tenant_id,
 )
+from switch_core.gateway import hosted_relay
+from switch_core.gateway.dependencies import get_session
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     TOKEN,
     controller_app,
@@ -579,3 +582,117 @@ async def test_auto_start_off_notice_is_posted_once(worker_app):
     assert second.json()["posted"] is False
     assert len(sent) == 1
     assert "not set to start one automatically" in sent[0][1]
+
+
+@pytest.mark.parametrize("order", ["reply_then_teardown", "teardown_then_reply"])
+@pytest.mark.parametrize("stage", ["dispatching", "awaiting_reply"])
+async def test_gateway_cancel_with_teardown_and_immediate_reply(
+    worker_app, caplog, order, stage
+):
+    client, request_id, _, service, factory, _ = worker_app
+    conn = await _ready_worker(worker_app)
+    app = client._transport.app
+    request_sessions: list[str] = []
+
+    async def tracked_session():
+        async with factory() as session:
+            request_sessions.append("open")
+            try:
+                yield session
+            finally:
+                request_sessions.append("closed")
+
+    app.dependency_overrides[get_session] = tracked_session
+    loop = asyncio.get_running_loop()
+    loop_errors: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    try:
+        request = asyncio.create_task(
+            client.post(
+                f"/hosted-launches/{request_id}/relay",
+                json={"message": {"forget": str(uuid4())}, "timeout_ms": 5000},
+            )
+        )
+        frames: list[dict[str, Any]] = []
+        for _ in range(1000):
+            frames += [d for e, d in conn.worker_frames.drain() if e == "relay"]
+            if frames:
+                break
+            await asyncio.sleep(0)
+        assert len(frames) == 1
+        if stage == "awaiting_reply":
+            for _ in range(20):
+                await asyncio.sleep(0)
+        reply = client.post(
+            f"/agents/{conn.agent_id}/connection/relay/{frames[0]['id']}",
+            json={
+                "connection_id": conn.id,
+                "generation": conn.stream_generation,
+                "ok": True,
+                "value": {"accepted": 1},
+            },
+        )
+        if order == "reply_then_teardown":
+            replying = asyncio.create_task(reply)
+            request.cancel()
+        else:
+            request.cancel()
+            replying = asyncio.create_task(reply)
+        outcome, replied = await asyncio.gather(
+            request, replying, return_exceptions=True
+        )
+        await asyncio.gather(*hosted_relay._dispatches)
+    finally:
+        loop.set_exception_handler(None)
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert replied.status_code == 200, replied.text
+    assert replied.json() == {"ok": True}
+    assert frames[0]["relay_seq"] == 1
+    assert conn.worker_frames.drain() == []
+    assert (await _launch(factory, request_id)).relay_seq == 1
+    assert request_sessions == ["open", "closed"]
+    relays = service.connections.relays
+    assert relays.get(frames[0]["id"]).future.done()
+    assert not relays.mutating_pending(conn.agent_id, conn.worker.launch_id)
+    assert loop_errors == []
+    logged = caplog.text.lower()
+    assert "session closed" not in logged
+    assert "connection in use" not in logged
+    assert "another operation is in progress" not in logged
+
+
+async def test_relay_stream_shows_a_full_worker_queue(worker_app):
+    _, request_id, agent_id, service, factory, _ = worker_app
+    conn = await _ready_worker(worker_app)
+    session_id = str(uuid4())
+    slots = [conn.worker_frames.reserve(1) for _ in range(64)]
+    stream = hosted_relay.relay_events(
+        service,
+        require_tenant_id(),
+        agent_id,
+        request_id,
+        ConsoleView(frozenset({session_id})),
+    )
+    try:
+        assert (await anext(stream)).startswith(b"event: worker\n")
+        refused = (await anext(stream)).decode()
+        assert refused.startswith("event: error\n")
+        assert json.loads(refused.split("data: ", 1)[1]) == {
+            "sessionId": session_id,
+            "code": "worker_busy",
+            "message": "The worker's frame queue is full. Retry shortly.",
+        }
+        for slot in slots:
+            slot.release()
+        retried = asyncio.create_task(anext(stream))
+        for _ in range(300):
+            frames = [d for e, d in conn.worker_frames.drain() if e == "relay"]
+            if frames:
+                break
+            await asyncio.sleep(0.01)
+        assert [frame["message"] for frame in frames] == [{"subscribe": session_id}]
+        retried.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await retried
+    finally:
+        await stream.aclose()
