@@ -10,7 +10,9 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from uuid import UUID
+from uuid import UUID, uuid5
+
+from botocore.exceptions import ClientError
 
 from .config import ConfigError, ControllerConfig
 from .model import DesiredState, ObservedState
@@ -20,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 WORKER_CAPABILITY_PATH = "/run/switch-hosted/secrets/worker-capability"
 WORKER_CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+
+
+def bundle_token(request_id: str, revision: int) -> str:
+    return str(uuid5(UUID(request_id), str(revision)))
 
 
 def worker_attach_fields(prepared: dict) -> tuple[dict[str, str], dict[str, str]]:
@@ -217,23 +223,66 @@ class Gateway:
         if job["state"] == "error":
             self.store.set_desired(agent_id, DesiredState.STOPPED)
             return
+        revision = job["revision"]
+        token = bundle_token(request_id, revision)
+        agent = self.store.require_bundle(agent_id, revision, token)
+        if agent.required_bundle_token != token:
+            logger.warning(
+                "Ignoring launch %s at revision %s: revision %s is already required.",
+                request_id,
+                revision,
+                agent.required_bundle_revision,
+            )
+            return
         if agent.desired_state == DesiredState.STOPPED:
             agent = self.store.set_desired(agent_id, DesiredState.RUNNING)
-        if agent.volume_id is None or agent.instance_launch_issued:
+        if agent.volume_id is None or agent.bundle_token == token:
             return
-        versions = self.secrets.describe_secret(SecretId=assignment.assignment_secret_arn).get(
-            "VersionIdsToStages", {}
-        )
-        if request_id not in versions:
-            prepared = self.request(f"/{request_id}/prepare", {})
-            if prepared["agent_id"] != agent_id:
-                raise ConfigError("Cloud gateway returned a different worker identity.")
-            bundle = self.bundle(prepared, agent.volume_id)
+        secret_id = assignment.assignment_secret_arn
+        if self.promote_bundle(secret_id, token):
+            self.store.record_bundle(agent_id, token)
+            return
+        prepared = self.request(f"/{request_id}/prepare", {})
+        if prepared["agent_id"] != agent_id:
+            raise ConfigError("Cloud gateway returned a different worker identity.")
+        if prepared["revision"] != revision:
+            logger.warning(
+                "Launch %s moved from revision %s to %s during preparation; waiting for the next poll.",
+                request_id,
+                revision,
+                prepared["revision"],
+            )
+            return
+        bundle = self.bundle(prepared, agent.volume_id)
+        try:
             self.secrets.put_secret_value(
-                SecretId=assignment.assignment_secret_arn,
-                ClientRequestToken=request_id,
+                SecretId=secret_id,
+                ClientRequestToken=token,
                 SecretString=json.dumps(bundle, separators=(",", ":")),
             )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ResourceExistsException":
+                raise
+            if not self.promote_bundle(secret_id, token):
+                raise
+        self.store.record_bundle(agent_id, token)
+
+    def promote_bundle(self, secret_id: str, token: str) -> bool:
+        """Make the bundle version `token` AWSCURRENT if it exists; False if it does not."""
+        versions = self.secrets.describe_secret(SecretId=secret_id).get("VersionIdsToStages", {})
+        if token not in versions:
+            return False
+        if "AWSCURRENT" in versions[token]:
+            return True
+        holder = {
+            "RemoveFromVersionId": version
+            for version, stages in versions.items()
+            if "AWSCURRENT" in stages
+        }
+        self.secrets.update_secret_version_stage(
+            SecretId=secret_id, VersionStage="AWSCURRENT", MoveToVersionId=token, **holder
+        )
+        return True
 
     def report_observations(self) -> None:
         for job in self.request(""):
