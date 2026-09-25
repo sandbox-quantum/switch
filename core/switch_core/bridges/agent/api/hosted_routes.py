@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
@@ -8,8 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.agent.api.hosted_worker_routes import refusal, require_worker
 from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_config, get_session
+from switch_core.bridges.agent.dependencies import get_config, get_protocol, get_session
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
@@ -146,61 +148,15 @@ async def provider_status(
     return {"verified": body.authenticated}
 
 
-@router.post("/operations/claim")
-async def claim_operation(
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> dict | None:
-    launch = await operation_launch(session, agent)
-    rows = list(
-        await session.scalars(
-            select(HostedOperation)
-            .where(
-                HostedOperation.tenant_id == require_tenant_id(),
-                HostedOperation.launch_id == launch.id,
-                HostedOperation.state.in_(["queued", "claimed"]),
-            )
-            .order_by(HostedOperation.created_at)
-            .with_for_update()
-        )
-    )
-    now = datetime.now(UTC)
-    for operation in rows:
-        if operation.launch_revision != launch.revision:
-            operation.state = "unknown" if operation.state == "claimed" else "failed"
-            operation.error = (
-                "The worker changed. Inspect the session if the outcome is unknown."
-            )
-            operation.updated_at = now
-            continue
-        if operation.state == "claimed" and operation.updated_at < now - timedelta(
-            minutes=5
-        ):
-            operation.state = "unknown"
-            operation.error = "The worker did not confirm the outcome. Inspect the session before issuing another operation."
-        elif operation.state == "queued":
-            operation.state = "claimed"
-            operation.updated_at = now
-            await session.commit()
-            return operation_summary(operation)
-    await session.commit()
-    return None
-
-
-class OperationResult(BaseModel):
+class WorkerFence(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    state: Literal["applied", "failed", "unknown"]
-    error: str | None = Field(max_length=512)
+    connection_id: str = Field(min_length=1, max_length=128)
+    generation: int = Field(ge=0)
 
 
-@router.post("/operations/{operation_id}/result")
-async def operation_result(
-    operation_id: UUID,
-    body: OperationResult,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> dict:
-    launch = await operation_launch(session, agent)
+async def locked_operation(
+    session: AsyncSession, launch: HostedLaunch, operation_id: UUID
+) -> HostedOperation:
     operation = await session.scalar(
         select(HostedOperation)
         .where(
@@ -212,9 +168,68 @@ async def operation_result(
     )
     if operation is None:
         raise HTTPException(404, "Cloud operation not found.")
+    return operation
+
+
+@router.post("/operations/{operation_id}/claim")
+async def claim_operation(
+    operation_id: UUID,
+    body: WorkerFence,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict:
+    conn = require_worker(
+        protocol.connections, agent, body.connection_id, body.generation
+    )
+    launch = await operation_launch(session, agent)
+    operation = await locked_operation(session, launch, operation_id)
+    assert conn.worker is not None
+    if (
+        operation.state != "queued"
+        or operation.launch_revision != launch.revision
+        or conn.worker.launch_revision != launch.revision
+    ):
+        raise refusal(
+            409, "operation_not_claimable", "This operation cannot be claimed."
+        )
+    operation.state = "claimed"
+    operation.claimed_by = f"{protocol.event_buffer.boot}:{conn.id}:{body.generation}"
+    operation.claimed_boot_id = conn.worker.boot_id
+    operation.updated_at = datetime.now(UTC)
+    await session.commit()
+    return operation_summary(operation)
+
+
+class OperationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1, max_length=128)
+    generation: int = Field(ge=0)
+    state: Literal["applied", "failed", "unknown"]
+    error: str | None = Field(max_length=512)
+
+
+@router.post("/operations/{operation_id}/result")
+async def operation_result(
+    operation_id: UUID,
+    body: OperationResult,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict:
+    conn = require_worker(
+        protocol.connections, agent, body.connection_id, body.generation
+    )
+    launch = await operation_launch(session, agent)
+    operation = await locked_operation(session, launch, operation_id)
+    assert conn.worker is not None
     if operation.launch_revision != launch.revision:
         raise HTTPException(
             409, "The operation belongs to an earlier worker generation."
+        )
+    if operation.claimed_boot_id != conn.worker.boot_id:
+        raise refusal(
+            409, "operation_not_claimed", "This worker did not claim the operation."
         )
     if operation.state not in ("claimed", body.state):
         raise HTTPException(409, "This operation is no longer awaiting a result.")

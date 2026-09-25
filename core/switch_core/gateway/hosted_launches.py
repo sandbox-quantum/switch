@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self, cast
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.addressing import AddressingPolicy
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import decrypt_token
 from switch_core.db.models import (
@@ -21,16 +23,18 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_launch_store import (
     HostedLaunchConflict,
     HostedLaunchStore,
+    lock_launch,
 )
 from switch_core.db.stores.provider_connection_store import (
     ProviderConnectionBusy,
     ProviderConnectionStore,
 )
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import get_config, get_protocol, get_session
 from switch_core.gateway.github_connections import connection_status
 from switch_core.gateway.github_connections import service as get_github
 from switch_core.gateway.provider_connections import get_verifier
@@ -136,6 +140,7 @@ async def lifecycle(
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> dict:
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -185,6 +190,8 @@ async def lifecycle(
     launch.updated_at = datetime.now(UTC)
     await queue_revocation(session, (GitHubIssuedToken.launch_id == launch.id,))
     await session.commit()
+    if launch.agent_id:
+        protocol.connections.supersede(launch.agent_id, launch.revision)
     response = summary(launch)
     remaining = await revoke_pending(
         session, config, (GitHubIssuedToken.launch_id == launch.id,)
@@ -200,6 +207,88 @@ def operation_summary(operation: HostedOperation) -> dict:
         "state": operation.state,
         "error": operation.error,
     }
+
+
+class SessionOperationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    session_id: UUID
+    action: Literal["start", "restart"]
+
+
+OPERATION_RERING_SECONDS = 5
+OPERATION_RERINGS = 6
+_doorbells: set[asyncio.Task[None]] = set()
+
+
+async def ring_operation(
+    protocol: ProtocolService, tenant_id: str, agent_id: str, operation_id: str
+) -> None:
+    """Ring the worker for a queued operation until it is claimed or the rings run out."""
+    protocol.connections.ring_worker(agent_id, "operation", {"id": operation_id})
+    for _ in range(OPERATION_RERINGS):
+        await asyncio.sleep(OPERATION_RERING_SECONDS)
+        async with tenant_session(protocol.session_factory, tenant_id) as session:
+            operation = await session.get(HostedOperation, (tenant_id, operation_id))
+            if operation is None or operation.state != "queued":
+                return
+        protocol.connections.ring_worker(agent_id, "operation", {"id": operation_id})
+
+
+@router.post("/{request_id}/sessions", status_code=202)
+async def session_operation(
+    request_id: UUID,
+    body: SessionOperationRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict:
+    await lock_launch(session, str(request_id))
+    launch = await HostedLaunchStore().owned(session, str(request_id), user.id)
+    if launch is None:
+        raise HTTPException(404, "Cloud launch not found.")
+    existing = await session.get(HostedOperation, (require_tenant_id(), str(body.id)))
+    if existing:
+        if (
+            existing.launch_id != launch.id
+            or existing.action != body.action
+            or existing.session_id != str(body.session_id)
+        ):
+            raise HTTPException(
+                409, "This operation ID was already used for different details."
+            )
+        return operation_summary(existing)
+    if (
+        launch.state not in ("ready", "running")
+        or launch.desired_state != "running"
+        or launch.agent_id is None
+    ):
+        raise HTTPException(409, "Start the cloud worker and wait until it is ready.")
+    pending = await session.scalar(
+        select(HostedOperation.id).where(
+            HostedOperation.tenant_id == require_tenant_id(),
+            HostedOperation.launch_id == launch.id,
+            HostedOperation.session_id == str(body.session_id),
+            HostedOperation.state.in_(["queued", "claimed"]),
+        )
+    )
+    if pending is not None:
+        raise HTTPException(409, "This session already has a pending operation.")
+    operation = HostedOperation(
+        id=str(body.id),
+        launch_id=launch.id,
+        launch_revision=launch.revision,
+        session_id=str(body.session_id),
+        action=body.action,
+    )
+    session.add(operation)
+    await session.commit()
+    task = asyncio.create_task(
+        ring_operation(protocol, require_tenant_id(), launch.agent_id, operation.id)
+    )
+    _doorbells.add(task)
+    task.add_done_callback(_doorbells.discard)
+    return operation_summary(operation)
 
 
 @router.get("/{request_id}/sessions/{operation_id}")
