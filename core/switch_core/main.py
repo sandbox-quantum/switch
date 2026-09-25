@@ -100,6 +100,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -390,6 +391,7 @@ async def run(config: SwitchConfig) -> None:
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
     usage_store = UsageStore()
+    budget_store = BudgetStore()
     media_store = MediaStore()
     template_store = TemplateStore()
 
@@ -645,6 +647,7 @@ async def run(config: SwitchConfig) -> None:
         invitation_store=invitation_store,
         template_store=template_store,
         usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,

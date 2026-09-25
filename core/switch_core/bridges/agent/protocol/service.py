@@ -58,6 +58,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     resolve_registration_owner_id,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
@@ -79,6 +80,7 @@ from switch_core.db.models import (
     Task,
     Tool,
     User,
+    require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
@@ -87,6 +89,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
 from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -288,6 +291,7 @@ class ProtocolService:
         self.room_role_store = RoomRoleStore()
         self.room_group_store = RoomGroupStore()
         self.message_store = MessageStore()
+        self.budget_guard = BudgetGuard(BudgetStore())
         self.user_store = UserStore()
         self.room_store = room_store
         self.room_service = room_service
@@ -992,9 +996,23 @@ class ProtocolService:
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
         async with self.session_factory() as session:
-            found = await self.room_store.get_with_membership(
-                session, room_id, agent_id
+            return await self._room_member_in(session, agent_id, room_id)
+
+    async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
+        """`require_room_member`, and raise `BudgetExceeded` if the agent has
+        reached a budget covering it. One session for both, so a post still
+        costs one pool checkout."""
+        async with self.session_factory() as session:
+            room = await self._room_member_in(session, agent_id, room_id)
+            await self.budget_guard.require_within(
+                session, tenant_id=require_tenant_id(), agent_id=agent_id
             )
+        return room
+
+    async def _room_member_in(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> RoomDescriptor:
+        found = await self.room_store.get_with_membership(session, room_id, agent_id)
         if found is None:
             raise ValueError(f"Room not found: {room_id}")
         room, is_member = found
@@ -1195,7 +1213,7 @@ class ProtocolService:
         logger.debug(
             "[AGENT-MSG] agent=%s room=%s content=%s", agent_id, room_id, content[:80]
         )
-        room = await self.require_room_member(agent_id, room_id)
+        room = await self.require_room_poster(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
@@ -1270,7 +1288,7 @@ class ProtocolService:
                     f"attachment '{filename}' is {len(data)} bytes, over the "
                     f"{max_bytes}-byte limit (AGENT_MEDIA_MAX_BYTES)"
                 )
-        room = await self.require_room_member(agent_id, room_id)
+        room = await self.require_room_poster(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
@@ -2151,9 +2169,10 @@ class ProtocolService:
         """Delegate a task from one agent to another.
 
         Returns task_id and the performer's reachability status at delegation time.
-        Raises ValueError if agents or room not found, or agents not in room.
+        Raises ValueError if agents or room not found, or agents not in room,
+        and `BudgetExceeded` if either agent has reached a budget covering it.
         """
-        room = await self.require_room_member(requester_id, room_id)
+        room = await self.require_room_poster(requester_id, room_id)
 
         async with self.session_factory() as session:
             performer = await self.agent_store.get(session, performer_id)
@@ -2174,6 +2193,9 @@ class ProtocolService:
                 room_id=room.id,
                 group_id=room_row.group_id if room_row is not None else None,
                 sender_agent_id=requester_id,
+            )
+            await self.budget_guard.require_within(
+                session, tenant_id=require_tenant_id(), agent_id=performer_id
             )
 
         async with self.session_factory() as session:

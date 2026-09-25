@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -39,6 +40,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -92,6 +94,7 @@ def _app(
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
+    app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         client_lifecycle or _FakeClientLifecycle(session_factory)
@@ -1242,3 +1245,233 @@ class TestUsageRoute:
             )
 
         assert response.status_code == 400
+
+
+class TestBudgetRoutes:
+    async def _admin(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str
+    ) -> tuple[str, str]:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_A, role="admin"
+        )
+        return user_id, _token(user_id, f"{name}@example.invalid", TENANT_A)
+
+    async def test_an_admin_sets_a_budget_and_sees_its_spend(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id, token = await self._admin(session_factory, "budget-admin")
+        agent_id, agent_name, _ = await _make_agent_with_key(
+            session_factory, tenant_id=TENANT_A, owner_id=user_id
+        )
+        async with session_factory() as session:
+            agent = await AgentStore().get(session, agent_id)
+            assert agent is not None
+            await UsageStore().record(
+                session,
+                tenant_id=TENANT_A,
+                metric=UsageMetric.TURNS,
+                client_id=agent.client_id,
+                model="",
+                amount=3,
+            )
+            await session.commit()
+
+        async with _client(_app(session_factory), token) as client:
+            created = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": agent_id,
+                    "metric": "turns",
+                    "model": "",
+                    "amount_limit": 3,
+                    "period_hours": 24,
+                },
+            )
+            listed = await client.get(f"/tenants/{TENANT_A}/budgets")
+
+        assert created.status_code == 201
+        body = created.json()
+        assert body["agent_name"] == agent_name
+        assert (body["spent"], body["exhausted"]) == (3, True)
+        assert listed.json() == [body]
+
+    async def test_a_second_budget_on_the_same_thing_is_a_conflict(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-twice")
+        budget = {
+            "agent_id": None,
+            "metric": "messages",
+            "model": "",
+            "amount_limit": 100,
+            "period_hours": 24,
+        }
+
+        async with _client(_app(session_factory), token) as client:
+            first = await client.post(f"/tenants/{TENANT_A}/budgets", json=budget)
+            second = await client.post(f"/tenants/{TENANT_A}/budgets", json=budget)
+
+        assert first.status_code == 201
+        assert second.status_code == 409
+
+    @pytest.mark.parametrize("metric", ["messages", "turns"])
+    async def test_a_budget_on_a_metric_counted_without_a_model_cannot_name_one(
+        self, session_factory: async_sessionmaker[AsyncSession], metric: str
+    ) -> None:
+        _, token = await self._admin(session_factory, f"budget-model-{metric}")
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": metric,
+                    "model": "some-model",
+                    "amount_limit": 100,
+                    "period_hours": 24,
+                },
+            )
+
+        assert response.status_code == 422
+        assert "not counted per model" in response.text
+
+    @pytest.mark.parametrize(
+        ("amount_limit", "period_hours"),
+        [(2**53, 24), (100, 8785), (0, 24), (100, 0)],
+    )
+    async def test_a_budget_past_the_bounds_is_refused(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        amount_limit: int,
+        period_hours: int,
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-bounds")
+        limits = {"amount_limit": amount_limit, "period_hours": period_hours}
+
+        async with _client(_app(session_factory), token) as client:
+            created = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={"agent_id": None, "metric": "turns", "model": "", **limits},
+            )
+            within = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": "turns",
+                    "model": "",
+                    "amount_limit": 100,
+                    "period_hours": 24,
+                },
+            )
+            updated = await client.put(
+                f"/tenants/{TENANT_A}/budgets/{within.json()['id']}", json=limits
+            )
+
+        assert created.status_code == 422
+        assert within.status_code == 201
+        assert updated.status_code == 422
+
+    async def test_a_budget_for_another_workspaces_agent_is_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-foreign")
+        await _make_tenant(session_factory, TENANT_B)
+        their_owner = await _make_member(
+            session_factory, name="budget-theirs", tenant_id=TENANT_B, role="owner"
+        )
+        their_agent, _, _ = await _make_agent_with_key(
+            session_factory, tenant_id=TENANT_B, owner_id=their_owner
+        )
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": their_agent,
+                    "metric": "turns",
+                    "model": "",
+                    "amount_limit": 1,
+                    "period_hours": 24,
+                },
+            )
+
+        assert response.status_code == 404
+
+    async def test_a_limit_that_is_not_positive_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-zero")
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": "turns",
+                    "model": "",
+                    "amount_limit": 0,
+                    "period_hours": 24,
+                },
+            )
+
+        assert response.status_code == 422
+
+    async def test_an_admin_changes_and_removes_a_budget(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-edit")
+
+        async with _client(_app(session_factory), token) as client:
+            created = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": "output_tokens",
+                    "model": "some-model",
+                    "amount_limit": 1000,
+                    "period_hours": 24,
+                },
+            )
+            budget_id = created.json()["id"]
+            updated = await client.put(
+                f"/tenants/{TENANT_A}/budgets/{budget_id}",
+                json={"amount_limit": 5000, "period_hours": 168},
+            )
+            deleted = await client.delete(f"/tenants/{TENANT_A}/budgets/{budget_id}")
+            again = await client.delete(f"/tenants/{TENANT_A}/budgets/{budget_id}")
+            listed = await client.get(f"/tenants/{TENANT_A}/budgets")
+
+        assert updated.status_code == 200
+        assert (updated.json()["amount_limit"], updated.json()["period_hours"]) == (
+            5000,
+            168,
+        )
+        assert deleted.status_code == 204
+        assert again.status_code == 404
+        assert listed.json() == []
+
+    async def test_a_plain_member_cannot_see_budgets(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="budget-member", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "budget-member@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/budgets")
+
+        assert response.status_code == 403
+
+    async def test_an_admin_of_a_cannot_touch_bs_budgets(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-snoop")
+        await _make_tenant(session_factory, TENANT_B)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_B}/budgets")
+
+        assert response.status_code == 403
