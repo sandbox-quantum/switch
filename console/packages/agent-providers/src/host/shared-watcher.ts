@@ -34,12 +34,13 @@ import {
 } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { SessionPlacements } from './placements';
-import { roomInputId } from './room-inbox';
+import { roomInboxHolds, roomInputId } from './room-inbox';
 import {
   SessionHostFailedError,
   type SessionRequest,
   SessionUnavailableError,
 } from './session-channel';
+import { hostInboxRecordSchema } from './session-host';
 import { readHostSessions } from './session-list';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { hostParked } from './shared-state';
@@ -214,6 +215,48 @@ async function stopped(sessionId: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+}
+
+/**
+ * Whether any of this agent's session hosts has a durable record of taking
+ * this room message: in its room inbox, or as a command in its inbox. A record
+ * that cannot be read throws, since it may be the one that says the message
+ * ran.
+ */
+async function hostTook(
+  agentId: string,
+  event: { roomId: string; messageId: string }
+): Promise<boolean> {
+  for (const listed of readHostSessions(nodeFs, nodePath, agentId, sharedSessionsBase())) {
+    const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(listed.session);
+    const sessionRoot = sharedSessionRoot(sessionId);
+    try {
+      if (await roomInboxHolds(sessionRoot, event)) return true;
+      let text: string;
+      try {
+        text = await readFile(join(sessionRoot, 'inbox.jsonl'), 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (text && !text.endsWith('\n')) throw new Error('inbox.jsonl has an incomplete record.');
+      for (const line of text.split('\n').filter(Boolean)) {
+        const record = hostInboxRecordSchema.parse(JSON.parse(line));
+        if (
+          record.type === 'accepted' &&
+          record.command.origin.roomId === event.roomId &&
+          record.command.origin.messageId === event.messageId
+        )
+          return true;
+      }
+    } catch (error) {
+      throw new Error(
+        `Cannot tell whether session ${sessionId} took message ${event.messageId} in room ${event.roomId}, so its cancel stays unanswered: ${(error as Error).message}`,
+        { cause: error }
+      );
+    }
+  }
+  return false;
 }
 
 /**
@@ -1160,6 +1203,7 @@ export async function runSharedWatcher(
             );
             // Already on its way to the host: the host's answer settles it.
             if (inFlight) continue;
+            const took = await hostTook(agentId, entry);
             const waiting = held.get(entry.roomId);
             if (waiting) {
               waiting.events = waiting.events.filter(
@@ -1171,7 +1215,11 @@ export async function runSharedWatcher(
               pumpEntry.queue = pumpEntry.queue.filter(
                 (event) => event.roomId !== entry.roomId || event.messageId !== entry.messageId
               );
-            await assignments.released(entry, entry.reason);
+            await assignments.released(entry, took ? null : entry.reason);
+            if (took) {
+              await ack(entry, 'admitted', null);
+              continue;
+            }
           }
           await ack(entry, 'cancelled', entry.reason);
         }
