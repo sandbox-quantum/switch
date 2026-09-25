@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.collaboration.models import BridgeInstallLink
+from switch_core.db.models import (
+    MAX_BUDGET_AMOUNT,
+    MAX_BUDGET_PERIOD_HOURS,
+    UsageMetric,
+)
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -721,6 +727,21 @@ class MemberDetail(BaseModel):
     created_at: str
 
 
+class UsageTotalResponse(BaseModel):
+    """One consumer's total of one metric over the requested window.
+
+    `client_name` and `client_type` are null when the client has since been
+    deleted; what it spent still counts against the workspace.
+    """
+
+    metric: str
+    client_id: str
+    client_name: str | None
+    client_type: str | None
+    model: str
+    amount: int
+
+
 class MemberUpdateRequest(BaseModel):
     role: str
 
@@ -1175,3 +1196,44 @@ class TemplateValidateResponse(BaseModel):
     blocked: bool
     errors: list[TemplateFinding]
     warnings: list[TemplateFinding]
+
+
+class BudgetCreateRequest(BaseModel):
+    """A new budget. `agent_id` null covers every agent in the workspace;
+    `model` empty covers every model."""
+
+    agent_id: str | None
+    metric: UsageMetric
+    model: str
+    amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
+    period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
+
+    @model_validator(mode="after")
+    def _model_only_on_token_metrics(self) -> BudgetCreateRequest:
+        if self.model and self.metric in (UsageMetric.MESSAGES, UsageMetric.TURNS):
+            raise ValueError(
+                f"A {self.metric.value} budget cannot name a model: "
+                f"{self.metric.value} are not counted per model"
+            )
+        return self
+
+
+class BudgetUpdateRequest(BaseModel):
+    amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
+    period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
+
+
+class BudgetResponse(BaseModel):
+    """A budget and what has been spent against it in the current period,
+    which ends at `resets_at`."""
+
+    id: str
+    agent_id: str | None
+    agent_name: str | None
+    metric: str
+    model: str
+    amount_limit: int
+    period_hours: int
+    spent: int
+    resets_at: datetime
+    exhausted: bool

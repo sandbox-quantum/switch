@@ -60,7 +60,6 @@ function makeProvider(id: string, binaryName: string): CLIAgentPluginProvider {
       prompt: { kind: 'argv', flag: '' },
       sessions: { kind: 'resumable' },
       autoApprove: { kind: 'supported' },
-      hooks: { kind: 'none' },
       mcp: { kind: 'none' },
       plugins: { kind: 'none' },
     },

@@ -1,4 +1,4 @@
-import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Globe, Info, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -10,16 +10,10 @@ import { report } from '@renderer/lib/telemetry/report';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -92,16 +86,6 @@ void _stepsAreExhaustive;
 void _stepsAreComplete;
 
 /**
- * How many steps connecting to a server someone else runs takes: choose that
- * path, point at the server, sign in, then say which messaging account is you.
- *
- * The chooser is step 1 but carries no counter — the other two paths it leads
- * to are not four steps, and a count shown before the choice would promise a
- * length that depends on what is clicked next.
- */
-const CONNECT_STEPS = 4;
-
-/**
  * Add a Switch server: run one here, run one on a host you have onboarded, or
  * connect to one someone else runs.
  *
@@ -158,7 +142,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   useEffect(() => {
     if (isEdit || reportedOpening.current) return;
     reportedOpening.current = true;
-    report('add_server_step', { step: openedAt, choice: openedWith });
+    report('add_server_step', { step: openedAt, choice: openedWith, first_run: false });
   }, [isEdit, openedAt, openedWith]);
 
   /**
@@ -173,7 +157,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     const nextChoice = CHOICE_FOR_STEP[next] ?? choice;
     setChoice(nextChoice);
     setStep(next);
-    report('add_server_step', { step: next, choice: nextChoice });
+    report('add_server_step', { step: next, choice: nextChoice, first_run: false });
   };
   // The server the wizard just created, and the subject of every step after
   // it. Null in edit mode and on the two managed paths, which is what
@@ -212,6 +196,9 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onBack={isEdit ? undefined : () => goToStep('choose')}
         onDone={finish}
         onClose={props.onClose}
+        // The dialog is closed, not left part-way: Cancel is the way out and it
+        // has no server to name.
+        onRegistered={null}
       />
     );
   }
@@ -221,6 +208,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onBack={() => goToStep('choose')}
         onDone={finish}
         onClose={props.onClose}
+        onRegistered={null}
       />
     );
   }
@@ -239,18 +227,22 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       <LinkAccountsStep
         serverId={connected.id}
         serverName={connected.name}
-        step={CONNECT_STEPS}
-        of={CONNECT_STEPS}
         onDone={() => finish(connected.id)}
       />
     );
   }
   return (
     <ExternalServerStep
-      {...props}
+      onSuccess={props.onSuccess}
+      onClose={props.onClose}
+      initialGatewayUrl={props.initialGatewayUrl ?? null}
+      initialApiUrl={props.initialApiUrl ?? null}
+      initialName={props.initialName ?? null}
+      serverId={props.serverId ?? null}
       isEdit={isEdit}
+      firstRun={false}
       existing={connected}
-      onBack={isEdit ? undefined : () => goToStep('choose')}
+      onBack={isEdit ? null : () => goToStep('choose')}
       onConnected={(server) => {
         setConnected(server);
         goToStep('signIn');
@@ -275,42 +267,41 @@ function ChooseStep({
   onClose: () => void;
 }) {
   return (
-    <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>Add a Switch server</DialogTitle>
-      </DialogHeader>
-      <DialogContentArea className="pt-0">
-        <div className="grid gap-3">
-          <ChoiceCard
-            icon={<Laptop className="size-5" />}
-            title="Run a server on this computer"
-            description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
-            onClick={onLocal}
-          />
-          <ChoiceCard
-            icon={<Server className="size-5" />}
-            title="Run a server on a remote host"
-            description="Switch Console sets it up over SSH on a host you've onboarded. Stays running when Switch Console is closed."
-            onClick={onRemoteHost}
-          />
-          <ChoiceCard
-            icon={<Globe className="size-5" />}
-            title="Connect to an existing server"
-            description="Point Switch Console at a Switch gateway someone else runs, by URL."
-            onClick={onExternal}
-          />
-        </div>
-      </DialogContentArea>
-      <DialogFooter>
+    <WizardFrame
+      title="Add a Switch server"
+      subtitle={null}
+      pager={{ pageName: 'Add a server', onBack: null, onNext: null }}
+      footer={
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-      </DialogFooter>
-    </>
+      }
+    >
+      <div className="grid gap-3">
+        <ChoiceCard
+          icon={<Laptop className="size-5" />}
+          title="Run a server on this computer"
+          description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
+          onClick={onLocal}
+        />
+        <ChoiceCard
+          icon={<Server className="size-5" />}
+          title="Run a server on a remote host"
+          description="Switch Console sets it up over SSH on a host you've onboarded. Stays running when Switch Console is closed."
+          onClick={onRemoteHost}
+        />
+        <ChoiceCard
+          icon={<Globe className="size-5" />}
+          title="Connect to an existing server"
+          description="Point Switch Console at a Switch gateway someone else runs, by URL."
+          onClick={onExternal}
+        />
+      </div>
+    </WizardFrame>
   );
 }
 
-function ChoiceCard({
+export function ChoiceCard({
   icon,
   title,
   description,
@@ -349,15 +340,24 @@ function SetupStepItem({ children }: { children: React.ReactNode }) {
 // Step 2a — local server setup (preflight → progress → done)
 // ---------------------------------------------------------------------------
 
-const LocalSetupStep = observer(function LocalSetupStep({
+export const LocalSetupStep = observer(function LocalSetupStep({
   onBack,
   onDone,
   onClose,
+  onRegistered,
 }: {
   onBack?: () => void;
   /** Reports the server the stack registered, so the flow can end on it. */
   onDone: (serverId: string | null) => void;
-  onClose: () => void;
+  /** Null where the flow has no way out but forwards — the first-run pages. */
+  onClose: (() => void) | null;
+  /**
+   * Reports the server the moment it is registered rather than when Done is
+   * pressed, so a flow that offers a way out can aim it at the right row.
+   * Null for a chrome with no such offer — the dialog, which is closed instead
+   * of left.
+   */
+  onRegistered: ((serverId: string) => void) | null;
 }) {
   const store = localServerStore;
 
@@ -366,12 +366,25 @@ const LocalSetupStep = observer(function LocalSetupStep({
     void store.checkDocker();
   }, [store]);
 
+  const registeredId = store.status?.serverId ?? null;
+  useEffect(() => {
+    if (registeredId !== null) onRegistered?.(registeredId);
+  }, [registeredId, onRegistered]);
+
   const running = store.isRunning;
   const starting = store.isTransitioning;
   const docker = store.docker;
   const dockerReady = docker?.available ?? false;
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
+
+  // The pager's back arrow only ever repeats the footer's Back, so the two read
+  // one const. Open during the install too: the store is a singleton the main
+  // process streams into, so leaving loses only what is on screen, and holding
+  // the page shut left the full-window flow with no live control at all through
+  // a multi-gigabyte pull — while the same page in the dialog could still be
+  // dismissed with Escape.
+  const goBack = onBack ?? null;
 
   const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
@@ -380,11 +393,25 @@ const LocalSetupStep = observer(function LocalSetupStep({
   };
 
   return (
-    <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>Set up a server on this computer</DialogTitle>
-      </DialogHeader>
-      <DialogContentArea className="space-y-4 pt-0">
+    <WizardFrame
+      title="Set up a server on this computer"
+      subtitle="Switch Console installs the full stack with Docker and keeps it updated."
+      pager={{ pageName: 'Set up a server', onBack: goBack, onNext: null }}
+      footer={
+        <>
+          <BackOrClose
+            onBack={goBack}
+            onClose={onClose}
+            closeDisabled={starting}
+            closeLabel={running ? 'Close' : 'Cancel'}
+          />
+          <ConfirmButton onClick={onPrimary} disabled={starting || (!running && !dockerReady)}>
+            {starting ? 'Starting…' : primaryLabel}
+          </ConfirmButton>
+        </>
+      }
+    >
+      <div className="space-y-4">
         <div className="flex items-center gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-background-tertiary text-foreground-muted">
             <Laptop className="size-5" />
@@ -436,9 +463,16 @@ const LocalSetupStep = observer(function LocalSetupStep({
         {(starting || store.logs.length > 0) && !running && (
           <div className="space-y-1.5">
             {store.message && starting && (
-              <div className="flex items-center gap-2 text-sm text-foreground">
-                <Spinner className="size-3.5" />
-                <span>{store.message}</span>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-sm text-foreground">
+                  <Spinner className="size-3.5" />
+                  <span>{store.message}</span>
+                </div>
+                {/* Said out loud, because Back being live during a download
+                    that takes minutes otherwise looks like it cancels one. */}
+                <p className="text-xs text-foreground-muted">
+                  This keeps running if you leave the page — come back here to watch it.
+                </p>
               </div>
             )}
             <LogTail
@@ -447,24 +481,50 @@ const LocalSetupStep = observer(function LocalSetupStep({
             />
           </div>
         )}
-      </DialogContentArea>
-      <DialogFooter>
-        {onBack && !starting ? (
-          <Button variant="outline" onClick={onBack}>
-            Back
-          </Button>
-        ) : (
-          <Button variant="outline" onClick={onClose} disabled={starting}>
-            {running ? 'Close' : 'Cancel'}
-          </Button>
-        )}
-        <ConfirmButton onClick={onPrimary} disabled={starting || (!running && !dockerReady)}>
-          {starting ? 'Starting…' : primaryLabel}
-        </ConfirmButton>
-      </DialogFooter>
-    </>
+      </div>
+    </WizardFrame>
   );
 });
+
+/**
+ * The button on the left of a wizard's footer.
+ *
+ * A page that can be left offers Cancel; one that can only be stepped back
+ * through offers Back; the first-run pages can do neither while a stack is
+ * installing, and get a Back that is visibly held rather than no button and a
+ * footer that changes shape under the eye.
+ */
+function BackOrClose({
+  onBack,
+  onClose,
+  closeDisabled,
+  closeLabel,
+}: {
+  onBack: (() => void) | null;
+  onClose: (() => void) | null;
+  closeDisabled: boolean;
+  closeLabel: string;
+}) {
+  if (onBack) {
+    return (
+      <Button variant="outline" onClick={onBack}>
+        Back
+      </Button>
+    );
+  }
+  if (onClose) {
+    return (
+      <Button variant="outline" onClick={onClose} disabled={closeDisabled}>
+        {closeLabel}
+      </Button>
+    );
+  }
+  return (
+    <Button variant="outline" disabled>
+      Back
+    </Button>
+  );
+}
 
 function DockerStatus({
   ready,
@@ -511,15 +571,18 @@ function DockerStatus({
 // Step 2b — remote-host managed setup (pick an onboarded SSH host → start)
 // ---------------------------------------------------------------------------
 
-const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
+export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   onBack,
   onDone,
   onClose,
+  onRegistered,
 }: {
   onBack: () => void;
   /** Reports the server the stack registered, so the flow can end on it. */
   onDone: (serverId: string | null) => void;
   onClose: () => void;
+  /** As on the local page: the registration, not the Done press. */
+  onRegistered: ((serverId: string) => void) | null;
 }) {
   const store = remoteServerStore;
   const [hosts, setHosts] = useState<{ sshHost: string; name: string }[] | null>(null);
@@ -549,8 +612,17 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   const status = sshHost ? store.statusFor(sshHost) : null;
   const logs = sshHost ? store.logsFor(sshHost) : [];
 
+  const registeredId = sshHost ? (status?.serverId ?? null) : null;
+  useEffect(() => {
+    if (registeredId !== null) onRegistered?.(registeredId);
+  }, [registeredId, onRegistered]);
+
   const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
   const canStart = !!sshHost && name.trim().length > 0 && dockerReady && !starting && !hostBlocked;
+  // One const for the footer's Back and the pager's back arrow, which only
+  // repeats it. Open during the install, for the same reason as the local page:
+  // the store outlives the page, so nothing is abandoned by leaving it.
+  const goBack = onBack;
   const primaryLabel = running ? 'Done' : status?.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
     if (running) onDone(sshHost ? (store.statusFor(sshHost).serverId ?? null) : null);
@@ -558,11 +630,24 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   };
 
   return (
-    <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>Set up a server on a remote host</DialogTitle>
-      </DialogHeader>
-      <DialogContentArea className="space-y-4 pt-0">
+    <WizardFrame
+      title="Set up a server on a remote host"
+      subtitle={null}
+      pager={{
+        pageName: 'Set up on a remote host',
+        onBack: goBack,
+        onNext: null,
+      }}
+      footer={
+        <>
+          <BackOrClose onBack={goBack} onClose={onClose} closeDisabled closeLabel="Cancel" />
+          <ConfirmButton onClick={onPrimary} disabled={!running && !canStart}>
+            {starting ? 'Starting…' : primaryLabel}
+          </ConfirmButton>
+        </>
+      }
+    >
+      <div className="space-y-4">
         {hosts === null ? (
           <div className="flex items-center gap-2 text-sm text-foreground-muted">
             <Spinner className="size-3.5" />
@@ -682,22 +767,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
             )}
           </>
         )}
-      </DialogContentArea>
-      <DialogFooter>
-        {!starting ? (
-          <Button variant="outline" onClick={onBack}>
-            Back
-          </Button>
-        ) : (
-          <Button variant="outline" onClick={onClose} disabled>
-            Cancel
-          </Button>
-        )}
-        <ConfirmButton onClick={onPrimary} disabled={!running && !canStart}>
-          {starting ? 'Starting…' : primaryLabel}
-        </ConfirmButton>
-      </DialogFooter>
-    </>
+      </div>
+    </WizardFrame>
   );
 });
 
@@ -714,7 +785,24 @@ function looksLikeUrl(value: string): boolean {
   }
 }
 
-const ExternalServerStep = observer(function ExternalServerStep({
+/**
+ * A name for a server the user was never asked to name.
+ *
+ * The first-run form leaves the field out — someone connecting their only
+ * server has nothing to tell it apart from, and a required text box between
+ * them and a working app is a question asked for the list's benefit rather than
+ * theirs. The hostname is what they would have typed anyway, and renaming is a
+ * click away once there is a sidebar to see it in.
+ */
+function nameFromGatewayUrl(gatewayUrl: string): string {
+  // The host rather than the hostname: two servers on one machine differ only
+  // by port, and a sidebar with two rows both called `localhost` names neither
+  // of them. An IPv6 address keeps its brackets, which is how an address with
+  // a port beside it is written.
+  return new URL(gatewayUrl).host;
+}
+
+export const ExternalServerStep = observer(function ExternalServerStep({
   onSuccess,
   onClose,
   onBack,
@@ -723,11 +811,21 @@ const ExternalServerStep = observer(function ExternalServerStep({
   initialName,
   serverId,
   isEdit,
+  firstRun,
   existing,
   onConnected,
-}: Props & {
+}: {
+  initialGatewayUrl: string | null;
+  initialApiUrl: string | null;
+  initialName: string | null;
+  serverId: string | null;
   isEdit: boolean;
-  onBack?: () => void;
+  /** The first-run wording of the same form: no name to ask for, and the
+   * server's own accounts worth saying out loud before the sign-in step. */
+  firstRun: boolean;
+  onSuccess: () => void;
+  onClose: () => void;
+  onBack: (() => void) | null;
   /** Set when the wizard has already created the server and the user came back
    * to fix what they typed — the same form, saving instead of adding. */
   existing: SwitchServer | null;
@@ -744,9 +842,11 @@ const ExternalServerStep = observer(function ExternalServerStep({
   const trimmedApi = apiUrl.trim();
   const gatewayValid = looksLikeUrl(trimmedGateway);
   const apiValid = looksLikeUrl(trimmedApi);
-  // In edit mode the name is owned by the separate Rename action, so this form
-  // only edits the URLs — the name field isn't shown and isn't required.
-  const isValid = (isEdit || trimmedName.length > 0) && gatewayValid && apiValid;
+  // In edit mode the name is owned by the separate Rename action, and on first
+  // run it comes from the gateway, so neither shows the field or requires it.
+  const asksForName = !isEdit && !firstRun;
+  const isValid = (!asksForName || trimmedName.length > 0) && gatewayValid && apiValid;
+  const submittedName = firstRun && gatewayValid ? nameFromGatewayUrl(trimmedGateway) : trimmedName;
 
   const gatewayMessage =
     trimmedGateway.length > 0 && !gatewayValid
@@ -768,7 +868,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
     if (savedId) {
       const result = await switchServersStore.updateServer(
         savedId,
-        trimmedName,
+        submittedName,
         trimmedGateway,
         trimmedApi
       );
@@ -783,7 +883,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
     } else {
-      const saved = await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
+      const saved = await switchServersStore.addServer(submittedName, trimmedGateway, trimmedApi);
       if (!saved) {
         setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
@@ -793,64 +893,117 @@ const ExternalServerStep = observer(function ExternalServerStep({
       return;
     }
     onSuccess();
-  }, [isValid, isEdit, savedId, trimmedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
+  }, [isValid, isEdit, savedId, submittedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
+
+  // First run is asked before the saved row, because a page that goes on to the
+  // sign-in must not offer "Save changes" — the user stepped back to fix an
+  // address, and the button still takes them forward rather than closing.
+  const submitLabel = submitting
+    ? savedId
+      ? 'Saving…'
+      : 'Adding…'
+    : firstRun
+      ? 'Sign in to this server'
+      : savedId
+        ? 'Save changes'
+        : 'Add server';
+
+  // The footer's Back and the pager's back arrow are the same move, so they
+  // read one const. Shut while the form is submitting: the write registers a
+  // server, and stepping off it mid-way leaves one behind with no page on it.
+  const goBack = onBack && !submitting ? onBack : null;
 
   return (
-    <>
-      {isEdit ? (
-        <DialogHeader showCloseButton={false}>
-          <DialogTitle>Edit connection</DialogTitle>
-        </DialogHeader>
-      ) : (
-        <WizardStepHeader title="Connect to an existing server" step={2} of={CONNECT_STEPS} />
-      )}
-      <DialogContentArea className="pt-0">
-        <FieldGroup>
-          {!isEdit && (
-            <Field>
-              <FieldLabel>Name</FieldLabel>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Pilot"
-                autoFocus
-              />
-            </Field>
+    <WizardFrame
+      title={
+        isEdit
+          ? 'Edit connection'
+          : firstRun
+            ? 'Connect to your server'
+            : 'Connect to an existing server'
+      }
+      subtitle={firstRun ? 'Whoever set it up can give you these addresses.' : null}
+      /* Editing a connection is one dialog rather than a flow, and a pager on
+         it would invent pages either side that do not exist. */
+      pager={
+        isEdit
+          ? null
+          : {
+              pageName: 'Connect to a server',
+              onBack: goBack,
+              onNext: null,
+            }
+      }
+      footer={
+        <>
+          <Button
+            variant="outline"
+            onClick={goBack ?? onClose}
+            disabled={!!onBack && goBack === null}
+          >
+            {onBack ? 'Back' : 'Cancel'}
+          </Button>
+          <ConfirmButton onClick={() => void handleSubmit()} disabled={!isValid || submitting}>
+            {submitLabel}
+          </ConfirmButton>
+        </>
+      }
+    >
+      <FieldGroup>
+        {asksForName && (
+          <Field>
+            <FieldLabel>Name</FieldLabel>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Pilot"
+              autoFocus
+            />
+          </Field>
+        )}
+        <Field>
+          <FieldLabel>Gateway URL</FieldLabel>
+          <Input
+            value={gatewayUrl}
+            onChange={(e) => setGatewayUrl(e.target.value)}
+            placeholder="https://switch-gateway.example.com"
+            autoFocus={isEdit || firstRun}
+          />
+          {firstRun && (
+            <p className="mt-1 text-xs text-foreground-muted">Where the app and its chat live.</p>
           )}
-          <Field>
-            <FieldLabel>Gateway URL</FieldLabel>
-            <Input
-              value={gatewayUrl}
-              onChange={(e) => setGatewayUrl(e.target.value)}
-              placeholder="https://switch-gateway.example.com"
-              autoFocus={isEdit}
-            />
-            {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
-          </Field>
-          <Field>
-            <FieldLabel>API URL</FieldLabel>
-            <Input
-              value={apiUrl}
-              onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://switch-api.example.com"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void handleSubmit();
-              }}
-            />
-            {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
-            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
-          </Field>
-        </FieldGroup>
-      </DialogContentArea>
-      <DialogFooter>
-        <Button variant="outline" onClick={onBack ?? onClose}>
-          {onBack ? 'Back' : 'Cancel'}
-        </Button>
-        <ConfirmButton onClick={() => void handleSubmit()} disabled={!isValid || submitting}>
-          {submitting ? (savedId ? 'Saving…' : 'Adding…') : savedId ? 'Save changes' : 'Add server'}
-        </ConfirmButton>
-      </DialogFooter>
-    </>
+          {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
+        </Field>
+        <Field>
+          <FieldLabel>API URL</FieldLabel>
+          <Input
+            value={apiUrl}
+            onChange={(e) => setApiUrl(e.target.value)}
+            placeholder="https://switch-api.example.com"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void handleSubmit();
+            }}
+          />
+          {firstRun && (
+            <p className="mt-1 text-xs text-foreground-muted">
+              Where agents connect. Often the same host on a different port — whoever set the server
+              up knows which.
+            </p>
+          )}
+          {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
+          {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+        </Field>
+        {firstRun && (
+          <Alert>
+            <Info className="size-4" />
+            <AlertDescription>
+              This server keeps its own accounts. Signing in here signs you in to it, not to
+              anything else.
+            </AlertDescription>
+          </Alert>
+        )}
+      </FieldGroup>
+    </WizardFrame>
   );
 });
 
@@ -864,7 +1017,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
  * signed-out server lists no rooms, no agents and no messaging apps, and looks
  * broken rather than unauthenticated.
  */
-const SignInStep = observer(function SignInStep({
+export const SignInStep = observer(function SignInStep({
   server,
   onBack,
   onClose,
@@ -872,7 +1025,8 @@ const SignInStep = observer(function SignInStep({
 }: {
   server: SwitchServer;
   onBack: () => void;
-  onClose: () => void;
+  /** Null where there is nothing to close onto — the first-run pages. */
+  onClose: (() => void) | null;
   onSignedIn: () => void;
 }) {
   const signIn = useServerSignIn(server.id);
@@ -883,40 +1037,47 @@ const SignInStep = observer(function SignInStep({
     if (await signIn.signInWithPassword()) onSignedIn();
   };
 
+  // One const for the footer's Back and the pager's back arrow that repeats it.
+  const goBack = signIn.submitting ? null : onBack;
+
   return (
-    <>
-      <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
-      <DialogContentArea className="pt-0">
-        <ServerSignInFields
-          signIn={signIn}
-          idPrefix="connect-server-sign-in"
-          gatewayUrl={server.gatewayUrl}
-          onSignedIn={onSignedIn}
-        />
-      </DialogContentArea>
-      <DialogFooter>
-        <Button variant="outline" onClick={onBack} disabled={signIn.submitting}>
-          Back
-        </Button>
-        {canUsePassword ? (
-          <ConfirmButton
-            onClick={() => void submit()}
-            disabled={!signIn.canSubmitPassword || signIn.submitting}
-          >
-            {signIn.submitting ? 'Signing in…' : 'Sign in'}
-          </ConfirmButton>
-        ) : (
-          // Nothing for a primary button to do: either the only method is the
-          // provider button in the body, or the server offers none at all and
-          // the body says so. Leaving a dead "Sign in" there would imply the
-          // form was incomplete rather than absent.
-          !canUseOidc && (
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-          )
-        )}
-      </DialogFooter>
-    </>
+    <WizardFrame
+      title={`Sign in to ${server.name}`}
+      subtitle={null}
+      pager={{ pageName: 'Sign in', onBack: goBack, onNext: null }}
+      footer={
+        <>
+          <Button variant="outline" onClick={onBack} disabled={goBack === null}>
+            Back
+          </Button>
+          {canUsePassword ? (
+            <ConfirmButton
+              onClick={() => void submit()}
+              disabled={!signIn.canSubmitPassword || signIn.submitting}
+            >
+              {signIn.submitting ? 'Signing in…' : 'Sign in'}
+            </ConfirmButton>
+          ) : (
+            // Nothing for a primary button to do: either the only method is the
+            // provider button in the body, or the server offers none at all and
+            // the body says so. Leaving a dead "Sign in" there would imply the
+            // form was incomplete rather than absent.
+            !canUseOidc &&
+            onClose && (
+              <Button variant="outline" onClick={onClose}>
+                Close
+              </Button>
+            )
+          )}
+        </>
+      }
+    >
+      <ServerSignInFields
+        signIn={signIn}
+        idPrefix="connect-server-sign-in"
+        gatewayUrl={server.gatewayUrl}
+        onSignedIn={onSignedIn}
+      />
+    </WizardFrame>
   );
 });

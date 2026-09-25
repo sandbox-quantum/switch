@@ -44,9 +44,28 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
-### [0.27.0] - 2026-09-23
+### [0.28.0] - 2026-09-25
 
 #### Added
+- **Sessions live with the host; switch-core only relays (#543).** Session
+  ownership moves to Console and its sidecar — switch-core relays the agent
+  connection rather than owning session lifecycle. The agent bridge API is
+  reworked accordingly (activity routes replace the old session routes, with
+  the operation and command surfaces updated to match).
+- **Publish, edit, share and search room templates (#501).** Server-side
+  template visibility, a room-YAML export endpoint, and parameterized export
+  (values replaced with `{key}` placeholders), backing the Console's
+  capture-as-template flow and the gateway template management UI.
+- **Bound workspace creation per person (#458, CHOO-2722).**
+  `GATEWAY_MAX_WORKSPACES_PER_USER` (default 3) caps self-service workspace
+  creation; the check, creation and count run under a NOWAIT lock on the
+  caller so concurrent requests cannot slip past, and the bound counts
+  workspaces *created* (`users.workspaces_created`) so handing one over does
+  not free the allowance. `0` closes self-service; deployment operators are
+  exempt.
+- **Richer connector-event telemetry, plus DB and bridge timing (#488).**
+  Connector events gain a failure reason and a `duration_ms`, and server-side
+  DB/bridge lifecycle timing is recorded.
 - **Multi-tenancy phase 1 — tenant isolation enforced in the database.** Every
   request and every unit of background work now binds a tenant onto its session,
   the schema is scoped to a tenant, and row-level security enforces the boundary
@@ -70,6 +89,9 @@ version of their own to them without also giving them a release of their own.
 - Index on `rooms.group_id` (#404).
 
 #### Fixed
+- Removing a bridge or agent now deletes its clients and their room memberships
+  in one transaction, so client rows are no longer orphaned when a client had
+  ever joined a room (#525, CHOO-1492).
 - Removing an agent from a room no longer stops message delivery to the rest of
   the room (#412).
 - A failed bridge read is no longer mistaken for an empty bridge list (#515).
@@ -1317,14 +1339,32 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
-### [0.35.0] - 2026-09-23
+### [0.36.0] - 2026-09-25
 
 #### Added
+- **Sessions live with the host.** Console and its sidecar now own agent
+  sessions and their lifecycle; switch-core only relays the connection (#543).
+- **Capture, publish, share and search room templates.** Capture a live room as
+  a shareable, parameterized template (values become `{key}` placeholders), and
+  publish, edit, share and search templates from the Console (#501).
 - **Templates.** Create a new agent from a template, with a dedicated
   create-from-template view (#405).
 - **Load and manage agents on a remote host** (#364).
 
 #### Changed
+- Connector telemetry events now carry a failure reason and a `duration_ms`
+  (#488).
+- **Managed servers behind the app's switch-core pin are upgraded
+  automatically**, and sessions wait for it. The local server is upgraded at
+  startup and a remote managed server when its host is reconciled (at startup
+  and whenever the host becomes reachable); a stopped one is upgraded at its
+  next start rather than started at the old version. Every database is backed up
+  with `pg_dumpall` into a timestamped `backups/` directory next to the stack
+  first, and an `upgrade.json` journal resumes an interrupted upgrade or refuses
+  it loudly. Sessions and room watchers for agents on the server wait while it
+  updates and are refused with the error if it fails. The server page shows the
+  update's progress, or its error and a Retry button, in place of the optional
+  "Restart to update" banner.
 - **Usage telemetry is now opt-out.** The setting defaults to on and the
   first-run dialog is a notice rather than a question — it still states what is
   shared, is not dismissible, and carries the off switch (pre-set to on).
@@ -1333,9 +1373,15 @@ version of their own to them without also giving them a release of their own.
   server honours the same single telemetry answer (#529).
 - **Watchers are console-parented locally and sidecar-parented remotely**, so a
   watcher's lifecycle follows the process that should own it (#507).
-- Local-server mode now bundles **switch-core 0.27.0** (was 0.25.0), and the
-  refreshed agent-runtime 0.4.3, sidecar 1.9.8, and connectors (Claude Code
-  0.9.16, Codex 0.3.17, OpenCode 0.1.12).
+- Local-server mode now bundles **switch-core 0.28.0** (was 0.25.0), and the
+  refreshed agent-runtime 0.7.0 and sidecar 1.9.9.
+
+#### Removed
+- **Dead UI and RPC surface removed** from the Console (#526, CHOO-2323).
+- The bundled connector plugins are retired: every session now gets the Switch
+  tools from its own host and the Switch skill pushed by Console. The plugin
+  files remain only so Consoles that have not updated can still install and
+  update the plugin they expect (see `connectors/DEPRECATED.md`).
 
 #### Fixed
 - An unusable remote working directory is reported before an identity is minted,
@@ -2830,6 +2876,14 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.7.0] - 2026-09-25
+
+#### Changed
+- Reworked for the host-owned session model: the runtime serves the Switch tool
+  surface per session host while Console/sidecar own session lifecycle and
+  switch-core relays (#543). No longer published on its own tag — ships inside
+  Switch Console (0.36.0) and its sidecar.
+
 ### [0.4.3] - 2026-09-23
 
 #### Added
@@ -2989,6 +3043,13 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+### [1.9.9] - 2026-09-25
+
+#### Changed
+- Owns its agent sessions under the new host-owned session model; switch-core
+  relays rather than owning session lifecycle (#543). Ships with Switch Console
+  0.36.0.
 
 ### [1.9.8] - 2026-09-23
 

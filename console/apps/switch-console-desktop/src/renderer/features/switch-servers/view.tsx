@@ -16,6 +16,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -43,6 +44,8 @@ import {
   serverDeployedTelemetry,
   serverDrift,
   serverPlacementLabel,
+  serverProgress,
+  serverUpgrade,
 } from './server-presentation';
 import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -117,12 +120,15 @@ const ServerMainPanel = observer(function ServerMainPanel() {
    */
   const refreshEverything = async (): Promise<void> => {
     setRefreshingPage(true);
+    // The three caches below are keyed by workspace, so a server id would
+    // invalidate nothing and the button would spin over stale cards.
+    const workspaceId = workspacesStore.idOnServerInScope(serverId);
     try {
       await Promise.all([
         store.refreshServer(serverId),
-        queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] }),
-        queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(serverId) }),
-        queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', serverId] }),
+        queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] }),
+        queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', workspaceId] }),
         switchRoomsStore.refreshRoomState(),
         agentsStore.load(),
         new Promise((resolve) => setTimeout(resolve, MIN_REFRESH_FEEDBACK_MS)),
@@ -285,6 +291,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           rather than waiting inside the stack card further down. */}
         <VersionDriftNotice
           drift={drift}
+          upgrade={serverUpgrade(server)}
+          progress={serverProgress(server)}
           disabled={stackTransitioning}
           onRestart={() => restartStack(server)}
         />

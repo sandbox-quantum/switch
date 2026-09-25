@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
+import { requireHttpMcp } from '../acp-mcp';
 import type {
   ModelSelection,
   ProviderAdapter,
@@ -154,6 +155,11 @@ export class AntigravityAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
       const initialized = await initializeAntigravity(client);
+      requireHttpMcp(
+        'Antigravity',
+        input.mcpServers,
+        initialized.agentCapabilities?.mcpCapabilities?.http
+      );
       // Signing in belongs here — starting a session is work the user asked
       // for, so a browser opening is an answer to something they did. The
       // readiness probe deliberately stops at the handshake above.
@@ -576,7 +582,13 @@ export class AntigravityAdapter implements ProviderAdapter {
       }
     this.cancelApprovals(state);
     state.turn = null;
-    this.emit(state, { type: 'turn.completed', turnId, outcome, ...(message ? { message } : {}) });
+    this.emit(state, {
+      type: 'turn.completed',
+      turnId,
+      outcome,
+      ...(message ? { message } : {}),
+      usage: [],
+    });
     if (!state.turn)
       this.emit(state, {
         type: 'session.state.changed',
@@ -621,6 +633,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         turnId: input.turnId,
         outcome: 'error',
         message: reason,
+        usage: [],
       });
     this.sessions.delete(id);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });

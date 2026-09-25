@@ -23,7 +23,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  *
  * The rule never looks at how many types exist beyond the one/many split, and
  * never at their order. Keying on either makes onboarding change behaviour
- * every time a connector is added.
+ * every time an agent type is added.
  */
 export function autoSelectedAgentType(
   selectableIds: readonly AgentProviderId[],

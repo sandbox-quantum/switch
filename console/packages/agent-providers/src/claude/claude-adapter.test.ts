@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderSessionStartInput, RuntimeMode } from '../adapter';
+import { ProviderConversationUnavailableError } from '../adapter';
 import { EventRecorder } from '../testing/event-recorder';
 import { ClaudeAdapter, installShadowedWarningFilter } from './claude-adapter';
 import type { FakeSdk } from './fake-sdk';
@@ -55,7 +56,11 @@ describe('ClaudeAdapter session lifecycle', () => {
     'accepts the first message after initialization without a conversation init event: %j',
     async (resume) => {
       const sdk = createFakeSdk(false);
-      const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+      const adapter = new ClaudeAdapter({
+        query: sdk.query,
+        claudeExecutablePath: '/bin/claude',
+        savedConversationExists: async () => true,
+      });
       const recorder = new EventRecorder(adapter);
       await adapter.startSession(startInput({ resume }));
       await recorder.waitFor('session.state.changed', (event) => event.status === 'ready', 1_000);
@@ -135,6 +140,33 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(options.mcpServers).toEqual({
       switch_echo: { type: 'stdio', command: 'node', args: ['server.mjs'] },
       remote: { type: 'http', url: 'https://example.invalid/mcp' },
+    });
+  });
+
+  it('reaches the host’s Switch server over HTTP with its bearer, the connector plugin off', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        mcpServers: {
+          switch: {
+            transport: 'http',
+            url: 'http://127.0.0.1:4567/mcp',
+            headers: { Authorization: 'Bearer per-session' },
+          },
+        },
+      })
+    );
+    const options = sdk.options();
+    expect(options.mcpServers).toEqual({
+      switch: {
+        type: 'http',
+        url: 'http://127.0.0.1:4567/mcp',
+        headers: { Authorization: 'Bearer per-session' },
+      },
+    });
+    expect(options.settings).toEqual({
+      enabledPlugins: { 'switch-connector@switch-plugins': false },
     });
   });
 
@@ -255,9 +287,25 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(seen).toEqual(['SOMETHING_ELSE']);
   });
 
+  it('refuses to resume a conversation Claude never saved', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async () => false,
+    });
+    await expect(
+      adapter.startSession(startInput({ resume: { nativeSessionId: 'never-saved' } }))
+    ).rejects.toBeInstanceOf(ProviderConversationUnavailableError);
+  });
+
   it('resumes a native session instead of picking a new id', async () => {
     const sdk = createFakeSdk();
-    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async (id) => id === 'earlier',
+    });
     const session = await adapter.startSession(
       startInput({ resume: { nativeSessionId: 'earlier' } })
     );
@@ -431,6 +479,80 @@ describe('ClaudeAdapter event translation', () => {
     sdk.latest().emit(assistantMessage('msg_4', [{ type: 'text', text: 'main' }]));
     await recorder.waitFor('item.completed', () => true, 1_000);
     expect(recorder.ofType('content.delta')).toHaveLength(0);
+  });
+});
+
+function modelUsage(input: number, output: number, cacheRead = 0, cacheWrite = 0) {
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheWrite,
+    webSearchRequests: 0,
+    costUSD: 0,
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  };
+}
+
+describe('ClaudeAdapter token usage', () => {
+  it("reports each turn's share of the session's running totals, per model", async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    const query = sdk.latest();
+
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'one' });
+    const [first] = await query.waitForSent(1);
+    query.emit(
+      resultMessage([String(first?.uuid)], {
+        modelUsage: { opus: modelUsage(100, 20, 1000, 50), haiku: modelUsage(5, 1) },
+      })
+    );
+    const one = await recorder.waitFor('turn.completed', (e) => e.turnId === 'turn-1', 1_000);
+    expect(one.usage).toEqual([
+      {
+        model: 'opus',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 1000,
+        cacheWriteTokens: 50,
+      },
+      { model: 'haiku', inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ]);
+
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-2', text: 'two' });
+    const sent = await query.waitForSent(2);
+    query.emit(
+      resultMessage([String(sent[1]?.uuid)], {
+        modelUsage: { opus: modelUsage(130, 25, 1500, 50), haiku: modelUsage(5, 1) },
+      })
+    );
+    const two = await recorder.waitFor('turn.completed', (e) => e.turnId === 'turn-2', 1_000);
+    expect(two.usage).toEqual([
+      {
+        model: 'opus',
+        inputTokens: 30,
+        outputTokens: 5,
+        cacheReadTokens: 500,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
+  it('counts spend from a result that did not close the turn', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'count' });
+    const query = sdk.latest();
+    const [first] = await query.waitForSent(1);
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-2', text: 'stop' });
+    const sent = await query.waitForSent(2);
+
+    query.emit(resultMessage([String(first?.uuid)], { modelUsage: { opus: modelUsage(10, 1) } }));
+    query.emit(resultMessage([String(sent[1]?.uuid)], { modelUsage: { opus: modelUsage(25, 3) } }));
+
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.usage).toEqual([
+      { model: 'opus', inputTokens: 25, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ]);
   });
 });
 

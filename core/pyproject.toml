@@ -1,6 +1,6 @@
 [project]
 name = "switch-core"
-version = "0.27.0"
+version = "0.28.0"
 description = "Switch — AI agent orchestration and governance platform"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -85,9 +85,10 @@ known-first-party = ["switch_core"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not benchmark'"
 markers = [
     "integration: boots real Postgres + Tuwunel via testcontainers (slow; excluded from the default run — use `just test-integration`)",
+    "benchmark: boots real Postgres and serves the agent bridge on a socket to measure it (slow, and reports numbers rather than asserting them; excluded from the default run — use `just bench`)",
     "no_ambient_tenant: opt out of session_factory's default tenant-zero binding, for tests asserting what is or is not bound",
 ]
 

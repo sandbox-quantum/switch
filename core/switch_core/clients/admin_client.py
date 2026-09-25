@@ -125,6 +125,7 @@ class AdminClient(ClientBase[ClientConfig]):
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
+            metered=False,
         )
 
     # ── Platform messages ───────────────────────────────────────────────────
@@ -168,6 +169,7 @@ class AdminClient(ClientBase[ClientConfig]):
             format="markdown",
             thread_root_id=thread_root_id,
             extra_content={PLATFORM_MARKER: marker_value},
+            metered=False,
         )
 
     # ── Admin notices ─────────────────────────────────────────────────────────
@@ -196,7 +198,7 @@ class AdminClient(ClientBase[ClientConfig]):
                 if mention_regex(role.name).search(strip_emphasis(body)) is None:
                     continue
                 if not await self._room_role_store.has_live_holder(
-                    session, role.id, self._connections.live_agent_ids()
+                    session, role.id, self._connections.live_connection_ids()
                 ):
                     unreachable.append(role.name)
         handle = self._sender_handle(event)
@@ -288,6 +290,7 @@ class AdminClient(ClientBase[ClientConfig]):
             mentions=mentions,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(message_type),
+            metered=False,
         )
 
     def _sender_handle(self, event: InboundMessage) -> str:

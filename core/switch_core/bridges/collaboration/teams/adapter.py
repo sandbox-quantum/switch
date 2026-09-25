@@ -565,7 +565,7 @@ class TeamsAdapter(CollaborationAdapter):
     # makes the lifecycle say so at startup when it is not.
     renders_custom_url_schemes: ClassVar[bool] = False
 
-    publishes_sdk_sessions: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
 
     # A problem gets its own message. An edit to the status is not something
     # Teams notifies anyone about, so a failure folded into it reaches whoever

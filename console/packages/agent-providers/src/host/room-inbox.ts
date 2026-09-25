@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
-import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 
@@ -34,31 +32,54 @@ export function roomInputId(event: AgentBridgeEvent): string | null {
     .digest('hex')}`;
 }
 
-export const roomConnectionSchema = z.strictObject({
+/**
+ * The connection a session's room events arrive over: its agent's, held by the
+ * controller that routes to it.
+ *
+ * Deliberately not strict. A config written when a session served itself also
+ * names the rooms and the cursor that connection of its own was opened on;
+ * neither is a session's to decide now, and refusing them would leave a
+ * session an older app started unopenable by this one.
+ */
+export const roomConnectionSchema = z.object({
   connectionId: z.string().min(1),
-  rooms: z.array(z.string().min(1)),
-  startCursor: z.number().int().nonnegative().optional(),
+  // A migration hint, never an instruction to take a room from another session.
+  restoreRoomId: z.string().min(1).optional(),
 });
+const gapSchema = z
+  .strictObject({
+    fromSequence: z.number().int().nonnegative(),
+    reason: z.string().min(1),
+  })
+  .nullable();
 const receivedSchema = z.strictObject({
   type: z.literal('received'),
   sequence: z.number().int().positive(),
   roomId: z.string().min(1),
   messageId: z.string().min(1),
-  missed: z.number().int().nonnegative(),
-  gap: z
-    .strictObject({
-      fromSequence: z.number().int().nonnegative(),
-      reason: z.string().min(1),
-    })
-    .nullable(),
+  // The event itself, as the agent's stream delivered it to the controller:
+  // what the session's prompt is built from.
+  event: z.unknown().optional(),
 });
-/** Deliveries journaled before a tally was recorded carry neither field. */
+/**
+ * Deliveries journaled before the server counted chatter per room carry a
+ * tally and a gap note the host worked out for itself. Read and ignored:
+ * neither decides anything now, and refusing them would leave an inbox an
+ * older app wrote unopenable.
+ */
 const storedReceivedSchema = receivedSchema.extend({
-  missed: receivedSchema.shape.missed.default(0),
-  gap: receivedSchema.shape.gap.default(null),
+  missed: z.number().int().nonnegative().optional(),
+  gap: gapSchema.optional(),
 });
+/**
+ * An event this session's controller routed here, rather than one its own
+ * connection served. Kept apart from a delivery because it says nothing about
+ * where that connection has reached.
+ */
+const handedOverSchema = receivedSchema.extend({ type: z.literal('handoff') });
 const recordSchema = z.discriminatedUnion('type', [
   storedReceivedSchema,
+  handedOverSchema,
   z.strictObject({
     type: z.literal('ack'),
     sequence: z.number().int().positive(),
@@ -68,9 +89,21 @@ const recordSchema = z.discriminatedUnion('type', [
     type: z.literal('cursor'),
     sequence: z.number().int().nonnegative(),
     reset: z.boolean(),
-    gap: receivedSchema.shape.gap,
+    gap: gapSchema,
   }),
-  z.strictObject({ type: z.literal('rooms'), rooms: z.array(z.string()) }),
+  /**
+   * A routed delivery given back unmade, so routing it here again is a fresh
+   * attempt rather than a repeat of one this session already finished.
+   */
+  z.strictObject({
+    type: z.literal('release'),
+    identity: z.string().min(1),
+  }),
+  /** What the server answered this session's binding with. */
+  z.strictObject({
+    type: z.literal('rooms'),
+    rooms: z.array(z.string()),
+  }),
 ]);
 type Received = z.infer<typeof receivedSchema>;
 const identity = (event: Pick<Received, 'roomId' | 'messageId'>): string =>
@@ -79,51 +112,37 @@ const identity = (event: Pick<Received, 'roomId' | 'messageId'>): string =>
 export class SharedRoomInbox {
   private readonly received = new Map<string, Received>();
   private readonly outstanding = new Map<string, Received>();
-  private readonly sequences = new Map<number, string>();
   private rooms: string[] | null = null;
-  private cursor: number | null = null;
-  private missed = 0;
-  private gap: Received['gap'] = null;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
+    // Only a journal an older app wrote carries deliveries and the position
+    // they reached: a session is served by its agent's controller, whose
+    // sequence numbers are that connection's rather than this one's. They are
+    // still replayed, so a session upgraded mid-flight admits what it was
+    // handed before the upgrade and acknowledges it exactly once.
+    const sequences = new Map<number, string>();
+    let cursor: number | null = null;
     for (const record of journal.records) {
       if (record.type === 'received') {
-        // Older journals carried restart evidence only on the next delivery.
-        if (record.gap && this.cursor !== null && record.sequence < this.cursor)
-          this.sequences.clear();
+        if (record.gap && cursor !== null && record.sequence < cursor) sequences.clear();
         const key = identity(record);
         this.received.set(key, record);
         this.outstanding.set(key, record);
-        this.sequences.set(record.sequence, key);
-        this.cursor = record.sequence;
-        this.gap = null;
+        sequences.set(record.sequence, key);
+        cursor = record.sequence;
+      } else if (record.type === 'handoff') {
+        this.hold({ ...record, type: 'received' });
       } else if (record.type === 'ack') {
-        const key = record.identity ?? this.sequences.get(record.sequence);
+        const key = record.identity ?? sequences.get(record.sequence);
         if (!key) throw new Error('Room inbox acknowledges an unknown delivery.');
         this.outstanding.delete(key);
+      } else if (record.type === 'release') {
+        this.received.delete(record.identity);
+        this.outstanding.delete(record.identity);
       } else if (record.type === 'cursor') {
-        if (record.reset) this.sequences.clear();
-        this.cursor = record.sequence;
-        this.gap = record.gap;
+        if (record.reset) sequences.clear();
+        cursor = record.sequence;
       } else this.rooms = record.rooms;
     }
-  }
-
-  static async savedRooms(root: string): Promise<string[] | null> {
-    let text: string;
-    try {
-      text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    }
-    if (text && !text.endsWith('\n'))
-      throw new Error('Room inbox has an incomplete record; recovery review is required.');
-    let rooms: string[] | null = null;
-    for (const line of text.split('\n').slice(0, -1)) {
-      const record = recordSchema.parse(JSON.parse(line));
-      if (record.type === 'rooms') rooms = record.rooms;
-    }
-    return rooms;
   }
 
   static async open(root: string): Promise<SharedRoomInbox> {
@@ -132,106 +151,61 @@ export class SharedRoomInbox {
     );
   }
 
-  async connect(
-    credentials: SwitchCredentials,
-    connection: z.infer<typeof roomConnectionSchema>,
-    signal: AbortSignal,
-    fail: (error: Error) => void
-  ): Promise<void> {
-    const cursor = this.cursor ?? connection.startCursor;
-    let rooms = this.rooms ?? connection.rooms;
-    await new Promise<void>((resolve, reject) => {
-      const aborted = () => reject(signal.reason);
-      signal.addEventListener('abort', aborted, { once: true });
-      const stream = new SwitchEventStream({
-        creds: credentials,
-        connectionId: connection.connectionId,
-        scope: 'single',
-        filter: 'all',
-        startCursor: cursor,
-        rooms,
-        signal,
-        log: console,
-        onEvent: async (event) => {
-          const messageId = roomInputId(event);
-          if (!messageId) {
-            if (event.type === 'message') this.missed += 1;
-            return;
-          }
-          const received = receivedSchema.parse({
-            type: 'received',
-            sequence: event.sequence,
-            roomId: event.room_id,
-            messageId,
-            missed: this.missed,
-            gap: this.gap,
-          });
-          const key = identity(received);
-          const previous = this.sequences.get(received.sequence);
-          if (previous && previous !== key)
-            throw new Error('Room delivery sequence changed identity.');
-          if (this.received.has(key)) return;
-          await this.journal.append(received);
-          this.received.set(key, received);
-          this.outstanding.set(key, received);
-          this.sequences.set(received.sequence, key);
-          this.cursor = received.sequence;
-          this.missed = 0;
-          this.gap = null;
-        },
-        onRooms: (next) => {
-          void (async () => {
-            if (this.rooms === null || JSON.stringify(next) !== JSON.stringify(rooms)) {
-              await this.journal.append({ type: 'rooms', rooms: next });
-              rooms = next;
-              this.rooms = [...next];
-            }
-            signal.removeEventListener('abort', aborted);
-            resolve();
-          })().catch((error: Error) => {
-            reject(error);
-            fail(error);
-          });
-        },
-        // A gap costs the agent context, not the connection: the stream keeps
-        // serving from wherever it resumed, and the warning rides on the next
-        // delivery so the agent reads the room before it answers.
-        onGap: async (gap) => {
-          console.warn(`Room delivery gap: ${gap.reason}. Read room context before continuing.`);
-          const detail = { fromSequence: gap.fromSequence, reason: gap.reason };
-          if (gap.resumedAt !== undefined) {
-            await this.journal.append({
-              type: 'cursor',
-              sequence: gap.resumedAt,
-              reset: gap.cursorReset === true,
-              gap: detail,
-            });
-            this.cursor = gap.resumedAt;
-            if (gap.cursorReset) {
-              this.sequences.clear();
-              this.missed = 0;
-            }
-          }
-          this.gap = detail;
-        },
-        onEvicted: (reason) => {
-          if (reason === 'heartbeat lapsed' || reason.startsWith('heartbeat lapsed;'))
-            console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
-          else fail(new Error(`Room connection was evicted: ${reason}`));
-        },
-        onRoomRejected: ({ roomId, detail }) =>
-          fail(new Error(`Room ${roomId} was refused: ${detail}`)),
-      });
-      stream.start();
-    });
+  /**
+   * Records the rooms the server says this session serves, so what the session
+   * was last told is readable after the fact rather than only while it runs.
+   */
+  async serves(rooms: string[]): Promise<void> {
+    if (this.rooms !== null && JSON.stringify(this.rooms) === JSON.stringify(rooms)) return;
+    await this.journal.append({ type: 'rooms', rooms });
+    this.rooms = [...rooms];
   }
 
-  currentRooms(): string[] {
-    return [...(this.rooms ?? [])];
+  /**
+   * Takes an event this session's controller routed here and holds it for
+   * admission.
+   *
+   * Duplicates are dropped on the room and message they name rather than on
+   * the position they arrived at: the sequence belongs to the controller's
+   * connection, and a session upgraded from one of its own can hold the same
+   * event under two of them.
+   */
+  async accept(
+    event: Pick<Received, 'sequence' | 'roomId' | 'messageId' | 'event'>
+  ): Promise<boolean> {
+    const received = receivedSchema.parse({ type: 'received', ...event });
+    if (this.received.has(identity(received))) return false;
+    await this.journal.append({ ...received, type: 'handoff' });
+    this.hold(received);
+    return true;
   }
 
   pending(): Received[] {
     return [...this.outstanding.values()];
+  }
+
+  private hold(received: Received): void {
+    const key = identity(received);
+    this.received.set(key, received);
+    this.outstanding.set(key, received);
+  }
+
+  /**
+   * Gives a routed delivery back without making it.
+   *
+   * Not an acknowledgement, and the difference is the whole point of it. An
+   * acknowledgement is this session's word that the delivery is finished, and
+   * it refuses the same room and message for ever after — which is right for
+   * one that was made, and wrong for one this session was refused because the
+   * room had moved on. A room can move back, and when it does the delivery has
+   * still never been made.
+   */
+  async release(event: Pick<Received, 'roomId' | 'messageId'>): Promise<void> {
+    const key = identity(event);
+    if (!this.received.has(key)) return;
+    await this.journal.append({ type: 'release', identity: key });
+    this.received.delete(key);
+    this.outstanding.delete(key);
   }
 
   async acknowledge(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<void> {

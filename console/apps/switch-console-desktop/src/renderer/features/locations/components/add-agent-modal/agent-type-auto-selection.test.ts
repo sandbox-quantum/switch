@@ -30,7 +30,7 @@ describe('autoSelectedAgentType', () => {
   });
 
   // The bug this rule replaced keyed on `length === 1`, so onboarding silently
-  // changed behaviour the moment a second connector shipped. A third must not
+  // changed behaviour the moment a second agent type shipped. A third must not
   // move it again.
   it('does not depend on how many types are usable', () => {
     expect(autoSelectedAgentType([CLAUDE, CODEX, OPENCODE], 'codex')).toBe(CODEX);

@@ -456,7 +456,7 @@ class DiscordAdapter(CollaborationAdapter):
     # https redirect (`GATEWAY_PUBLIC_URL`) to be clickable here.
     renders_custom_url_schemes: ClassVar[bool] = False
 
-    publishes_sdk_sessions: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
 
     # A problem somebody has to act on gets its own reply, because the status
     # it would otherwise be an edit to is a message they have already read.

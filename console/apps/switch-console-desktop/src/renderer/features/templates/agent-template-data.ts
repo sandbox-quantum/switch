@@ -4,6 +4,7 @@ import type { TemplateSummary } from '@main/core/agent-templates/template-summar
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './bundled-templates';
 
@@ -73,18 +74,37 @@ export async function loadAgentTemplateByOrigin(
     if (!bundled) throw new Error(`This Console no longer bundles "${origin.name}".`);
     return agentTemplateFromContent(origin.name, bundled.yamlText, bundled.instructions, origin);
   }
-  if (!origin.serverId)
-    throw new Error(`"${origin.name}" came from a server this Console does not know.`);
-  const detail = await rpc.switchServers.getTemplateDetail({
-    serverId: origin.serverId,
+  const detail = await rpc.workspaces.getTemplateDetail({
+    workspaceId: templateWorkspaceId(origin),
     templateId: origin.id,
   });
   return agentTemplateFromContent(origin.name, detail.definition, null, origin);
 }
 
+/**
+ * The workspace to ask for a server template, from what the origin recorded.
+ *
+ * A registry belongs to a workspace, so an origin naming only a server is
+ * answerable exactly while that server holds one. Where it holds several the
+ * window's own workspace is not an answer: it would load a different template
+ * of the same id, or none, and offer it as this agent's.
+ */
+function templateWorkspaceId(origin: AgentTemplateOrigin): string {
+  if (origin.workspaceId) return origin.workspaceId;
+  if (!origin.serverId)
+    throw new Error(`"${origin.name}" came from a server this Console does not know.`);
+  const onServer = workspacesStore.onServer(origin.serverId);
+  if (onServer.length === 1) return onServer[0]!.id;
+  if (onServer.length === 0)
+    throw new Error(`The workspace "${origin.name}" came from is not known yet.`);
+  throw new Error(
+    `"${origin.name}" was recorded before this Console kept which workspace a template came from, and its Switch server now has ${onServer.length}. Open it from that workspace's template list instead.`
+  );
+}
+
 /** Resolve a listing entry (bundled or from the server's registry) into the agent it describes. */
 export async function loadAgentTemplate(
-  serverId: string,
+  workspaceId: string,
   template: StoredTemplateSummary
 ): Promise<AgentTemplate> {
   const bundled = findBundledTemplate(template.id);
@@ -95,12 +115,14 @@ export async function loadAgentTemplate(
       source: 'bundled',
     });
   }
-  const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId: template.id });
+  const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId: template.id });
+  const serverId = workspacesStore.serverIdFor(workspaceId);
   return agentTemplateFromContent(detail.name, detail.definition, null, {
     id: detail.id,
     name: detail.name,
     source: 'server',
-    serverId,
+    workspaceId,
+    ...(serverId ? { serverId } : {}),
   });
 }
 
@@ -135,7 +157,7 @@ export type LoadedTemplate = {
  * owner, so someone else's template of the same name is not a copy.
  */
 export async function loadTemplateById(
-  serverId: string,
+  workspaceId: string,
   templateId: string,
   meId: string | null
 ): Promise<LoadedTemplate> {
@@ -148,7 +170,7 @@ export async function loadTemplateById(
   let savedCopy: StoredTemplateSummary | null = null;
   if (bundled) {
     savedCopy =
-      (await rpc.switchServers.listTemplates({ serverId }).catch(() => [])).find(
+      (await rpc.workspaces.listTemplates({ workspaceId }).catch(() => [])).find(
         (t) => t.name === bundled.name && meId !== null && t.ownerId === meId
       ) ?? null;
     name = bundled.name;
@@ -160,7 +182,7 @@ export async function loadTemplateById(
         })
       : bundled.yamlText;
   } else {
-    const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId });
+    const detail = await rpc.workspaces.getTemplateDetail({ workspaceId, templateId });
     const { definition, ...summary } = detail;
     name = detail.name;
     description = detail.description;

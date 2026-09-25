@@ -100,6 +100,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -117,10 +118,10 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
-from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.app import create_gateway_app
@@ -133,10 +134,17 @@ from switch_core.observability.bootstrap import (
     start_observability,
 )
 from switch_core.observability.pool import pool_stats
+from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.session_activity.listener import SessionActivityListener
+from switch_core.session_activity.maintenance import (
+    maintenance_loop as session_activity_maintenance_loop,
+)
+from switch_core.session_activity.outcomes import ApprovalOutcomes
+from switch_core.session_activity.service import SessionActivityService
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -331,10 +339,30 @@ async def run(config: SwitchConfig) -> None:
     engine = create_engine_from_config(config)
     await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
+    # Wired here rather than inside the engine factory, so the database layer
+    # keeps knowing nothing about observability. Unconditional: the listeners
+    # record into whatever registry is installed, which is the null one until
+    # `start_observability` runs and stays null when export is off — measured
+    # at 0.3 µs per statement against a 130 µs statement, so a server that
+    # reports nothing pays nothing worth counting, and turning export on does
+    # not change how queries execute.
+    instrument_queries(engine)
+
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
     # subscription exists before the first consumer needs it.
+    #
+    # Deliberately NOT instrumented for query timing: `MessageListener` takes
+    # the raw asyncpg connection off this engine and issues `LISTEN` and its
+    # heartbeat through the driver, so SQLAlchemy's cursor events never fire
+    # and the listeners would record nothing at all. That this connection is
+    # alive is answered by the `message_listener` readiness check instead.
     message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    # The same arrangement for session activity and approval requests: their
+    # tables announce each change with the row attached, and this pushes it on.
+    session_activity_listener = SessionActivityListener(
+        lambda: create_unpooled_engine(config)
+    )
 
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
@@ -350,7 +378,6 @@ async def run(config: SwitchConfig) -> None:
     bridge_store = CollaborationBridgeStore()
     external_user_store = ExternalUserStore()
     bridge_message_map_store = BridgeMessageMapStore()
-    session_request_post_store = SessionRequestPostStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
@@ -363,6 +390,8 @@ async def run(config: SwitchConfig) -> None:
     room_group_store = RoomGroupStore()
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
+    usage_store = UsageStore()
+    budget_store = BudgetStore()
     media_store = MediaStore()
     template_store = TemplateStore()
 
@@ -444,6 +473,7 @@ async def run(config: SwitchConfig) -> None:
         config=config,
         room_store=room_store,
         message_store=message_store,
+        usage_store=usage_store,
         media_store=media_store,
         listener=message_listener,
         invites=invites,
@@ -482,7 +512,6 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         external_user_store=external_user_store,
         bridge_message_map_store=bridge_message_map_store,
-        session_request_post_store=session_request_post_store,
         room_store=room_store,
         agent_store=agent_store,
         client_store=client_store,
@@ -492,6 +521,9 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
+        session_activity_listener=session_activity_listener,
+        session_activity_service=SessionActivityService(session_factory),
+        connections=connections,
         telemetry=telemetry,
     )
 
@@ -542,6 +574,9 @@ async def run(config: SwitchConfig) -> None:
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        approval_outcomes=ApprovalOutcomes(
+            session_activity_listener, SessionActivityService(session_factory)
+        ),
         connections=connections,
         telemetry=telemetry,
     )
@@ -611,6 +646,8 @@ async def run(config: SwitchConfig) -> None:
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         template_store=template_store,
+        usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,
@@ -668,7 +705,9 @@ async def run(config: SwitchConfig) -> None:
 
     probes = RuntimeProbes(
         listener_connected=message_listener.connected.is_set,
+        session_activity_listener_connected=session_activity_listener.connected.is_set,
         bridges_running=collab_lifecycle.running_count,
+        bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         clients_running=client_lifecycle.running_count,
         connectors_running=connector_lifecycle.running_count,
@@ -700,6 +739,9 @@ async def run(config: SwitchConfig) -> None:
             )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
+            session_activity_task = asyncio.create_task(
+                session_activity_maintenance_loop(session_factory)
+            )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
@@ -711,14 +753,17 @@ async def run(config: SwitchConfig) -> None:
                 else None
             )
             await message_listener.start()
+            await session_activity_listener.start()
             try:
                 yield
             finally:
                 sweep_task.cancel()
+                session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()
+                await session_activity_listener.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.

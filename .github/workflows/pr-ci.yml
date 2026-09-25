@@ -90,7 +90,6 @@ jobs:
             backend:
               - *shared
               - 'core/**'
-              - 'connectors/**'
             console:
               - *shared
               - 'console/**'
@@ -120,7 +119,6 @@ jobs:
               - 'console/apps/switch-console-desktop/package.json'
               - 'console/apps/switch-console-desktop/src/shared/app-identity*.ts'
               - 'console/packages/switch-agent-runtime/package.json'
-              - 'connectors/**/plugin.json'
 
   backend:
     name: Backend (core)
@@ -147,7 +145,7 @@ jobs:
         run: uv run --project core ruff check .
 
       - name: mypy
-        run: uv run --project core mypy --config-file core/pyproject.toml core/switch_core/ connectors/
+        run: uv run --project core mypy --config-file core/pyproject.toml core/switch_core/
 
       # Store tests boot real Postgres via testcontainers; ubuntu-latest ships
       # Docker so the containers come up without extra setup. The slow

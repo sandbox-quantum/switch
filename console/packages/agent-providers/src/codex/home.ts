@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
@@ -10,7 +10,6 @@ export async function prepareCodexSessionHome(input: {
   sessionId: string;
   sourceHome: string;
   config: string;
-  skill: string;
 }): Promise<string> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
@@ -31,8 +30,11 @@ export async function prepareCodexSessionHome(input: {
   }
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
+  // The session host registers its own `switch` server; an entry of that name
+  // in the user's config would be merged into it rather than replaced.
   const servers = config.mcp_servers as Record<string, unknown> | undefined;
   if (servers) delete servers.switch;
+  // The connector plugin Switch used to ship; kept off for installs that still have it.
   const plugins = config.plugins as Record<string, { enabled?: boolean }> | undefined;
   for (const [name, plugin] of Object.entries(plugins ?? {})) {
     if (name.includes('switch-connector')) plugin.enabled = false;
@@ -40,9 +42,9 @@ export async function prepareCodexSessionHome(input: {
   await writeFile(join(home, 'config.toml'), stringify(config), { mode: 0o600 });
   for (const name of ['AGENTS.md', 'rules', 'plugins', 'hooks.json'])
     await linkHomeAsset(join(input.sourceHome, name), join(home, name));
-  const skillDir = join(home, 'skills', 'switch');
-  await mkdir(skillDir, { recursive: true });
-  await writeFile(join(skillDir, 'SKILL.md'), input.skill);
+  // Earlier builds wrote the Switch skill here; it now arrives as developer
+  // instructions, and a leftover copy would only be read again by shell.
+  await rm(join(home, 'skills', 'switch'), { recursive: true, force: true });
   await linkSkills(join(input.sourceHome, 'skills'), join(home, 'skills'));
   return home;
 }

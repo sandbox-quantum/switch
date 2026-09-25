@@ -1,12 +1,11 @@
-import { sessionSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
+import { listHostSessions } from '@main/core/sdk-host/host-sessions';
 import { stopSharedSession } from '@main/core/sdk-host/shared-agent-runtime';
 import { configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
+import { manageAgentSidecar } from '@main/core/sdk-host/sidecar-management';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { fetchSdkSessions } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -15,27 +14,29 @@ import { log } from '@main/lib/logger';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 import { remoteSessionReconciler } from './remote-session-reconciler';
-import { ensureRemoteWatcher, startRemoteDiscovery } from './remote-watcher';
+import { startRemoteDiscovery } from './remote-watcher';
 
 export async function resetRemoteAgent(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
-  if (!agent?.serverId || !agent.switchAgentId)
+  if (!agent?.workspaceId || !agent.switchAgentId)
     throw new Error('The agent is not linked to Switch.');
-  const server = await getServer(agent.serverId);
-  if (!server) throw new Error('The agent’s Switch server is missing.');
-  await configureSharedWatcher(agentId, false);
+  await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'explicit');
   remoteSessionReconciler.stop(agentId);
-  const remote = sessionSchema.array().parse(await fetchSdkSessions(server));
+  const remote = await listHostSessions(agentId);
   for (const session of remote) {
     if (session.agentId === agent.switchAgentId && session.status !== 'stopped')
-      await stopSharedSession(server, session.sessionId);
+      await stopSharedSession(agentId, session.sessionId);
   }
   const local = await db
     .select({ id: sessions.id })
     .from(sessions)
     .where(eq(sessions.agentId, agentId));
   for (const session of local) await removeLocalSession(session.id);
-  await ensureRemoteWatcher(agentId);
+  // Someone asked for this agent back, so it ends on the same transition as
+  // Start: a controller stopped by hand is started, rather than held down by
+  // the record of that stop, which is durable and outlasts the reset. Auto-start
+  // is a separate setting and is carried through untouched.
+  await manageAgentSidecar(agentId, 'start');
   await startRemoteDiscovery(agentId);
 }
 

@@ -6,9 +6,9 @@ import {
   type RepoAgentAttributes,
   type RepoAgentDefinition,
   type RepoAgentField,
-  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
+  RECOGNISED_SWITCH_TOOL_RULES,
   SWITCH_AGENT_SETTINGS_DIR,
-  SWITCH_CONNECTOR_TOOL_RULES,
+  SWITCH_TOOL_RULES,
 } from '@switch-console/core/agents/plugins';
 
 /**
@@ -33,15 +33,15 @@ export const CLAUDE_SUBAGENTS = {
 
 const SWITCH_ENV_KEYS = ['SWITCH_API_ENDPOINT', 'SWITCH_API_TOKEN', 'SWITCH_AGENT_ID'] as const;
 
-/** Prefix of the Switch connector's MCP tools. A subagent can only participate
- * in Switch if its tool allowlist grants it (or omits `tools` entirely, which
- * Claude Code reads as "all tools"). */
-const SWITCH_MCP_TOOL_PREFIX = 'mcp__plugin_switch-connector_switch';
+/** Prefix of one tool of the `switch` MCP server. A subagent can only
+ * participate in Switch if its tool allowlist grants the server or one of its
+ * tools (or omits `tools` entirely, which Claude Code reads as "all tools"). */
+const SWITCH_MCP_TOOL_PREFIX = 'mcp__switch__';
 
 /** Rules to strip on read-back, so the form shows only the user's own tools.
  * Wider than what is written, so a definition authored by an older Switch Console
  * does not surface a retired rule as if the user had chosen it. */
-const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES;
+const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_TOOL_RULES;
 
 const MD_SUFFIX = '.md';
 
@@ -282,7 +282,7 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
     if (key === 'tools') {
       const list = toList(raw);
       if (list.length > 0) {
-        lines.push(`tools: ${dedupe([...list, ...SWITCH_CONNECTOR_TOOL_RULES]).join(', ')}`);
+        lines.push(`tools: ${dedupe([...list, ...SWITCH_TOOL_RULES]).join(', ')}`);
       }
       continue;
     }
@@ -316,7 +316,9 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
 function isEligible(tools: string[] | null): boolean {
   // No `tools` line → inherits every tool (including the Switch MCP tools).
   if (tools === null) return true;
-  return tools.some((tool) => tool.startsWith(SWITCH_MCP_TOOL_PREFIX));
+  return tools.some(
+    (tool) => SWITCH_RULES.includes(tool) || tool.startsWith(SWITCH_MCP_TOOL_PREFIX)
+  );
 }
 
 function asNonEmptyString(value: unknown): string | null {
@@ -354,12 +356,12 @@ function neutralSettingsRelPath(name: string): string {
  * yet migrated (CHOO-1440).
  */
 async function readCredsObject(
-  workspaceFs: PluginFs,
+  workdirFs: PluginFs,
   name: string
 ): Promise<Record<string, unknown>> {
-  const neutral = await workspaceFs.read(neutralSettingsRelPath(name));
+  const neutral = await workdirFs.read(neutralSettingsRelPath(name));
   if (neutral !== null) return parseSettingsObject(neutral);
-  return parseSettingsObject(await workspaceFs.read(settingsRelPath(name)));
+  return parseSettingsObject(await workdirFs.read(settingsRelPath(name)));
 }
 
 function definitionRelPath(name: string): string {
@@ -368,11 +370,11 @@ function definitionRelPath(name: string): string {
 
 /** Description/model from a subagent's definition, project scope then user scope. */
 async function readDefinitionMeta(
-  workspaceFs: PluginFs,
+  workdirFs: PluginFs,
   homeFs: PluginFs,
   name: string
 ): Promise<{ description: string | null; model: string | null }> {
-  const project = await workspaceFs.read(definitionRelPath(name));
+  const project = await workdirFs.read(definitionRelPath(name));
   if (project !== null) {
     const fm = parseFrontmatter(project);
     return { description: fm.description, model: fm.model };
@@ -386,27 +388,27 @@ async function readDefinitionMeta(
 }
 
 export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
-  async discoverLocal(workspaceFs, homeFs): Promise<LocalRepoAgent[]> {
+  async discoverLocal(workdirFs, homeFs): Promise<LocalRepoAgent[]> {
     // Names come from either credentials location — the neutral `.switch/agents`
     // dir and the legacy `.claude/switch-subagents` dir — so both migrated and
     // un-migrated installs are discovered (CHOO-1440). Plain agents' creds files
     // live in the neutral dir too (keyed by agent id, no `.claude/agents/<name>.md`
     // definition); a neutral file counts as a subagent only when it has a
     // definition, so those are filtered out here.
-    const neutralCandidates = (await workspaceFs.list(SWITCH_AGENT_SETTINGS_DIR))
+    const neutralCandidates = (await workdirFs.list(SWITCH_AGENT_SETTINGS_DIR))
       .filter((entry) => entry.endsWith('.json'))
       .map((entry) => entry.slice(0, -'.json'.length))
       .filter((name) => name.length > 0);
     const neutralNames: string[] = [];
     for (const name of neutralCandidates) {
       if (
-        (await workspaceFs.exists(definitionRelPath(name))) ||
+        (await workdirFs.exists(definitionRelPath(name))) ||
         (await homeFs.exists(definitionRelPath(name)))
       ) {
         neutralNames.push(name);
       }
     }
-    const legacyNames = (await workspaceFs.list(CLAUDE_SUBAGENTS.dirRelative))
+    const legacyNames = (await workdirFs.list(CLAUDE_SUBAGENTS.dirRelative))
       .filter((entry) => entry.endsWith(CLAUDE_SUBAGENTS.settingsSuffix))
       .map((entry) => entry.slice(0, -CLAUDE_SUBAGENTS.settingsSuffix.length));
     const names = [...new Set([...neutralNames, ...legacyNames])]
@@ -415,9 +417,9 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
 
     return Promise.all(
       names.map(async (name) => {
-        const settings = await readCredsObject(workspaceFs, name);
+        const settings = await readCredsObject(workdirFs, name);
         const env = (settings.env ?? {}) as Record<string, unknown>;
-        const { description, model } = await readDefinitionMeta(workspaceFs, homeFs, name);
+        const { description, model } = await readDefinitionMeta(workdirFs, homeFs, name);
         return {
           name,
           description,
@@ -429,8 +431,8 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     );
   },
 
-  async discoverDefinitions(workspaceFs): Promise<RepoAgentDefinition[]> {
-    const entries = await workspaceFs.list(CLAUDE_SUBAGENTS.definitionsDirRelative);
+  async discoverDefinitions(workdirFs): Promise<RepoAgentDefinition[]> {
+    const entries = await workdirFs.list(CLAUDE_SUBAGENTS.definitionsDirRelative);
     const files = entries
       .filter((entry) => entry.endsWith(MD_SUFFIX))
       .sort((a, b) => a.localeCompare(b));
@@ -438,10 +440,10 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     return Promise.all(
       files.map(async (file) => {
         const content =
-          (await workspaceFs.read(`${CLAUDE_SUBAGENTS.definitionsDirRelative}/${file}`)) ?? '';
+          (await workdirFs.read(`${CLAUDE_SUBAGENTS.definitionsDirRelative}/${file}`)) ?? '';
         const fm = parseFrontmatter(content);
         const name = fm.name ?? file.slice(0, -MD_SUFFIX.length);
-        const registered = await workspaceFs.exists(settingsRelPath(name));
+        const registered = await workdirFs.exists(settingsRelPath(name));
         return {
           name,
           description: fm.description,
@@ -466,8 +468,8 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     ];
   },
 
-  async readLaunchEnv(workspaceFs, agentName): Promise<Record<string, string>> {
-    const settings = await readCredsObject(workspaceFs, agentName);
+  async readLaunchEnv(workdirFs, agentName): Promise<Record<string, string>> {
+    const settings = await readCredsObject(workdirFs, agentName);
     const env = (settings.env ?? {}) as Record<string, unknown>;
     const result: Record<string, string> = {};
     for (const key of SWITCH_ENV_KEYS) {
@@ -489,13 +491,13 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     return definitionRelPath(name);
   },
 
-  async writeDefinition(workspaceFs, attributes: RepoAgentAttributes): Promise<void> {
+  async writeDefinition(workdirFs, attributes: RepoAgentAttributes): Promise<void> {
     const name = toScalar(attributes.name);
-    await workspaceFs.write(definitionRelPath(name), serializeDefinition(attributes));
+    await workdirFs.write(definitionRelPath(name), serializeDefinition(attributes));
   },
 
-  async readDefinition(workspaceFs, name): Promise<RepoAgentAttributes | null> {
-    const content = await workspaceFs.read(definitionRelPath(name));
+  async readDefinition(workdirFs, name): Promise<RepoAgentAttributes | null> {
+    const content = await workdirFs.read(definitionRelPath(name));
     if (content === null) return null;
     const fields = parseFrontmatterFields(content);
 
@@ -527,8 +529,8 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     return attributes;
   },
 
-  async removeLocal(workspaceFs, name): Promise<void> {
-    await workspaceFs.delete(definitionRelPath(name));
-    await workspaceFs.delete(settingsRelPath(name));
+  async removeLocal(workdirFs, name): Promise<void> {
+    await workdirFs.delete(definitionRelPath(name));
+    await workdirFs.delete(settingsRelPath(name));
   },
 };

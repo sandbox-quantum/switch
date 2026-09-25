@@ -5,7 +5,7 @@ export interface CommandDef {
   label: string;
   description?: string;
   group?: string;
-  scope: 'app' | 'location' | 'session' | 'session-sub';
+  scope: 'app' | 'session';
   shortcutKey?: ShortcutSettingsKey;
   /** Token resolved to a LucideIcon by the renderer's COMMAND_ICONS map. */
   iconKey?: string;
@@ -30,15 +30,6 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'settings',
   },
   {
-    id: 'app.library',
-    label: 'Open Library',
-    description: 'Open the Library',
-    scope: 'app',
-    shortcutKey: 'library',
-    group: 'App',
-    iconKey: 'library',
-  },
-  {
     id: 'app.newLocation',
     label: 'Add Switch Agent',
     description: 'Onboard a local directory as a Switch agent — configuring one if needed',
@@ -54,15 +45,6 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
     scope: 'app',
     group: 'App',
     iconKey: 'server',
-  },
-  {
-    id: 'app.newSession',
-    label: 'New Session',
-    description: 'Spawn a new session for this agent',
-    scope: 'app',
-    shortcutKey: 'newSession',
-    group: 'App',
-    iconKey: 'square-plus',
   },
   {
     id: 'app.toggleTheme',
@@ -94,137 +76,12 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
 
 export const SESSION_COMMAND_DEFS = defineCommandDefs([
   {
-    id: 'session.sidebarChanges',
-    label: 'View Changes',
-    description: 'Open the Changes panel in the right sidebar',
-    scope: 'session',
-    shortcutKey: 'sidebarChanges',
-    group: 'View',
-    iconKey: 'file-diff',
-  },
-  {
-    id: 'session.sidebarFiles',
-    label: 'View Files',
-    description: 'Open the Files panel in the right sidebar',
-    scope: 'session',
-    shortcutKey: 'sidebarFiles',
-    group: 'View',
-    iconKey: 'folder-open',
-  },
-  {
-    id: 'session.viewTerminals',
-    label: 'View Terminals',
-    description: 'Open the terminal drawer',
-    scope: 'session',
-    group: 'View',
-    iconKey: 'terminal',
-  },
-  {
-    id: 'session.toggleRightSidebar',
-    label: 'Toggle Right Sidebar',
-    description: 'Show or hide the right sidebar',
-    scope: 'session',
-    shortcutKey: 'toggleRightSidebar',
-    group: 'Panel',
-    iconKey: 'panel-right',
-  },
-  {
-    id: 'session.openBrowser',
-    label: 'Open Browser',
-    description: 'Open an in-app browser for this session',
-    scope: 'session',
-    shortcutKey: 'openBrowser',
-    group: 'Browser',
-    iconKey: 'globe',
-  },
-  {
-    id: 'session.browserGoBack',
-    label: 'Browser Back',
-    description: 'Go back in the active browser tab',
-    scope: 'session',
-    group: 'Browser',
-    iconKey: 'arrow-left',
-  },
-  {
-    id: 'session.browserGoForward',
-    label: 'Browser Forward',
-    description: 'Go forward in the active browser tab',
-    scope: 'session',
-    group: 'Browser',
-    iconKey: 'arrow-right',
-  },
-  {
-    id: 'session.browserReload',
-    label: 'Reload Browser',
-    description: 'Reload the active browser tab',
-    scope: 'session',
-    group: 'Browser',
-    iconKey: 'refresh-cw',
-  },
-  {
-    id: 'session.browserFocusUrl',
-    label: 'Focus Browser URL',
-    description: 'Focus the URL field in the active browser tab',
-    scope: 'session',
-    group: 'Browser',
-    iconKey: 'text-cursor-input',
-  },
-  {
-    id: 'session.browserOpenExternal',
-    label: 'Open Browser URL Externally',
-    description: 'Open the active browser URL in the system browser',
-    scope: 'session',
-    group: 'Browser',
-    iconKey: 'external-link',
-  },
-  {
-    id: 'session.browserCopyUrl',
-    label: 'Copy Browser URL',
-    description: 'Copy the active browser URL',
-    scope: 'session',
-    shortcutKey: 'browserCopyUrl',
-    group: 'Browser',
-    iconKey: 'copy',
-  },
-  {
-    id: 'session.gitFetch',
-    label: 'Git Fetch',
-    description: 'Fetch latest changes from remote',
-    scope: 'session',
-    group: 'Git',
-    iconKey: 'git-pull-request',
-  },
-  {
-    id: 'session.gitPull',
-    label: 'Git Pull',
-    description: 'Pull latest changes from remote',
-    scope: 'session',
-    group: 'Git',
-    iconKey: 'arrow-down-to-line',
-  },
-  {
-    id: 'session.gitPush',
-    label: 'Git Push',
-    description: 'Push commits to remote',
-    scope: 'session',
-    group: 'Git',
-    iconKey: 'arrow-up-to-line',
-  },
-  {
     id: 'session.pin',
     label: 'Pin Session',
     description: 'Pin this session to keep it at the top',
     scope: 'session',
     group: 'Session',
     iconKey: 'pin',
-  },
-  {
-    id: 'session.convertAutomation',
-    label: 'Convert to Regular Session',
-    description: 'Detach this session from its automation run',
-    scope: 'session',
-    group: 'Session',
-    iconKey: 'message-square',
   },
   {
     id: 'session.nextSession',

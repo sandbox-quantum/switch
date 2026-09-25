@@ -6,14 +6,19 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   snapshot: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  fetchSdkSessions: mocks.list,
-  fetchSdkSnapshot: mocks.snapshot,
-  submitSdkCommand: mocks.submit,
-  fetchSdkCommandStatus: mocks.status,
+vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
+vi.mock('@main/core/sdk-host/host-journal', () => ({
+  JournalUnavailableError: class extends Error {},
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('@main/core/sdk-host/transcripts', () => ({ currentSnapshot: mocks.snapshot }));
+vi.mock('@main/core/sdk-host/session-commands', () => ({
+  CommandNotRecordedError: class extends Error {},
+  submitSessionCommand: mocks.submit,
+  sessionCommandStatus: mocks.status,
+}));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
 const { stopSharedAgentSessions } = await import('./stop-shared-agent-sessions');
 const session = {
@@ -36,7 +41,7 @@ const session = {
     attachmentMimeTypes: [],
   },
 };
-const agent = { id: 'local-agent', serverId: 'server', switchAgentId: 'agent' } as Agent;
+const agent = { id: 'local-agent', workspaceId: 'workspace', switchAgentId: 'agent' } as Agent;
 const receipt = {
   type: 'command.status',
   commandId: 'stop-epoch',
@@ -85,4 +90,9 @@ it('does not stop other agents or retired sessions', async () => {
   ]);
   await stopSharedAgentSessions(agent);
   expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it('does nothing for an agent with no workspace to address', async () => {
+  await stopSharedAgentSessions({ ...agent, workspaceId: null } as Agent);
+  expect(mocks.list).not.toHaveBeenCalled();
 });

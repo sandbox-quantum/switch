@@ -118,7 +118,7 @@ id, no IP field, no Switch identity.
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |
 | `onboarding_completed` | *(no fields)* |
-| `add_server_step` | `step`: `choose` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` |
+| `add_server_step` | `step`: `choose` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 
 **Agents and sessions**
 
@@ -127,7 +127,7 @@ id, no IP field, no Switch identity.
 | `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `error` · `entry_point`: `sidebar` |
 | `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
 | `agent_reset` | `agent_type` · `outcome` · `failure_reason`: `none` / `agent_not_found` / `not_remote` / `connect` / `error` |
-| `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `pty_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` |
+| `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
 | `session_started` | `agent_type`: `claude` · `location`: `local` · `outcome`: `success` · `failure_reason`: `none` / `agent_not_found` / `already_exists` / `spawn_failed` · `entry_point`: `command_palette` · `start_source`: `user` / `auto` / `adopted` / `unknown` · `has_initial_prompt`: `true` (**a boolean — never the prompt**) · `connected_to_room`: `false` |
 | `session_ended` | `agent_type` · `location` · `outcome`: `normal` / `failed` |
 | `session_attached` | `agent_type` · `outcome` |
@@ -138,13 +138,12 @@ Note the shape of `failure_reason` everywhere: a short enumerated code such as
 a stack trace, or a command's stderr — those are mapped to `error` if they don't
 match a known code.
 
-**Connector**
-
-| Event | Fields, with example values |
-|---|---|
-| `connector_installed` | `agent_type`: `claude` · `target`: `local` · `outcome`: `success` |
-| `connector_updated` | `agent_type` · `target`: `remote` · `outcome` · `was_reinstall`: `false` |
-| `connector_uninstalled` | `agent_type` · `target`: `local` · `outcome` |
+`duration_ms` on `agent_cli_action` is how long the operation took, in whole
+milliseconds, measured on a monotonic clock around the operation itself. Like
+`agent_count` and `result_count` it is a number rather than a value from a fixed
+set, so to be explicit: it is an elapsed time and nothing else. It names no path,
+host, command or repository, and at this resolution it does not distinguish one
+machine from another.
 
 **Servers and sign-in**
 
@@ -178,7 +177,7 @@ agents.
 
 | Event | Fields, with example values |
 |---|---|
-| `host_setup_step` | `step_kind`: `core-dependency` / `agent-cli` / `agent-plugin` / `unknown` · `agent_type` · `action`: `install` / `update` / `skip` · `outcome` |
+| `host_setup_step` | `step_kind`: `core-dependency` / `agent-cli` / `unknown` · `agent_type` · `action`: `install` / `update` / `skip` · `outcome` |
 | `host_onboarded` | `outcome`: `success` · `picked_from_ssh_config`: `true` (**a boolean — the SSH host is never sent**) |
 | `host_removed` | `outcome` |
 

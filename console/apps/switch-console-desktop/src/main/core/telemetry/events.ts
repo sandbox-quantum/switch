@@ -137,6 +137,22 @@ export type TelemetryCliFailure =
   | 'error';
 
 /**
+ * How long an operation took, in whole milliseconds, on a monotonic clock.
+ *
+ * A number rather than a value from a fixed set, like `agent_count` and
+ * `result_count`, so how to read it matters.
+ * Nothing is bucketed and nothing is clamped: take percentiles, not means —
+ * some of these legitimately include a password prompt left on screen.
+ *
+ * Branded so `startTimer()` is the only thing that can mint one. That is what
+ * stops a call site reaching for `Date.now() - startedAt`, which is not
+ * monotonic and across a clock step yields a negative number nothing at the far
+ * end can tell from data.
+ */
+declare const durationMsBrand: unique symbol;
+export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };
+
+/**
  * Which messaging platform a room or bridge is on.
  *
  * The server names the platform as free text, so this is narrowed at the emitter
@@ -319,11 +335,6 @@ export type TelemetryEventMap = {
     server_kind: 'local' | 'remote_managed' | 'external';
     outcome: TelemetryOutcome;
   };
-  connector_installed: {
-    agent_type: TelemetryAgentType;
-    target: TelemetryLocationKind;
-    outcome: 'success' | 'failure';
-  };
   /**
    * The app checked for an update. `trigger` separates a check someone asked for
    * from the hourly one, because only the first says anything about intent.
@@ -366,29 +377,6 @@ export type TelemetryEventMap = {
   /** Someone linked their account on a messaging platform to their Switch user. */
   bridge_identity_claimed: {
     bridge_platform: TelemetryBridgePlatform;
-    outcome: TelemetryOutcome;
-  };
-  /**
-   * The connector was updated. `was_reinstall` separates a host with a single
-   * update verb from one where the connector must be removed and put back —
-   * Codex has no update verb, so for it every update has a window in the middle
-   * with nothing installed, and a failure there leaves the agent without one.
-   */
-  connector_updated: {
-    agent_type: TelemetryAgentType;
-    target: 'local' | 'remote';
-    outcome: TelemetryOutcome;
-    was_reinstall: boolean;
-  };
-  /**
-   * The connector was removed. The churn signal.
-   *
-   * Only ever `local`: there is no remote uninstall anywhere above the service,
-   * so a `remote` value here would be one that cannot occur.
-   */
-  connector_uninstalled: {
-    agent_type: TelemetryAgentType;
-    target: 'local';
     outcome: TelemetryOutcome;
   };
   /**
@@ -449,10 +437,17 @@ export type TelemetryEventMap = {
     outcome: TelemetryOutcome;
   };
   /**
-   * An agent's own CLI was installed, updated or removed — not the Switch
-   * connector, which `connector_installed` and friends report.
+   * An agent's own CLI was installed, updated or removed.
    *
    * The single biggest wall a new user hits, and until now entirely uncounted.
+   *
+   * `duration_ms` matters most here: a CLI install that takes four minutes and
+   * one that takes ten seconds are otherwise the same row, and a package manager
+   * getting slower is the kind of regression nobody reports because it never
+   * fails.
+   *
+   * A dependency manager that throws instead of returning a result is reported
+   * as `error` by `reportedCliAction`, so every attempt is in the denominator.
    */
   agent_cli_action: {
     agent_type: TelemetryAgentType;
@@ -461,6 +456,7 @@ export type TelemetryEventMap = {
     action: TelemetryCliAction;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryCliFailure;
+    duration_ms: TelemetryDurationMs;
   };
   /**
    * A room was created on a server. `bridge_unavailable` is the failure worth
@@ -605,15 +601,12 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   ],
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome'],
-  connector_installed: ['agent_type', 'target', 'outcome'],
   update_checked: ['trigger', 'result'],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
-  connector_updated: ['agent_type', 'target', 'outcome', 'was_reinstall'],
-  connector_uninstalled: ['agent_type', 'target', 'outcome'],
   agent_removed: [
     'agent_type',
     'location',
@@ -634,6 +627,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'action',
     'outcome',
     'failure_reason',
+    'duration_ms',
   ],
   room_created: [
     'server_kind',
@@ -657,7 +651,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   onboarding_step_started: ['step_id'],
   onboarding_checklist_dismissed: [],
   onboarding_completed: [],
-  add_server_step: ['step', 'choice'],
+  add_server_step: ['step', 'choice', 'first_run'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source'],
   session_attached: ['agent_type', 'outcome'],

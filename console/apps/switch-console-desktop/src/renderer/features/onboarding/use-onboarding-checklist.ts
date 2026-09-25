@@ -5,7 +5,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { report } from '@renderer/lib/telemetry/report';
 import {
   deriveOnboardingSteps,
@@ -33,7 +33,7 @@ export function useOnboardingProgress(): OnboardingProgress {
     addServer: switchServersStore.servers.length > 0,
     agentProviders: (agentTypes ?? []).some((type) => type.available),
     onboardAgents: appState.locations.locations.size > 0,
-    createRoom: switchRoomsStore.listedRoomsOnAllServers.length > 0,
+    createRoom: switchRoomsStore.listedRoomsInAllWorkspaces.length > 0,
   };
 }
 

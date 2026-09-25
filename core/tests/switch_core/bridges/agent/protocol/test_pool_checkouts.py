@@ -19,10 +19,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import RoomDescriptor
-from switch_core.db.models import Agent, ApiKey, Client, Room, User
+from switch_core.budgets import BudgetExceeded, BudgetGuard
+from switch_core.db.models import (
+    Agent,
+    ApiKey,
+    Client,
+    Room,
+    UsageBudget,
+    UsageMetric,
+    User,
+)
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.usage_store import UsageStore
 
 
 class _CountingSessionFactory:
@@ -62,6 +73,7 @@ def _service(counting: _CountingSessionFactory) -> ProtocolService:
     svc.session_factory = counting  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
+    svc.budget_guard = BudgetGuard(BudgetStore())  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.connections = ConnectionRegistry()
     return svc
@@ -327,6 +339,39 @@ class TestSendMessage:
 
         with pytest.raises(PermissionError):
             await svc.send_message(outsider_id, room_id, "hello")
+
+    async def test_an_agent_over_its_budget_cannot_post_and_it_costs_one_checkout(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, member_id, _ = await _seed(session_factory)
+        async with session_factory() as session:
+            agent = await AgentStore().get(session, member_id)
+            assert agent is not None
+            session.add(
+                UsageBudget(
+                    agent_id=member_id,
+                    metric="messages",
+                    model="",
+                    amount_limit=2,
+                    period_hours=24,
+                )
+            )
+            await UsageStore().record(
+                session,
+                tenant_id=agent.tenant_id,
+                metric=UsageMetric.MESSAGES,
+                client_id=agent.client_id,
+                model="",
+                amount=2,
+            )
+            await session.commit()
+        counting = _CountingSessionFactory(session_factory)
+        svc = _service(counting)
+
+        with pytest.raises(BudgetExceeded, match="member has reached its budget"):
+            await svc.send_message(member_id, room_id, "hello")
+
+        assert counting.opened == 1
 
 
 class TestAgentStatuses:

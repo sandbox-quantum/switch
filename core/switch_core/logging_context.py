@@ -40,7 +40,19 @@ from switch_core.tenant_context import current_tenant_id
 # The context fields, in the order they are rendered. Anything logged as
 # context must be listed here, so that a typo in a bind call is an error rather
 # than a field that silently never appears.
-CONTEXT_FIELDS: tuple[str, ...] = ("tenant_id", "request_id", "agent_id", "user_id")
+#
+# `room_id` is here and not in a metric attribute, deliberately: a room id is
+# unbounded and belongs to one tenant, which is disqualifying for a dashboard
+# label (see `observability/catalogue.py`) and is exactly what a log line is
+# for. A room is the unit almost every support question arrives in — "this room
+# stopped relaying" — so it has to be something a log search can filter on.
+CONTEXT_FIELDS: tuple[str, ...] = (
+    "tenant_id",
+    "request_id",
+    "agent_id",
+    "room_id",
+    "user_id",
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +60,7 @@ class LogContext:
     tenant_id: str | None = None
     request_id: str | None = None
     agent_id: str | None = None
+    room_id: str | None = None
     user_id: str | None = None
 
 
@@ -150,5 +163,6 @@ class LogContextFilter(logging.Filter):
         )
         record.request_id = context.request_id
         record.agent_id = context.agent_id
+        record.room_id = context.room_id
         record.user_id = context.user_id
         return True

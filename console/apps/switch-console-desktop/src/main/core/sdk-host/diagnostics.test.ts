@@ -5,7 +5,11 @@ vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: () => import.meta.filename,
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({
-  getAgentById: async () => ({ id: 'agent', switchAgentId: 'remote-agent', serverId: 'server' }),
+  getAgentById: async () => ({
+    id: 'agent',
+    switchAgentId: 'remote-agent',
+    workspaceId: 'workspace',
+  }),
 }));
 vi.mock('@main/core/agents/agent-location', () => ({
   getAgentLocation: async () => ({ sshHost: 'host', dir: '/work' }),
@@ -16,10 +20,11 @@ vi.mock('@main/core/agents/connect-remote-agent', () => ({
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
   LocalExecutionContext: class {},
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchSdkSessions: mocks.sessions }));
+vi.mock('./host-sessions', () => ({ listHostSessions: mocks.sessions }));
 const { sharedAgentDiagnostics, sharedAgentLogs } = await import('./diagnostics');
 beforeEach(() => {
   vi.resetAllMocks();
@@ -58,10 +63,15 @@ it('redacts watcher failures and propagates SSH failures', async () => {
         supervisorPid: null,
         buildHash: null,
         failure: 'token=example-placeholder',
+        takenOver: { at: '2026-01-01T00:00:00.000Z', reason: 'token=example-placeholder' },
       },
     ]),
   });
-  expect((await sharedAgentDiagnostics('agent')).watchers[0].failure).toContain('[REDACTED]');
+  const [watcher] = (await sharedAgentDiagnostics('agent')).watchers;
+  expect(watcher.failure).toContain('[REDACTED]');
+  // Whatever the server said when it evicted us reaches the panel too, so it
+  // goes through the same redaction as any other reported text.
+  expect(watcher.takenOver?.reason).toContain('[REDACTED]');
   mocks.exec.mockRejectedValueOnce(new Error('SSH unavailable'));
   await expect(sharedAgentDiagnostics('agent')).rejects.toThrow('SSH unavailable');
 });

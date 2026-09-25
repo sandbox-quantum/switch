@@ -22,10 +22,10 @@ def _no_connections() -> SimpleNamespace:
     contribute nothing.
     """
     return SimpleNamespace(
-        live_agent_ids=lambda: set(),
+        live_connection_ids=lambda: set(),
         is_live=lambda _agent_id: False,
         live_in_room=lambda _agent_id, _room_id: False,
-        has_session_in=lambda _agent_id, _room_id: False,
+        claimant_of=lambda _agent_id, _room_id: None,
         can_spawn_for=lambda _agent_id, _room_id: False,
         for_agent=lambda _agent_id: [],
     )
@@ -79,7 +79,7 @@ def _admin_client(
     async def _list_roles(_session, _room_id):  # type: ignore[no-untyped-def]
         return roles
 
-    async def _has_live_holder(_session, role_id, _alive=()):  # type: ignore[no-untyped-def]
+    async def _has_live_holder(_session, role_id, _live_conns=()):  # type: ignore[no-untyped-def]
         return role_id in live_role_ids
 
     async def _get_by_name_insensitive(_session, name):  # type: ignore[no-untyped-def]
@@ -89,6 +89,7 @@ def _admin_client(
         room_id,
         body,
         *,
+        metered,
         format="markdown",
         mentions=None,
         thread_root_id=None,
@@ -97,6 +98,7 @@ def _admin_client(
         sent.append(
             {
                 "body": body,
+                "metered": metered,
                 "thread_root_id": thread_root_id,
                 "mentions": mentions,
                 "extra_content": extra_content,
@@ -366,6 +368,7 @@ class TestAdminCommandDispatch:
         await client.reply_command("!m", "the result")
         assert sent[0]["body"] == "the result"
         assert _marker_type(sent[0]) == AdminMessageType.COMMAND_RESULT.value
+        assert sent[0]["metered"] is False
 
     async def test_admin_owned_command_is_handled(self) -> None:
         host, sent = _command_host()

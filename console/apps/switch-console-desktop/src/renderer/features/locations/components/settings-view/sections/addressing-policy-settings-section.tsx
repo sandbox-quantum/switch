@@ -32,7 +32,7 @@ export function AddressingPolicySettingsSection({
   });
 
   const switchAgents = (agents ?? []).filter(
-    (a) => a.serverId && a.switchAgentId && (!agentId || a.id === agentId)
+    (a) => a.workspaceId && a.switchAgentId && (!agentId || a.id === agentId)
   );
   if (switchAgents.length === 0) return null;
 
@@ -41,6 +41,7 @@ export function AddressingPolicySettingsSection({
       {switchAgents.map((agent) => (
         <AddressingPolicyRow
           key={agent.id}
+          workspaceId={agent.workspaceId as string}
           serverId={agent.serverId as string}
           agentId={agent.switchAgentId as string}
           agentName={agent.name}
@@ -52,11 +53,15 @@ export function AddressingPolicySettingsSection({
 }
 
 function AddressingPolicyRow({
+  workspaceId,
   serverId,
   agentId,
   agentName,
   showName,
 }: {
+  workspaceId: string;
+  /** Only for the link out to the server's messaging apps, which is a page
+   *  about the gateway rather than about this workspace's data. */
   serverId: string;
   agentId: string;
   agentName: string;
@@ -64,37 +69,37 @@ function AddressingPolicyRow({
 }) {
   const queryClient = useQueryClient();
   const { navigate } = useNavigate();
-  const { identities } = useMyIdentities(serverId);
+  const { identities } = useMyIdentities(workspaceId);
   const [draft, setDraft] = useState<AddressingPolicy | null>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const policyKey = ['agent-addressing-policy', serverId, agentId];
+  const policyKey = ['agent-addressing-policy', workspaceId, agentId];
   const { data: saved } = useQuery({
     queryKey: policyKey,
-    queryFn: () => rpc.switchServers.getAddressingPolicy({ serverId, agentId }),
+    queryFn: () => rpc.workspaces.getAddressingPolicy({ workspaceId, agentId }),
   });
   const rooms = useQuery({
-    queryKey: ['remote-rooms', serverId],
-    queryFn: () => rpc.switchServers.listRemoteRooms(serverId),
+    queryKey: ['remote-rooms', workspaceId],
+    queryFn: () => rpc.workspaces.listRooms(workspaceId),
   });
   const groups = useQuery({
-    queryKey: ['remote-room-groups', serverId],
-    queryFn: () => rpc.switchServers.listRemoteRoomGroups(serverId),
+    queryKey: ['remote-room-groups', workspaceId],
+    queryFn: () => rpc.workspaces.listRoomGroups(workspaceId),
   });
   const users = useQuery({
-    queryKey: ['remote-external-users', serverId],
-    queryFn: () => rpc.switchServers.listRemoteExternalUsers(serverId),
+    queryKey: ['remote-external-users', workspaceId],
+    queryFn: () => rpc.workspaces.listExternalUsers(workspaceId),
   });
   const remoteAgents = useQuery({
-    queryKey: ['remote-agents', serverId],
-    queryFn: () => rpc.switchServers.listRemoteAgents(serverId),
+    queryKey: ['remote-agents', workspaceId],
+    queryFn: () => rpc.workspaces.listAgents(workspaceId),
   });
   const bridges = useQuery({
-    queryKey: ['remote-bridges', serverId],
-    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
+    queryKey: ['remote-bridges', workspaceId],
+    queryFn: () => rpc.workspaces.listBridges(workspaceId),
   });
-  // The apps on this server the user has claimed no account on. Null until both
+  // The apps in this workspace the user has claimed no account on. Null until both
   // halves have arrived: a bridge list without the identities would read as
   // every app unlinked.
   const unlinkedApps =
@@ -109,7 +114,7 @@ function AddressingPolicyRow({
 
   const mutation = useMutation({
     mutationFn: (policy: AddressingPolicy | null) =>
-      rpc.switchServers.updateAddressingPolicy({ serverId, agentId, policy }),
+      rpc.workspaces.updateAddressingPolicy({ workspaceId, agentId, policy }),
     onSuccess: (_result, policy) => {
       queryClient.setQueryData(policyKey, policy);
       setDirty(false);

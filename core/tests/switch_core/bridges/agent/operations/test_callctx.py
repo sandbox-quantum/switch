@@ -40,7 +40,7 @@ def _drive_then_finalise_elsewhere(coro: Coroutine[Any, Any, None]) -> None:
 
 def test_call_context_survives_being_closed_from_another_context() -> None:
     async def body() -> None:
-        with call_context(CallContext(agent_id=AGENT, session_key="c1")):
+        with call_context(CallContext(agent_id=AGENT, session_key="c1", session=None)):
             await _Suspend()
 
     assert current_call_context() is None

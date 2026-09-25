@@ -41,8 +41,15 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
-from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
+from switch_core.db.models import (
+    ClientRoom,
+    MediaBlob,
+    Message,
+    MessageAttachment,
+    UsageMetric,
+)
 from switch_core.db.session_scope import tenant_session
+from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
 from switch_core.observability.catalogue import (
@@ -79,6 +86,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.media_store import MediaStore
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.db.stores.usage_store import UsageStore
     from switch_core.messages.notify import MessageListener
 
 logger = logging.getLogger(__name__)
@@ -90,6 +98,12 @@ _DELIVERY_PAGE = 200
 
 # What makes an `m.room.message` a file rather than text.
 _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
+
+
+# What a tenant is metered for: something a participant said. Custom events
+# are the platform's own bookkeeping — reports, state, receipts — and charging
+# a tenant for them would bill it for how Switch works.
+_METERED_KINDS = frozenset({"message", "media"})
 
 
 def _sent_kind(event_type: str, content: dict[str, object]) -> str:
@@ -160,6 +174,7 @@ class PostgresTransport:
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         message_store: MessageStore,
+        usage_store: UsageStore,
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
@@ -185,6 +200,7 @@ class PostgresTransport:
         self._session_factory = session_factory
         self._room_store = room_store
         self._message_store = message_store
+        self._usage_store = usage_store
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
@@ -287,22 +303,26 @@ class PostgresTransport:
             self._delivering = True
             try:
                 for room_id in rooms:
-                    try:
-                        await self._drain_room(room_id)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        # One room's failure is not the other rooms' problem,
-                        # and this loop is the only delivery this client has.
-                        # Counted as well as logged: swallowing it is what
-                        # makes a stalled room invisible.
-                        metrics().increment(DELIVERY_FAILURES, {})
-                        logger.error(
-                            "Delivery failed for client %s in room %s",
-                            self.user_id,
-                            room_id,
-                            exc_info=True,
-                        )
+                    # Bound around the drain rather than named in the message
+                    # below, so every line this room's delivery produces —
+                    # including the handlers' own — can be filtered to it.
+                    with log_context(room_id=room_id):
+                        try:
+                            await self._drain_room(room_id)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # One room's failure is not the other rooms'
+                            # problem, and this loop is the only delivery this
+                            # client has. Counted as well as logged: swallowing
+                            # it is what makes a stalled room invisible.
+                            metrics().increment(DELIVERY_FAILURES, {})
+                            logger.error(
+                                "Delivery failed for client %s in room %s",
+                                self.user_id,
+                                room_id,
+                                exc_info=True,
+                            )
             finally:
                 self._delivering = False
 
@@ -574,6 +594,7 @@ class PostgresTransport:
         body: str,
         *,
         sender_name: str,
+        metered: bool,
         format: MessageFormat = "text",
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
@@ -587,7 +608,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def send_event(
         self,
@@ -595,7 +618,9 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
     ) -> SendResult:
-        return await self._send(room_id, event_type, content, self.display_name)
+        return await self._send(
+            room_id, event_type, content, self.display_name, metered=False
+        )
 
     async def send_media(
         self,
@@ -606,6 +631,7 @@ class PostgresTransport:
         size: int,
         *,
         sender_name: str,
+        metered: bool,
         msgtype: str,
         caption: str | None = None,
         thread_root_id: str | None = None,
@@ -622,7 +648,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             group=group,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def _send(
         self,
@@ -630,6 +658,8 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
         sender_name: str,
+        *,
+        metered: bool,
     ) -> SendResult:
         """Write the event, which is what sending it means here.
 
@@ -680,6 +710,15 @@ class PostgresTransport:
                 await self._message_store.create(
                     session, message, attachments_in(content)
                 )
+                if metered and kind in _METERED_KINDS:
+                    await self._usage_store.record(
+                        session,
+                        tenant_id=tenant_id,
+                        metric=UsageMetric.MESSAGES,
+                        client_id=self.client_id,
+                        model="",
+                        amount=1,
+                    )
                 await session.commit()
         except Exception:
             # `MESSAGES_SENT` is recorded only after the commit, so without

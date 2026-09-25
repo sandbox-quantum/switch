@@ -2,7 +2,6 @@ import { provisionTriggerOf } from '@main/core/telemetry/narrow';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { generateSessionName } from './name-generation/generateSessionName';
 import { dehydrateSession } from './operations/dehydrateSession';
 import { getSession } from './operations/getSession';
 import { hydrateSession } from './operations/hydrateSession';
@@ -61,5 +60,4 @@ export const sessionController = createRPCController({
     // falls back to `initial`, which reports nothing.
     return sessionService.provisionSession(params.sessionId, provisionTriggerOf(params.trigger));
   },
-  generateSessionName,
 });

@@ -1,8 +1,9 @@
 import { getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
-import { getLocationAgentsOnServer } from './getAgents';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
+import { getLocationAgentsInWorkspace } from './getAgents';
 
 export type DiscoveredLocationAgent = {
   /** The definition/launch name (`.claude/agents/<name>.md` stem, `--agent <name>`). */
@@ -17,7 +18,7 @@ export type DiscoveredLocationAgent = {
    * definition with no Switch setup, which is adoptable anywhere. */
   credentialEndpoint: string | null;
   /** Whether the definition can join Switch (its tools allowlist keeps the
-   * connector's MCP tools, or it inherits all tools). */
+   * Switch MCP tools, or it inherits all tools). */
   eligible: boolean;
   /** Whether Switch Console already has an agent row for this definition in this dir,
    * on the server being onboarded to. */
@@ -46,15 +47,18 @@ export async function discoverLocationAgents(params: {
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
   if (!behavior) return [];
 
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
   const location = await getLocationByHostDir(params.sshHost, params.dir);
   const existing = location
-    ? new Set((await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name))
+    ? new Set(
+        (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
+      )
     : new Set<string>();
 
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
-    const definitions = await behavior.discoverDefinitions(workspace.fs);
-    const local = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
+    const definitions = await behavior.discoverDefinitions(workdir.fs);
+    const local = await behavior.discoverLocal(workdir.fs, workdir.homeFs);
     const credentialled = new Map(
       local.filter((l) => l.switchAgentId !== null).map((l) => [l.name, l.apiEndpoint])
     );
@@ -67,6 +71,6 @@ export async function discoverLocationAgents(params: {
       alreadyAgent: existing.has(def.name),
     }));
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

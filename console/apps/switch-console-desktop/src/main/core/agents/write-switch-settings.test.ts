@@ -52,9 +52,9 @@ describe('writeSwitchSettings', () => {
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_AGENT_ID: 'agent-123',
     });
-    // The Switch connector tools are auto-approved ("don't ask").
+    // The Switch tools are auto-approved ("don't ask").
     expect(settings.permissions).toEqual({
-      allow: ['mcp__plugin_switch-connector_switch'],
+      allow: ['mcp__switch'],
     });
 
     // The detector should now recognise the directory as a configured agent.
@@ -87,7 +87,7 @@ describe('writeSwitchSettings', () => {
     const settings = await readSettings();
     // Existing allow rules are preserved; the Switch rules are unioned in.
     expect(settings.permissions).toEqual({
-      allow: ['Bash', 'mcp__plugin_switch-connector_switch'],
+      allow: ['Bash', 'mcp__switch'],
     });
     expect(settings.env).toEqual({
       EXISTING_KEY: 'keep-me',
@@ -148,10 +148,10 @@ describe('writeNeutralAgentSettingsFs', () => {
       SWITCH_API_TOKEN: 'new-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
-    // The connector's MCP tools are auto-approved on top of whatever the agent
+    // The Switch MCP tools are auto-approved on top of whatever the agent
     // already allowed, so a Switch agent never has to ask to reach its room.
     expect(settings.permissions).toEqual({
-      allow: ['Bash', 'mcp__plugin_switch-connector_switch'],
+      allow: ['Bash', 'mcp__switch'],
     });
   });
 
@@ -259,19 +259,15 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
 
   it('reports the owning server through foreignCredentialsOwnerFs, for a caller checking before it registers', async () => {
     await seed('shared-name', otherInstall);
-    const workspaceFs = createPluginFs(dir);
+    const workdirFs = createPluginFs(dir);
 
     expect(
-      await foreignCredentialsOwnerFs(workspaceFs, 'shared-name', 'https://switch.example.com')
+      await foreignCredentialsOwnerFs(workdirFs, 'shared-name', 'https://switch.example.com')
     ).toBe('https://other-switch.example.com');
     expect(
-      await foreignCredentialsOwnerFs(
-        workspaceFs,
-        'shared-name',
-        'https://other-switch.example.com'
-      )
+      await foreignCredentialsOwnerFs(workdirFs, 'shared-name', 'https://other-switch.example.com')
     ).toBeNull();
-    expect(await foreignCredentialsOwnerFs(workspaceFs, 'absent', 'https://switch.example.com')) //
+    expect(await foreignCredentialsOwnerFs(workdirFs, 'absent', 'https://switch.example.com')) //
       .toBeNull();
   });
 });
@@ -393,9 +389,9 @@ describe('removeSwitchSettings', () => {
     expect(removeSwitchSettings(provisioned)).toEqual({ kind: 'delete' });
   });
 
-  it('strips only the SWITCH_* keys and connector rules, preserving everything else', () => {
+  it('strips only the SWITCH_* keys and Switch rules, preserving everything else', () => {
     const existing = JSON.stringify({
-      permissions: { allow: ['Bash', 'mcp__plugin_switch-connector_switch'], deny: ['Read'] },
+      permissions: { allow: ['Bash', 'mcp__switch'], deny: ['Read'] },
       hooks: { PostToolUse: [{ command: 'x' }] },
       env: {
         EXISTING_KEY: 'keep-me',
@@ -411,7 +407,7 @@ describe('removeSwitchSettings', () => {
 
     // Our env keys are gone; the user's stays.
     expect(parsed.env).toEqual({ EXISTING_KEY: 'keep-me' });
-    // The connector allow rule is removed; the user's allow/deny rules stay.
+    // The Switch allow rule is removed; the user's allow/deny rules stay.
     expect(parsed.permissions).toEqual({ allow: ['Bash'], deny: ['Read'] });
     // Unrelated keys are untouched.
     expect(parsed.hooks).toEqual({ PostToolUse: [{ command: 'x' }] });
@@ -422,6 +418,7 @@ describe('removeSwitchSettings', () => {
       hooks: { PostToolUse: [{ command: 'x' }] },
       permissions: {
         allow: [
+          'mcp__switch',
           'mcp__plugin_switch-connector_switch',
           'mcp__plugin_switch-connector_switch-channel',
         ],
@@ -434,7 +431,7 @@ describe('removeSwitchSettings', () => {
     const parsed = JSON.parse((result as { content: string }).content) as Record<string, unknown>;
 
     // Both blocks held only our contributions — including the retired
-    // switch-channel rule an older Switch Console wrote — so both are dropped.
+    // connector-plugin rules an older Switch Console wrote — so both are dropped.
     expect(parsed).toEqual({ hooks: { PostToolUse: [{ command: 'x' }] } });
     expect('env' in parsed).toBe(false);
     expect('permissions' in parsed).toBe(false);

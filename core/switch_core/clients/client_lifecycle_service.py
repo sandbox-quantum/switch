@@ -15,6 +15,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -118,9 +119,11 @@ class ClientLifecycleService:
         nothing to repair that short of the next boot.
 
         This is now the one seam a tenant comes into existence through, so
-        that whatever eventually offers tenant creation (there is no such
-        endpoint yet — Phase 2's scope) has a single place to call rather
-        than a row to insert and a checklist to remember. It reuses
+        that whatever offers tenant creation — `POST /tenants` today — has a
+        single place to call rather than a row to insert and a checklist to
+        remember. Whether a caller is *allowed* to create one is decided
+        before this, at the route: this call provisions, it does not
+        authorise. It reuses
         `ensure_system_client` rather than duplicating its per-type,
         per-tenant provisioning logic: the new tenant is simply the one gap
         that enumeration has not filled yet.
@@ -258,12 +261,22 @@ class ClientLifecycleService:
         self._client_tenants.clear()
         self._tasks.clear()
 
-    async def remove(self, client_id: str) -> None:
-        await self.stop(client_id)
-        async with self._session_factory() as session:
-            await self._client_store.delete(session, client_id)
-            await session.commit()
-        logger.info("Removed client %s", client_id)
+    async def delete_record(self, session: AsyncSession, client_id: str) -> None:
+        """Delete a client's row in the caller's transaction, committing nothing.
+
+        The counterpart to `stop`, and separate from it on purpose. A client
+        row is only ever deleted alongside whatever owned the client — a
+        bridge and the puppets it minted, an agent — and those rows have to go
+        in one transaction or not at all: the owner's delete commits first
+        otherwise, and a failure after it leaves clients nothing points at and
+        nothing will retry.
+
+        Stopping the running client is the half that cannot join a
+        transaction, so callers do that first. A rollback then leaves a
+        stopped client whose row survives, which the next start repairs — the
+        opposite order leaves an orphan row that nothing repairs.
+        """
+        await self._client_store.delete(session, client_id)
 
     def get(self, client_id: str) -> ClientBase[ClientConfig] | None:
         return self._clients.get(client_id)
@@ -344,8 +357,13 @@ class ClientLifecycleService:
         through an ordinary `tenant_session` under that tenant. An exemption
         call here would have been a question whose answer the caller was
         already holding.
+
+        The room goes with it for the same reason: the inbound handler that
+        mints a puppet has that room bound as log context, and the puppet's
+        own log lines must not name it for the rest of its life. Each delivery
+        binds its room.
         """
-        with no_tenant():
+        with no_tenant(), log_context(room_id=None):
             try:
                 await client.start()
             except Exception:

@@ -12,11 +12,9 @@ was recorded. This one has the shapes it has no case for.
 
 from __future__ import annotations
 
-import asyncio
 import itertools
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -33,10 +31,6 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_request,
 )
 from switch_core.bridges.collaboration.session.text import parse_text_answer
-from switch_core.bridges.collaboration.session.transport import (
-    FixtureEventSource,
-    project,
-)
 from switch_core.sessions.contract import (
     Answer,
     Question,
@@ -45,27 +39,14 @@ from switch_core.sessions.contract import (
     SnapshotRequest,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
-QUESTIONS_PATH = (
-    REPO_ROOT / "console/packages/shared/src/session-v1/examples.questions.json"
-)
+from .session_fixtures import QUESTIONS_PATH, recorded_requests
 
 FORM = RequestReference(token="opaque-token", handle="R43")
 ONE = RequestReference(token="opaque-token", handle="R44")
 
 
-def _run(coro: Any) -> Any:
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
 def _requests(*events: str) -> dict[str, SnapshotRequest]:
-    source = FixtureEventSource.from_examples(QUESTIONS_PATH, events=events)
-    projection = _run(project(source, "session-questions"))
-    return {request.request_id: request for request in projection.snapshot.requests}
+    return recorded_requests(QUESTIONS_PATH, *events)
 
 
 def _form() -> SnapshotRequest:

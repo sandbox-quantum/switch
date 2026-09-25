@@ -7,7 +7,7 @@ class SessionRoomIntents {
   clearSharedIntent(sessionId: string): void {
     this.rooms.delete(sessionId);
   }
-  getSharedIntent(sessionId: string, _agentId: string): { rooms: string[]; startCursor?: number } {
+  getSharedIntent(sessionId: string, _agentId: string): { rooms: string[] } {
     const room = this.rooms.get(sessionId);
     return { rooms: room ? [room] : [] };
   }

@@ -12,8 +12,10 @@ import {
   hasDiscardableSessionError,
   hasSessionError,
 } from '@renderer/features/sessions/stores/session-selectors';
+import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -21,14 +23,13 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/lib/ui/context-menu';
-import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
@@ -63,7 +64,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
 
   const agentName = agent.name;
   const location = getLocationStore(agent.locationId);
-  const iconUrl = useAgentIconUrl(agent.serverId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
 
   // The agent's name IS its Switch identity: Switch Console chose it, registered it
   // under that name, and keys its credentials and definition by it. Reading the
@@ -119,7 +120,10 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                 className="-mx-[1.5px] bg-transparent"
               />
             </span>
-            <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
+            <SidebarMenuAction
+              aria-label={`Open agent ${label}`}
+              className="flex-initial truncate select-none"
+            >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{label}</span>
                 {/* What the agent runs on. The avatar took the leading slot, so
@@ -151,6 +155,14 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                     Shared with the room-grouped rows so the two trees cannot
                     disagree about the same agent (CHOO-1682/1809). */}
                 <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
+                {agent.providerId && (
+                  <ProviderIssueIndicator
+                    providerId={agent.providerId}
+                    sshHost={sshHost}
+                    hostReachable={!hostUnreachable}
+                    onOpen={open}
+                  />
+                )}
                 {locationViewKind(location) === 'ready' &&
                   hasSessionError(agent.locationId) &&
                   (hasDiscardableSessionError(agent.locationId) ? (
@@ -183,6 +195,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                   ))}
               </span>
             </SidebarMenuAction>
+            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger
@@ -205,10 +218,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                 </SidebarItemMiniButton>
               }
             />
-            <TooltipContent>
-              New Session
-              <BoundShortcut settingsKey="newSession" variant="badge" />
-            </TooltipContent>
+            <TooltipContent>New Session</TooltipContent>
           </Tooltip>
           {hasSessions && (
             <SidebarItemMiniButton

@@ -1,9 +1,11 @@
+import { SessionHostFailedError } from '@switch-console/agent-providers';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import type { Session } from '@shared/core/sessions/sessions';
 
 const mocks = vi.hoisted(() => ({
   agent: vi.fn(),
+  persistedRoom: vi.fn(),
   server: vi.fn(),
   snapshot: vi.fn(),
   commandStatus: vi.fn(),
@@ -14,30 +16,31 @@ const mocks = vi.hoisted(() => ({
   readFailure: vi.fn(),
   exec: vi.fn(),
   specialization: vi.fn(),
+  ready: vi.fn(),
 }));
 
-class FakeGatewayError extends Error {
-  constructor(
-    readonly kind: string,
-    message: string,
-    readonly status?: number
-  ) {
-    super(message);
-  }
-}
+vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
+  ensureServerSessionReady: mocks.ready,
+}));
 
+vi.mock('./transcripts', () => ({ currentSnapshot: mocks.snapshot }));
+vi.mock('./host-journal', () => ({ JournalUnavailableError: class extends Error {} }));
+vi.mock('./sidecar-control', () => ({ withSidecar: vi.fn() }));
 vi.mock('@switch-console/shared/session-v1', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   snapshotSchema: { parse: (value: unknown) => value },
   commandStatusSchema: { parse: (value: unknown) => value },
 }));
+vi.mock('@main/core/switch-rooms/session-room-store', () => ({
+  getPersistedRoomConnection: mocks.persistedRoom,
+}));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  GatewayError: FakeGatewayError,
-  fetchSdkSnapshot: mocks.snapshot,
-  fetchSdkCommandStatus: mocks.commandStatus,
-  submitSdkCommand: mocks.submit,
+vi.mock('@main/core/workspaces/workspace-session', () => ({ workspaceServer: mocks.server }));
+class FakeNotRecorded extends Error {}
+vi.mock('./session-commands', () => ({
+  CommandNotRecordedError: FakeNotRecorded,
+  sessionCommandStatus: mocks.commandStatus,
+  submitSessionCommand: mocks.submit,
 }));
 vi.mock('@main/core/sessions/session-join', () => ({ loadSessionWithAgent: mocks.loadSession }));
 vi.mock('@main/core/sessions/operations/set-initial-prompt-delivery', () => ({
@@ -98,15 +101,17 @@ function runtime() {
 }
 
 beforeEach(() => {
+  mocks.persistedRoom.mockResolvedValue(null);
   vi.clearAllMocks();
   mocks.specialization.mockResolvedValue({});
   mocks.agent.mockResolvedValue({
     id: 'agent-1',
     name: 'scout',
     switchAgentId: 'remote-agent',
-    serverId: 'server-1',
+    workspaceId: 'workspace-1',
   });
   mocks.server.mockResolvedValue({ id: 'server-1' });
+  mocks.ready.mockResolvedValue(undefined);
   mocks.exec.mockResolvedValue({ stdout: 'null' });
   mocks.readFailure.mockResolvedValue(null);
   // The launch reports an existing host, which is what a retry after a failed
@@ -122,13 +127,7 @@ beforeEach(() => {
     providerId: 'claude',
     name: 'scout',
   });
-  mocks.commandStatus.mockRejectedValue(
-    new FakeGatewayError(
-      'http',
-      'Switch gateway returned 404: {"code":"NOT_FOUND","message":"No such command"}',
-      404
-    )
-  );
+  mocks.commandStatus.mockRejectedValue(new FakeNotRecorded('No such command'));
   mocks.submit.mockResolvedValue({
     type: 'command.status',
     commandId: 'minted',
@@ -197,14 +196,8 @@ it('does not resend a prompt the server already holds', async () => {
   });
 });
 
-it('treats a 404 that names another code as an uncertain lookup', async () => {
-  mocks.commandStatus.mockRejectedValue(
-    new FakeGatewayError(
-      'http',
-      'Switch gateway returned 404: {"code":"NOT_AUTHORIZED","message":"No"}',
-      404
-    )
-  );
+it('treats a lookup that fails for another reason as uncertain', async () => {
+  mocks.commandStatus.mockRejectedValue(new Error('The session journal reader stopped.'));
 
   await runtime().start(session, false, 'Say hello');
 
@@ -229,8 +222,7 @@ it.each([false, true])(
     const config = await buildSharedHostConfig(
       savedSession,
       { sessionPath: '/work', sessionEnvVars: {} },
-      { kind: 'local' } as LocationTransport,
-      { rooms: [] }
+      { kind: 'local' } as LocationTransport
     );
     expect(config.start.input.runtimeMode).toBe(enabled ? 'full-access' : 'approval-required');
   }
@@ -249,12 +241,9 @@ it('reads updated model, effort and instructions for each launch', async () => {
       instructions: 'Updated instructions',
     });
   const launch = () =>
-    buildSharedHostConfig(
-      session,
-      { sessionPath: '/work', sessionEnvVars: {} },
-      { kind: 'local' } as LocationTransport,
-      { rooms: [] }
-    );
+    buildSharedHostConfig(session, { sessionPath: '/work', sessionEnvVars: {} }, {
+      kind: 'local',
+    } as LocationTransport);
   const first = await launch();
   const second = await launch();
   expect(first.start.input.model).toEqual({ id: 'first-model', options: { effort: 'low' } });
@@ -304,6 +293,23 @@ it('keeps a background authentication failure visible without sending the first 
   await expect(agent.stop()).resolves.toBeUndefined();
 });
 
+it('fails as soon as the host stops on a recorded failure, without waiting to poll for it', async () => {
+  mocks.snapshot.mockRejectedValue(
+    new SessionHostFailedError('Sign in on the execution machine with claude auth login.')
+  );
+  const agent = runtime();
+  const started = Date.now();
+  await expect(agent.start(session, false, 'Say hello')).rejects.toThrow(
+    'Shared SDK host failed: Sign in on the execution machine with claude auth login.'
+  );
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(agent.startupStatus()).toEqual({
+    status: 'error',
+    message: 'Shared SDK host failed: Sign in on the execution machine with claude auth login.',
+  });
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
 it('still rejects deployment failures before a host connects', async () => {
   mocks.runHost.mockRejectedValueOnce(new Error('Could not deploy host.'));
   const agent = runtime();
@@ -320,7 +326,7 @@ it('reports restart progress through host replacement and authentication until r
         release = resolve;
       })
   );
-  mocks.loadSession.mockResolvedValue({ serverId: 'server-1', row: { config: {} } });
+  mocks.loadSession.mockResolvedValue({ workspaceId: 'workspace-1', row: { config: {} } });
   mocks.snapshot
     .mockResolvedValueOnce({
       session: { epoch: 'old', connectivity: 'online', status: 'ready' },
@@ -353,4 +359,56 @@ it('reports restart progress through host replacement and authentication until r
   await pending;
   expect(agent.startupStatus()).toEqual({ status: 'ready', message: null });
   expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it('passes the existing conversation room as a guarded migration hint', async () => {
+  mocks.persistedRoom.mockResolvedValue({ roomId: 'saved-room', switchAgentId: 'switch-agent' });
+  mocks.agent.mockResolvedValue({
+    id: 'agent-1',
+    switchAgentId: 'switch-agent',
+    providerId: 'claude',
+  });
+  const config = await buildSharedHostConfig(
+    session,
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(config.roomConnection?.restoreRoomId).toBe('saved-room');
+  mocks.persistedRoom.mockResolvedValue({ roomId: 'saved-room', switchAgentId: 'other-agent' });
+  const other = await buildSharedHostConfig(session, { sessionPath: '/work', sessionEnvVars: {} }, {
+    kind: 'local',
+  } as LocationTransport);
+  expect(other.roomConnection?.restoreRoomId).toBeUndefined();
+});
+
+it('never starts a host or replays the initial prompt while the server is not ready', async () => {
+  mocks.ready.mockRejectedValueOnce(new Error('Updating Local from switch-core 0.1.0 failed'));
+  const agent = runtime();
+
+  await expect(agent.start(session, false, 'Do work')).rejects.toThrow('failed');
+  expect(mocks.ready).toHaveBeenCalledWith({ id: 'server-1' });
+  expect(mocks.runHost).not.toHaveBeenCalled();
+  expect(mocks.submit).not.toHaveBeenCalled();
+  expect(agent.startupStatus()).toMatchObject({ status: 'error' });
+});
+
+it('waits for the server’s update before starting the session', async () => {
+  let ready: () => void = () => {};
+  mocks.ready.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      ready = resolve;
+    })
+  );
+  const agent = runtime();
+  const started = agent.start(session, false, 'Say hello');
+
+  await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalled());
+  expect(agent.startupStatus()).toEqual({
+    status: 'starting',
+    message: 'Waiting for the Switch server to be ready…',
+  });
+  expect(mocks.runHost).not.toHaveBeenCalled();
+  ready();
+  await started;
+  expect(mocks.submit).toHaveBeenCalledTimes(1);
 });

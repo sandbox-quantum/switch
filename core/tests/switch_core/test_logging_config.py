@@ -204,7 +204,23 @@ def test_a_third_party_logger_gets_the_same_fields(monkeypatch: pytest.MonkeyPat
 
 def test_binding_an_unknown_field_is_an_error() -> None:
     with pytest.raises(ValueError, match="Unknown log context field"):
-        bind_log_context(room_id="room-1")  # type: ignore[call-arg]
+        bind_log_context(session_id="session-1")  # type: ignore[call-arg]
+
+
+def test_a_room_can_be_bound_and_reaches_the_record() -> None:
+    """A room is the unit almost every support question arrives in — "this room
+    stopped relaying" — and it used to be rejected here, so the only way to
+    follow one was to grep for an id that appeared in some messages' text and
+    not others. It is a log field rather than a metric attribute on purpose:
+    unbounded, and belonging to one tenant."""
+    token = bind_log_context(room_id="room-1")
+    try:
+        assert current_log_context().room_id == "room-1"
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, "m", None, None)
+        LogContextFilter(default_tenant_id="default").filter(record)
+        assert record.room_id == "room-1"  # type: ignore[attr-defined]
+    finally:
+        unbind_log_context(token)
 
 
 def test_unbind_restores_the_previous_context() -> None:

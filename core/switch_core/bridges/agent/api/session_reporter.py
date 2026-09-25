@@ -18,6 +18,7 @@ import time
 
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
+    CloseCode,
     Connection,
     ConnectionRegistry,
 )
@@ -31,14 +32,10 @@ logger = logging.getLogger(__name__)
 # triggered by that TTL lapsing. Too tight and every lapse is a new session.
 _RECONNECT_GRACE_SECONDS = HEARTBEAT_TTL_SECONDS * 4
 
-# The registry's reasons are prose. Anything unmapped reports `error` rather
-# than failing validation at the moment a session drops.
-_SESSION_END_REASONS = {
-    "heartbeat lapsed": "heartbeat_lapsed",
-    "room already claimed": "room_claimed",
-    "invalid room subscription": "error",
-    "replaced": "replaced",
-    "shutdown": "normal",
+_SESSION_END_REASONS: dict[CloseCode, str] = {
+    "heartbeat_lapsed": "heartbeat_lapsed",
+    "taken_over": "replaced",
+    "closed": "error",
 }
 
 
@@ -106,7 +103,9 @@ class SessionReporter:
             # Still connected by another stream; the session did not end.
             return
 
-        reason = _SESSION_END_REASONS.get(conn.closed_reason or "", "error")
+        reason = (
+            "error" if conn.closure is None else _SESSION_END_REASONS[conn.closure.code]
+        )
         try:
             session.ending = asyncio.get_running_loop().create_task(
                 self._end_after_grace(conn.agent_id, reason)

@@ -1,7 +1,7 @@
 """The MCP tool surface agents are told about must be the surface that exists.
 
-The connector skills and `protocol/instructions.py` name specific tools and
-tell agents to call them, and neither is checked against the server's actual
+The Switch skill Console pushes into every session and
+`protocol/instructions.py` name specific tools and tell agents to call them, and neither is checked against the server's actual
 registrations at build time. These tests pin the tool names so a rename, a
 removal, or a name that only ever existed in the documentation fails here
 rather than surfacing as an agent calling into nothing.
@@ -42,11 +42,11 @@ async def test_task_protocol_is_fully_exposed(tool_names: set[str]) -> None:
 
 
 async def test_documented_tools_exist(tool_names: set[str]) -> None:
-    """Every tool the connector skills advertise is registered.
+    """Every tool the Switch skill advertises is registered.
 
-    Mirrors the tool names used across `connectors/*/skills/switch/SKILL.md`,
+    Mirrors the tool names used in `console/packages/plugins/src/switch-skill/SKILL.md`,
     including those named only in the body. Maintained by hand: add a name here
-    when a skill starts advertising one.
+    when the skill starts advertising one.
     """
     documented = {
         "list_rooms",
@@ -97,24 +97,26 @@ async def test_tool_descriptions_preserve_the_full_operation_contract() -> None:
     assert "Returns:" in tools[operation.name].description
 
 
-SKILLS = sorted(
-    (Path(__file__).parents[5] / "connectors").glob("*/skills/switch/SKILL.md")
+SKILL = (
+    Path(__file__).parents[5]
+    / "console"
+    / "packages"
+    / "plugins"
+    / "src"
+    / "switch-skill"
+    / "SKILL.md"
 )
 
 
 # Tools the agent runtime serves itself, so absent from the bridge's surface.
-# The skills index them alongside the bridge tools because an agent calls them
+# The skill indexes them alongside the bridge tools because an agent calls them
 # the same way, but they are registered by
 # `console/packages/switch-agent-runtime/`, not here — checking them against
 # this server's registrations would fail on tools that are working correctly.
 RUNTIME_TOOLS = {"send_attachment", "download_attachment"}
 
-# Served only when startup could not produce an identity, in place of the normal
-# surface, and documented in their own sections rather than the index.
-DEGRADED_TOOLS = {"select_agent", "switch_unavailable"}
-
-# Registered, and deliberately kept out of the skills. The task protocol is not
-# ready to be used, so each skill carries a section telling agents not to call
+# Registered, and deliberately kept out of the skill. The task protocol is not
+# ready to be used, so the skill carries a section telling agents not to call
 # these rather than a workflow that exercises them. The tools stay on the server
 # — nothing here removes them — and this set is what keeps that gap deliberate:
 # empty it when the protocol is either documented again or taken off the server.
@@ -122,12 +124,12 @@ UNDOCUMENTED_TOOLS = TASK_PROTOCOL_TOOLS
 
 
 def _indexed_tools(skill: Path) -> list[str]:
-    """The tool names listed in a skill's `## Tool index` section.
+    """The tool names listed in the skill's `## Tool index` section.
 
     One tool per bullet, opening with the backticked name. Read from the body
     rather than the frontmatter: the `description:` is always-resident context
-    on both hosts (and Codex truncates it to fit a budget), so it carries a
-    trigger rather than an inventory.
+    on the hosts that load it as a skill (and Codex truncates it to fit a
+    budget), so it carries a trigger rather than an inventory.
 
     Every bullet in the section must parse. A tool silently dropping out
     because someone bolded it, indented it, or folded two onto one line is the
@@ -155,81 +157,40 @@ async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
 
     The frontmatter list this replaced was one mechanical line; a prose bullet
     list is easy to shorten by accident. Without this, deleting a bullet passes
-    every other check in the file: the drift test still sees two identical
-    indexes, and the registration test only ever objects to *extra* names.
+    every other check in the file: the registration test only ever objects to
+    *extra* names.
 
     `UNDOCUMENTED_TOOLS` is the one sanctioned way past this: a tool leaves the
     index by being named there, not by a bullet quietly going missing.
     """
-    for skill in SKILLS:
-        indexed = set(_indexed_tools(skill))
-        missing = tool_names - indexed - DEGRADED_TOOLS - UNDOCUMENTED_TOOLS
-        assert not missing, (
-            f"{skill} does not index registered tools: {sorted(missing)}"
-        )
+    indexed = set(_indexed_tools(SKILL))
+    missing = tool_names - indexed - UNDOCUMENTED_TOOLS
+    assert not missing, f"{SKILL} does not index registered tools: {sorted(missing)}"
 
 
 async def test_undocumented_tools_are_disclaimed() -> None:
     """A tool kept out of the index is named as off-limits, not just omitted.
 
     Silence would read as the tool not existing, and an agent that meets one in
-    an event or an error message has nothing to go on. Every skill has to spell
+    an event or an error message has nothing to go on. The skill has to spell
     out that these are registered and must not be called.
     """
-    for skill in SKILLS:
-        body = skill.read_text()
-        unmentioned = {tool for tool in UNDOCUMENTED_TOOLS if f"`{tool}`" not in body}
-        assert not unmentioned, (
-            f"{skill} drops registered tools without saying they are off-limits: "
-            f"{sorted(unmentioned)}"
-        )
-
-
-def test_every_connector_ships_a_skill() -> None:
-    """Each connector documents the room workflow for its own host.
-
-    A connector added without one leaves its agents with the Switch tools and
-    no instructions for using them — which looks like a badly behaved agent
-    rather than a missing file.
-    """
-    connectors = {
-        path.name
-        for path in (Path(__file__).parents[5] / "connectors").iterdir()
-        if path.is_dir()
-    }
-    with_skills = {skill.parents[2].name for skill in SKILLS}
-    assert connectors == with_skills, (
-        f"connectors without a skill: {sorted(connectors - with_skills)}"
+    body = SKILL.read_text()
+    unmentioned = {tool for tool in UNDOCUMENTED_TOOLS if f"`{tool}`" not in body}
+    assert not unmentioned, (
+        f"{SKILL} drops registered tools without saying they are off-limits: "
+        f"{sorted(unmentioned)}"
     )
 
 
-def test_all_skills_index_the_same_tools() -> None:
-    """The connectors' tool indexes must not drift apart.
-
-    They are host-specific documents but the tool surface behind them is one
-    surface, and a tool added to one skill's index is silently absent from the
-    others'.
-    """
-    assert len(SKILLS) >= 2, f"expected several connector skills, found {SKILLS}"
-    indexes = {skill: _indexed_tools(skill) for skill in SKILLS}
-    reference, expected = next(iter(indexes.items()))
-    for skill, indexed in indexes.items():
-        assert indexed == expected, (
-            f"{skill}'s tool index differs from {reference}'s: "
-            f"only in {skill}: {sorted(set(indexed) - set(expected))}, "
-            f"only in {reference}: {sorted(set(expected) - set(indexed))}"
-        )
-
-
 async def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:
-    """Every tool a skill's index advertises actually exists.
+    """Every tool the skill's index advertises actually exists.
 
     Derived from the files rather than restated here, so this half cannot go
     stale the way the hand-maintained set above can. It does not replace that
     set: that one pins names this test would accept being dropped entirely.
     """
-    for skill in SKILLS:
-        advertised = set(_indexed_tools(skill)) - RUNTIME_TOOLS
-        assert advertised <= tool_names, (
-            f"{skill} advertises unregistered tools: {sorted(advertised - tool_names)}"
-        )
+    advertised = set(_indexed_tools(SKILL)) - RUNTIME_TOOLS
+    assert advertised <= tool_names, (
+        f"{SKILL} advertises unregistered tools: {sorted(advertised - tool_names)}"
+    )

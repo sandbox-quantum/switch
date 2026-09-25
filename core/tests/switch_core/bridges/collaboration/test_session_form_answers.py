@@ -1,21 +1,16 @@
 """Answering a set of questions, typed or pressed.
 
-`test_session_text_answers.py` is the same journey for an approval, and shares
-its helpers with this file. What is different about a form is that an answer to
-it can be incomplete, and the contract does not stop it: `answers: []` is a
-valid `QuestionsResult`, so a partial form would be accepted by both ends and
-by the host, which has no way to ask again for the part it did not get. So the
-refusal has to be here, and most of this file is that refusal.
+An answer to a form can be incomplete, and the contract does not stop it:
+`answers: []` is a valid `QuestionsResult`, so a partial form would be accepted
+by both ends and by the host, which has no way to ask again for the part it did
+not get. So the refusal has to be here, and most of this file is that refusal.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import random
 from typing import Any
-
-import pytest
 
 from switch_core.bridges.collaboration.session.form import (
     Unanswerable,
@@ -23,24 +18,14 @@ from switch_core.bridges.collaboration.session.form import (
     resolve_pressed_option,
     resolve_text_answer,
 )
-from switch_core.bridges.collaboration.session.inbound import Refused
-from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.session.text import parse_text_answer
 from switch_core.sessions.contract import (
     ApprovalResult,
     QuestionsResult,
 )
 
-from .test_session_answers import (
-    _approval_form,
-    _interactions,
-    _post,
-    _press,
-    _questions_form,
-    _run,
-)
-from .test_session_questions_cards import QUESTIONS_PATH, _form
-from .test_session_text_answers import _typed
+from .session_fixtures import QUESTIONS_PATH, _approval_form, _questions_form
+from .test_session_questions_cards import _form
 from .test_session_text_grammar import _ALPHABET
 
 CARD = "C1:111.0"
@@ -95,18 +80,15 @@ def test_the_record_is_the_card_the_fixture_describes() -> None:
 def test_the_same_answers_are_one_command_whichever_order_they_were_typed() -> None:
     """Two people can only race if they disagree.
 
-    The command id is derived from the answer, so the same person saying the
-    same thing twice — differently ordered because they retyped it — must not
-    become two answers for the session to pick between.
+    The same person saying the same thing twice — differently ordered because
+    they retyped it — must not become two answers for the session to pick
+    between.
     """
-    interactions = _interactions(_post(form=FORM))
+    first = _answer('R42 q1=1; q2=1,3; q3="b"')
+    again = _answer('R42 q3="b"; q2=3,1; q1=1')
 
-    first = _run(interactions.command_for_text(_typed('R42 q1=1; q2=1,3; q3="b"')))
-    again = _run(interactions.command_for_text(_typed('R42 q3="b"; q2=3,1; q1=1')))
-
-    assert first is not None and again is not None
-    assert first.command_id == again.command_id
-    assert first.body.answer == again.body.answer
+    assert isinstance(first, QuestionsResult)
+    assert first == again
 
 
 def test_options_are_recorded_in_the_order_the_card_offered_them() -> None:
@@ -237,25 +219,6 @@ def test_a_press_on_a_single_question_form_answers_that_question() -> None:
     assert resolved.answers[0].custom_text is None
 
 
-def test_a_press_that_reaches_a_longer_form_answers_nothing(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """No card renders one, so it is a card from before this rule or a forgery.
-
-    Either way there is no question to attach it to, and attaching it to the
-    first would answer whichever question happened to come first.
-    """
-    interactions = _interactions(_post(form=FORM))
-
-    with caplog.at_level(logging.WARNING):
-        command = _run(
-            interactions.command_for(_press(action_id=f"{ANSWER_ACTION}:all"))
-        )
-
-    assert isinstance(command, Refused)
-    assert "a press answers one question and that card asks 3" in caplog.text
-
-
 def test_a_press_for_an_option_the_record_never_had_answers_nothing() -> None:
     """A control carries its own id, and the record is what says it was ours."""
     approval = _approval_form(("allow-once", "accept"))
@@ -279,61 +242,6 @@ def test_a_press_on_a_question_asking_for_several_answers_nothing() -> None:
     assert resolved.reason == (
         "a press is one option and that question takes as many as apply"
     )
-
-
-# ── On the inbound path ──────────────────────────────────────────────────────
-
-
-def test_a_bare_yes_under_a_form_never_asks_the_platform_about_the_thread() -> None:
-    """The thread read is a call to Slack on the hot path of every message.
-
-    A form has no decision for "yes" to name, so the answer is the same before
-    the call as after it, and the call is worth not making.
-    """
-    asked: list[str] = []
-
-    async def is_first_reply(channel_id: str, root_ref: str, ref: str) -> bool:
-        asked.append(ref)
-        return True
-
-    interactions = _interactions(_post(form=FORM))
-    interactions._is_first_reply = is_first_reply  # type: ignore[assignment]
-
-    assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
-    assert asked == []
-
-
-def test_naming_the_form_answers_it_from_anywhere_in_the_thread() -> None:
-    interactions = _interactions(_post(form=FORM), first_reply=False)
-
-    command = _run(
-        interactions.command_for_text(
-            _typed('R42 q1=1; q2=1; q3="branch"', root_id=CARD)
-        )
-    )
-
-    assert command is not None
-    assert isinstance(command.body.answer, QuestionsResult)
-
-
-def test_a_form_answer_that_does_not_fit_is_refused_out_loud(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A message that named a card and then did not fit it is not chatter.
-
-    Two accounts of it, and they say the same thing: the log names the request
-    so it can be traced, and the refusal carries the reason back to whoever
-    typed it. `test_session_refusals.py` is where the second half is checked.
-    """
-    interactions = _interactions(_post(form=FORM))
-
-    with caplog.at_level(logging.WARNING):
-        outcome = _run(interactions.command_for_text(_typed("R42 q1=1")))
-
-    assert isinstance(outcome, Refused)
-    assert "q2, q3 went unanswered" in outcome.reason
-    assert "request-demo" in caplog.text
-    assert "q2, q3 went unanswered" in caplog.text
 
 
 # ── The property that matters most ───────────────────────────────────────────

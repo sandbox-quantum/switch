@@ -132,8 +132,8 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
  */
 const RoomStateDisclosure = observer(function RoomStateDisclosure() {
   const { navigate } = useNavigate();
-  const signedOut = switchRoomsStore.serversNotSignedIn;
-  const failed = switchRoomsStore.serversThatFailedToLoad;
+  const signedOut = switchRoomsStore.workspacesNotSignedIn;
+  const failed = switchRoomsStore.workspacesThatFailedToLoad;
 
   // Being signed out is the whole explanation, so it is said on its own: the
   // memberships that "didn't load" are the same fact, and offering a retry for

@@ -135,6 +135,35 @@ def message_listener_check(is_connected: Callable[[], bool]) -> HealthCheck:
     return HealthCheck(name="message_listener", gates_readiness=False, probe=probe)
 
 
+def session_activity_listener_check(is_connected: Callable[[], bool]) -> HealthCheck:
+    """Whether session activity and approval answers are being pushed.
+
+    Approval answers reach agents, and activity reaches messaging platforms,
+    through this `LISTEN`. While it is down both are still recorded but nothing
+    is pushed; it reconnects itself and subscribers resync when it does.
+    """
+
+    async def probe() -> CheckOutcome:
+        if is_connected():
+            return CheckOutcome(
+                name="session_activity_listener", healthy=True, detail=""
+            )
+        return CheckOutcome(
+            name="session_activity_listener",
+            healthy=False,
+            detail=(
+                "The Postgres LISTEN connection for session activity is down, so "
+                "approval answers and activity are recorded but not pushed. It "
+                "retries with backoff; if this persists, the database is "
+                "refusing connections."
+            ),
+        )
+
+    return HealthCheck(
+        name="session_activity_listener", gates_readiness=False, probe=probe
+    )
+
+
 def bridges_check(
     running: Callable[[], int], configured: Callable[[], int]
 ) -> HealthCheck:

@@ -15,7 +15,6 @@ import {
   remoteDependencyDescriptor,
 } from '@main/core/dependencies/remote-dependency-manager';
 import { listPlugins } from '@main/core/providers/plugin-registry';
-import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryHostSetupAction, TelemetryOutcome } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -32,7 +31,7 @@ import {
 import { hostReachabilityService } from '../production-host-reachability';
 import { HostSetupRunner, type StepCheckResult, type StepInstallResult } from './host-setup-runner';
 import { InstallProgressReader } from './install-progress';
-import { agentPluginStepId, buildSetupPlan, reconcileInterruptedPlan } from './plan-builder';
+import { buildSetupPlan, reconcileInterruptedPlan } from './plan-builder';
 import { deleteSetupPlan, getSetupPlan, listSetupPlans, saveSetupPlan } from './setup-plan-store';
 import {
   condenseCommandOutput,
@@ -44,11 +43,11 @@ import {
 const runners = new Map<string, HostSetupRunner>();
 
 /**
- * Supported SDK providers and the connector steps each one requires.
+ * Supported SDK providers, one CLI step each.
  *
  * Read from the plugin registry, not from the host. Whether a type is
- * *supported* is a static fact about the plugin — its `switchSetup` dialect and
- * the binary it names — and asking the host meant running every agent type's
+ * *supported* is a static fact about the plugin — the binary it names — and
+ * asking the host meant running every agent type's
  * CLI over SSH on every plan build, purely to be told what the registry already
  * knew. Whether a type is *installed* is a per-host question, and that is what
  * the plan's own steps are for.
@@ -62,7 +61,6 @@ function plannableAgentTypes() {
     )
     .map((plugin) => ({
       agentId: plugin.metadata.id,
-      connectorRequired: plugin.capabilities.switchSetup.kind !== 'none',
       name: remoteDependencyDescriptor(plugin.metadata.id)?.name ?? plugin.metadata.id,
     }));
 }
@@ -148,10 +146,6 @@ export async function readSetupPlan(sshHost: string): Promise<HostSetupPlan | nu
   return await getSetupPlan(sshHost);
 }
 
-function stepAgentId(step: HostSetupStep): string {
-  return step.kind === 'agent-plugin' ? step.id.replace(/:plugin$/, '') : step.id;
-}
-
 function runnerFor(sshHost: string, manager: HostDependencyManager): HostSetupRunner {
   const existing = runners.get(sshHost);
   if (existing) return existing;
@@ -162,10 +156,7 @@ function runnerFor(sshHost: string, manager: HostDependencyManager): HostSetupRu
     save: (plan) => saveSetupPlan(plan),
     publish: (plan) => events.emit(hostSetupPlanEventChannel, plan),
     requireReachable: (host) => hostReachabilityService.requireReachable(host),
-    canInstall: (step) => {
-      if (step.kind === 'agent-plugin') return true;
-      return manager.getInstallOptions(step.id).length > 0;
-    },
+    canInstall: (step) => manager.getInstallOptions(step.id).length > 0,
     check: (step) => checkStep(sshHost, manager, step),
     install: (step) => installStep(sshHost, manager, step),
     update: (step) => updateStep(sshHost, manager, step),
@@ -175,52 +166,12 @@ function runnerFor(sshHost: string, manager: HostDependencyManager): HostSetupRu
   return runner;
 }
 
-/**
- * Observe one step, whatever kind it is.
- *
- * Exported so the rule that checking one row touches one agent type — and no
- * others — can be tested directly; it is not obvious from the call site, and
- * getting it wrong is silent apart from stray failures against an unrelated
- * row's CLI.
- */
+/** Observe one step. Exported for tests. */
 export async function checkStep(
   sshHost: string,
   manager: HostDependencyManager,
   step: HostSetupStep
 ): Promise<StepCheckResult> {
-  if (step.kind === 'agent-plugin') {
-    const service = await getRemoteSwitchSetupService(sshHost);
-    const agentId = stepAgentId(step);
-    // Ask about this agent type alone. Listing every type's status and then
-    // discarding all but one ran each other type's CLI over SSH as a side
-    // effect, so checking one row reported failures for a different row's
-    // absent CLI — and cost two extra round trips per type to do it.
-    //
-    // `checkForUpdates` rather than `getStatus`: it refreshes the host's
-    // marketplace catalog first. `getStatus` reads whatever that host last
-    // fetched, which can be arbitrarily old, so an update could exist and go
-    // unreported indefinitely. A failed refresh does not throw — it returns the
-    // cached versions with `refreshError` set, and an update we could not
-    // confirm is simply not claimed.
-    const status = await service.checkForUpdates(agentId);
-    if (!status.supported) {
-      return {
-        outcome: 'unknown',
-        error: `${agentId} is no longer a known agent type on this host.`,
-      };
-    }
-    return status.installed
-      ? {
-          outcome: 'satisfied',
-          version: status.installedVersion ?? null,
-          latestVersion: status.latestVersion,
-          updateAvailable: status.updateAvailable,
-        }
-      : // Nothing installed, so there is nothing to be out of date. What the
-        // marketplace advertises is install-time detail, not an update.
-        { outcome: 'missing' };
-  }
-
   const state = await manager.probe(step.id);
   const result = outcomeForDependency(
     state,
@@ -296,14 +247,6 @@ async function installStep(
   manager: HostDependencyManager,
   step: HostSetupStep
 ): Promise<StepInstallResult> {
-  if (step.kind === 'agent-plugin') {
-    const service = await getRemoteSwitchSetupService(sshHost);
-    const result = await service.install(stepAgentId(step));
-    return result.success
-      ? { ok: true }
-      : { ok: false, error: result.message ?? `Could not install the Switch connector.` };
-  }
-
   const stopProgress = streamInstallProgress(sshHost, step.id);
   let result: Awaited<ReturnType<typeof manager.install>>;
   try {
@@ -327,26 +270,12 @@ async function installStep(
   };
 }
 
-/**
- * Replace one step with the newest available version.
- *
- * Exported for the same reason `checkStep` is: the routing (connector vs
- * dependency manager) is invisible from the call site and each half has its own
- * failure vocabulary.
- */
+/** Replace one step with the newest available version. Exported for tests. */
 export async function updateStep(
   sshHost: string,
   manager: HostDependencyManager,
   step: HostSetupStep
 ): Promise<StepInstallResult> {
-  if (step.kind === 'agent-plugin') {
-    const service = await getRemoteSwitchSetupService(sshHost);
-    const result = await service.update(stepAgentId(step));
-    return result.success
-      ? { ok: true }
-      : { ok: false, error: result.message ?? 'Could not update the Switch connector.' };
-  }
-
   const stopProgress = streamInstallProgress(sshHost, step.id);
   let result: Awaited<ReturnType<typeof manager.update>>;
   try {
@@ -510,5 +439,3 @@ export async function discardSetupPlan(sshHost: string): Promise<void> {
   runners.delete(sshHost);
   await deleteSetupPlan(sshHost);
 }
-
-export { agentPluginStepId };

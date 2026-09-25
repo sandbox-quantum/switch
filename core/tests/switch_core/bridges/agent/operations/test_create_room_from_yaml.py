@@ -284,7 +284,9 @@ links:
 async def _call(
     agent_id: str, session_key: str | None = None, **kwargs: Any
 ) -> dict[str, Any]:
-    token = set_call_context(CallContext(agent_id=agent_id, session_key=session_key))
+    token = set_call_context(
+        CallContext(agent_id=agent_id, session_key=session_key, session=None)
+    )
     try:
         return await create_room_from_yaml(**kwargs)
     finally:

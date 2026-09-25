@@ -20,18 +20,24 @@
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
+import {
+  AGENT_PROVIDER_IDS,
+  asAgentProviderId,
+} from '@shared/core/providers/agent-provider-registry';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
 import { switchServersStore } from '../../switch-servers/switch-servers-store';
+import { workspacesStore } from '../../workspaces/workspaces-store';
 import { hostReachabilityStore } from '../host-reachability-store';
 import { hostSetupStore } from '../host-setup-store';
 import { HostUnreachablePanel } from '../host-unreachable-panel';
@@ -43,7 +49,7 @@ import {
   PrerequisiteRow,
   SectionLabel,
 } from '../setup/setup-rows';
-import { groupPlanSteps } from '../setup/step-presentation';
+import { groupPlanSteps, needsFirstCheck } from '../setup/step-presentation';
 import {
   useHostSetupPlan,
   useInstallSetupStep,
@@ -103,6 +109,19 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
     startPrepare();
   }, [blocked, plan.isLoading, startPrepare]);
 
+  // A step nobody has looked at yet has no state worth showing: probe the
+  // host once when the page opens with any, rather than leaving every row
+  // blank until someone presses Re-check. Steps already observed keep their
+  // last result; re-checking those stays a deliberate click.
+  const { mutate: startRecheck } = recheck;
+  const autoChecked = useRef(false);
+  const unobserved = needsFirstCheck(plan.data ?? null);
+  useEffect(() => {
+    if (autoChecked.current || blocked || !prepare.isSuccess || !unobserved) return;
+    autoChecked.current = true;
+    startRecheck();
+  }, [blocked, prepare.isSuccess, unobserved, startRecheck]);
+
   // Resolve the Switch server for this host: prefer a managed server on this
   // host, then the active server, then the first available. Read the
   // observables outside useMemo so MobX tracks them and React sees them change.
@@ -113,6 +132,10 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
     if (managed) return managed.id;
     return activeServer?.id ?? servers[0]?.id ?? null;
   }, [sshHost, servers, activeServer]);
+  // Which of that server's workspaces the discovery below asks. `GET /agents`
+  // answers for one tenant, so without it the list would be whichever workspace
+  // the session last selected.
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
 
   const status = deriveHostStatus(reachability, plan.data ?? null);
   const { prerequisites, agentTypes } = useMemo(
@@ -274,16 +297,30 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                           onUpdate={(stepId) => updateStep.mutate(stepId)}
                           onRecheck={(stepId) => recheckStep.mutate(stepId)}
                           onOpen={() => setSheetTarget({ kind: 'agent-type', row })}
+                          signIn={
+                            // Installed is not usable: a session also needs
+                            // the CLI signed in on this host.
+                            !blocked &&
+                            (AGENT_PROVIDER_IDS as readonly string[]).includes(row.agentId) ? (
+                              <ProviderConnectionStatus
+                                providerId={asAgentProviderId(row.agentId)}
+                                sshHost={sshHost}
+                                dir=""
+                                compact
+                              />
+                            ) : null
+                          }
                         />
                       </div>
                     ))}
                   </section>
                 )}
 
-                {serverId && (
+                {serverId && workspaceId && (
                   <LoadExistingAgentsSection
                     sshHost={sshHost}
                     serverId={serverId}
+                    workspaceId={workspaceId}
                     initiallyOpen={justAdded}
                   />
                 )}
@@ -318,6 +355,9 @@ export const remoteHostView = {
   // No titlebar slot: the page header already names the host and repeats the
   // alias underneath it, so a third copy in the title bar was only noise.
   MainPanel: RemoteHostMainPanel,
+  // A host is somewhere agents run, not something a server owns: its page says
+  // the same things with no server registered as with ten.
+  worksWithoutServer: true,
   canActivate: (params: unknown): GuardResult => {
     // Params can come from a snapshot written by an older build, so validate
     // rather than trust: a view with no host to show has nothing to render.

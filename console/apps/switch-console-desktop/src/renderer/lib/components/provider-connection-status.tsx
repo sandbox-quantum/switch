@@ -12,6 +12,44 @@ const loginCommands: Record<AgentProviderId, string> = {
   opencode: 'opencode auth login',
 };
 
+/**
+ * Whether a provider's CLI is installed and signed in on a machine. One check
+ * per provider, machine and directory, shared by every component that asks:
+ * the Add Agent tiles, an agent's settings and the sidebar all read the same
+ * cached answer.
+ */
+export function useProviderReadiness(
+  providerId: AgentProviderId,
+  sshHost: string | null,
+  dir: string,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: ['provider-readiness', providerId, sshHost, dir],
+    queryFn: () => rpc.agents.providerReadiness({ providerId, sshHost, dir }),
+    // Signing in is not something that changes minute to minute, and this is
+    // rendered once per provider tile and once per agent row — so a short
+    // window turned opening a page into a burst of probes, each of which
+    // starts a provider process on the execution machine.
+    staleTime: 5 * 60_000,
+    retry: false,
+    enabled,
+  });
+}
+
+/** What is wrong with a provider on a machine, in a few words, or null when nothing is known to be. */
+export function providerProblem(
+  data: { installed: boolean | null; status: string } | undefined
+): string | null {
+  if (!data) return null;
+  if (data.installed === false) return 'CLI not installed';
+  if (data.status === 'unauthenticated') return 'Not signed in';
+  if (data.status === 'unconfigured') return 'No backend configured';
+  return null;
+}
+
+export { loginCommands };
+
 export function ProviderConnectionStatus({
   providerId,
   sshHost,
@@ -23,16 +61,7 @@ export function ProviderConnectionStatus({
   dir: string;
   compact?: boolean;
 }) {
-  const query = useQuery({
-    queryKey: ['provider-readiness', providerId, sshHost, dir],
-    queryFn: () => rpc.agents.providerReadiness({ providerId, sshHost, dir }),
-    // Signing in is not something that changes minute to minute, and this
-    // component is rendered once per provider tile and once per agent row —
-    // so a short window turned opening a page into a burst of probes, each of
-    // which starts a provider process on the execution machine.
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  const query = useProviderReadiness(providerId, sshHost, dir, true);
   const copy = useMutation({
     mutationFn: () => navigator.clipboard.writeText(loginCommands[providerId]),
   });

@@ -125,13 +125,18 @@ it is what `read_context` is for.
 Two annotations tell you when that matters:
 
 - **An unread count** — a delivered line ends with `(N unaddressed room
-  messages arrived since the previous message you were sent — call read_context
-  to catch up.)`. Read what its absence does and does not prove, below.
-- **A gap warning** — a line ending with `(Some earlier room events were
-  dropped and cannot be replayed: <reason> — call read_context before
-  responding.)`. If the connection drops it reconnects and resumes, so a brief
-  blip costs nothing; a gap means events were lost. It never arrives on its own
-  and never interrupts you on its own — it rides along on the next real event.
+  messages arrived since you last read this room's context — call read_context
+  to catch up.)`. Switch keeps that count per room, so reading one room's
+  context clears that room's and leaves every other room standing at its own.
+  Read what a silent line does and does not prove, below.
+- **Lost history** — when the server restarted or events aged out, the
+  affected room's count says so rather than quietly shrinking. The line reads
+  `At least N … and there may have been more`, which is a floor, or says how
+  far behind you are is not known, with the reason. Both mean read before
+  answering. If the connection merely drops it reconnects and resumes, so a
+  brief blip costs nothing and says nothing. There is no separate warning, and
+  none arrives or interrupts you on its own — it rides along on the next line
+  you are sent for that room.
 
 ## When to call `read_context` again
 
@@ -139,10 +144,10 @@ Once on arrival, and then **whenever something tells you the room moved
 without you**:
 
 - **An unread count reached you on a `[Switch]` line** — read, and widen
-  `since` to cover it. Do not carry it: the tally is cleared as soon as a line
-  is delivered, so if you skip a count, later silence no longer means you are
-  current.
-- **A gap warning arrived** — events were dropped; read before responding.
+  `since` to cover it. The count clears only when you read that room's
+  context, so skipping one leaves it standing rather than quietly lost.
+- **A line called the count a floor, or said it is not known** — history was
+  lost in that room; read before responding.
 - **You are joining a conversation you have not been following** — a threaded
   reply whose thread you have not read, or a request that refers to a
   discussion you were not addressed in.
@@ -151,11 +156,12 @@ without you**:
 
 Otherwise the line you were handed plus what you have already read is enough.
 
-**What "no count" does and does not prove.** Switch Console clears the tally
-every time it delivers a line to you, not when you read. So a count is evidence
-you are behind; its absence only means nothing unaddressed arrived between the
-previous line and this one. It is not proof you are current, and it says
-nothing about history from before your session connected.
+**What "no count" does and does not prove.** Switch clears a room's count when
+you call `read_context` on that room, and on nothing else. So a silent line in
+a room you have read since does mean nothing unaddressed has arrived there. It
+says nothing about any other room, each of which carries its own count. And
+Switch does not invent a zero: where it cannot work out where you stand it says
+so, with the reason, so treat that as being behind.
 
 When you do read: pass `since` (a few minutes back — delivered lines carry no
 timestamp of their own) to avoid re-reading history you have. The response is

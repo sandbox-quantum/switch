@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
 )
 
+from .session_fixtures import _item, _turn
 from .test_mattermost_activity_view import CALLBACK_URL, _buttons, _resolving, _shown
 from .test_mattermost_press import (
     CHANNEL,
@@ -49,7 +50,6 @@ from .test_mattermost_press import (
     _record,
 )
 from .test_mattermost_sdk_only import _posts
-from .test_session_activity import _item, _turn
 
 RUNNING_TURN = "turn-running"
 OTHER_TURN = "turn-next"

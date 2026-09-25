@@ -13,7 +13,7 @@ from switch_core.bridges.collaboration.session.renderers import MARKDOWN
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
 from switch_core.sessions.contract import Item
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn
 
 _URL = "https://console.example/session/s"
 

@@ -1,15 +1,12 @@
-import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
+import { sessionSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
+import { listHostSessions } from '@main/core/sdk-host/host-sessions';
 import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionWasDeleted } from '@main/core/sessions/deleted-sessions';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import {
-  fetchRoomDetail,
-  fetchSdkSessions,
-  fetchSdkSnapshot,
-} from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
+import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
+import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -19,9 +16,14 @@ import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 
-/** Discover server-owned sessions on either execution transport without starting providers. */
+/** How often a linked agent's sessions are listed while discovery is healthy. */
+export const DISCOVERY_MS = 5000;
+/** The longest a failing discovery waits before trying again. */
+export const DISCOVERY_MAX_BACKOFF_MS = 60000;
+/** Discover an agent's sessions from its host, locally or over SSH, without starting providers. */
 class RemoteSessionReconciler {
-  private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly failedRounds = new Map<string, number>();
   private readonly inFlight = new Set<string>();
   private readonly failures = new Map<string, string>();
   errors(): { agentId: string; message: string }[] {
@@ -34,15 +36,28 @@ class RemoteSessionReconciler {
 
   start(agentId: string): void {
     if (this.timers.has(agentId)) return;
-    const timer = setInterval(() => void this.tick(agentId), 2000);
+    this.schedule(agentId, 0);
+  }
+  /** The next round: steady while healthy, doubling while it keeps failing. */
+  private schedule(agentId: string, delay: number): void {
+    const timer = setTimeout(() => {
+      void this.tick(agentId).then(() => {
+        if (this.timers.get(agentId) !== timer) return;
+        const failed = this.failedRounds.get(agentId) ?? 0;
+        this.schedule(
+          agentId,
+          failed ? Math.min(DISCOVERY_MS * 2 ** failed, DISCOVERY_MAX_BACKOFF_MS) : DISCOVERY_MS
+        );
+      });
+    }, delay);
     timer.unref();
     this.timers.set(agentId, timer);
-    void this.tick(agentId);
   }
   stop(agentId: string): void {
-    clearInterval(this.timers.get(agentId));
+    clearTimeout(this.timers.get(agentId));
     this.timers.delete(agentId);
     this.failures.delete(agentId);
+    this.failedRounds.delete(agentId);
   }
   dispose(): void {
     for (const agentId of this.timers.keys()) this.stop(agentId);
@@ -58,14 +73,9 @@ class RemoteSessionReconciler {
         this.stop(agentId);
         return;
       }
-      if (!agent.serverId) throw new Error('This linked agent has no Switch server configured.');
-      const server = await getServer(agent.serverId);
-      if (!server) throw new Error('The session discovery server is missing.');
-      const remote = await fetchSdkSessions(server);
-      if (!Array.isArray(remote))
-        throw new Error(
-          'The server returned an incompatible session list. Update Console and server together.'
-        );
+      if (!agent.workspaceId) throw new Error('This linked agent has no workspace configured.');
+      const workspaceId = agent.workspaceId;
+      const remote: unknown[] = await listHostSessions(agentId);
       const failures: string[] = [];
       const local = new Map(
         (
@@ -116,16 +126,7 @@ class RemoteSessionReconciler {
           // A retired session is finished; adopting one puts a row back for
           // work that will never resume.
           if (session.status === 'stopped' || session.retired) continue;
-          let roomId = session.roomIds?.[0] ?? null;
-          if (session.roomIds === undefined && !local.has(session.sessionId)) {
-            const snapshot = snapshotSchema.parse(
-              await fetchSdkSnapshot(server, session.sessionId)
-            );
-            roomId =
-              snapshot.session.roomIds?.[0] ??
-              [...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ??
-              null;
-          }
+          const roomId = session.roomIds?.[0] ?? null;
           if (roomId)
             switchRoomService.mirrorRemoteSessionRoom(
               {
@@ -143,7 +144,7 @@ class RemoteSessionReconciler {
             id: session.sessionId,
             agentId,
             title: roomId
-              ? `Session for ${(await fetchRoomDetail(server, roomId)).name}`
+              ? `Session for ${(await withWorkspaceSession(workspaceId, (server) => fetchRoomDetail(server, roomId))).name}`
               : 'Shared session',
             attach: false,
             startSource: 'adopted',
@@ -171,7 +172,9 @@ class RemoteSessionReconciler {
           `${failures.length} SDK session(s) could not be discovered. ${failures[0]}`
         );
       this.failures.delete(agentId);
+      this.failedRounds.delete(agentId);
     } catch (error) {
+      this.failedRounds.set(agentId, (this.failedRounds.get(agentId) ?? 0) + 1);
       const message = `Session discovery failed: ${String(error)}`;
       const changed = this.failures.get(agentId) !== message;
       this.failures.set(agentId, message);

@@ -1,60 +1,37 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { GatewayError } from '@main/core/switch-servers/gateway-client';
 import { stopSavedSession } from './stop-saved-session';
 
 const mocks = vi.hoisted(() => ({
   agent: vi.fn(),
-  server: vi.fn(),
-  snapshot: vi.fn(),
   stop: vi.fn(),
+  stopLocal: vi.fn(),
 }));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.agent }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({
-  GatewayError: class extends Error {
-    constructor(
-      readonly kind: string,
-      message: string,
-      readonly status?: number
-    ) {
-      super(message);
-    }
-  },
-  fetchSdkSnapshot: mocks.snapshot,
-}));
 vi.mock('./stop-shared-session', () => ({ stopSharedSession: mocks.stop }));
+vi.mock('./local-host', () => ({ stopLocalSession: mocks.stopLocal }));
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.agent.mockResolvedValue({ switchAgentId: 'remote-agent', serverId: 'server' });
-  mocks.server.mockResolvedValue({ id: 'server' });
-  mocks.snapshot.mockResolvedValue({});
+  mocks.agent.mockResolvedValue({ switchAgentId: 'remote-agent', workspaceId: 'workspace' });
   mocks.stop.mockResolvedValue(undefined);
+  mocks.stopLocal.mockResolvedValue(undefined);
 });
 
-it('stops a saved session even without a provisioned Console runtime', async () => {
+it('asks the session host to stop, then stops the local worker', async () => {
   await stopSavedSession('session', 'agent');
-  expect(mocks.stop).toHaveBeenCalledWith({ id: 'server' }, 'session');
+  expect(mocks.stop).toHaveBeenCalledWith('agent', 'session');
+  expect(mocks.stopLocal).toHaveBeenCalledWith('session');
 });
 
-it('allows removal when the server confirms that the session does not exist', async () => {
-  mocks.snapshot.mockRejectedValue(new GatewayError('http', 'Missing', 404));
+it('leaves an unlinked agent to its local worker', async () => {
+  mocks.agent.mockResolvedValue({ switchAgentId: null });
   await stopSavedSession('session', 'agent');
   expect(mocks.stop).not.toHaveBeenCalled();
+  expect(mocks.stopLocal).toHaveBeenCalledWith('session');
 });
 
-it('preserves an uncertain stop even if its receipt is not found', async () => {
-  mocks.stop.mockRejectedValue(new GatewayError('http', 'Receipt missing', 404));
-  await expect(stopSavedSession('session', 'agent')).rejects.toThrow('Receipt missing');
-});
-
-it('does not treat an inaccessible server as a missing session', async () => {
-  mocks.snapshot.mockRejectedValue(new GatewayError('network', 'Offline'));
-  await expect(stopSavedSession('session', 'agent')).rejects.toThrow('Offline');
-  expect(mocks.stop).not.toHaveBeenCalled();
-});
-
-it('reports missing server configuration before removing a linked session', async () => {
-  mocks.server.mockResolvedValue(null);
-  await expect(stopSavedSession('session', 'agent')).rejects.toThrow('Switch server is missing');
+it('still stops the local worker when the host stop is uncertain', async () => {
+  mocks.stop.mockRejectedValue(new Error('Stop delivery has not been confirmed.'));
+  await expect(stopSavedSession('session', 'agent')).rejects.toThrow('not been confirmed');
+  expect(mocks.stopLocal).toHaveBeenCalledWith('session');
 });

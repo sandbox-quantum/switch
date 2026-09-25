@@ -1,17 +1,20 @@
 import { Bot, ChevronRight, DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
+import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -59,7 +62,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   // This is a Switch room's member list, so the Switch identity is what matters
   // — and that is the stored name: it is what was registered on the server.
   const label = agent.name || 'Unnamed agent';
-  const iconUrl = useAgentIconUrl(agent.serverId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
 
   const expandKey = roomAgentGroupKey(roomId, agent.id);
   const expanded = sidebarStore.isGroupExpanded(expandKey);
@@ -79,12 +82,12 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   if (!location) return null;
 
   const removeFromRoom = () => {
-    const serverId = switchRoomsStore.roomServerId(roomId);
-    if (!serverId || !agent.switchAgentId) return;
+    const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
+    if (!workspaceId || !agent.switchAgentId) return;
     const roomLabel = switchRoomsStore.roomNameById(roomId) ?? 'the room';
     void toastPromise(
-      rpc.switchServers
-        .removeRoomAgent({ serverId, roomId, agentId: agent.switchAgentId })
+      rpc.workspaces
+        .removeRoomAgent({ workspaceId, roomId, agentId: agent.switchAgentId })
         .then(() => switchRoomsStore.refreshRoomState()),
       {
         loading: `Removing ${label} from ${roomLabel}…`,
@@ -117,7 +120,10 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                 className="-mx-[1.5px] bg-transparent"
               />
             </span>
-            <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
+            <SidebarMenuAction
+              aria-label={`Open agent ${label}`}
+              className="flex-initial truncate select-none"
+            >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{label}</span>
                 {/* Mirrors the agent-grouped row: the same agent must not carry
@@ -136,8 +142,19 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                   sshHost={location.data?.sshHost ?? null}
                   agentId={agent.providerId ?? null}
                 />
+                {agent.providerId && (
+                  <ProviderIssueIndicator
+                    providerId={agent.providerId}
+                    sshHost={location.data?.sshHost ?? null}
+                    hostReachable={!hostReachabilityStore.isBlocked(location.data?.sshHost ?? null)}
+                    onOpen={() =>
+                      navigate('location', { locationId: agent.locationId, agentName: agent.name })
+                    }
+                  />
+                )}
               </span>
             </SidebarMenuAction>
+            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger

@@ -157,9 +157,6 @@ async def assemble_agent_detail(
     room_role_store: RoomRoleStore,
     connections: ConnectionRegistry,
 ) -> AgentDetail:
-    # Presence is the union of the heartbeat rows and the live connections
-    # (CHOO-1857 stage B); an empty set means "rows only".
-    alive_agent_ids = connections.live_agent_ids()
     owner_names: dict[str, str] = {}
 
     async def owner_name(owner_id: str | None) -> str | None:
@@ -183,12 +180,13 @@ async def assemble_agent_detail(
     room_name_by_id = {room.id: room.name for room in rooms}
 
     memberships: list[AgentRoomMembership] = []
+    live_connection_ids = connections.live_connection_ids()
     for room in rooms:
         statuses = await compute_agent_statuses(
             session, [agent], room.id, agent_session_store, connections
         )
         room_role = await room_role_store.agent_room_role(
-            session, room.id, agent.id, alive_agent_ids
+            session, room.id, agent.id, live_connection_ids
         )
         memberships.append(
             AgentRoomMembership(

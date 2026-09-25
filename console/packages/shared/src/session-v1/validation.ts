@@ -206,6 +206,16 @@ export const snapshotSchema: z.ZodType<Snapshot> = z.object({
     })
   ),
   commandStatuses: z.array(commandStatusSchema),
+  notices: z
+    .array(
+      z.strictObject({
+        level: z.enum(['info', 'warning', 'error']),
+        code: id,
+        message: z.string(),
+        afterItemId: id.nullable(),
+      })
+    )
+    .default([]),
   nextPageToken: id.nullable(),
 });
 export const commandSchema: z.ZodType<Command> = z.strictObject({
@@ -238,6 +248,32 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     }),
   ]),
 });
+// The receipt for a host that asked to be handed the command it just caused.
+// The command is set only when this submission created it and nothing else was
+// already queued for the session; on any other status, and from a server built
+// before the receipt existed, the command endpoint remains the way to reach it.
+// Absent rather than null is that older server, so the field is optional and
+// its absence means the same thing: fetch.
+export const roomMessageReceiptSchema = commandStatusSchema.extend({
+  command: commandSchema.nullish(),
+});
+// The rooms Switch has a session serving, answered when it names the connection
+// its events arrive over. The session's own, not the connection's: one
+// connection carries every session an agent has.
+export const roomBindingSchema = z.object({ rooms: z.array(z.string().min(1)) });
+// The deliveries Switch is still holding for the rooms a session itself holds,
+// answered when the session asks for its own work instead of waiting to be
+// handed it. The agent API's own field names, unconverted, and read loosely so
+// a server that learns to say more about a delivery does not stop this one
+// being read.
+export const heldDeliveriesSchema = z.array(
+  z.object({
+    room_id: z.string().min(1),
+    message_id: z.string().min(1),
+    sequence,
+    expired: z.boolean(),
+  })
+);
 
 export function eventBytes(event: unknown): number {
   return new TextEncoder().encode(JSON.stringify(event)).byteLength;

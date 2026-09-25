@@ -1,15 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { appendFile, mkdir, open, readFile, rename } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
+  clearTakenOver,
   ensureSharedProcess,
   runSharedWatcher,
+  sharedConfigSchema,
   type SharedHostConfig,
   sharedSessionRoot,
+  SessionLinks,
   superviseSharedHost,
   type Supervision,
+  WATCH_FLAGS_FILE,
+  type WatchFlags,
+  WatcherControl,
+  watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { log } from '@main/lib/logger';
@@ -24,6 +31,19 @@ const consoleLifetime = new AbortController();
 
 const watchers = new Map<string, { stop: AbortController; done: Promise<void> }>();
 const sessions = new Map<string, { stop: AbortController; done: Promise<void> }>();
+
+/**
+ * Who asked for this watcher to run.
+ *
+ * `'restore'` — Console booting, an agent renamed, a provider config saved.
+ * The watcher is being brought back to the state it was already meant to be
+ * in, and nothing about that is a decision to reclaim a connection something
+ * else now holds.
+ *
+ * `'explicit'` — a person turned auto-sessions on, or pressed Restart. That is
+ * a decision, and it clears a stood-down watcher's marker.
+ */
+export type WatcherIntent = 'restore' | 'explicit';
 
 export function localStateBase(kind: 'sdk-sessions' | 'sdk-watchers'): string {
   return join(homedir(), '.local', 'state', 'switch', kind);
@@ -51,6 +71,25 @@ export function localWatcherRoot(identity: string): string {
   return matches[0] ? join(base, matches[0]) : keyed;
 }
 
+/**
+ * Every watcher state root this identity has, including ones saved under an
+ * earlier key. Competing roots are an error to run on but not to remove, so
+ * unlike `localWatcherRoot` this reports all of them.
+ */
+function localWatcherRoots(identity: string): string[] {
+  const base = localStateBase('sdk-watchers');
+  const roots = new Set([join(base, createHash('sha256').update(identity).digest('hex'))]);
+  if (existsSync(base))
+    for (const name of readdirSync(base))
+      if (savedAgentId(join(base, name)) === identity) roots.add(join(base, name));
+  return [...roots];
+}
+
+/** Discards a local agent's watcher state once the agent itself is going. */
+export async function removeLocalWatcherRoots(identity: string): Promise<void> {
+  for (const root of localWatcherRoots(identity)) await rm(root, { recursive: true, force: true });
+}
+
 async function writeAtomic(destination: string, body: unknown): Promise<void> {
   const temporary = `${destination}.${randomUUID()}`;
   const file = await open(temporary, 'wx', 0o600);
@@ -63,9 +102,9 @@ async function writeAtomic(destination: string, body: unknown): Promise<void> {
   await rename(temporary, destination);
 }
 
-export async function writeWatchEnabled(root: string, enabled: boolean): Promise<void> {
+export async function writeWatchFlags(root: string, flags: WatchFlags): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await writeAtomic(join(root, 'watch.json'), { enabled });
+  await writeAtomic(join(root, WATCH_FLAGS_FILE), watchFlagsSchema.parse(flags));
 }
 
 /**
@@ -129,11 +168,19 @@ async function halt(
 }
 
 /**
+ * Console's end of the IPC pipe to each local session host it supervises:
+ * commands and room messages go down it, and every event the host records
+ * comes back up it.
+ */
+export const localSessionLinks = new SessionLinks();
+
+/**
  * Supervises a local host from inside Console. The worker keeps its own process
  * group so a misbehaving provider can still be fenced, but Console owns the
  * supervisor rather than detaching one, so the worker stops when Console does.
  */
 export const consoleSupervision: Supervision = {
+  links: localSessionLinks,
   get build() {
     return resolveSharedHostBundlePath();
   },
@@ -150,6 +197,7 @@ export const consoleSupervision: Supervision = {
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           signal,
           build: bundle,
+          links: localSessionLinks,
         }),
       'Local SDK host supervisor stopped',
       // The supervisor records a worker's own failure under this root already.
@@ -190,11 +238,38 @@ export async function readLocalHostFailure(root: string): Promise<unknown> {
   }
 }
 
-/** Runs the room watcher inside Console rather than deploying a detached host. */
-export async function startLocalWatcher(config: SharedHostConfig): Promise<void> {
+/**
+ * Runs the room watcher inside Console rather than deploying a detached host.
+ *
+ * `intent` decides what to do about a watcher that stood down because something
+ * took its connection. `'restore'` — boot, a rename, a config reconcile — leaves
+ * it standing down: none of those is anybody asking for this watcher back, and
+ * starting it would take the connection off whoever holds it now. `'explicit'`
+ * is a person asking, and clears the marker.
+ */
+/**
+ * How Console reaches each local agent's running watcher, by Switch agent id:
+ * "Reconnect to room" is a direct call into it.
+ */
+const watcherControls = new Map<string, WatcherControl>();
+
+export function localWatcherControl(switchAgentId: string): WatcherControl {
+  let control = watcherControls.get(switchAgentId);
+  if (!control) {
+    control = new WatcherControl();
+    watcherControls.set(switchAgentId, control);
+  }
+  return control;
+}
+
+export async function startLocalWatcher(
+  config: SharedHostConfig,
+  options: { intent: WatcherIntent; spawning: boolean }
+): Promise<void> {
   const root = localWatcherRoot(config.session.agentId);
   await clearStaleOwners(root);
-  await writeWatchEnabled(root, true);
+  if (options.intent === 'explicit') await clearTakenOver(root);
+  await writeWatchFlags(root, { enabled: true, spawn: options.spawning });
   await ensureSharedProcess({
     root,
     config,
@@ -202,13 +277,26 @@ export async function startLocalWatcher(config: SharedHostConfig): Promise<void>
     watcher: true,
     restart: false,
     supervision: {
+      links: null,
       build: consoleSupervision.build,
-      start: async ({ root: prepared }) => {
+      start: async ({ root: prepared, configPath }) => {
+        // The configuration that was written, not the one that was asked for.
+        // A deployed host reads this same file, and a watcher whose root was
+        // prepared by an earlier call would otherwise run on settings the file
+        // does not hold.
+        const written = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
         await note(prepared, 'Room watcher started inside Console.');
         track(
           watchers,
           prepared,
-          (signal) => runSharedWatcher(prepared, config, signal, consoleSupervision),
+          (signal) =>
+            runSharedWatcher(
+              prepared,
+              written,
+              signal,
+              consoleSupervision,
+              localWatcherControl(written.session.agentId)
+            ),
           'Local room watcher stopped',
           true
         );
@@ -220,7 +308,10 @@ export async function startLocalWatcher(config: SharedHostConfig): Promise<void>
 
 export async function stopLocalWatcher(identity: string): Promise<void> {
   const root = localWatcherRoot(identity);
-  await writeWatchEnabled(root, false);
+  await writeWatchFlags(root, { enabled: false, spawn: false });
+  // Turning the watcher off answers the question the marker was holding open.
+  // Leaving it would make the next enable a no-op that reports nothing.
+  await clearTakenOver(root);
   await halt(watchers, root);
 }
 

@@ -63,7 +63,10 @@ export async function createAntigravityClient(input: {
  */
 export async function initializeAntigravity(client: StdioJsonRpcClient) {
   return await client.request<{
-    agentCapabilities?: { sessionCapabilities?: { resume?: unknown } };
+    agentCapabilities?: {
+      sessionCapabilities?: { resume?: unknown };
+      mcpCapabilities?: { http?: boolean };
+    };
     authMethods?: { id?: string }[];
   }>('initialize', {
     protocolVersion: 1,

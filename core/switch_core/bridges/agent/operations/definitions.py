@@ -16,11 +16,15 @@ from typing import Any
 
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
+    bound_rooms,
+    caller_session,
     connected_room,
+    counting_reader,
     get_agent_id,
     get_protocol,
     require_connected_room,
     session_key,
+    sole_connected_room,
 )
 from switch_core.bridges.agent.operations.registry import operation
 from switch_core.bridges.agent.protocol.connections import (
@@ -97,6 +101,38 @@ def claim_room_on_caller_connection(
         evicted.id,
     )
     return evicted.id
+
+
+def rooms_on_caller_connection(
+    protocol: ProtocolService, agent_id: str, connection_id: str
+) -> set[str]:
+    """The rooms claimed by the connection underneath this caller.
+
+    For a caller that is the only session on its connection these are its own
+    rooms, which is what makes this the right answer to "where was I" for a
+    caller with no session identity to ask instead.
+    """
+    connection = protocol.connections.get(connection_id)
+    if connection is None or connection.agent_id != agent_id:
+        return set()
+    return set(connection.rooms)
+
+
+def release_room_on_caller_connection(
+    protocol: ProtocolService, agent_id: str, connection_id: str, room_id: str
+) -> None:
+    """Drop a room the caller has left from the connection underneath it.
+
+    The counterpart of the claim, and the reason `claim_room` no longer clears:
+    a connection's rooms are the union of its sessions', so the only thing
+    entitled to remove one is the session that was in it. Leaving the room
+    claimed would keep this agent's slot occupied and keep delivering the
+    room's events to a session that has moved on.
+    """
+    connection = protocol.connections.get(connection_id)
+    if connection is None or connection.agent_id != agent_id:
+        return
+    protocol.connections.release_room(connection, room_id)
 
 
 async def bind_room_for_connectionless_caller(
@@ -256,17 +292,51 @@ async def connect_to_room(
     key = session_key()
     if not key:
         raise ValueError("MCP session has no session id; cannot connect to room")
-    evicted_connection_id = claim_room_on_caller_connection(
-        protocol, agent_id, key, room.id
-    )
 
-    await bind_room_for_connectionless_caller(
-        protocol,
-        agent_id=agent_id,
-        connection_id=key,
-        room_id=room.id,
-        connection_model=profile.connection_model,
-    )
+    # Where a session is recorded and where its events are routed are one
+    # move, so they are made under one hold of the agent's connection slots.
+    # Reconciling the connection after the bind has already committed leaves a
+    # window a sibling can bind this room in, and the rooms this caller then
+    # drops are the ones it was in before that — it would take the room off a
+    # connection the sibling now holds it on.
+    #
+    # The slot lock is taken before the bind's row locks and never after, which
+    # is the order every other holder of both takes them in.
+    caller = caller_session()
+    displaced_session_id = None
+    async with protocol.connections.slots(agent_id):
+        # Routing is where events actually go, so moving it on a bind that
+        # then fails would send them somewhere the session is not — and the
+        # rooms to vacate are the caller's own, read under the bind's lock
+        # rather than from what it believed on arrival.
+        if caller is not None:
+            previous, displaced_session_id = protocol.connections.place_session(
+                agent_id, caller.id, room.id, key
+            )
+        else:
+            previous = rooms_on_caller_connection(protocol, agent_id, key)
+
+        evicted_connection_id = claim_room_on_caller_connection(
+            protocol, agent_id, key, room.id
+        )
+        for departed in previous - {room.id}:
+            release_room_on_caller_connection(protocol, agent_id, key, departed)
+
+        # Connecting is how an agent's occupancy of a room changes hands, and
+        # the occupant is the one whose reading clears that room's unread
+        # count. The connection underneath cannot stand in for it: sessions of
+        # one agent share it, and each of them is in a room of its own.
+        reader = counting_reader()
+        if reader is not None:
+            protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
+
+        await bind_room_for_connectionless_caller(
+            protocol,
+            agent_id=agent_id,
+            connection_id=key,
+            room_id=room.id,
+            connection_model=profile.connection_model,
+        )
 
     return {
         "agent_id": agent_id,
@@ -294,12 +364,27 @@ async def connect_to_room(
         "packages": resources["packages"],
         "linked_rooms": linked_rooms,
         "roles": roles,
-        "warning": (
-            evicted_session_warning(room.id, evicted_connection_id)
-            if evicted_connection_id
-            else None
+        "warning": _eviction_warning(
+            room.id, displaced_session_id, evicted_connection_id
         ),
     }
+
+
+def _eviction_warning(
+    room_id: str, displaced_session_id: str | None, evicted_connection_id: str | None
+) -> str | None:
+    """Name whoever lost the room, preferring the session that lost it.
+
+    The two doors overlap: displacing a sibling that shares this connection
+    evicts no connection at all, and evicting a connection whose session
+    predates the selector displaces no session that can be named. Where both
+    fire they are the same eviction seen twice, so it is reported once.
+    """
+    if displaced_session_id is not None:
+        return evicted_session_warning(room_id, f"session {displaced_session_id}")
+    if evicted_connection_id is not None:
+        return evicted_session_warning(room_id, f"connection {evicted_connection_id}")
+    return None
 
 
 async def _decorate_linked_rooms(
@@ -572,16 +657,33 @@ async def read_context(
             connected to, and does not clear that room's unread count.
     """
     agent_id = get_agent_id()
+    connected = await bound_rooms()
     if room_id is None:
-        room_id = await require_connected_room()
+        room_id = sole_connected_room(connected)
 
     protocol = get_protocol()
     since_ms = parse_timestamp_ms(since) if since else None
     before_ms = parse_timestamp_ms(before) if before else None
 
-    return await protocol.read_context(
+    buffer = protocol.event_buffer
+    # Sampled before the read, because anything enqueued while the history
+    # response is in flight is not in that response. Clearing through the
+    # later head would report a zero for a message the agent never saw;
+    # clearing through this one can only leave something counted twice.
+    through = buffer.head(agent_id)
+
+    context = await protocol.read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
     )
+
+    reader = counting_reader()
+    if reader is not None and room_id in connected:
+        # Catching up is the whole point of the unread count, so doing it
+        # clears this room — and only this room. A read of somewhere else
+        # leaves every count alone, including this one.
+        buffer.caught_up(agent_id, reader, room_id, through, session_key())
+
+    return context
 
 
 @operation
@@ -1157,13 +1259,17 @@ async def assume_role(role: str) -> dict[str, Any]:
     role. Fails if you already hold a role (release it first), or if the role
     is exclusive and currently held by another live agent.
 
-    For exclusive roles, this acquires a lease with a fast heartbeat: while
+    For exclusive roles, this acquires a lease held by you specifically: while
     your session stays alive the seat is yours, and it auto-releases shortly
-    after you disconnect so another agent can take over.
+    after you disconnect so another agent can take over. A sibling session of
+    the same agent cannot hold it open on your behalf.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
-    return await get_protocol().assume_room_role(agent_id, room_id, role, session_key())
+    caller = caller_session()
+    return await get_protocol().assume_room_role(
+        agent_id, room_id, role, session_key(), caller.id if caller else None
+    )
 
 
 @operation

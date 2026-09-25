@@ -10,6 +10,7 @@ from switch_core.observability.health import (
     bridges_check,
     connectors_check,
     message_listener_check,
+    session_activity_listener_check,
 )
 from switch_core.observability.metrics import MetricsRegistry
 
@@ -209,3 +210,16 @@ async def test_connectors_check_counts_the_missing_ones():
 async def test_connectors_check_is_healthy_when_none_are_configured():
     check = connectors_check(running=lambda: 0, configured=lambda: 0)
     assert (await check.probe()).healthy is True
+
+
+@pytest.mark.asyncio
+async def test_session_activity_listener_check_follows_the_connection():
+    connected = [True]
+    check = session_activity_listener_check(lambda: connected[0])
+
+    assert (await check.probe()).healthy is True
+    connected[0] = False
+    outcome = await check.probe()
+    assert outcome.healthy is False
+    assert "LISTEN" in outcome.detail
+    assert check.gates_readiness is False

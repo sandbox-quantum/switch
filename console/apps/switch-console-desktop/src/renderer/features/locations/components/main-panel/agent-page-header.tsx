@@ -8,10 +8,12 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import {
+  workspaceAgentsQueryKey,
+  useWorkspaceAgents,
+} from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -36,8 +38,8 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const agentMachineName = agent?.name ?? agentName ?? 'Agent';
   const provider = agent?.providerId ? providerDisplayName(agent.providerId) : null;
 
-  const serverId = agent?.serverId ?? null;
-  const { data: remoteAgents } = useRemoteAgents(serverId);
+  const workspaceId = agent?.workspaceId ?? null;
+  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
   const remote = (remoteAgents ?? []).find((a) => a.id === agent?.switchAgentId) ?? null;
   const description = remote?.description ?? null;
 
@@ -46,7 +48,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   // Show machine name as subtitle only if displayName exists and differs from name
   const showMachineName = remote?.displayName != null && remote.displayName !== agentMachineName;
 
-  const roomable = serverId !== null && agent?.switchAgentId != null;
+  const roomable = workspaceId !== null && agent?.switchAgentId != null;
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -56,10 +58,10 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
    * request that can fail. It is reported rather than swallowed: a picture
    * that silently reverts on the next refresh is worse than an error. */
   const changeIcon = async (iconUrl: string | null) => {
-    if (serverId === null || switchAgentId === null) return;
+    if (workspaceId === null || switchAgentId === null) return;
     try {
-      await rpc.switchServers.updateAgentIcon({ serverId, agentId: switchAgentId, iconUrl });
-      await queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
+      await rpc.workspaces.updateAgentIcon({ workspaceId, agentId: switchAgentId, iconUrl });
+      await queryClient.invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) });
     } catch (cause) {
       const { headline, detail } = describeFailure(cause, "Could not change the agent's icon.");
       toast({
@@ -70,7 +72,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
     }
   };
 
-  const editableIcon = serverId !== null && switchAgentId !== null;
+  const editableIcon = workspaceId !== null && switchAgentId !== null;
 
   return (
     <header className="flex shrink-0 items-start gap-5 pt-10">
@@ -111,14 +113,14 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
             }
           >
-            New Session <BoundShortcut settingsKey="newSession" />
+            New Session
           </Button>
           {roomable && (
             <Button
               variant="outline"
               onClick={() =>
                 showAddToRoom({
-                  serverId: serverId as string,
+                  workspaceId: workspaceId as string,
                   switchAgentId: agent.switchAgentId as string,
                   agentName: title,
                 })

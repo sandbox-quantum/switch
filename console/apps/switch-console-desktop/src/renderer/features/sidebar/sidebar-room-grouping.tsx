@@ -18,9 +18,9 @@ import { cn } from '@renderer/utils/utils';
 import { SidebarItemMiniButton, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent, UNASSIGNED_ROOM_KEY } from './sidebar-store';
 
-/** Current room of a session, from the live connection set reported by the hook. */
+/** Sidebar placement remembers the last room even after its delivery ownership is lost. */
 export function sessionRoomId(session: SessionStore): string | null {
-  return roomConnectionsStore.roomForSession(session.data.id);
+  return roomConnectionsStore.associatedRoomForSession(session.data.id);
 }
 
 export function roomLabel(roomKey: string): string {
@@ -54,14 +54,14 @@ export function isRoomNameKnown(roomKey: string): boolean {
  */
 export function deleteRoomAction(
   roomKey: string,
-  showDeleteRoomModal: (args: { serverId: string; roomId: string; roomName: string }) => void
+  showDeleteRoomModal: (args: { workspaceId: string; roomId: string; roomName: string }) => void
 ): (() => void) | null {
   if (roomKey === UNASSIGNED_ROOM_KEY) return null;
-  const serverId = switchRoomsStore.roomServerId(roomKey);
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomKey);
   const room = switchRoomsStore.roomSummaryById(roomKey);
-  if (!serverId || !room) return null;
-  if (!switchRoomsStore.canDeleteRoom(serverId, room)) return null;
-  return () => showDeleteRoomModal({ serverId, roomId: roomKey, roomName: room.name });
+  if (!workspaceId || !room) return null;
+  if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
+  return () => showDeleteRoomModal({ workspaceId, roomId: roomKey, roomName: room.name });
 }
 
 /** Show a room's conversation in the main panel (no-op for Unassigned, which

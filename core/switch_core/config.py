@@ -141,6 +141,23 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §4.
     gateway_tenant_choice_enabled: bool = False
 
+    # How many workspaces one person may own here. 0 turns `POST /tenants` into
+    # a 403 outright, so this single value is both the cap and the gate.
+    #
+    # It exists because workspace creation is an amplification vector rather
+    # than just a row: `all_tenant_ids()` drives a fan-out per tenant at boot
+    # and a sweep every few seconds, across clients, collaboration bridges,
+    # server connectors and rooms. Unbounded self-service creation therefore
+    # buys steady-state work in the deployment, not storage.
+    #
+    # Counts `owner` memberships only, so being invited into someone else's
+    # workspace never spends an allowance the invitee cannot get back. Deployment
+    # operators (`users.role == "admin"`) are exempt, on the same grounds as
+    # every other operator bypass in `authz.py`: this bounds self-service, and
+    # an operator provisioning workspaces for other people is not that.
+    # docs/old/multi-tenancy-phase2-tenants.md, §5.
+    gateway_max_workspaces_per_user: int = 3
+
     # ── Logging ──────────────────────────────────────────────────────────────
     # "text" for a terminal, "json" for a log pipeline that parses fields.
     log_format: str = "text"
@@ -301,7 +318,6 @@ class SwitchConfig(BaseSettings):
     # fixture's request there as a real card, to exercise the answer path
     # against a real workspace. It needs the repository checkout for the
     # fixtures, and it says in the log that there is no session behind the card.
-    session_demo_enabled: bool = False
 
     # Upper bound on a template document uploaded to the registry. The column
     # itself is unbounded, so raising this is a deploy-time change and never a
@@ -345,14 +361,16 @@ class SwitchConfig(BaseSettings):
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
     # as "15s"), turning a slot that never comes back into a loud, attributable
-    # error. Disabled by default, and it must stay that way until Matrix I/O
+    # error. Disabled by default, and it must stay that way until provisioning
     # moves out of the RoomService transactions: `add_agents_to_room`,
-    # `remove_agents_from_room` and `delete_room` currently hold a transaction
-    # across invite/kick round trips, so enabling this today would trade a
-    # latency problem for a consistency one — Matrix membership changed, the
-    # rows that record it rolled back. Applies to the application engine only;
-    # Alembic builds its own engine from `db_connect_args`, so a migration is
-    # never killed mid-transaction.
+    # `remove_agents_from_room` and `delete_room` hold a transaction across
+    # invite/kick calls, so enabling this today would trade a latency problem
+    # for a consistency one — membership changed, the rows that record it
+    # rolled back. `PostgresProvisioning` writes rows on its own session rather
+    # than dialling a homeserver, which shortens that window without closing
+    # it: the two still commit separately.
+    # Applies to the application engine only; Alembic builds its own engine
+    # from `db_connect_args`, so a migration is never killed mid-transaction.
     db_idle_in_transaction_session_timeout: str | None = None
 
     # How long a migration waits for a lock before giving up (a Postgres
@@ -603,6 +621,16 @@ class SwitchConfig(BaseSettings):
     @property
     def observability_enabled(self) -> bool:
         return self.otlp_endpoint is not None
+
+    @model_validator(mode="after")
+    def _validate_max_workspaces_per_user(self) -> "SwitchConfig":
+        if self.gateway_max_workspaces_per_user < 0:
+            raise ValueError(
+                "GATEWAY_MAX_WORKSPACES_PER_USER must not be negative (0 "
+                "disables workspace creation), got "
+                f"{self.gateway_max_workspaces_per_user!r}."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":

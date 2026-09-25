@@ -1,7 +1,7 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getAgentLocation } from './agent-location';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgentById } from './getAgentById';
 
 /**
@@ -19,11 +19,11 @@ export async function readAgentDefinition(agentId: string): Promise<RepoAgentAtt
   if (!behavior || !agent.name) return null;
 
   const location = await getAgentLocation(agent);
-  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
-    return await behavior.readDefinition(workspace.fs, agent.name);
+    return await behavior.readDefinition(workdir.fs, agent.name);
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }
 
@@ -47,16 +47,16 @@ export async function updateAgentDefinition(params: {
   }
 
   const location = await getAgentLocation(agent);
-  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
-    const current = await behavior.readDefinition(workspace.fs, agent.name);
+    const current = await behavior.readDefinition(workdir.fs, agent.name);
     const description = typeof current?.description === 'string' ? current.description : '';
-    await behavior.writeDefinition(workspace.fs, {
+    await behavior.writeDefinition(workdir.fs, {
       ...params.attributes,
       name: agent.name,
       description,
     });
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

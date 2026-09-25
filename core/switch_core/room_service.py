@@ -16,7 +16,6 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -38,6 +37,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
     normalise_actor_kind,
     normalise_channel_type,
@@ -55,19 +55,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
-
-
-def _age_days(created_at: object) -> float:
-    """How many days old a room is, for reporting. Zero if unknown.
-
-    Takes `object` because the timestamp columns on the models are annotated
-    `Mapped[str]` while carrying real `datetime`s — so the honest signature is
-    "whatever the column hands back", checked here rather than trusted.
-    """
-    if not isinstance(created_at, datetime):
-        return 0.0
-    moment = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - moment).total_seconds() / 86400.0, 0.0)
 
 
 class LinkedRoomSpec(BaseModel):
@@ -590,6 +577,50 @@ class RoomService:
             if bridge_core and external_channel_id:
                 bridge_core.end_provisioning(external_channel_id)
 
+        # The room row is durably committed above. Everything from here down —
+        # channel capture, Matrix invites, adding agents/users on the external
+        # platform — is best-effort against another system and can still fail
+        # (and, on failure, still propagate out of this call, same as before).
+        # Reported here rather than at the end of the function so a failure in
+        # any of that does not also make the room's existence go unreported:
+        # the row is the thing the event describes, and it is already true.
+        #
+        # Resolved on its own line, never inside the argument list below: an
+        # `await` there is evaluated before `emit_safely` is entered, outside
+        # the guard meant to contain it.
+        platform = await self._bridge_platform(bridge_id)
+
+        emit_safely(
+            self._telemetry,
+            "room_created",
+            {
+                "channel_type": normalise_channel_type(channel_type),
+                "bridge_platform": platform,
+                "agent_count": len(agent_ids),
+                "human_count": len(config.user_names or []),
+                "has_instructions": config.instructions is not None,
+                "created_by_kind": config.created_by_kind,
+                "from_template": config.from_template,
+            },
+        )
+
+        # Only a room a person made counts as activation. Guarded like the
+        # emit above it: this runs ahead of the invite, the agent adds and the
+        # client joins, so an unguarded raise would leave a committed room
+        # nobody is in.
+        if self._telemetry is not None and config.created_by_kind == "user":
+            try:
+                await self._telemetry.emit_milestone(
+                    "first_room_created",
+                    channel_type=normalise_channel_type(channel_type),
+                    bridge_platform=platform,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not report the first_room_created milestone for room %s",
+                    room.id,
+                )
+
         if bridge_core and external_channel_id:
             await self._ensure_channel_capture(
                 bridge_core, external_channel_id, channel_type
@@ -645,32 +676,6 @@ class RoomService:
             len(agent_clients),
             len(system_clients),
         )
-
-        # Never inside the argument list: an `await` there is evaluated before
-        # `emit_safely` is entered, outside the guard meant to contain it.
-        platform = await self._bridge_platform(bridge_id)
-
-        emit_safely(
-            self._telemetry,
-            "room_created",
-            {
-                "channel_type": normalise_channel_type(channel_type),
-                "bridge_platform": platform,
-                "agent_count": len(agent_ids),
-                "human_count": len(config.user_names or []),
-                "has_instructions": config.instructions is not None,
-                "created_by_kind": config.created_by_kind,
-                "from_template": config.from_template,
-            },
-        )
-
-        # Only a room a person made counts as activation.
-        if self._telemetry is not None and config.created_by_kind == "user":
-            await self._telemetry.emit_milestone(
-                "first_room_created",
-                channel_type=normalise_channel_type(channel_type),
-                bridge_platform=platform,
-            )
 
         failed_attachments = unreachable_users + await self._attach_after_creation(
             room.id, config
@@ -765,7 +770,7 @@ class RoomService:
                 "created_by_kind": normalise_actor_kind(
                     (room.metadata_ or {}).get("created_by_kind")
                 ),
-                "age_days": _age_days(room.created_at),
+                "age_days": age_days(room.created_at),
                 "was_ever_active": was_ever_active,
                 "agent_count": agent_count,
             },
@@ -1014,7 +1019,7 @@ class RoomService:
             "room_archived",
             {
                 "bridge_platform": await self._bridge_platform(room.bridge_id),
-                "age_days": _age_days(room.created_at),
+                "age_days": age_days(room.created_at),
                 "was_ever_active": await self._was_ever_active(room.tenant_id, room_id),
             },
         )
@@ -1022,8 +1027,10 @@ class RoomService:
     async def _bridge_platform(self, bridge_id: str | None) -> str:
         """The platform a bridge id names, as the telemetry catalogue spells it.
 
-        `none` for an internal-only room and for a lookup that failed. Never
-        raises: the operations this labels must not fail because it did.
+        `none` for an internal-only room; `unknown` for a lookup that failed —
+        the two must stay distinct, or a transient error reports a
+        Slack-bridged room as internal-only. Never raises: the operations this
+        labels must not fail because it did.
         """
         if bridge_id is None or self._telemetry is None:
             return "none"
@@ -1037,26 +1044,30 @@ class RoomService:
                 bridge_id,
                 exc_info=True,
             )
-            return "none"
+            return "unknown"
         return normalise_platform(bridge.type if bridge else None)
 
-    async def _was_ever_active(self, tenant_id: str, room_id: str) -> bool:
-        """Whether a human ever posted in this room.
+    async def _was_ever_active(self, tenant_id: str, room_id: str) -> str:
+        """Whether a human ever posted in this room: `"true"`, `"false"`, or
+        `"unknown"` when the lookup itself failed.
 
-        Asked only on archive, so the cost lands on a rare operation. False on
-        failure — an archive must not fail because a count did.
+        Asked only on archive/delete, so the cost lands on a rare operation.
+        `"unknown"` rather than `"false"` on failure — a count that could not
+        run is not evidence the room was never used, which is exactly the
+        fact this property exists to carry.
         """
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
-                return await room_had_human_activity(session, tenant_id, room_id)
+                active = await room_had_human_activity(session, tenant_id, room_id)
         except Exception:
             logger.warning(
                 "Could not determine whether room %s was ever active; "
-                "reporting it as inactive.",
+                "reporting it as unknown.",
                 room_id,
                 exc_info=True,
             )
-            return False
+            return "unknown"
+        return "true" if active else "false"
 
     async def add_users_to_room(self, room_id: str, user_names: list[str]) -> list[str]:
         """Add users to a bridged room; returns the names that did not make it

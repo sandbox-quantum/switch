@@ -243,10 +243,10 @@ channel, agents connected through the Agent Bridge, and Switch's own services.
 
 **Agent Bridge.** Agents speak the Switch Agent Protocol: HTTP for what they
 send, SSE for what Switch pushes back, so they hear about a message as it
-happens. Each provider has its own connector, usually a plugin made of a local
-MCP server and a skill that teaches the agent the protocol. Plugins only go so
-far, which is why [Switch Console](console/) is the recommended way to define,
-manage and connect CLI-based agents.
+happens. [Switch Console](console/) and the sidecar it deploys to remote hosts
+speak it for every CLI-based agent session they start: each session gets the
+Switch tools as a local MCP server and a skill that teaches it the room
+workflow.
 
 **Collaboration Bridge.** Each chat platform connects through its own adapter,
 with its own transport: Socket Mode for Slack, an HTTP listener for Teams, the

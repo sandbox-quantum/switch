@@ -11,7 +11,7 @@ import {
   completedAgentStorageMigrationGeneration,
   markAgentStorageMigrationComplete,
 } from './agent-storage-migration-marker';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgents } from './getAgents';
 import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
@@ -32,7 +32,7 @@ import { writeNeutralAgentSettingsFs } from './write-switch-settings';
  */
 export async function migrateAgentStorage(): Promise<void> {
   // Once a full pass has migrated every agent, never re-run: the steady-state
-  // migration re-opens each agent's workspace filesystem (an SSH/SFTP round trip
+  // migration re-opens each agent's workdir filesystem (an SSH/SFTP round trip
   // per remote agent) on every boot for no benefit.
   const completed = await completedAgentStorageMigrationGeneration();
   if (completed >= AGENT_STORAGE_MIGRATION_GENERATION) return;
@@ -65,7 +65,7 @@ export async function migrateAgentStorage(): Promise<void> {
  *
  * `completedGeneration` is the generation this install already finished, so a
  * re-run can skip agents the new generation cannot change — the check happens
- * before the workspace filesystem is opened, which for a remote agent is an SSH
+ * before the workdir filesystem is opened, which for a remote agent is an SSH
  * connect and an SFTP channel.
  */
 async function migrateOne(agent: Agent, completedGeneration: number): Promise<boolean> {
@@ -78,13 +78,13 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
 
   // Generation 2 only broadened step 1 to providers WITHOUT a behavior; for one
   // that has it, every step is what generation 1 already ran. Skipping here is
-  // what keeps the generation bump from re-opening a workspace per Claude agent.
+  // what keeps the generation bump from re-opening a workdir per Claude agent.
   if (completedGeneration >= 1 && behavior) return false;
 
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
 
-  const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+  const workdir = await resolveWorkdirFsFor(location.sshHost, location.dir);
   try {
     // The agent's identity is its single `name` (CHOO-1440): the creds/definition
     // stem on disk. It is authoritative — earlier migrations, and the 0041 SQL
@@ -111,13 +111,13 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     //    to recover it — nothing can reconstruct it from the gateway.
     const idKeyedRelPath = agentSettingsRelativePath(agent.id);
     const namedRelPath = agentSettingsRelativePath(name);
-    const neutral = name === agent.id ? null : await workspace.fs.read(namedRelPath);
+    const neutral = name === agent.id ? null : await workdir.fs.read(namedRelPath);
     if (neutral === null) {
       const recovered =
-        parseSwitchAgentCredentials(await workspace.fs.read(idKeyedRelPath), log) ??
-        (behavior ? toCreds(await behavior.readLaunchEnv(workspace.fs, name)) : null) ??
+        parseSwitchAgentCredentials(await workdir.fs.read(idKeyedRelPath), log) ??
+        (behavior ? toCreds(await behavior.readLaunchEnv(workdir.fs, name)) : null) ??
         (behavior
-          ? parseSwitchAgentCredentials(await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH), log)
+          ? parseSwitchAgentCredentials(await workdir.fs.read(SWITCH_SETTINGS_RELATIVE_PATH), log)
           : null);
       if (recovered && !belongsToAgent(agent, recovered)) {
         log.warn('migrateAgentStorage: recovered credentials name a different Switch agent', {
@@ -128,7 +128,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
           foundSwitchAgentId: recovered.agentId,
         });
       } else if (recovered) {
-        await writeNeutralAgentSettingsFs(workspace.fs, {
+        await writeNeutralAgentSettingsFs(workdir.fs, {
           slug: name,
           apiEndpoint: recovered.apiEndpoint,
           apiToken: recovered.token,
@@ -141,9 +141,9 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     // Remove the stale ID-keyed neutral file once the name-keyed one is in place:
     // an incomplete leftover there otherwise shadows the real creds in the
     // session preflight (which scans both), and a complete one is now redundant.
-    if (name !== agent.id && (await workspace.fs.read(namedRelPath)) !== null) {
-      if ((await workspace.fs.read(idKeyedRelPath)) !== null) {
-        await workspace.fs.delete(idKeyedRelPath);
+    if (name !== agent.id && (await workdir.fs.read(namedRelPath)) !== null) {
+      if ((await workdir.fs.read(idKeyedRelPath)) !== null) {
+        await workdir.fs.delete(idKeyedRelPath);
         changed = true;
       }
     }
@@ -151,14 +151,14 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     // 2. Definition: ensure the provider has an on-disk definition for this agent
     //    so it runs as a named repository-defined agent. Behavior providers only —
     //    a provider without definitions (Codex) has nothing to write here.
-    if (behavior && (await behavior.readDefinition(workspace.fs, name)) === null) {
-      await behavior.writeDefinition(workspace.fs, { name, description });
+    if (behavior && (await behavior.readDefinition(workdir.fs, name)) === null) {
+      await behavior.writeDefinition(workdir.fs, { name, description });
       changed = true;
     }
 
     return changed;
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }
 

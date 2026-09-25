@@ -25,7 +25,7 @@ from typing import Any
 from switch_core.bridges.collaboration.adapter import TurnActivity
 from switch_core.bridges.collaboration.telegram.chunking import MAX_MESSAGE
 
-from .test_session_activity import _item, _turn
+from .session_fixtures import _item, _turn
 from .test_telegram_adapter import _adapter, _bot
 from .test_telegram_sdk_only import CHANNEL, SESSION_URL, _card, _running
 

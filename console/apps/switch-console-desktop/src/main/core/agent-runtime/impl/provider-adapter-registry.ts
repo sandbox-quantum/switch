@@ -5,30 +5,9 @@ import {
   createCursorAdapter,
   createOpencodeAdapter,
   type ProviderAdapter,
-  type OpencodeSkill,
 } from '@switch-console/agent-providers';
-import { OPENCODE_SKILL_CONTENT } from '@switch-console/plugins/agents/opencode/skill';
 import { log } from '@main/lib/logger';
 import { supportsProviderRuntime } from '@shared/core/agents/agent-provider-config';
-
-/**
- * The Switch room-workflow skill, as the isolated session needs it.
- *
- * The adapter points OpenCode at a config home Switch Console writes, which is
- * what keeps the user's own MCP registrations out of the session — and takes
- * their `skills/` directory with it, including the `switch` skill the connector
- * installed. Supplying the same content back is what makes the tools the
- * session is given usable: forty room tools and no instructions for them is
- * the failure this avoids.
- *
- * The name must be the skill's own: OpenCode discovers `skills/<name>/SKILL.md`
- * and rejects one whose folder disagrees with its frontmatter.
- *
- * Claude Code needs no counterpart: its session loads the user's own settings
- * and installed plugins, so the connector plugin's copy of the same skill is
- * already there (see `ClaudeAdapter.startSession`).
- */
-const SWITCH_SKILL: OpencodeSkill = { name: 'switch', content: OPENCODE_SKILL_CONTENT };
 
 /**
  * One adapter per provider, shared by every session of that provider.
@@ -65,7 +44,7 @@ class ProviderAdapterRegistry {
       error: (message: string, meta?: Record<string, unknown>) => log.error(message, meta),
     };
     if (providerId === 'opencode') {
-      return createOpencodeAdapter({ skills: [SWITCH_SKILL], logger });
+      return createOpencodeAdapter({ logger });
     }
     if (providerId === 'claude') {
       // No executable is configured, so the adapter takes the `claude` on the

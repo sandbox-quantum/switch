@@ -429,12 +429,19 @@ pnpm run lint
   enough — excess-property checking does not apply through a spread — so the runtime
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
-  success-vs-failure, app version, operating system, and the random install id. Never:
-  prompts, code, file paths, working directories, error messages or stack traces (use an
-  enumerated code), machine or user names, IP or MAC addresses, email or sign-in, and no
-  agent, room, project, location or server names or ids. Widening this is a consent
-  decision — the user-facing wording lives in
-  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step with it.
+  success-vs-failure, how long an operation took, app version, operating system, and the
+  random install id. A duration is a number rather than a value from a fixed set,
+  so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
+  milliseconds, and never a span that could encode something else. That is a branded
+  type, not an alias for `number`, and `startTimer()` is the only thing that mints one —
+  so a call site cannot reach for `Date.now() - startedAt`, which is not monotonic and
+  across a clock step yields a negative number nothing at the far end can tell from data.
+  Never: prompts, code, file paths, working directories, error messages or stack traces
+  (use an enumerated code), machine or user names, IP or MAC addresses, email or sign-in,
+  and no agent, room, project, location or server names or ids. Widening this is a consent
+  decision — the summary the user consents to lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts`, the field-by-field disclosure it
+  links to is `docs/TELEMETRY.md`, and both must be kept in step with it.
 - **The interface may report only through the one gate.** Almost everything is
   reported from the main process, where a call site is type-checked against the
   catalogue. The exceptions are moments that exist only in the UI — a screen
@@ -497,31 +504,14 @@ pnpm run lint
   Code's own file, read by every session in the directory, which does not need
   the credential. Do not add a token back to it: two copies is how one goes stale
   and authenticates as the wrong agent.
-  - **That write is Switch Console's alone.** The connector's `configure` skill
-    deliberately writes no `SWITCH_*` into any settings file — a directory it
-    sets up carries the store and nothing else, which is the resolution path that
-    works on every runtime. Do not "restore" the env block there to match this
-    layout; the skill strips it on sight.
-  - **Where Switch Console does write it, Claude Code makes it live.** Its `env`
-    block becomes real process environment for everything a session spawns, the
-    Switch runtime and the connector's hooks included — so the agent id in it
-    decides who a hand-started session is, and an id naming no entry under
-    `.switch/agents/` fails every session in that directory rather than falling
-    back. Keep the two in step; changing one means changing the other.
-  - Four consumers read this layout: switchdash, the sidecar,
-    `@sandboxaq/switch-agent-runtime`, and the Claude connector's
-    `hooks/switch_hook.py`. The runtime and the hook read it whenever the
-    environment does not already carry a complete identity — including when it
-    carries a *partial* one, which is the ordinary case above. Changing the
-    shape means changing all four.
-  - The runtime and the hook are the same resolution written twice, in two
-    languages, over the same directory. They must agree: where they don't, a
-    session acts as one agent and is mediated as another, and nothing fails to
-    say so. The hook keys on the agent id the session recorded when it joined a
-    room — not on the settings file — so a directory holding several agents
-    still resolves exactly. Change one and change the other, and keep the paired
-    cases in `bin.handshake.test.ts` and `test_claude_connector_hook.py`
-    matching.
+  - **Where Switch Console writes the settings file, Claude Code makes it live.**
+    Its `env` block becomes real process environment for everything a session
+    spawns, so keep the agent id in it in step with `.switch/agents/`; changing
+    one means changing the other.
+  - Two consumers read this layout: Switch Console and the sidecar. A session
+    host reads it through `readSharedCredentials` in
+    `packages/agent-providers/src/host/shared-config.ts` and refuses a file
+    naming a different agent. Changing the shape means changing both.
   - The token being in a working tree at all is a known exposure — a
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
@@ -540,30 +530,17 @@ execution machine. Never replace unknown command outcomes with retries.
 
 ## Versioned Artifacts — Bump Them
 
-Four things here ship independently of the app and carry their own version.
-**If you make a non-trivial change to one, bump its version in the same commit.**
+The agent runtime package carries its own version, separate from the app's.
+**If you make a non-trivial change to it, bump its version in the same commit.**
 Not at release time, not "later" — in the commit that changes it, or it will be
 forgotten and someone will debug a build they think is newer than it is.
 
 | Artifact | Version lives in | Bump when |
 |---|---|---|
-| Claude Code plugin | `../connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
-| Codex plugin | `../connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
-| OpenCode connector | `../connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
-| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and the marketplace connectors' `.mcp.json` pin the version sessions actually run. An agent type whose connector the app writes rather than installs is pinned by `SWITCH_AGENT_RUNTIME_PIN` in `packages/plugins/src/distribution.ts`, which `connectors/opencode-plugin/opencode.json` must match. `runtime-pin.test.ts` and `connector-assets.test.ts` fail if any of them disagree |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change to the protocol client or the hosted tool surface. Its version is the `client_version` Switch records for the connection, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
 dependencies. A comment or a rename that changes nothing does not need one.
-
-**The runtime's version and the connector pins move at different times, in
-this order.** Bump `package.json` with the change; the pins must keep naming a
-version that is *published*, so they stay behind until the tag exists
-(`git tag switch-agent-runtime-v<version> && git push origin <tag>`), and only
-then move to it. Pinning ahead points every session at something the registry
-does not have. Nothing checks this for you — the pins and `package.json` are
-free to sit apart, and how far apart is a release decision rather than an
-invariant. The cost of the lag is real and worth stating in the PR — a change
-to `bin.ts` reaches no session until the tag is pushed and the pins follow.
 
 SDK host deployment uses the bundle content hash. Preserve wire compatibility
 and durable command receipts across redeployment.
@@ -615,22 +592,15 @@ pnpm run test
   display metadata, and a mirror of each provider's argv shape. The mirror is
   descriptive: nothing reads it at spawn time, so change the plugin first and update the
   mirror to match. `provider-argv-parity.test.ts` pins Codex's.
-- **How an agent type gets its Switch connector** is the `switchSetup` capability
-  in `packages/core/src/agents/plugins/capabilities/switch-setup.ts`, and it has
-  two working shapes. `kind: 'cli'` drives the host's plugin-marketplace CLI, with
-  the per-host verbs and JSON shapes in
-  `src/main/core/switch-setup/switch-setup-cli-dialect.ts` (Claude Code, Codex).
-  `kind: 'files'` is for a host with no marketplace: the plugin supplies a
-  behavior that writes the connector itself, through a home-rooted `PluginFs` so
-  one implementation serves a local machine and an SSH host alike (OpenCode).
-  Both reach the same status / install / update / uninstall surface in
-  `switch-setup-service.ts` and `remote-switch-setup.ts`. A `files` connector has
-  no version of its own — it ships inside the app, so the app version stamps the
-  install and "update available" means an install written by an older build.
+- **The Switch skill every session receives** lives in
+  `packages/plugins/src/switch-skill/SKILL.md`, the one copy Console pushes to
+  every host (system context for Claude Code, Cursor and Antigravity; a
+  `SKILL.md` for Codex and OpenCode). A change to how agents interact with Switch
+  — MCP tools, in-room commands, room workflow — updates it.
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
   `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
 - SDK host deployment and env passthrough live under `src/main/core/sdk-host/`.
-- Provider event hooks and plugins live under `src/main/core/agent-hooks/`.
+- Per-provider directory-trust helpers live under `src/main/core/agent-hooks/`.
 - Modal definitions are centralized in `src/renderer/app/modal-registry.ts`.
 - View definitions and navigation guards are centralized in `src/renderer/app/view-registry.ts`.
 - MCP types live under `src/shared/core/mcp/`.
@@ -653,23 +623,6 @@ pnpm run test
   OTLP relay, which holds the vendor credentials server-side, so every build can report
   and none carries a secret. Example:
   `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009 pnpm run dev`.
-- **A hook command is built for the machine the session runs on, not for the one
-  building it.** `writeHooks(fs, hooks, { platform })` takes the target
-  platform: `process.platform` locally and in the sidecar, the execution host's platform
-  during SDK host setup. A `makeStdinHookCommand(...)` returns
-  a builder, not a string, so nothing can freeze the wrong shell at import time.
-  Getting this wrong is silent — the POSIX form ends in `|| true` and agents
-  ignore hook exit codes, so the only symptom is a remote session whose provider
-  session id is never captured and whose room never stops saying "working on it".
-- **A Windows hook command carries no quotes of its own.** It is a bare
-  `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64>`,
-  never a `cmd.exe /d /c "…"` wrapper. Hosts wrap a `command` hook in a shell
-  before running it, and Claude Code's wrapping did not reliably survive the
-  inner double quotes: when they were lost, cmd.exe ignored its `/c` argument,
-  opened an interactive prompt and exited 0 — a hook that reported success
-  having never run. Because the marker then exists only inside the base64,
-  `isManagedHookEntry` decodes it; matching on the raw string would stop
-  recognising managed entries and append a duplicate on every launch.
 - The Codex Windows install list leads with the ChatGPT `install.ps1`, and npm's
   option is stripped of the `recommended` flag `npmDependency` adds for every
   platform — both `pickInstallOption` and the settings UI take the *first*
@@ -684,17 +637,7 @@ pnpm run test
   nothing else. The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
   network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
-  stands. Measured against codex-cli 0.146.0, Codex runs hooks **outside** the
-  sandbox, so Switch Console's `curl http://127.0.0.1:$SWITCHDASH_HOOK_PORT/hook`
-  hooks return 200 under `workspace-write` — the loopback block applies to
-  model-generated commands only. See
-  `packages/plugins/src/agents/impl/codex/index.ts`.
-- Every Codex session launched by Switch Console — not only auto-approving ones — carries
-  `--dangerously-bypass-hook-trust`. Codex skips any hook it has no persisted
-  `trusted_hash` for, which would take Switch Console's own hooks with it; the flag is
-  per-invocation and also un-gates hooks the user added to `~/.codex/hooks.json`
-  themselves. Rationale and the rejected alternative are on `CODEX_HOOK_TRUST_FLAG` in
-  `packages/plugins/src/agents/impl/codex/hooks.ts`.
+  stands. See `packages/plugins/src/agents/impl/codex/index.ts`.
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —

@@ -11,7 +11,6 @@ export interface AppShortcutDef {
   label: string;
   description: string;
   category: string;
-  hideFromSettings?: boolean;
   conflictBehavior?: 'prevent' | 'allow';
   ignoreWhenMonacoFocused?: boolean;
 }
@@ -108,35 +107,16 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Open application settings',
     category: 'Navigation',
   },
-  library: {
-    defaultHotkey: 'Mod+L',
-    label: 'Library',
-    description: 'Open the Library',
-    category: 'Navigation',
-  },
   toggleLeftSidebar: {
     defaultHotkey: 'Mod+B',
     label: 'Toggle Left Sidebar',
     description: 'Show or hide the left sidebar',
     category: 'View',
   },
-  toggleRightSidebar: {
-    defaultHotkey: 'Mod+.',
-    label: 'Toggle Right Sidebar',
-    description: 'Show or hide the right sidebar',
-    category: 'View',
-  },
   closeModal: {
     defaultHotkey: 'Escape',
     label: 'Close Modal',
     description: 'Close the current modal or dialog',
-    category: 'Navigation',
-    hideFromSettings: true,
-  },
-  newSession: {
-    defaultHotkey: 'Mod+N',
-    label: 'New Session',
-    description: 'Create a new session',
     category: 'Navigation',
   },
   deleteSelectedSessions: {
@@ -157,32 +137,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Open the location in the default editor',
     category: 'Navigation',
   },
-  sidebarChanges: {
-    defaultHotkey: 'Mod+Shift+1',
-    label: 'View Changes',
-    description: 'Open the right sidebar to the Changes panel',
-    category: 'Session View',
-  },
-  sidebarFiles: {
-    defaultHotkey: 'Mod+Shift+2',
-    label: 'View Files',
-    description: 'Open the right sidebar to the Files panel',
-    category: 'Session View',
-  },
-  tabNext: {
-    defaultHotkey: 'Mod+Alt+ArrowRight',
-    label: 'Next Tab',
-    description: 'Switch to the next tab',
-    category: 'Tab Navigation',
-    conflictBehavior: 'allow',
-  },
-  tabPrev: {
-    defaultHotkey: 'Mod+Alt+ArrowLeft',
-    label: 'Previous Tab',
-    description: 'Switch to the previous tab',
-    category: 'Tab Navigation',
-    conflictBehavior: 'allow',
-  },
   sessionNext: {
     defaultHotkey: 'Mod+Alt+ArrowDown',
     label: 'Next Session',
@@ -196,18 +150,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Switch to the previous session',
     category: 'Session View',
     ignoreWhenMonacoFocused: true,
-  },
-  openBrowser: {
-    defaultHotkey: 'Mod+Shift+B',
-    label: 'Open Browser',
-    description: 'Open an in-app browser in the current session',
-    category: 'Session View',
-  },
-  browserCopyUrl: {
-    defaultHotkey: 'Mod+Shift+C',
-    label: 'Copy Browser URL',
-    description: 'Copy the current in-app browser URL',
-    category: 'Session View',
   },
   confirm: {
     defaultHotkey: 'Mod+Enter',
@@ -232,13 +174,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     label: 'Go Forward',
     description: 'Navigate to the next location',
     category: 'Navigation',
-  },
-  splitPane: {
-    defaultHotkey: 'Mod+\\',
-    label: 'Split Pane',
-    description: 'Move the active tab to a new pane on the right',
-    category: 'Tab Navigation',
-    conflictBehavior: 'allow',
   },
 });
 

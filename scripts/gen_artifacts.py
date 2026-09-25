@@ -464,8 +464,8 @@ TARGETS = [
         REPO_ROOT / "console" / "packages" / "shared" / "src" / "artifacts.ts",
         render_typescript,
     ),
-    # agent-runtime: published to a registry, so it cannot depend on the
-    # unpublished workspace package above and carries its own copy.
+    # agent-runtime: depends on no other workspace package, so it carries its
+    # own copy.
     Target(
         REPO_ROOT
         / "console"

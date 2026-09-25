@@ -16,7 +16,7 @@ import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
+import { scopeToLocationWorkspace } from '@renderer/lib/layout/scope-to-workspace';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import { report } from '@renderer/lib/telemetry/report';
@@ -103,9 +103,12 @@ const GROUP_CLASS = cn(
 
 // Ordered allowlists for the "Suggested Actions" empty-state group. Defined at
 // module scope so the arrays keep stable references across renders.
-const SESSION_SUGGESTED = ['session.sidebarChanges', 'session.sidebarFiles', 'resource-monitor'];
-const LOCATION_SUGGESTED = ['app.newSession', 'app.settings', 'resource-monitor'];
-const APP_SUGGESTED = ['app.newLocation', 'app.settings', 'resource-monitor'];
+//
+// Every id here must be one a CommandProvider actually produces, or the
+// resource monitor: the list is filtered against the live registry, so an id
+// nothing implements silently shortens the group rather than failing.
+const SESSION_SUGGESTED = ['session.pin', 'app.settings', 'resource-monitor'];
+const DEFAULT_SUGGESTED = ['app.newLocation', 'app.addServer', 'app.settings', 'resource-monitor'];
 
 function PaletteItem({
   value,
@@ -191,7 +194,7 @@ export function CommandPaletteModal({
   // Search spans every server, but the sidebar only loads the one it is showing
   // — so the others' rooms are pulled here, by the feature that needs them.
   useEffect(() => {
-    void switchRoomsStore.loadRoomsOnAllServers();
+    void switchRoomsStore.loadRoomsInAllWorkspaces();
   }, []);
 
   // Prefetch recents immediately on mount so the empty-query view is instant.
@@ -254,16 +257,12 @@ export function CommandPaletteModal({
 
   const actions = useMemo(() => {
     // Empty state: show the ordered context-specific suggested actions only.
-    const suggestedIds = sessionId
-      ? SESSION_SUGGESTED
-      : locationId
-        ? LOCATION_SUGGESTED
-        : APP_SUGGESTED;
+    const suggestedIds = sessionId ? SESSION_SUGGESTED : DEFAULT_SUGGESTED;
     return [...registryActions, resourceMonitorAction]
       .filter((a) => suggestedIds.includes(a.id))
       .sort((a, b) => suggestedIds.indexOf(a.id) - suggestedIds.indexOf(b.id))
       .slice(0, 7);
-  }, [registryActions, resourceMonitorAction, locationId, sessionId]);
+  }, [registryActions, resourceMonitorAction, sessionId]);
 
   const rankedDb = applyContextAffinity(searchResult.items, { locationId });
   const actionResults = actions;
@@ -273,7 +272,7 @@ export function CommandPaletteModal({
   // span every server, not the active one: you search precisely because you do
   // not know where a thing is.
   const roomResults = useObserver(() =>
-    matchRooms(switchRoomsStore.listedRoomsOnAllServers, debouncedQuery)
+    matchRooms(switchRoomsStore.listedRoomsInAllWorkspaces, debouncedQuery)
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
 
@@ -326,7 +325,7 @@ export function CommandPaletteModal({
     if (!item.locationId) return;
     const locationId = item.locationId;
     handleClose();
-    void scopeToLocationServer(locationId).then(() =>
+    void scopeToLocationWorkspace(locationId).then(() =>
       navigate('session', { locationId, sessionId: item.id })
     );
   };
@@ -343,7 +342,7 @@ export function CommandPaletteModal({
     if (!item.locationId) return;
     const locationId = item.locationId;
     handleClose();
-    void scopeToLocationServer(locationId).then(() => {
+    void scopeToLocationWorkspace(locationId).then(() => {
       sidebarStore.ensureGroupExpanded(agentExpandKey(item.id));
       navigate('location', { locationId, agentName: item.title });
     });

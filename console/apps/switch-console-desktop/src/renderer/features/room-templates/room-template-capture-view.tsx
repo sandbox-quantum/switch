@@ -8,6 +8,7 @@ import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { prefillForSave } from '@renderer/features/templates/agent-template-data';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -238,7 +239,9 @@ const CapturePanel = observer(function CapturePanel() {
     let cancelled = false;
     void (async () => {
       try {
-        const yaml = await rpc.switchServers.exportRoomYaml({ serverId, roomId });
+        const workspaceId = workspacesStore.idOnServerInScope(serverId);
+        if (workspaceId === null) throw new Error('This server’s workspace is not known yet.');
+        const yaml = await rpc.workspaces.exportRoomYaml({ workspaceId, roomId });
         if (cancelled) return;
         setOriginalYaml(yaml);
         setCandidates(extractCandidates(yaml));

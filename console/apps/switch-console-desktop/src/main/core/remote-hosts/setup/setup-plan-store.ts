@@ -47,7 +47,7 @@ const LEGACY_STEP_STATES: Record<string, HostSetupStepState> = {
   // "never attempted because something upstream failed" is just "not yet".
   blocked: 'pending',
 };
-const STEP_KINDS: HostSetupStepKind[] = ['core-dependency', 'agent-cli', 'agent-plugin'];
+const STEP_KINDS: HostSetupStepKind[] = ['core-dependency', 'agent-cli'];
 
 const OUTCOMES: DependencyCheckOutcome[] = [
   'satisfied',
