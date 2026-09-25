@@ -28,6 +28,7 @@ from switch_core.db.models import HostedLaunch, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.hosted_mailbox_store import (
+    NOTICE_RETRIES_PER_PASS,
     WAKE_ENTRIES_PER_FRAME,
     HostedMailboxStore,
     MailboxEntry,
@@ -118,7 +119,7 @@ async def deliver_on_attach(
 
 
 async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
-    """One pass over the bound tenant: reclaim, expire, prune, re-offer and log the backlog."""
+    """One pass over the bound tenant: reclaim, expire, prune, post owed notices, re-offer and log the backlog."""
     store = HostedMailboxStore()
     registry = protocol.connections
     boot = protocol.event_buffer.boot
@@ -142,6 +143,7 @@ async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
         pruned = await store.prune(session, now)
         backlog = await store.backlog(session, since)
         waiting = await store.agents_with_pending(session)
+        owed = await store.owed_notices(session, NOTICE_RETRIES_PER_PASS)
         await session.commit()
     if reclaimed or notices or tombstoned or pruned:
         logger.info(
@@ -161,7 +163,19 @@ async def mailbox_upkeep(protocol: ProtocolService, since: datetime) -> None:
             agent.oldest.isoformat() if agent.oldest else "-",
             agent.refused,
         )
-    await post_mailbox_notices(protocol, notices)
+    fresh = {(notice.agent_id, notice.room_id, notice.message_id) for notice in notices}
+    retried = [
+        notice
+        for notice in owed
+        if (notice.agent_id, notice.room_id, notice.message_id) not in fresh
+    ]
+    if retried:
+        logger.warning(
+            "Wake mailbox in tenant %s retries %d room notice(s) a failed send still owes",
+            require_tenant_id(),
+            len(retried),
+        )
+    await post_mailbox_notices(protocol, owed)
     by_agent = {launch.agent_id: launch.id for launch in launches}
     for agent_id in waiting:
         launch_id = by_agent.get(agent_id)

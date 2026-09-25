@@ -781,6 +781,7 @@ Tenant-scoped with RLS, like every table in main's `545f80e11f13`.
 | `ever_offered` | Set on the first offer and never cleared. |
 | `offered_to`, `offered_until` | `core_boot:connection_id:generation` and the lease, while `offered`. |
 | `origin` | `live` or `cutover` (Migration). |
+| `notice_owed` | The room notice a terminal move owes (`stopped`, `expired`, `expired_uncertain`, `started_before_*`), set in the same transaction as the move and cleared once the room has it. |
 | `addressed_at, updated_at, expires_at` | |
 
 Index `(tenant_id, agent_id, state, addressed_at)`.
@@ -929,6 +930,15 @@ By state, 24 h after `addressed_at`:
 
 Terminal rows (`admitted`, `cancelled`, `refused`, `duplicate`, `expired`,
 `expired_uncertain`) are pruned 7 days after `updated_at` by the upkeep loop.
+
+### Owed notices
+
+Every notice above is posted after its transaction commits, so a send can
+fail after the row has moved. The row keeps `notice_owed` until the room has
+the notice; the upkeep loop retries owed notices every 30 s, up to 100 rooms a
+pass, logging a warning for each failure. The per message and reason receipt
+(Failure notices) keeps a retry from posting twice. A row pruned with its
+notice still owed takes the obligation with it.
 
 ### Tests that prove D3
 

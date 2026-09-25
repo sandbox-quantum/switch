@@ -29,6 +29,8 @@ MAILBOX_EXPIRY = timedelta(hours=24)
 MAILBOX_RETENTION = timedelta(days=7)
 WAKE_ENTRIES_PER_FRAME = 50
 ACKS_PER_CALL = 200
+#: Owed room notices the upkeep retries in one pass over a tenant.
+NOTICE_RETRIES_PER_PASS = 100
 
 #: Rows the worker has still to settle; these keep the VM awake.
 BUSY_STATES = ("pending", "offered", "accepted")
@@ -158,12 +160,22 @@ class AgentBacklog:
     refused: int
 
 
+def by_room(
+    notices: Sequence[MailboxNotice],
+) -> list[tuple[MailboxNotice, list[str]]]:
+    """Per (agent, room, reason): the latest row's notice, and every message it answers for."""
+    groups: dict[tuple[str, str, str], tuple[MailboxNotice, list[str]]] = {}
+    for notice in notices:
+        key = (notice.agent_id, notice.room_id, notice.reason)
+        messages = groups[key][1] if key in groups else []
+        messages.append(notice.message_id)
+        groups[key] = (notice, messages)
+    return list(groups.values())
+
+
 def one_per_room(notices: Sequence[MailboxNotice]) -> list[MailboxNotice]:
     """The latest row's notice per (agent, room, reason): one notice per room, in its thread."""
-    latest: dict[tuple[str, str, str], MailboxNotice] = {}
-    for notice in notices:
-        latest[(notice.agent_id, notice.room_id, notice.reason)] = notice
-    return list(latest.values())
+    return [notice for notice, _ in by_room(notices)]
 
 
 def _notice(row: HostedWakeMailbox, reason: str) -> MailboxNotice:
@@ -174,6 +186,16 @@ def _notice(row: HostedWakeMailbox, reason: str) -> MailboxNotice:
         thread_id=row.thread_id,
         reason=reason,
     )
+
+
+def _notices(owed: Sequence[tuple[HostedWakeMailbox, str]]) -> list[MailboxNotice]:
+    """Oldest first, so the latest row of a room is the same one on every retry."""
+    return [
+        _notice(row, reason)
+        for row, reason in sorted(
+            owed, key=lambda item: (item[0].addressed_at, item[0].message_id)
+        )
+    ]
 
 
 class HostedMailboxStore:
@@ -390,14 +412,11 @@ class HostedMailboxStore:
                 HostedWakeMailbox.state == "pending",
                 HostedWakeMailbox.ever_offered.is_(False),
             )
-            .values(state="cancelled", updated_at=now)
+            .values(state="cancelled", notice_owed="stopped", updated_at=now)
             .returning(HostedWakeMailbox)
             .execution_options(synchronize_session=False)
         )
-        notices = [
-            _notice(row, "stopped")
-            for row in sorted(cancelled, key=lambda row: row.addressed_at)
-        ]
+        notices = _notices([(row, "stopped") for row in cancelled])
         requested = await session.execute(
             update(HostedWakeMailbox)
             .where(
@@ -448,7 +467,7 @@ class HostedMailboxStore:
             )
         }
         now = datetime.now(UTC)
-        notices: list[MailboxNotice] = []
+        owed: list[tuple[HostedWakeMailbox, str]] = []
         for room, message, outcome in acks:
             row = rows.get((room, message))
             if row is None:
@@ -458,17 +477,15 @@ class HostedMailboxStore:
                 continue
             if row.state == "cancel_requested":
                 reason = row.cancel_reason or "stopped"
-                notices.append(
-                    _notice(
-                        row,
-                        reason if target == "cancelled" else STARTED_BEFORE[reason],
-                    )
+                row.notice_owed = (
+                    reason if target == "cancelled" else STARTED_BEFORE[reason]
                 )
+                owed.append((row, row.notice_owed))
             row.state = target
             row.offered_to = None
             row.offered_until = None
             row.updated_at = now
-        return {key: row.state for key, row in rows.items()}, notices
+        return {key: row.state for key, row in rows.items()}, _notices(owed)
 
     async def expire(
         self, session: AsyncSession, now: datetime
@@ -490,16 +507,17 @@ class HostedMailboxStore:
                 HostedWakeMailbox.state == "pending",
                 HostedWakeMailbox.ever_offered.is_(False),
             )
-            .values(state="expired", updated_at=now)
+            .values(state="expired", notice_owed="expired", updated_at=now)
             .returning(HostedWakeMailbox)
             .execution_options(synchronize_session=False)
         )
-        notices = [_notice(row, "expired") for row in never_offered]
+        owed = [(row, "expired") for row in never_offered]
         uncertain = await session.scalars(
             update(HostedWakeMailbox)
             .where(*due, HostedWakeMailbox.state.in_(("pending", "offered")))
             .values(
                 state="expired_uncertain",
+                notice_owed="expired_uncertain",
                 offered_to=None,
                 offered_until=None,
                 updated_at=now,
@@ -507,7 +525,7 @@ class HostedMailboxStore:
             .returning(HostedWakeMailbox)
             .execution_options(synchronize_session=False)
         )
-        notices += [_notice(row, "expired_uncertain") for row in uncertain]
+        notices = _notices(owed + [(row, "expired_uncertain") for row in uncertain])
         tombstoned = await session.execute(
             update(HostedWakeMailbox)
             .where(*due, HostedWakeMailbox.state.in_(("accepted", "held")))
@@ -515,6 +533,74 @@ class HostedMailboxStore:
             .execution_options(synchronize_session=False)
         )
         return notices, int(getattr(tombstoned, "rowcount", 0) or 0)
+
+    async def owed_notices(
+        self, session: AsyncSession, limit: int
+    ) -> list[MailboxNotice]:
+        """Room notices terminal moves owe and no one has posted yet, oldest first.
+
+        Bounded to `limit` (agent, room, reason) groups, each whole, so a
+        group's latest row is the one every retry posts for.
+        """
+        tenant_id = require_tenant_id()
+        owed = (
+            HostedWakeMailbox.tenant_id == tenant_id,
+            HostedWakeMailbox.notice_owed.is_not(None),
+        )
+        groups = (
+            select(
+                HostedWakeMailbox.agent_id,
+                HostedWakeMailbox.room_id,
+                HostedWakeMailbox.notice_owed,
+            )
+            .where(*owed)
+            .group_by(
+                HostedWakeMailbox.agent_id,
+                HostedWakeMailbox.room_id,
+                HostedWakeMailbox.notice_owed,
+            )
+            .order_by(func.min(HostedWakeMailbox.addressed_at))
+            .limit(limit)
+            .subquery()
+        )
+        rows = await session.scalars(
+            select(HostedWakeMailbox)
+            .join(
+                groups,
+                and_(
+                    HostedWakeMailbox.agent_id == groups.c.agent_id,
+                    HostedWakeMailbox.room_id == groups.c.room_id,
+                    HostedWakeMailbox.notice_owed == groups.c.notice_owed,
+                ),
+            )
+            .where(*owed)
+            .order_by(HostedWakeMailbox.addressed_at, HostedWakeMailbox.message_id)
+        )
+        return [
+            _notice(row, row.notice_owed) for row in rows if row.notice_owed is not None
+        ]
+
+    async def notice_posted(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room_id: str,
+        reason: str,
+        message_ids: Sequence[str],
+    ) -> None:
+        """The room has the notice these rows owed under `reason`; they owe nothing more."""
+        await session.execute(
+            update(HostedWakeMailbox)
+            .where(
+                HostedWakeMailbox.tenant_id == require_tenant_id(),
+                HostedWakeMailbox.agent_id == agent_id,
+                HostedWakeMailbox.room_id == room_id,
+                HostedWakeMailbox.message_id.in_(list(message_ids)),
+                HostedWakeMailbox.notice_owed == reason,
+            )
+            .values(notice_owed=None)
+            .execution_options(synchronize_session=False)
+        )
 
     async def prune(self, session: AsyncSession, now: datetime) -> int:
         result = await session.execute(

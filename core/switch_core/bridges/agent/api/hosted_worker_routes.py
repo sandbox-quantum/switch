@@ -62,7 +62,7 @@ from switch_core.db.stores.hosted_mailbox_store import (
     HostedMailboxStore,
     MailboxNotice,
     MailboxOutcome,
-    one_per_room,
+    by_room,
 )
 
 logger = logging.getLogger(__name__)
@@ -516,11 +516,13 @@ async def post_mailbox_notices(
 ) -> None:
     """Post what the mailbox owes rooms, one notice per room and reason, after the commit.
 
-    A notice that cannot be posted is logged, not raised: the row has already
-    moved, and the caller's work must not be undone by a room it cannot reach.
+    Each row keeps its `notice_owed` mark until the room has the notice, so a
+    send that fails is logged and left for the upkeep to retry; the per
+    message and reason receipt keeps a retry from posting it twice.
     """
     agents: dict[str, Agent | None] = {}
-    for notice in one_per_room(notices):
+    store = HostedMailboxStore()
+    for notice, message_ids in by_room(notices):
         if notice.agent_id not in agents:
             async with tenant_session(
                 protocol.session_factory, require_tenant_id()
@@ -534,24 +536,31 @@ async def post_mailbox_notices(
                 notice.room_id,
                 notice.agent_id,
             )
-            continue
-        try:
-            await post_room_notice(
-                protocol,
-                agent,
-                notice.room_id,
-                notice.message_id,
-                notice.thread_id,
-                cast(NoticeReason | CoreNoticeReason, notice.reason),
+        else:
+            try:
+                await post_room_notice(
+                    protocol,
+                    agent,
+                    notice.room_id,
+                    notice.message_id,
+                    notice.thread_id,
+                    cast(NoticeReason | CoreNoticeReason, notice.reason),
+                )
+            except Exception:
+                logger.warning(
+                    "Could not post the %s notice for message %s in room %s; "
+                    "the mailbox upkeep retries it",
+                    notice.reason,
+                    notice.message_id,
+                    notice.room_id,
+                    exc_info=True,
+                )
+                continue
+        async with tenant_session(protocol.session_factory, require_tenant_id()) as db:
+            await store.notice_posted(
+                db, notice.agent_id, notice.room_id, notice.reason, message_ids
             )
-        except Exception:
-            logger.error(
-                "Could not post the %s notice for message %s in room %s",
-                notice.reason,
-                notice.message_id,
-                notice.room_id,
-                exc_info=True,
-            )
+            await db.commit()
 
 
 class MailboxAckEntry(BaseModel):
