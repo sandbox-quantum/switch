@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect, type ReactNode } from 'react';
-import { WelcomePage } from '@renderer/features/onboarding/welcome-page';
+import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
+import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -63,6 +64,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     listError: switchServersStore.listError,
     installIsEmpty: switchServersStore.installIsEmpty,
     viewWorksWithoutServer: viewWorksWithoutServer(currentViewId),
+    onboardingInProgress: onboardingStore.inProgress,
   });
 
   switch (shape) {
@@ -79,7 +81,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
         />
       );
     case 'onboarding':
-      return <WelcomePage />;
+      return <OnboardingFlow />;
     case 'workspace':
       return (
         <WorkspaceLayout
