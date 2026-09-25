@@ -341,6 +341,9 @@ it('resets into a new epoch and native conversation while retaining history', as
   const { host, adapter, emit, root } = await start('claude');
   await host.command(message('old-turn'));
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  // Completed only after the provider reported the turn started, or its late
+  // start would put the turn back to running.
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed' });
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   // The turn reads completed a moment before the session reads ready again,
@@ -733,10 +736,13 @@ it('rejects unsupported native compaction without faulting the session', async (
 });
 
 it('requires an explicit fresh reset when the provider cannot resume the saved conversation', async () => {
-  const { host, emit, root } = await start('codex');
+  const { host, adapter, emit, root } = await start('codex');
   // The provider has answered, so the lost conversation held something.
   await host.command(message('answered'));
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  // Completed only after the provider reported the turn started, or its late
+  // start would put the turn back to running.
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({ type: 'turn.completed', turnId: 'answered', outcome: 'completed' });
   await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
