@@ -466,11 +466,22 @@ that as `false` would misfile a lookup failure as a failed setup.
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 
-**`agent_session_started`** — `known_agent_type`. Deliberately nothing about
-*how* the session was started: the server sees an authenticated connection
-whether a person launched it or Switch Console spawned it, and a property that
-takes the same value on every emission is a dimension that cannot segment
-anything.
+**`agent_session_started`** — `known_agent_type`. An agent *coming online*: its
+first live connection, not a session a person began. Sessions share their
+agent's one connection, held by Switch Console or a remote host's sidecar, so
+this fires when that connection opens and not again when a session starts on
+it. Deliberately nothing about *how*: the server cannot tell, and a property
+that takes the same value on every emission cannot segment anything.
+
+**`session_started`** — `start_source` (`user` \| `room` \| `automation` \|
+`unknown`), `known_agent_type`. A coding-agent session starting, reported once
+by the host that runs it when the session is new — never on a resume. The
+launcher stamps `start_source`: `user` is a person starting one in Switch
+Console, `room` the agent being addressed in a room, `automation` Console's
+local automation API. `unknown` is a launcher that said nothing, reported
+rather than dropped so an unstamped launch path is a visible gap. "Sessions a
+person started" is `start_source = user`. It is the launcher's claim, not proof
+a person clicked, and hosts older than this report nothing.
 
 **`agent_session_ended`** — `duration_seconds` (number), `reason` (`normal` \|
 `heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). No runtime: the
@@ -713,6 +724,9 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `agent_session_ended` — kill an agent and wait for the heartbeat sweep
   (a few seconds). Reported through a listener on the registry, so every path
   that closes a connection reports, not just the sweep.
+- `session_started` — `POST /agent-sessions/{id}/started` from a session host
+  (`bridges/agent/api/activity_routes.py`). A repeat for the same agent and
+  session emits nothing, across restarts.
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 

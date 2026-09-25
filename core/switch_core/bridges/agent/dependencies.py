@@ -145,5 +145,9 @@ def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
 
 
+def get_telemetry() -> TelemetryService | None:
+    return cast(TelemetryService | None, _state.get("telemetry"))
+
+
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], _state["session_factory"])

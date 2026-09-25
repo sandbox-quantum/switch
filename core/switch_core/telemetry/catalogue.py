@@ -172,7 +172,7 @@ _SNAPSHOT_COUNTS = (
     "agent_other_count",
     # Connections, not distinct agents: an agent may hold several. No
     # "sessions started today" — nothing durable records one, so it could only
-    # be an in-process tally a restart resets. `agent_session_started` covers it.
+    # be an in-process tally a restart resets. `session_started` covers it.
     "session_live_count",
     "connector_slack_count",
     "connector_mattermost_count",
@@ -301,9 +301,20 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "registration_path": one_of("bootstrap", "personal_key", "gateway", "other"),
         "has_parent": BOOLEAN,
     },
-    # No "start source": the server sees an authenticated connection whether a
-    # person launched the session or Console spawned it.
+    # An agent coming online: its first live connection. No "start source": the
+    # server sees an authenticated connection whether a person launched the
+    # session or Console spawned it. `session_started` is the one that says.
     "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    # A coding-agent session starting, as its host reports it once, when the
+    # session is new. `start_source` is what the launcher stamped on it: `user`
+    # a person starting one in Console, `room` the agent being addressed in a
+    # room, `automation` Console's local automation API, and `unknown` a
+    # launcher that said nothing — reported rather than dropped, so a launch
+    # path nobody stamped shows up as a gap instead of as no sessions.
+    "session_started": {
+        "start_source": one_of("user", "room", "automation", "unknown"),
+        "known_agent_type": KNOWN_AGENT_TYPE,
+    },
     # No runtime: the connection registry is the only thing that knows a
     # session ended and it holds none. Starts carry it.
     "agent_session_ended": {
