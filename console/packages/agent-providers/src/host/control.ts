@@ -111,11 +111,15 @@ const sentAttachmentsSchema = z.object({
   }),
 });
 
-/** Answer one control message; a refusal throws. `page` is the relay's. */
+/**
+ * Answer one control message; a refusal throws. `page` is the relay's.
+ * `dispatching` is called just before a session request is sent to its host.
+ */
 export async function handleControlMessage(
   context: ControlContext,
   peer: ControlPeer,
-  message: ControlMessage
+  message: ControlMessage,
+  dispatching: () => void
 ): Promise<unknown> {
   const { links, watcher } = context;
   if ('request' in message) {
@@ -127,7 +131,7 @@ export async function handleControlMessage(
     }
     // Waits for a host that is starting, not for one nothing is running.
     const running = await liveSupervisor(sessionRoot);
-    return links.request(sessionRoot, message.request, running ? REQUEST_WAIT_MS : 0);
+    return links.dispatch(sessionRoot, message.request, running ? REQUEST_WAIT_MS : 0, dispatching);
   }
   if ('subscribe' in message) {
     const sessionId = message.subscribe;
@@ -237,7 +241,7 @@ export async function serveControl(
       }
       if ('token' in parsed) return;
       const { id, ...message } = parsed;
-      void handleControlMessage(context, peer, message as ControlMessage).then(
+      void handleControlMessage(context, peer, message as ControlMessage, () => {}).then(
         (value) => send({ id, ok: true, value: value ?? null }),
         (error: unknown) =>
           send({

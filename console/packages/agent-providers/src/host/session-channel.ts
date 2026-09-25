@@ -374,7 +374,21 @@ export class SessionLinks {
    * still starting. Refused with `SessionUnavailableError` when none comes,
    * and with `SessionHostFailedError` as soon as the host stops on a failure.
    */
-  async request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
+  request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
+    return this.dispatch(root, request, timeoutMs, () => {});
+  }
+
+  /**
+   * `request`, calling `dispatching` once a host is ready, just before the
+   * request is sent to it. A throw from `dispatching` refuses the request
+   * before it reaches the host.
+   */
+  async dispatch(
+    root: string,
+    request: SessionRequest,
+    timeoutMs: number,
+    dispatching: () => void
+  ): Promise<unknown> {
     const link = this.link(root);
     const deadline = Date.now() + timeoutMs;
     while (!link.ready || !link.child) {
@@ -393,6 +407,7 @@ export class SessionLinks {
       });
     }
     const child = link.child;
+    dispatching();
     const id = link.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(
@@ -410,6 +425,11 @@ export class SessionLinks {
         reject(new SessionUnavailableError(`The session host could not be reached: ${error}`));
       });
     });
+  }
+
+  /** The roots with a host process running, ready or not. */
+  live(): string[] {
+    return [...this.links].flatMap(([root, link]) => (link.child ? [root] : []));
   }
 
   /** Hear each change in what a host says about being busy, and each host exit. */
