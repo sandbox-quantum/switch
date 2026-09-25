@@ -20,11 +20,13 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.budgets import BudgetGuard
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, ApiKey, Client, Room, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -120,6 +122,7 @@ def _client(
     client.client_store = ClientStore()
     client.matrix_user_id = f"@{agent.name}:test"
     client.client_id = agent.client_id
+    client.tenant_id = agent.tenant_id
     client._agent = agent
     client._agent_store = AgentStore()
     client._room_store = RoomStore()
@@ -135,6 +138,7 @@ def _client(
         external_user_store=client._external_user_store,
         live_connection_ids=client._connections.live_connection_ids,
     )
+    client._budget_guard = BudgetGuard(BudgetStore())
     client._frontend_base_url = None
     client._room_meta = {
         MATRIX_ROOM_ID: RoomMeta(

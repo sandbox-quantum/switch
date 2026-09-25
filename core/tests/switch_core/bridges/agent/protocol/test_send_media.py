@@ -60,7 +60,7 @@ def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> ProtocolServ
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
     svc.connections = ConnectionRegistry()
-    svc.require_room_member = _require  # type: ignore[assignment]
+    svc.require_room_poster = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
         get_by_agent_id=lambda agent_id: client
     )

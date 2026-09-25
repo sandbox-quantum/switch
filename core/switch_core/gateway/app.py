@@ -19,6 +19,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
@@ -73,6 +74,7 @@ def create_gateway_app(
     invitation_store: InvitationStore,
     template_store: TemplateStore,
     usage_store: UsageStore,
+    budget_store: BudgetStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     install_service: MessagingInstallService | None,
@@ -96,6 +98,7 @@ def create_gateway_app(
         invitation_store=invitation_store,
         template_store=template_store,
         usage_store=usage_store,
+        budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
         install_service=install_service,

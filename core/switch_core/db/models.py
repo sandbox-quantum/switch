@@ -2362,6 +2362,75 @@ class TenantUsage(TenantScoped, Base):
     amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+# A budget's period is at most a leap year, and its limit at most the largest
+# integer a JavaScript client reads exactly. Both keep the period arithmetic
+# and the gateway's numbers from overflowing.
+MAX_BUDGET_PERIOD_HOURS = 8784
+MAX_BUDGET_AMOUNT = 2**53 - 1
+
+
+class UsageBudget(TenantScoped, Base):
+    """A ceiling on one metric over a repeating period.
+
+    `agent_id` null covers every agent in the tenant; otherwise the one agent.
+    `model` empty covers every model. An agent that has reached any budget
+    covering it is stopped until the period turns over; people are never
+    stopped. A tenant with no budgets is unlimited.
+
+    Periods are whole hours counted from the Unix epoch in UTC, so a daily
+    budget turns over at midnight UTC and every writer agrees when.
+    """
+
+    __tablename__ = "usage_budgets"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_usage_budgets_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_usage_budgets_metric",
+        ),
+        CheckConstraint(
+            f"amount_limit > 0 AND amount_limit <= {MAX_BUDGET_AMOUNT}",
+            name="ck_usage_budgets_amount_limit",
+        ),
+        CheckConstraint(
+            f"period_hours > 0 AND period_hours <= {MAX_BUDGET_PERIOD_HOURS}",
+            name="ck_usage_budgets_period_hours",
+        ),
+        Index(
+            "uq_usage_budgets_tenant_wide",
+            "tenant_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
+        ),
+        Index(
+            "uq_usage_budgets_agent",
+            "tenant_id",
+            "agent_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this
