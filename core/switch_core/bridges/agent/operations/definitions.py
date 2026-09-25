@@ -1142,6 +1142,7 @@ async def create_room(
         group_name=group_name,
         roles=roles,
         aliases=aliases,
+        from_room_id=await connected_room(),
     )
     return {
         "id": result.room.id,
@@ -1671,6 +1672,15 @@ async def create_room_from_yaml(
     result provisioned as the calling agent's owner (an ownerless agent
     cannot provision rooms). Server-provided ``{$creator}`` names the owner.
 
+    A ``kickoff:`` is posted with your authority, not your owner's, and with
+    the run so far appended: the rooms that led here and who made them. The
+    call is refused, with nothing created, when the kickoff mentions an agent
+    that does not accept messages from you, when you ask for a room with the
+    same kickoff as one you already made further up the same path (the run is
+    then paused until your owner lets it continue), when the run was paused
+    or stopped, or while another room you asked for is still being created.
+    The refusal says which, and what to do.
+
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
             ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
@@ -1716,21 +1726,39 @@ async def create_room_from_yaml(
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
     await rooms_yaml.check_entity_params(parsed)
-    if isinstance(parsed.spec, GroupSpec):
-        group_result = await rooms_yaml.provision_group(
+    room_specs = (
+        [(r, r.kickoff) for r in parsed.spec.rooms]
+        if isinstance(parsed.spec, GroupSpec)
+        else [(parsed.spec, parsed.kickoff)]
+    )
+    kickoffs = [
+        (text, list(spec.agents), dict(spec.aliases or {}))
+        for spec, text in room_specs
+        if text
+    ]
+    async with protocol.run_service().agent_creating(
+        agent,
+        owner_name=owner_name,
+        from_room_id=await connected_room(),
+        kickoffs=kickoffs,
+    ) as origin:
+        if isinstance(parsed.spec, GroupSpec):
+            group_result = await rooms_yaml.provision_group(
+                parsed.spec,
+                user_id=owner_id,
+                is_admin=owner_is_admin,
+                creator_name=builtins["$creator"],
+                origin=origin,
+            )
+            return group_result.model_dump()
+        result = await rooms_yaml.provision(
             parsed.spec,
+            kickoff=parsed.kickoff,
             user_id=owner_id,
             is_admin=owner_is_admin,
             creator_name=builtins["$creator"],
+            origin=origin,
         )
-        return group_result.model_dump()
-    result = await rooms_yaml.provision(
-        parsed.spec,
-        kickoff=parsed.kickoff,
-        user_id=owner_id,
-        is_admin=owner_is_admin,
-        creator_name=builtins["$creator"],
-    )
     return result.model_dump()
 
 

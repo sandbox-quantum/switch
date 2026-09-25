@@ -115,6 +115,7 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.agent_runs import RunService
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -2480,9 +2481,14 @@ class ProtocolService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         aliases: dict[str, str] | None = None,
+        from_room_id: str | None = None,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
+
+        `from_room_id` is the room the agent is working in: the new room goes
+        into that room's run (see `agent_runs`), and is refused if the run is
+        paused or stopped or the agent is already creating a room.
 
         `group_name`, when given, files the room under an existing room group;
         it is resolved to a group id here (agents work in names, not ids)."""
@@ -2497,49 +2503,60 @@ class ProtocolService:
                 session, agent_id
             )
             group_id = await self._resolve_group_name(session, group_name)
+            owner = await session.get(User, agent.owner_id) if agent.owner_id else None
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
                 "or packages on creation"
             )
 
-        config = RoomCreateConfig(
-            name=name,
-            description=description,
-            agent_names=agent_names,
-            include_subagents_for=include_subagents_for,
-            join_event_listeners=join_event_listeners,
-            user_names=user_names,
-            channel_type=channel_type,  # type: ignore[arg-type]
-            bridge_id=bridge_id,
-            internal_only=internal_only,
-            admin_mode=admin_mode,
-            protection_config=security_config,
-            instructions=instructions,
-            created_by=agent.owner_id,
-            created_by_kind="agent",
-            owner_id=agent.owner_id,
-            group_id=group_id,
-            read_visibility=read_visibility,
-            write_visibility=write_visibility,
-            reference_ids=reference_ids,
-            package_ids=package_ids,
-            linked_rooms=(
-                [LinkedRoomSpec(**lr) for lr in linked_rooms] if linked_rooms else None
-            ),
-            roles=([RoleSpec(**r) for r in roles] if roles else None),
-            aliases=aliases,
-            acting_user_id=agent.owner_id,
-            acting_is_admin=owner_is_admin,
-        )
-        try:
-            result = await self.room_service.create_room(config)
-        except ValueError as e:
-            raise ValueError(f"Failed to create room: {str(e)}") from e
-        except PermissionError as e:
-            raise PermissionError(str(e)) from e
-        except RuntimeError as e:
-            raise RuntimeError(f"Room service error: {str(e)}") from e
+        async with self.run_service().agent_creating(
+            agent,
+            owner_name=owner.name if owner else None,
+            from_room_id=from_room_id,
+        ) as origin:
+            config = RoomCreateConfig(
+                name=name,
+                description=description,
+                agent_names=agent_names,
+                include_subagents_for=include_subagents_for,
+                join_event_listeners=join_event_listeners,
+                user_names=user_names,
+                channel_type=channel_type,  # type: ignore[arg-type]
+                bridge_id=bridge_id,
+                internal_only=internal_only,
+                admin_mode=admin_mode,
+                protection_config=security_config,
+                instructions=instructions,
+                created_by=agent.owner_id,
+                created_by_kind="agent",
+                created_by_agent_id=agent.id,
+                parent_room_id=origin.parent_room_id,
+                run_id=origin.run_id,
+                owner_id=agent.owner_id,
+                group_id=group_id,
+                read_visibility=read_visibility,
+                write_visibility=write_visibility,
+                reference_ids=reference_ids,
+                package_ids=package_ids,
+                linked_rooms=(
+                    [LinkedRoomSpec(**lr) for lr in linked_rooms]
+                    if linked_rooms
+                    else None
+                ),
+                roles=([RoleSpec(**r) for r in roles] if roles else None),
+                aliases=aliases,
+                acting_user_id=agent.owner_id,
+                acting_is_admin=owner_is_admin,
+            )
+            try:
+                result = await self.room_service.create_room(config)
+            except ValueError as e:
+                raise ValueError(f"Failed to create room: {str(e)}") from e
+            except PermissionError as e:
+                raise PermissionError(str(e)) from e
+            except RuntimeError as e:
+                raise RuntimeError(f"Room service error: {str(e)}") from e
         return result
 
     async def _resolve_group_name(
@@ -2640,6 +2657,17 @@ class ProtocolService:
             return await self.room_service.add_users_to_room(room_id, user_names)
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
+
+    def run_service(self) -> RunService:
+        """Runs over this service's stores; see ``agent_runs``."""
+        from switch_core.agent_runs import RunService
+
+        return RunService(
+            room_store=self.room_store,
+            agent_store=self.agent_store,
+            session_factory=self.session_factory,
+            client_lifecycle=self.client_lifecycle,
+        )
 
     def room_yaml_service(self) -> RoomYamlService:
         """The template engine over this service's collaborators.

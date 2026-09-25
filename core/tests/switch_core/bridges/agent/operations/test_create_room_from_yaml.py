@@ -8,6 +8,7 @@ Same FakeRoomService pattern as test_rooms_yaml.py: real PostgreSQL, no Matrix.
 from __future__ import annotations
 
 import uuid
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +24,7 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.definitions import create_room_from_yaml
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.admin_client import AdminClient
 from switch_core.db.models import (
@@ -187,6 +189,8 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
     )
+    # Runs are the real service's; only its collaborators are fakes.
+    fake_protocol.run_service = partial(ProtocolService.run_service, fake_protocol)
     # The same wiring `ProtocolService.room_yaml_service` does, over the fakes.
     fake_protocol.room_yaml_service = lambda: RoomYamlService(
         room_service=fake_protocol.room_service,
@@ -323,13 +327,13 @@ kickoff: "Start on the brief."
 
 
 @pytest.mark.asyncio
-async def test_kickoff_is_posted_on_behalf_of_the_owner(env):
+async def test_kickoff_is_posted_on_behalf_of_the_agent(env):
     result = await _call(env["agent_id"], yaml=KICKOFF_YAML)
 
     assert result["failed_attachments"] == []
     sent = env["admin"].sent
     assert [m["body"] for m in sent][-1] == "Start on the brief."
-    assert all(m["on_behalf_of"].name == "alice" for m in sent)
+    assert all(m["on_behalf_of"].agent_id == env["agent_id"] for m in sent)
 
 
 @pytest.mark.asyncio

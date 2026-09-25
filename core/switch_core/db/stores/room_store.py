@@ -76,6 +76,69 @@ class RoomStore:
         )
         return result.scalar_one_or_none()
 
+    async def run_rooms(self, session: AsyncSession, root_id: str) -> list[Room]:
+        """Every room of the run rooted at ``root_id``, the root first, then in
+        the order they were created. Archived rooms are included: a run is a
+        record of what happened."""
+        result = await session.execute(
+            select(Room)
+            .where(or_(Room.id == root_id, Room.run_id == root_id))
+            .order_by(Room.run_id.is_not(None), Room.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def path_to_root(self, session: AsyncSession, room_id: str) -> list[Room]:
+        """``room_id`` and each room above it, up to the root of its run.
+
+        Parents are set when a room is created and never change, so the walk
+        cannot loop; the bound is only there so a corrupted row cannot hang a
+        request."""
+        path: list[Room] = []
+        current: str | None = room_id
+        while current is not None and len(path) < 1000:
+            room = await session.get(Room, current)
+            if room is None:
+                break
+            path.append(room)
+            current = room.parent_room_id
+        return path
+
+    async def set_run_control(
+        self, session: AsyncSession, root_id: str, control: dict[str, object] | None
+    ) -> None:
+        await session.execute(
+            update(Room).where(Room.id == root_id).values(run_control=control)
+        )
+
+    async def recent_run_roots(
+        self, session: AsyncSession, *, user_id: str | None, limit: int
+    ) -> list[str]:
+        """The roots of the runs most recently added to, newest first.
+
+        A run is a template a person ran or a room an agent created, with
+        everything agents created below it. With ``user_id`` only the runs that
+        user took part in count: a template they ran, or a room one of their
+        agents created (``created_by`` is the agent's owner on that path).
+        Without it, every run, which is what an admin sees."""
+        root = sa_func.coalesce(Room.run_id, Room.id)
+        in_run = or_(
+            Room.run_id.is_not(None),
+            Room.template_name.is_not(None),
+            Room.created_by_agent_id.is_not(None),
+        )
+        stmt = select(root).where(in_run)
+        if user_id is not None:
+            stmt = stmt.where(
+                Room.created_by == user_id,
+                or_(
+                    Room.created_by_agent_id.is_not(None),
+                    Room.template_name.is_not(None),
+                ),
+            )
+        stmt = stmt.group_by(root).order_by(sa_func.max(Room.created_at).desc())
+        result = await session.execute(stmt.limit(limit))
+        return [row[0] for row in result.all()]
+
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
     ) -> list[Room]:

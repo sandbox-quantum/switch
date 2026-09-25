@@ -48,6 +48,7 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.room_service import RoomService
@@ -140,6 +141,7 @@ def create_gateway_app(
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
+    app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(
         messaging_installs_router,
