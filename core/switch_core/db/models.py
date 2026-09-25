@@ -496,7 +496,7 @@ class HostedWakeMailbox(TenantScoped, Base):
 
 
 class HostedCutoverVolume(TenantScoped, Base):
-    """A launch's retained worker volume, complete once its worker uploaded its manifest."""
+    """A launch's retained worker volume, complete once its preflight manifest is recorded."""
 
     __tablename__ = "hosted_cutover_volumes"
     __table_args__ = (
@@ -507,7 +507,7 @@ class HostedCutoverVolume(TenantScoped, Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "preflight_state IN ('pending', 'complete')",
+            "preflight_state IN ('pending', 'blocked', 'complete')",
             name="ck_hosted_cutover_volumes_state",
         ),
     )
@@ -517,6 +517,8 @@ class HostedCutoverVolume(TenantScoped, Base):
     )
     manifest_sha256: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    imports_queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class HostedCutoverItem(TenantScoped, Base):

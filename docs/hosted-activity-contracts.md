@@ -1087,36 +1087,49 @@ a472be90d1f6 → 48ab0298a34b → 51bc94a017d2 → 62cf05b128e3 → 73da16c239f4
 84eb27d340a5 → 95fc38e451b6`. None references the tables `b9e4d2a71c05`
 drops (checked by grep). Never edit or re-parent them.
 
-1. `<rev>_hosted_cutover_manifest`, child of `95fc38e451b6`, deployed with
-   the transitional build (Pilot order). It adds `hosted_cutover_volumes
-   (tenant_id, launch_id, preflight_state, manifest_sha256, completed_at)` and
-   `hosted_cutover_items (tenant_id, agent_id, launch_id, session_id, kind,
-   room_id, message_id, thread_id, disposition, payload JSONB NULL,
-   notice_posted_at)`, with RLS.
-2. `<rev>_merge_hosted_and_session_activity`: `down_revision =
-   ("<cutover_manifest>", "e3b7c9d2a415")`, with empty upgrade and downgrade.
-3. `<rev>_hosted_activity`: `hosted_wake_mailbox` (RLS, grants as
-   `545f80e11f13`). `hosted_launches.worker_capability_hash`,
-   `worker_capability_encrypted`, `worker_capability_revision`, `relay_seq`. `hosted_operations.claimed_by`,
-   `claimed_boot_id`. It also copies every `hosted_cutover_items` row with
-   disposition `import` into the mailbox as `pending`, `origin = cutover`,
-   `expires_at = now() + 24 h`.
+1. `a3c9e5f71d28_hosted_cutover_manifest`, child of `95fc38e451b6`, run by
+   `hosted-cutover-upgrade prepare` (Pilot order). It adds
+   `hosted_cutover_volumes (tenant_id, launch_id, preflight_state pending |
+   blocked | complete, manifest_sha256, completed_at, blocked_reason,
+   imports_queued_at)` and `hosted_cutover_items (tenant_id, agent_id,
+   launch_id, session_id, kind, room_id, message_id, thread_id, evidence,
+   disposition, payload JSONB NULL, notice_posted_at)`, with RLS; copies what
+   the `sdk_*` tables and queued `hosted_operations` hold for hosted agents
+   into items; and makes one `pending` volume per hosted agent's latest
+   launch. It refuses a database whose launches outlived `sdk_sessions`.
+2. `33e037ee949f` merges it with `e3b7c9d2a415`. It runs after
+   `b9e4d2a71c05`, in the same transaction, and raises unless every volume of
+   a non-deleted launch is `complete`, every item of one is decided, and every
+   `import` attachment still has its `media_blobs` row. The raise rolls the
+   drop back. With no cutover volumes (every main database, every fresh one)
+   it does nothing.
+3. `c4d8e2f1a9b7` (worker capability) and `d7e3a9c1f5b2`
+   (`hosted_wake_mailbox`, RLS). The mailbox copy of `import` items is not a
+   migration: `hosted-cutover-upgrade` queues them through
+   `HostedMailboxStore.write` right after the upgrade (`pending`, `origin =
+   cutover`, `expires_at = now() + 24 h`), once per volume, recorded in
+   `imports_queued_at`. The worker's manifest upload queues any not yet
+   queued, under the launch lock.
 
 An empty merge only proves the graph has one head. It does not prove the
-cutover is safe. The migration tests are real upgrades with data, against
-PostgreSQL:
+cutover is safe. The migration tests (`test_migration_hosted_merge.py`) are
+real upgrades with data, against PostgreSQL:
 
-- `test_upgrade_from_hosted_head`: seed a database at `95fc38e451b6` with
-  launches, operations, `sdk_*` rows, room-failure receipts and cutover items;
-  `alembic upgrade heads`. Launches and operations are intact, `import` items
-  are in the mailbox, the `sdk_*` tables are gone.
-- `test_upgrade_from_main_head`: seed at `e3b7c9d2a415` (a main deployment
-  that never had hosted agents) and upgrade. The hosted tables are created
-  empty and nothing else changes.
+- a pilot database at `95fc38e451b6` with launches, operations and `sdk_*`
+  rows is captured at the manifest revision, its volume recorded, and
+  upgraded to heads: launches and operations are intact, every item is
+  decided, the `sdk_*` tables are gone;
+- the gate refuses, naming the launch, while a volume is `pending` or
+  `blocked` (with the file and line the check named), an item is undecided,
+  an import has no event, an import's blob would be dropped with its session,
+  or the old tables changed after `prepare`; a bare `alembic upgrade heads`
+  in each of those states rolls back with the drop undone;
+- once recorded, the upgrade keeps exactly the session blob an import needs,
+  drops the others, and queues the import once;
+- a main database at `e3b7c9d2a415` upgrades with the hosted tables empty;
 - `alembic heads` is one head; `test_frozen_ddl_matches_create_all.py` still
   passes (no new NOTIFY DDL: mailbox delivery is offer-on-attach plus live
   buffer).
-- `test_cutover_refuses_incomplete_preflight` (below).
 
 ### Preflight: pending work on retained volumes
 
@@ -1153,10 +1166,13 @@ So reset state is preserved as-is, and request state is preserved as
 both branches. What remains is making room-originated work visible, or
 running it once.
 
-The **preflight** is `hosted-preflight` (new, agent-providers). It is built
-from the new image's code and runs read-only against each retained volume
-while the transitional Core is up. For each session root and the watcher root
-it:
+The **preflight** is `hosted-preflight` (agent-providers). The first boot of
+the new image runs it in place; before the drop it runs as
+`hosted-bootstrap.mjs --preflight-check <state-dir> <scratch-dir>` against a
+copy of each stopped volume, which it makes in the scratch directory and
+removes, so the volume itself is never written. The manifest it answers is
+the one the first boot will write, because the items depend only on the
+journals. For each session root and the watcher root it:
 
 1. parses every journal (`assignments.jsonl`, `room-inbox.jsonl`,
    `inbox.jsonl`, `events.jsonl`, `delivery-*.jsonl`, `shared-state.jsonl`)
@@ -1175,9 +1191,16 @@ it:
      `origin.roomId` and `origin.messageId` and the furthest record seen
      (`accepted`, `dispatched`, `finished`);
    - `request_open` (from `events.jsonl`) and `reset_pending`, per session;
-3. uploads the manifest to `POST /gateway/hosted-cutover/{launch_id}/manifest`
-   (tenant admin), which stores it in `hosted_cutover_items` and records its
-   digest.
+3. prints `{"manifest": {manifest_sha256, items}}`, or `{"blocked": {step,
+   file, line, error}}` with the file on the volume, and exits 2 when blocked.
+   `hosted-cutover-upgrade record <launch-id> <file>` applies it: a manifest
+   is merged with Core's capture and decided (below) and the volume becomes
+   `complete` with its digest; a blocked check makes it `blocked` with the
+   reason. After the upgrade the worker's first boot uploads the manifest to
+   `POST /agents/{id}/connection/cutover-manifest`, which only confirms it:
+   `409 cutover_manifest_unrecorded` for a volume with nothing recorded,
+   `409 cutover_manifest_conflict` for a different digest (the volume changed
+   after its check).
 
 **One disposition per logical room message.** The same message can appear in
 up to three sources at once: `room_pending` (its room-inbox ack was lost), a
@@ -1222,10 +1245,15 @@ as interrupted and not sent, followed by the imported one running: both true.
 Only `import` produces a mailbox row, and one message has at most one row
 (primary key), so it runs at most once.
 
-Notices are posted by the transitional Core, once per key, through #538's
-room-failure receipt path, before anything is deleted. Imported payloads live
-only in `hosted_cutover_items` until the `hosted_activity` revision copies
-them into the mailbox. Nothing is written to a file.
+Notices are posted by the new Core after the upgrade, once per key
+(`post_notice_once`), and each is recorded in `notice_posted_at`: at the
+manifest upload, and by the mailbox upkeep for every item still owed, so a
+volume whose worker has nothing to upload is not skipped and a failed post
+is retried. Recording a manifest keeps each import's attachment through the
+drop: its `media_blobs` row is detached from its #538 session, which
+`b9e4d2a71c05` would otherwise delete. Imported payloads live only in
+`hosted_cutover_items` until they are queued into the mailbox. Nothing is
+written to a file.
 
 Tests:
 
@@ -1242,13 +1270,40 @@ Tests:
   imported. After recovery the old command is `unknown`, and the imported one
   is accepted under the cutover id and runs once.
 
-**Gate.** Before `b9e4d2a71c05` can run, every non-deleted launch needs a
-volume with `preflight_state = complete`, every item needs a disposition, and
-every notice must be posted. `alembic upgrade heads` would order
-`b9e4d2a71c05` freely between the branches, so the cutover runs through a
-wrapper (`just hosted-cutover-upgrade`) that checks this and refuses. A guard
-inside `b9e4d2a71c05` or `env.py` is rejected: it would run on every main
-deployment.
+**Gate.** Before `b9e4d2a71c05` can run, every hosted agent's latest
+non-deleted launch needs a volume with `preflight_state = complete`, every
+item of one needs a disposition, every `import` needs its event, and every
+import attachment needs a `media_blobs` row no session owns.
+`hosted-cutover-upgrade` checks all of this, plus that every launch is
+stopped and that the `sdk_*` rows still match what `prepare` captured (the
+old Core did not run again), and refuses with one line per problem, naming
+the launch. `alembic upgrade heads` would order `b9e4d2a71c05` freely between
+the branches, and Core runs it at boot, so the merge revision checks the
+same volumes, decisions and blobs after the drop and rolls it back. A guard
+inside `b9e4d2a71c05` or `env.py` is still rejected; the merge revision is
+ours and is a no-op without cutover volumes.
+
+**Revised from the approved design, and why.** The approved design had a
+transitional Core (#538 plus the manifest revision, a manifest route and the
+disposition job) receive each worker's upload and post every notice before
+the drop. That cannot be built as written, and the gate above is the closest
+lossless design:
+
+- *No Core can serve the upload before the drop.* The disposition code is
+  main's (`to_inbound`, the attachment group rules, the mailbox), so a
+  transitional Core would be a second release of #538 carrying a port of it;
+  the new Core cannot run on a database still at `a3c9e5f71d28`, and the old
+  Core must stay down from `prepare` on or its capture goes stale. A worker
+  therefore has no Core to reach before the drop, and running the preflight
+  needs no worker at all: the same code checks a copy of the stopped volume,
+  and the one-shot `record` step (new code, directly against the database at
+  `a3c9e5f71d28`) applies it with the tables it reads still present.
+- *Notices cannot be posted before the drop.* Posting needs a running Core's
+  agent clients. Nothing a notice needs is dropped: the items, the rooms and
+  the messages all survive, so the gate requires every notice to be decided,
+  not posted, and the new Core posts each owed notice durably, once.
+- *Imports are queued after the drop, not copied by a revision,* so they go
+  through the mailbox's one write path and are queued once per volume.
 
 ### Pilot order
 
@@ -1260,14 +1315,32 @@ and deletes blobs tied to them. Its downgrade raises.
 1. Stop every hosted launch through the controller with desired `stopped`
    and `sleeping = false` (explicit Stop, so nothing wakes), and wait for
    `stopped`. Volumes persist.
-2. Deploy the transitional Core (#538 plus the cutover-manifest revision, the
-   manifest route and the disposition job).
-3. Run the preflight on every retained volume; resolve blocked volumes; wait
-   for the dispositions and notices.
-4. `pg_dump` the pilot database.
-5. Deploy the new Core through `just hosted-cutover-upgrade` (main's chain,
-   including the destructive revision, then the merge and `hosted_activity`).
-6. Roll the worker image (first-boot migration below), then Console.
+2. Take the old Core down and keep it down until step 8; nothing may write
+   to the `sdk_*` tables or a volume from here on.
+3. `pg_dump` the pilot database.
+4. `just hosted-cutover-upgrade prepare`: refuses unless every launch is
+   stopped, then captures the old tables at `a3c9e5f71d28`.
+5. For each launch `just hosted-cutover-upgrade status` lists: snapshot its
+   volume, attach the copy to a maintenance host with the new runtime build,
+   and run `node hosted-bootstrap.mjs --preflight-check <state-dir>
+   <scratch-dir> > <launch-id>.json` (`<state-dir>` is the volume's `state`
+   directory, `<scratch-dir>` a directory that does not exist yet, outside
+   it). Then `just hosted-cutover-upgrade record <launch-id>
+   <launch-id>.json`, whether the check passed or blocked.
+6. For a blocked volume, repair the file and line the reason names on the
+   real volume, snapshot it again and repeat step 5 for it.
+7. `just hosted-cutover-upgrade status` until it reports nothing blocking.
+8. `just hosted-cutover-upgrade` (the `upgrade` step): the gate, main's chain
+   including the destructive revision, the merge and the mailbox, then the
+   imports queued. Deploy the new Core; it posts the owed notices.
+9. Roll the worker image (first-boot migration below), then Console. Start
+   the launches within 24 hours of step 8, or their queued imports expire
+   (each with its notice).
+
+A step that fails can be run again: `record` of the same manifest changes
+nothing, and `upgrade` rolls back whole and, after the drop, only queues
+what is not yet queued. Should the gate report that the old tables changed
+after `prepare`, restore the dump from step 3 and start again at step 2.
 
 ### Cutover gating (Core + worker + Console together)
 
@@ -1413,12 +1486,12 @@ step is recorded in `<state root>/state-version.json` so a crash resumes it:
   agents through it; chunked attachment upload; `sleeping` and `waking` shown
   as health states from the launch, with an explicit wake; the cloud sidebar
   reads `list` instead of polling `sharedList`.
-- **WP6 cutover and state migration.** The transitional build
-  (cutover-manifest revision, manifest route, the per-message merge and
-  disposition job, notices),
-  `hosted-preflight`, the `just hosted-cutover-upgrade` gate, the pilot
-  runbook above, the first-boot migration, and version gates on all three
-  sides.
+- **WP6 cutover and state migration.** The cutover-manifest revision,
+  `hosted-preflight` and its `--preflight-check`, the per-message merge and
+  dispositions, the `just hosted-cutover-upgrade` steps and gate with the
+  merge-revision guard, the confirm-only manifest route, durable cutover
+  notices, the pilot runbook above, the first-boot migration, and version
+  gates on all three sides.
 - **WP7 acceptance** (`just bench` scenarios plus a pilot run):
   1. retained Codex and OpenCode conversations resume after cutover; a
      pre-cutover pending room message runs exactly once or is reported;

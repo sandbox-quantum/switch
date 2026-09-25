@@ -4,6 +4,10 @@ A pilot database reaches it through the cutover manifest `a3c9e5f71d28`, which
 has to run before main's `b9e4d2a71c05` drops the server-side session tables:
 the manifest is what keeps their pending work.
 
+The manifest only captures; the drop also waits for every retained volume's
+preflight check to be recorded (`hosted-cutover-upgrade record`), which the
+wrapper's gate and the merge revision both enforce.
+
 The hosted-agent chain (`ab921ef034cd` .. `95fc38e451b6`) was applied on a
 pilot before main grew its own head (`e3b7c9d2a415`), so a database can arrive
 at the merge from either side. The pilot side still has to run main's
@@ -30,11 +34,18 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table on Base.metadata
+from switch_core.bridges.agent.hosted_cutover import CutoverManifest
 from switch_core.config import SwitchConfig
 from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
 from switch_core.db.runtime_role import _require_every_policy, grant_runtime_role
 from switch_core.hosted_cutover_upgrade import (
+    BlockedCheck,
     CutoverRefused,
+    ManifestCheck,
+    PreflightBlocked,
+    cutover_problems,
+    queue_all_imports,
+    record,
     running_launches,
     upgrade,
 )
@@ -55,6 +66,13 @@ _HOSTED_TABLES = (
     "hosted_wake_mailbox",
     "hosted_cutover_volumes",
     "hosted_cutover_items",
+)
+
+_EMPTY_MANIFEST = ManifestCheck(
+    manifest=CutoverManifest(
+        manifest_sha256="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        items=[],
+    )
 )
 
 _PREDICATE = (
@@ -251,6 +269,95 @@ _EXPECTED_MANIFEST = (
 )
 
 
+def _config(url: str) -> SwitchConfig:
+    return cast(SwitchConfig, SimpleNamespace(owner_database_url=url, database_url=url))
+
+
+async def _seed_import(connection: AsyncConnection) -> None:
+    """A room message Core accepted for `a1` that no worker saw, with an attachment
+    whose blob #538 tied to the session, and a session blob nothing imports."""
+    await connection.execute(text("SET LOCAL session_replication_role = replica"))
+    await connection.execute(
+        text(
+            "INSERT INTO rooms (tenant_id, id, matrix_room_id, name, description) "
+            "VALUES ('t1', 'r2', '!r2:example.invalid', 'Room', '')"
+        )
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO messages (tenant_id, id, seq, room_id, transport_event_id, "
+            "sender_id, event_type, msgtype, body, content) "
+            "VALUES ('t1', 'row-m4', 1, 'r2', 'm4', '@person:example.invalid', "
+            "'m.room.message', 'm.file', 'report.txt', '{}')"
+        )
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO message_attachments "
+            "(tenant_id, id, message_id, position, uri, filename, mimetype, size) "
+            "VALUES ('t1', 'att-m4', 'row-m4', 0, 'mxc://example.invalid/kept', "
+            "'report.txt', 'text/plain', 5)"
+        )
+    )
+    for blob, uri in (("blob-kept", "kept"), ("blob-dropped", "dropped")):
+        await connection.execute(
+            text(
+                "INSERT INTO media_blobs (tenant_id, id, uri, size, data, sdk_session_id) "
+                "VALUES ('t1', :id, :uri, 5, 'bytes', 's1')"
+            ),
+            {"id": blob, "uri": f"mxc://example.invalid/{uri}"},
+        )
+    await connection.execute(
+        text(
+            "INSERT INTO sdk_session_commands "
+            "(tenant_id, session_id, command_id, accepted_sequence, command, status) "
+            "VALUES ('t1', 's1', 'c6', 2, CAST(:command AS jsonb), CAST(:status AS jsonb))"
+        ),
+        {"command": _command("r2", "m4", "slack"), "status": _status("c6", "accepted")},
+    )
+
+
+async def _pilot_at_manifest(url: str, *, with_import: bool) -> None:
+    """A pilot database with a stopped hosted launch, prepared at the manifest revision."""
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PILOT_HEAD))
+        async with engine.begin() as connection:
+            await _seed_tenant_and_user(connection)
+            await connection.execute(
+                text(
+                    "INSERT INTO hosted_launches "
+                    "(tenant_id, id, owner_id, name, spec, agent_id, state, desired_state) "
+                    "VALUES ('t1', 'l1', 'u1', 'pilot-agent', '{}', 'a1', 'stopped', 'stopped')"
+                )
+            )
+            await _seed_sdk_rows(connection)
+            if with_import:
+                await _seed_import(connection)
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_MANIFEST_REVISION))
+    finally:
+        await engine.dispose()
+
+
+async def _ungated_heads_refused(url: str, match: str) -> None:
+    """A bare `alembic upgrade heads` rolls back, the drop with it."""
+    engine = create_async_engine(url)
+    try:
+        with pytest.raises(RuntimeError, match=match):
+            async with engine.begin() as connection:
+                await connection.run_sync(_upgrade_to("heads"))
+        async with engine.begin() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == _MANIFEST_REVISION
+            )
+            assert await connection.scalar(text("SELECT to_regclass('sdk_sessions')"))
+    finally:
+        await engine.dispose()
+
+
 async def _cutover_rows(connection: AsyncConnection) -> tuple[list[Any], list[Any]]:
     volumes = (
         await connection.execute(
@@ -396,9 +503,9 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
             await connection.execute(
                 text(
                     "INSERT INTO hosted_launches "
-                    "(tenant_id, id, owner_id, name, spec, agent_id, state) "
+                    "(tenant_id, id, owner_id, name, spec, agent_id, state, desired_state) "
                     "VALUES ('t1', 'l1', 'u1', 'pilot-agent', "
-                    "'{\"auto_session\": true}', 'a1', 'ready')"
+                    "'{\"auto_session\": true}', 'a1', 'stopped', 'stopped')"
                 )
             )
             await connection.execute(
@@ -424,6 +531,9 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
         async with engine.begin() as connection:
             assert await connection.scalar(text("SELECT to_regclass('sdk_sessions')"))
             captured = await _cutover_rows(connection)
+
+        await record(_config(pilot_url), "l1", _EMPTY_MANIFEST)
+        assert await cutover_problems(_config(pilot_url)) == []
 
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to("heads"))
@@ -462,18 +572,35 @@ async def test_pilot_database_keeps_hosted_rows_through_the_merge(
                 )
             ).all()
             kept = await _cutover_rows(connection)
+            decided = {
+                (row.kind, row.message_id): row.disposition
+                for row in await connection.execute(
+                    text(
+                        "SELECT kind, message_id, disposition FROM hosted_cutover_items "
+                        "WHERE agent_id = 'a1'"
+                    )
+                )
+            }
     finally:
         await engine.dispose()
 
     assert [tuple(row) for row in connections] == [("u1", "claude", "api-key")]
     assert [tuple(row) for row in verifications] == [("v1", "queued")]
     assert [tuple(row) for row in launches] == [
-        ("l1", "pilot-agent", "a1", "ready", {"auto_session": True})
+        ("l1", "pilot-agent", "a1", "stopped", {"auto_session": True})
     ]
     assert [tuple(row) for row in operations] == [("o1", "l1", 1, "start")]
     assert [tuple(row) for row in tokens] == [("g1", "l1", "sealed-token")]
     assert captured == _EXPECTED_MANIFEST
-    assert kept == _EXPECTED_MANIFEST
+    assert kept == ([("l1", "complete")], [])
+    assert decided == {
+        ("console_command", None): "owner_notice",
+        ("operation", None): "preserved",
+        ("request_open", None): "interrupted",
+        ("room_message", "m1"): "uncertain",
+        ("room_message", "m2"): "ran",
+        ("session", None): "preserved",
+    }
 
 
 async def test_pilot_upgrade_refuses_to_drop_sessions_before_the_manifest(
@@ -608,3 +735,150 @@ async def test_main_database_keeps_session_activity_through_the_merge(
     assert [tuple(row) for row in requests] == [("r1", "Write file?", "open")]
     assert [tuple(row) for row in items] == [("item-1", "completed", "Read file")]
     assert cutover == ([], [])
+
+
+async def test_pilot_upgrade_refuses_the_drop_until_every_volume_is_recorded(
+    pilot_url: str,
+) -> None:
+    config = _config(pilot_url)
+    await _pilot_at_manifest(pilot_url, with_import=True)
+
+    problems = await cutover_problems(config)
+    assert any("launch l1 has no recorded preflight check" in p for p in problems)
+    assert any("launch l1 has cutover items no manifest decided" in p for p in problems)
+    with pytest.raises(CutoverRefused, match="l1"):
+        await upgrade(config)
+    await _ungated_heads_refused(pilot_url, "volume of launch l1 is pending")
+
+    await record(
+        config,
+        "l1",
+        BlockedCheck(
+            blocked=PreflightBlocked(
+                step="sessions",
+                file="/data/state/sessions/placeholder/events.jsonl",
+                line=3,
+                error="the line is not JSON",
+            )
+        ),
+    )
+    (blocked,) = [p for p in await cutover_problems(config) if "blocked" in p]
+    assert (
+        "launch l1: sessions at /data/state/sessions/placeholder/events.jsonl:3"
+        in blocked
+    )
+    assert "the line is not JSON" in blocked
+    with pytest.raises(CutoverRefused, match="events.jsonl:3"):
+        await upgrade(config)
+    await _ungated_heads_refused(pilot_url, "volume of launch l1 is blocked")
+
+    await record(config, "l1", _EMPTY_MANIFEST)
+    assert await cutover_problems(config) == []
+
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE media_blobs SET sdk_session_id = 's1' WHERE id = 'blob-kept'"
+                )
+            )
+        assert any(
+            "would be dropped with its session" in p
+            for p in await cutover_problems(config)
+        )
+        await _ungated_heads_refused(
+            pilot_url, "import attachment mxc://example.invalid/kept is gone"
+        )
+        await record(config, "l1", _EMPTY_MANIFEST)
+        assert await cutover_problems(config) == []
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE hosted_cutover_items SET payload = NULL WHERE message_id = 'm4'"
+                )
+            )
+        assert any(
+            "the import l1 r2 m4 has no event" in p
+            for p in await cutover_problems(config)
+        )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE hosted_cutover_items SET payload = CAST(:event AS jsonb) "
+                    "WHERE message_id = 'm4'"
+                ),
+                {
+                    "event": json.dumps(
+                        {"type": "message", "payload": {}, "missed": None}
+                    )
+                },
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_pilot_upgrade_refuses_a_capture_the_old_core_outran(
+    pilot_url: str,
+) -> None:
+    config = _config(pilot_url)
+    await _pilot_at_manifest(pilot_url, with_import=False)
+    await record(config, "l1", _EMPTY_MANIFEST)
+    assert await cutover_problems(config) == []
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE sdk_session_commands SET status = CAST(:status AS jsonb) "
+                    "WHERE command_id = 'c1'"
+                ),
+                {"status": _status("c1", "applied")},
+            )
+    finally:
+        await engine.dispose()
+    (stale,) = await cutover_problems(config)
+    assert stale.startswith("c1 changed in the old session tables after `prepare`")
+
+
+async def test_pilot_upgrade_keeps_what_the_recorded_volumes_import(
+    pilot_url: str,
+) -> None:
+    config = _config(pilot_url)
+    await _pilot_at_manifest(pilot_url, with_import=True)
+    await record(config, "l1", _EMPTY_MANIFEST)
+    assert await cutover_problems(config) == []
+
+    engine = create_async_engine(pilot_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to("heads"))
+        assert await cutover_problems(config) == []
+        await queue_all_imports(config)
+        await queue_all_imports(config)
+        async with engine.begin() as connection:
+            await _assert_merged_schema(connection)
+            blobs = (
+                await connection.scalars(text("SELECT id FROM media_blobs ORDER BY id"))
+            ).all()
+            mailbox = (
+                await connection.execute(
+                    text(
+                        "SELECT agent_id, room_id, message_id, launch_id, state, origin, "
+                        "event->'payload'->'attachments'->0->>'mxc' AS mxc "
+                        "FROM hosted_wake_mailbox"
+                    )
+                )
+            ).all()
+            queued = await connection.scalar(
+                text("SELECT imports_queued_at IS NOT NULL FROM hosted_cutover_volumes")
+            )
+    finally:
+        await engine.dispose()
+
+    assert blobs == ["blob-kept"]
+    assert [tuple(row) for row in mailbox] == [
+        ("a1", "r2", "m4", "l1", "pending", "cutover", "mxc://example.invalid/kept")
+    ]
+    assert queued

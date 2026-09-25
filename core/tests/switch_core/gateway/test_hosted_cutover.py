@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from switch_core.bridges.agent.hosted_cutover import (
+    CutoverConflict,
+    CutoverManifest,
     RoomMessageRecord,
+    apply_manifest,
     decide_room_message,
     merge_worker,
+    record_blocked,
 )
+from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.db.models import (
     HostedCutoverItem,
     HostedCutoverVolume,
@@ -69,16 +76,50 @@ async def core_item(app, kind: str, evidence: dict[str, Any], **columns: Any) ->
         await session.commit()
 
 
-async def upload(app, conn, items: list[dict[str, Any]], sha: str | None = None):
+async def volume(app) -> None:
+    """The row the cutover-manifest revision makes for the launch."""
+    async with app.factory() as session:
+        await session.execute(
+            insert(HostedCutoverVolume)
+            .values(tenant_id=require_tenant_id(), launch_id=app.request_id)
+            .on_conflict_do_nothing()
+        )
+        await session.commit()
+
+
+async def record(
+    app, items: list[dict[str, Any]], sha: str | None = None
+) -> CutoverManifest:
+    """`hosted-cutover-upgrade record` with the manifest a preflight check answered."""
+    manifest = CutoverManifest.model_validate(
+        {
+            "manifest_sha256": sha or hashlib.sha256(repr(items).encode()).hexdigest(),
+            "items": items,
+        }
+    )
+    await volume(app)
+    async with app.factory() as session:
+        await apply_manifest(
+            session, agent_id=app.agent_id, launch_id=app.request_id, manifest=manifest
+        )
+        await session.commit()
+    return manifest
+
+
+async def confirm(app, conn, manifest: CutoverManifest):
+    """The worker's upload of the manifest its first boot wrote."""
     return await app.client.post(
         f"/agents/{app.agent_id}/connection/cutover-manifest",
         json={
             "connection_id": conn.id,
             "generation": conn.stream_generation,
-            "manifest_sha256": sha or hashlib.sha256(repr(items).encode()).hexdigest(),
-            "items": items,
+            **manifest.model_dump(mode="json"),
         },
     )
+
+
+async def upload(app, conn, items: list[dict[str, Any]], sha: str | None = None):
+    return await confirm(app, conn, await record(app, items, sha))
 
 
 async def items(app) -> list[HostedCutoverItem]:
@@ -184,7 +225,15 @@ async def test_cutover_is_applied_once_per_manifest(mailbox_app):  # noqa: F811
     again = await upload(app, conn, manifest, sha="a" * 64)
     assert first.status_code == 200, first.text
     assert again.status_code == 200, again.text
-    other = await upload(app, conn, manifest[:1], sha="b" * 64)
+    with pytest.raises(CutoverConflict, match="a" * 64):
+        await record(app, manifest[:1], sha="b" * 64)
+    other = await confirm(
+        app,
+        conn,
+        CutoverManifest.model_validate(
+            {"manifest_sha256": "b" * 64, "items": manifest[:1]}
+        ),
+    )
     assert other.status_code == 409
     assert other.json()["detail"]["code"] == "cutover_manifest_conflict"
 
@@ -287,6 +336,97 @@ async def test_cutover_decides_items_that_are_not_room_messages(mailbox_app):  #
     assert notice_room == room
     assert "approval" in body
     assert await mailbox(app) == []
+
+
+async def test_cutover_refuses_a_manifest_recorded_for_no_volume(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    room = app.rooms[0]
+    conn = await ready(app)
+    manifest = CutoverManifest.model_validate(
+        {
+            "manifest_sha256": "c" * 64,
+            "items": [
+                room_record(
+                    room, "$m1", room_pending=True, host=None, failure_notified=False
+                )
+            ],
+        }
+    )
+    missing = await confirm(app, conn, manifest)
+    assert missing.status_code == 409
+    assert missing.json()["detail"]["code"] == "cutover_manifest_unrecorded"
+    await volume(app)
+    pending = await confirm(app, conn, manifest)
+    assert pending.status_code == 409
+    assert "preflight pending" in pending.json()["detail"]["message"]
+    assert await items(app) == []
+    assert await mailbox(app) == []
+
+
+async def test_a_blocked_volume_completes_once_it_checks_clean(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    room = app.rooms[0]
+    await volume(app)
+    async with app.factory() as session:
+        await record_blocked(session, app.request_id, "sessions at events.jsonl:3: bad")
+        await session.commit()
+    async with app.factory() as session:
+        blocked = await session.get(
+            HostedCutoverVolume, (require_tenant_id(), app.request_id)
+        )
+        assert blocked is not None
+        assert (blocked.preflight_state, blocked.blocked_reason) == (
+            "blocked",
+            "sessions at events.jsonl:3: bad",
+        )
+    await record(
+        app,
+        [
+            room_record(
+                room, "$m1", room_pending=True, host=None, failure_notified=False
+            )
+        ],
+        sha="d" * 64,
+    )
+    async with app.factory() as session:
+        complete = await session.get(
+            HostedCutoverVolume,
+            (require_tenant_id(), app.request_id),
+            populate_existing=True,
+        )
+        assert complete is not None
+        assert (complete.preflight_state, complete.blocked_reason) == (
+            "complete",
+            None,
+        )
+        with pytest.raises(CutoverConflict):
+            await record_blocked(session, app.request_id, "late")
+
+
+async def test_upkeep_posts_the_notices_a_recorded_volume_owes(mailbox_app):  # noqa: F811
+    app = mailbox_app
+    room = app.rooms[0]
+    await record(
+        app,
+        [
+            room_record(
+                room,
+                "$m2",
+                room_pending=False,
+                host="dispatched",
+                failure_notified=False,
+            )
+        ],
+    )
+    assert app.sent == []
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    ((notice_room, _, body),) = app.sent
+    assert notice_room == room
+    assert "may have been interrupted" in body
+    (item,) = await items(app)
+    assert item.notice_posted_at is not None
+    await mailbox_upkeep(app.service, datetime.now(UTC))
+    assert len(app.sent) == 1
 
 
 def test_decide_room_message_prefers_the_strongest_evidence():
