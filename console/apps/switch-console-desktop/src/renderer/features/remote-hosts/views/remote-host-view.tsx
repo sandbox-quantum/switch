@@ -20,15 +20,20 @@
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
+import {
+  AGENT_PROVIDER_IDS,
+  asAgentProviderId,
+} from '@shared/core/providers/agent-provider-registry';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
 import { switchServersStore } from '../../switch-servers/switch-servers-store';
@@ -43,7 +48,7 @@ import {
   PrerequisiteRow,
   SectionLabel,
 } from '../setup/setup-rows';
-import { groupPlanSteps } from '../setup/step-presentation';
+import { groupPlanSteps, needsFirstCheck } from '../setup/step-presentation';
 import {
   useHostSetupPlan,
   useInstallSetupStep,
@@ -102,6 +107,19 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
     if (blocked || plan.isLoading) return;
     startPrepare();
   }, [blocked, plan.isLoading, startPrepare]);
+
+  // A step nobody has looked at yet has no state worth showing: probe the
+  // host once when the page opens with any, rather than leaving every row
+  // blank until someone presses Re-check. Steps already observed keep their
+  // last result; re-checking those stays a deliberate click.
+  const { mutate: startRecheck } = recheck;
+  const autoChecked = useRef(false);
+  const unobserved = needsFirstCheck(plan.data ?? null);
+  useEffect(() => {
+    if (autoChecked.current || blocked || !prepare.isSuccess || !unobserved) return;
+    autoChecked.current = true;
+    startRecheck();
+  }, [blocked, prepare.isSuccess, unobserved, startRecheck]);
 
   // Resolve the Switch server for this host: prefer a managed server on this
   // host, then the active server, then the first available. Read the
@@ -275,6 +293,20 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                           onRecheck={(stepId) => recheckStep.mutate(stepId)}
                           onOpen={() => setSheetTarget({ kind: 'agent-type', row })}
                         />
+                        {/* Installed is not usable: a session also needs the
+                            CLI signed in on this host. */}
+                        {!blocked &&
+                          row.cli.state === 'satisfied' &&
+                          (AGENT_PROVIDER_IDS as readonly string[]).includes(row.agentId) && (
+                            <div className="pb-1 pl-12">
+                              <ProviderConnectionStatus
+                                providerId={asAgentProviderId(row.agentId)}
+                                sshHost={sshHost}
+                                dir=""
+                                compact
+                              />
+                            </div>
+                          )}
                       </div>
                     ))}
                   </section>
