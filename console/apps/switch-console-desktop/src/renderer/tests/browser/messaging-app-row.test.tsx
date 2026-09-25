@@ -79,7 +79,6 @@ function row(
 ) {
   return (
     <MessagingAppRow
-      workspaceId="ws-1"
       serverId="srv-1"
       bridge={overrides.bridge ?? bridge()}
       identities={overrides.identities === undefined ? [] : overrides.identities}

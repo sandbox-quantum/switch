@@ -2,7 +2,7 @@ import { openFixture } from '@tooling/utils/db';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
-import { agents, kv, locations, switchServers, workspaces } from '@main/db/schema';
+import { agents, kv, locations, switchServers } from '@main/db/schema';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -37,9 +37,8 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
 }));
 
 // Imported after the mocks so the module binds to the mocked db + secrets store.
-const { addServer, ensureManagedServer, removeServer, renameServer, setActiveServerId } =
+const { addServer, ensureManagedServer, removeServer, renameServer } =
   await import('./servers-store');
-const { getActiveWorkspaceId } = await import('@main/core/workspaces/workspaces-store');
 
 describe('servers-store: rename & delete', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
@@ -226,10 +225,6 @@ describe('servers-store: rename & delete', () => {
     });
 
     it('unlinks the server’s agents (keeps them), deletes the row, and clears the active pointer', async () => {
-      // The unlink is two foreign keys deep — the server's workspaces cascade,
-      // and their agents are set null — so this one test needs the engine to be
-      // enforcing them.
-      fixture.sqlite.pragma('foreign_keys = ON');
       await fixture.db
         .insert(locations)
         .values({ id: 'loc-1', name: 'Loc', sshHost: '', dir: '/repo/loc-1' });
@@ -239,163 +234,28 @@ describe('servers-store: rename & delete', () => {
         gatewayUrl: 'https://gw.example.com',
         apiUrl: 'https://api.example.com',
       });
-      await fixture.db.insert(workspaces).values({ id: 'ws-1', serverId: 'srv-1', name: 'Server' });
       await fixture.db.insert(agents).values([
-        {
-          id: 'agent-1',
-          locationId: 'loc-1',
-          name: 'A',
-          providerId: 'claude',
-          workspaceId: 'ws-1',
-        },
-        {
-          id: 'agent-2',
-          locationId: 'loc-1',
-          name: 'B',
-          providerId: 'claude',
-          workspaceId: 'ws-1',
-        },
+        { id: 'agent-1', locationId: 'loc-1', name: 'A', providerId: 'claude', serverId: 'srv-1' },
+        { id: 'agent-2', locationId: 'loc-1', name: 'B', providerId: 'claude', serverId: 'srv-1' },
       ]);
-      await fixture.db.insert(kv).values({ key: 'activeWorkspaceId', value: 'ws-1' });
+      await fixture.db.insert(kv).values({ key: 'activeSwitchServerId', value: 'srv-1' });
 
       await removeServer('srv-1');
 
       const remainingServers = await fixture.db.select().from(switchServers);
       expect(remainingServers).toHaveLength(0);
 
-      const remainingWorkspaces = await fixture.db.select().from(workspaces);
-      expect(remainingWorkspaces).toHaveLength(0);
-
       const remainingAgents = await fixture.db.select().from(agents);
       expect(remainingAgents).toHaveLength(2);
-      expect(remainingAgents.every((a) => a.workspaceId === null)).toBe(true);
+      expect(remainingAgents.every((a) => a.serverId === null)).toBe(true);
 
       const [activePointer] = await fixture.db
         .select()
         .from(kv)
-        .where(eq(kv.key, 'activeWorkspaceId'));
+        .where(eq(kv.key, 'activeSwitchServerId'));
       expect(activePointer).toBeUndefined();
 
       expect(secretMocks.deleteSecret).toHaveBeenCalledWith('switch-server-cookie:srv-1');
     });
-  });
-});
-
-describe('selecting a server', () => {
-  let fixture: Awaited<ReturnType<typeof openFixture>>;
-
-  beforeEach(async () => {
-    fixture = await openFixture('empty');
-    mocks.db = fixture.db;
-    fixture.sqlite.pragma('foreign_keys = OFF');
-    await fixture.db.insert(switchServers).values({
-      id: 'srv-1',
-      name: 'Local dev',
-      gatewayUrl: 'https://srv-1.example.com',
-      apiUrl: 'https://api-srv-1.example.com',
-    });
-  });
-
-  afterEach(() => {
-    fixture.close();
-    mocks.db = undefined;
-  });
-
-  async function seedWorkspace(
-    id: string,
-    tenantId: string | null,
-    role: 'owner' | 'member' | null = 'member'
-  ): Promise<void> {
-    await fixture.db.insert(workspaces).values({ id, serverId: 'srv-1', name: id, tenantId, role });
-  }
-
-  it('selects the one workspace a server has', async () => {
-    await seedWorkspace('ws-1', 't-1');
-
-    await setActiveServerId('srv-1');
-
-    expect(await getActiveWorkspaceId()).toBe('ws-1');
-  });
-
-  /**
-   * Refusing would fail the managed stack start this runs inside, taking a
-   * healthy server down over a question about which of its workspaces to show.
-   */
-  it('picks one rather than refusing when the account has several there', async () => {
-    await seedWorkspace('ws-1', 't-1');
-    await seedWorkspace('ws-2', 't-2');
-
-    await setActiveServerId('srv-1');
-
-    expect(await getActiveWorkspaceId()).toBe('ws-1');
-  });
-
-  // Re-selecting the server the user is already in must not move them to
-  // another of its workspaces; a managed stack start does exactly that.
-  it('leaves the selection alone when it is already on that server', async () => {
-    await seedWorkspace('ws-1', 't-1');
-    await seedWorkspace('ws-2', 't-2');
-    await setActiveServerId('srv-1');
-    await fixture.db.update(kv).set({ value: 'ws-2' }).where(eq(kv.key, 'activeWorkspaceId'));
-
-    await setActiveServerId('srv-1');
-
-    const [pointer] = await fixture.db.select().from(kv).where(eq(kv.key, 'activeWorkspaceId'));
-    expect(pointer!.value).toBe('ws-2');
-  });
-
-  /**
-   * The oldest row is the one a withdrawn membership is most likely to be —
-   * the server's original workspace, whose membership was the first to be
-   * given up. Landing on it would scope the window to something the gateway
-   * refuses every call for.
-   */
-  it('skips a workspace this account is no longer a member of', async () => {
-    await seedWorkspace('ws-1', 't-gone', null);
-    await seedWorkspace('ws-2', 't-2');
-
-    await setActiveServerId('srv-1');
-
-    expect(await getActiveWorkspaceId()).toBe('ws-2');
-  });
-
-  /**
-   * The row the server was registered with, before the gateway was asked which
-   * workspaces the account has. It names no tenant, so a call scoped to it
-   * selects none and the gateway answers with whichever workspace the session
-   * last selected — under this one's name. On an upgraded install it is also
-   * the oldest row, and holds every agent.
-   */
-  it('skips a placeholder the reconcile could not match', async () => {
-    await seedWorkspace('ws-1', null, null);
-    await seedWorkspace('ws-2', 't-2');
-
-    await setActiveServerId('srv-1');
-
-    expect(await getActiveWorkspaceId()).toBe('ws-2');
-  });
-
-  // Every server's first workspace starts out like this and is matched to a
-  // membership afterwards; on its own there is nothing to confuse it with.
-  it('selects a lone workspace that has no tenant yet', async () => {
-    await seedWorkspace('ws-1', null, null);
-
-    await setActiveServerId('srv-1');
-
-    expect(await getActiveWorkspaceId()).toBe('ws-1');
-  });
-
-  // Nothing else to fall back to, and refusing here takes a healthy managed
-  // stack start down; the seam says why on the first call instead.
-  it('still picks one when every workspace on the server is withdrawn', async () => {
-    await seedWorkspace('ws-1', 't-gone', null);
-
-    await setActiveServerId('srv-1');
-
-    expect(await getActiveWorkspaceId()).toBe('ws-1');
-  });
-
-  it('refuses a server with no workspace at all', async () => {
-    await expect(setActiveServerId('srv-1')).rejects.toThrow('no workspace');
   });
 });

@@ -4,7 +4,7 @@ import { adoptSubagent } from './adopt-subagent';
 
 const mocks = vi.hoisted(() => ({
   local: vi.fn(),
-  session: vi.fn(),
+  server: vi.fn(),
   remote: vi.fn(),
   create: vi.fn(),
   emit: vi.fn(),
@@ -12,18 +12,16 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@main/core/agents/agent-events', () => ({ agentEvents: { _emit: mocks.emit } }));
 vi.mock('@main/core/agents/createAgent', () => ({ createAgent: mocks.create }));
-vi.mock('@main/core/agents/getAgents', () => ({ getLocationAgentsInWorkspace: mocks.local }));
+vi.mock('@main/core/agents/getAgents', () => ({ getLocationAgentsOnServer: mocks.local }));
 vi.mock('@main/core/agents/remote-session-reconciler', () => ({
   remoteSessionReconciler: { start: mocks.start },
 }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: mocks.remote }));
-vi.mock('@main/core/workspaces/workspace-session', () => ({
-  withWorkspaceSession: mocks.session,
-}));
+vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: mocks.server }));
 const parent = {
   id: 'parent',
   locationId: 'location',
-  workspaceId: 'workspace',
+  serverId: 'server',
   apiEndpoint: 'https://example.test/agent',
   providerId: 'claude',
   autoApprove: false,
@@ -33,9 +31,7 @@ const parent = {
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.local.mockResolvedValue([]);
-  mocks.session.mockImplementation(
-    (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) => fn({ id: 'server' })
-  );
+  mocks.server.mockResolvedValue({ id: 'server' });
   mocks.remote.mockResolvedValue({ id: 'child', ownerName: 'Owner' });
   mocks.create.mockImplementation(async (value) => ({ ...value, id: 'local-child' }));
 });
@@ -48,7 +44,7 @@ it('adopts the child identity and discovers its sessions using its own credentia
       name: 'reviewer',
       switchAgentId: 'child',
       providerId: 'claude',
-      workspaceId: 'workspace',
+      serverId: 'server',
       autoApprove: false,
       providerConfig: parent.providerConfig,
     })

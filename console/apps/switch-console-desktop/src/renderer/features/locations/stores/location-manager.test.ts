@@ -74,7 +74,6 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     providerId: 'claude',
     switchAgentId: 'sw-1',
     apiEndpoint: 'https://switch.example.com',
-    workspaceId: 'workspace-1',
     serverId: 'server-1',
     status: null,
     autoApprove: false,

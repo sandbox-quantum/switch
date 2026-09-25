@@ -50,17 +50,12 @@ function launchSpec(providerId: string) {
 
 const h = vi.hoisted(() => {
   const state: {
-    workdir: PluginFs | null;
+    workspace: PluginFs | null;
     location: { id: string } | undefined;
     /** Agent-row names already in the directory, per Switch server. */
-    agentNamesByWorkspace: Record<string, string[]>;
+    agentNamesByServer: Record<string, string[]>;
     claudeDefinitions: Array<{ name: string; description: string | null }>;
-  } = {
-    workdir: null,
-    location: { id: 'loc-1' },
-    agentNamesByWorkspace: {},
-    claudeDefinitions: [],
-  };
+  } = { workspace: null, location: { id: 'loc-1' }, agentNamesByServer: {}, claudeDefinitions: [] };
   return { state, warn: vi.fn() };
 });
 
@@ -68,16 +63,13 @@ vi.mock('@main/core/locations/store', () => ({
   getLocationByHostDir: vi.fn(async () => h.state.location),
 }));
 vi.mock('./getAgents', () => ({
-  getLocationAgentsInWorkspace: vi.fn(async (_locationId: string, workspaceId: string) =>
-    (h.state.agentNamesByWorkspace[workspaceId] ?? []).map((name) => ({ name }))
+  getLocationAgentsOnServer: vi.fn(async (_locationId: string, serverId: string) =>
+    (h.state.agentNamesByServer[serverId] ?? []).map((name) => ({ name }))
   ),
 }));
-vi.mock('@main/core/workspaces/workspaces-store', () => ({
-  requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
-}));
-vi.mock('./agent-workdir-fs', () => ({
-  resolveWorkdirFsFor: vi.fn(async () => ({
-    fs: h.state.workdir as PluginFs,
+vi.mock('./agent-workspace-fs', () => ({
+  resolveWorkspaceFsFor: vi.fn(async () => ({
+    fs: h.state.workspace as PluginFs,
     homeFs: null,
     close: vi.fn(),
   })),
@@ -104,16 +96,16 @@ describe('discoverConfiguredAgents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.state.location = { id: 'loc-1' };
-    h.state.agentNamesByWorkspace = {};
+    h.state.agentNamesByServer = {};
     h.state.claudeDefinitions = [];
-    h.state.workdir = fakeFs();
+    h.state.workspace = fakeFs();
   });
 
   it('finds a Codex agent from credentials alone', async () => {
     // The gap this feature closes: Codex has no repo-agent definitions, so the
     // definition-based scan sees nothing. The provider-neutral credentials file
     // is written for every provider, so it finds the agent anyway.
-    h.state.workdir = fakeFs({
+    h.state.workspace = fakeFs({
       '.switch/agents/.gitignore': '*\n',
       '.switch/agents/codex-hoot.json': creds('sw-codex'),
       '.switchdash/agents/codex-hoot/agent-launch-spec.json': launchSpec('codex'),
@@ -133,7 +125,7 @@ describe('discoverConfiguredAgents', () => {
 
   it('never surfaces the API token', async () => {
     // Attaching must not need the secret: it stays on disk for the launch path.
-    h.state.workdir = fakeFs({
+    h.state.workspace = fakeFs({
       '.switch/agents/hoot.json': creds('sw-1', 'https://switch.example.com', 'tok-do-not-leak'),
     });
 
@@ -142,7 +134,7 @@ describe('discoverConfiguredAgents', () => {
 
   it('falls back to the owning provider definition, then to unknown', async () => {
     h.state.claudeDefinitions = [{ name: 'cc-hoot', description: null }];
-    h.state.workdir = fakeFs({
+    h.state.workspace = fakeFs({
       '.switch/agents/cc-hoot.json': creds('sw-cc'),
       '.switch/agents/mystery.json': creds('sw-my'),
     });
@@ -160,7 +152,7 @@ describe('discoverConfiguredAgents', () => {
 
   it('uses the provider definition and ignores obsolete sidecar launch specs', async () => {
     h.state.claudeDefinitions = [{ name: 'hoot', description: null }];
-    h.state.workdir = fakeFs({
+    h.state.workspace = fakeFs({
       '.switch/agents/hoot.json': creds('sw-1'),
       '.switchdash/agents/hoot/agent-launch-spec.json': launchSpec('codex'),
     });
@@ -169,8 +161,8 @@ describe('discoverConfiguredAgents', () => {
   });
 
   it('marks agents this Switch Console already has a row for', async () => {
-    h.state.agentNamesByWorkspace = { 'ws-srv-a': ['mine'] };
-    h.state.workdir = fakeFs({
+    h.state.agentNamesByServer = { 'srv-a': ['mine'] };
+    h.state.workspace = fakeFs({
       '.switch/agents/mine.json': creds('sw-mine'),
       '.switch/agents/theirs.json': creds('sw-theirs'),
     });
@@ -184,8 +176,8 @@ describe('discoverConfiguredAgents', () => {
     // The directory is a place on disk, not one server's territory. An agent row
     // for server A says nothing about server B, and treating it as "already got
     // this" is what silently emptied the onboarding list.
-    h.state.agentNamesByWorkspace = { 'ws-srv-a': ['shared'] };
-    h.state.workdir = fakeFs({ '.switch/agents/shared.json': creds('sw-shared') });
+    h.state.agentNamesByServer = { 'srv-a': ['shared'] };
+    h.state.workspace = fakeFs({ '.switch/agents/shared.json': creds('sw-shared') });
 
     expect((await scan('srv-a'))[0]).toMatchObject({ name: 'shared', alreadyAgent: true });
     expect((await scan('srv-b'))[0]).toMatchObject({ name: 'shared', alreadyAgent: false });
@@ -197,13 +189,13 @@ describe('discoverConfiguredAgents', () => {
 
   it('reports nothing for an unknown location rather than failing', async () => {
     h.state.location = undefined;
-    h.state.workdir = fakeFs({ '.switch/agents/hoot.json': creds('sw-1') });
+    h.state.workspace = fakeFs({ '.switch/agents/hoot.json': creds('sw-1') });
 
     expect((await scan())[0]).toMatchObject({ name: 'hoot', alreadyAgent: false });
   });
 
   it('skips unusable credentials files instead of inventing an identity', async () => {
-    h.state.workdir = fakeFs({
+    h.state.workspace = fakeFs({
       '.switch/agents/broken.json': '{ not json',
       '.switch/agents/no-id.json': JSON.stringify({ env: { SWITCH_API_ENDPOINT: 'https://x' } }),
       '.switch/agents/good.json': creds('sw-good'),
@@ -214,7 +206,7 @@ describe('discoverConfiguredAgents', () => {
   });
 
   it('ignores non-JSON entries such as the .gitignore', async () => {
-    h.state.workdir = fakeFs({
+    h.state.workspace = fakeFs({
       '.switch/agents/.gitignore': '*\n',
       '.switch/agents/hoot.json': creds('sw-1'),
     });

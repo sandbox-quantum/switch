@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import type { Agent } from '@shared/core/agents/agents';
-import type { Workspace } from '@shared/core/workspaces/workspaces';
 import {
   agentExpandKey,
   agentRoomGroupKey,
@@ -14,19 +13,6 @@ import {
 } from './sidebar-store';
 
 type SidebarLocationManager = ConstructorParameters<typeof SidebarStore>[0];
-
-/**
- * Scope the window to a workspace, the way choosing one in the switcher does.
- * Both workspaces here sit on the same server, which is the case the scope has
- * to tell apart: scoping by server would show them as one tree.
- */
-function scopeToWorkspace(workspaceId: string | null): void {
-  workspacesStore.workspaces = [
-    { id: 'ws-1', serverId: 'server-1' } as Workspace,
-    { id: 'ws-2', serverId: 'server-1' } as Workspace,
-  ];
-  workspacesStore.activeId = workspaceId;
-}
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: {
@@ -281,88 +267,87 @@ describe('SidebarStore grouping', () => {
   });
 });
 
-describe('SidebarStore active-workspace scoping', () => {
-  function linkAgent(locationId: string, workspaceId: string | null) {
-    agentsStore.byLocation.set(locationId, [{ locationId, workspaceId } as Agent]);
+describe('SidebarStore active-server scoping', () => {
+  function linkAgent(locationId: string, serverId: string | null) {
+    agentsStore.byLocation.set(locationId, [{ locationId, serverId } as Agent]);
   }
 
   afterEach(() => {
-    scopeToWorkspace(null);
+    switchServersStore.activeServerId = null;
     agentsStore.byLocation.clear();
   });
 
-  it("shows only the active workspace's locations", () => {
+  it("shows only the active server's locations", () => {
     const store = new SidebarStore(
       locationManager([
         { id: 'a', createdAt: '2026-01-01T00:00:00.000Z' },
         { id: 'b', createdAt: '2026-01-02T00:00:00.000Z' },
       ])
     );
-    linkAgent('a', 'ws-1');
-    linkAgent('b', 'ws-2');
-    scopeToWorkspace('ws-1');
+    linkAgent('a', 'server-1');
+    linkAgent('b', 'server-2');
+    switchServersStore.activeServerId = 'server-1';
 
     expect(store.orderedLocations.map((p) => p.id)).toEqual(['a']);
     expect(store.isEmpty).toBe(false);
   });
 
-  it('shows all locations when no workspace is active', () => {
+  it('shows all locations when no server is active', () => {
     const store = new SidebarStore(
       locationManager([
         { id: 'a', createdAt: '2026-01-01T00:00:00.000Z' },
         { id: 'b', createdAt: '2026-01-02T00:00:00.000Z' },
       ])
     );
-    linkAgent('a', 'ws-1');
-    linkAgent('b', 'ws-2');
+    linkAgent('a', 'server-1');
+    linkAgent('b', 'server-2');
 
     expect(store.orderedLocations.map((p) => p.id).sort()).toEqual(['a', 'b']);
   });
 
-  it('hides unlinked locations when a workspace is active', () => {
+  it('hides unlinked locations when a server is active', () => {
     const store = new SidebarStore(
       locationManager([{ id: 'a', createdAt: '2026-01-01T00:00:00.000Z' }])
     );
     linkAgent('a', null);
-    scopeToWorkspace('ws-1');
+    switchServersStore.activeServerId = 'server-1';
 
     expect(store.orderedLocations).toEqual([]);
     expect(store.isEmpty).toBe(true);
   });
 
-  it('shows a directory shared between workspaces under both (CHOO-2044)', () => {
-    // A directory is a place on disk, not one workspace's territory. Resolving it
-    // to a single one filed it under whichever agent came back first, and the
-    // other workspace's agents vanished from the tree. The two here share a
-    // server, so a server-scoped tree would not tell them apart at all.
+  it('shows a directory shared between servers under both (CHOO-2044)', () => {
+    // A directory is a place on disk, not one server's territory. Resolving it to
+    // a single server filed it under whichever agent came back first, and the
+    // other server's agents vanished from the tree.
     const store = new SidebarStore(
       locationManager([{ id: 'shared', createdAt: '2026-01-01T00:00:00.000Z' }])
     );
     agentsStore.byLocation.set('shared', [
-      { locationId: 'shared', workspaceId: 'ws-1' } as Agent,
-      { locationId: 'shared', workspaceId: 'ws-2' } as Agent,
+      { locationId: 'shared', serverId: 'server-1' } as Agent,
+      { locationId: 'shared', serverId: 'server-2' } as Agent,
     ]);
 
-    scopeToWorkspace('ws-1');
+    switchServersStore.activeServerId = 'server-1';
     expect(store.orderedLocations.map((p) => p.id)).toEqual(['shared']);
 
-    scopeToWorkspace('ws-2');
+    switchServersStore.activeServerId = 'server-2';
     expect(store.orderedLocations.map((p) => p.id)).toEqual(['shared']);
 
-    scopeToWorkspace('ws-3');
+    switchServersStore.activeServerId = 'server-3';
     expect(store.orderedLocations).toEqual([]);
   });
 
-  it('describes a shared directory by an agent in the active workspace (CHOO-2044)', () => {
+  it('describes a shared directory by an agent on the active server (CHOO-2044)', () => {
     const store = new SidebarStore(
       locationManager([{ id: 'shared', createdAt: '2026-01-01T00:00:00.000Z' }])
     );
     agentsStore.byLocation.set('shared', [
-      { locationId: 'shared', workspaceId: 'ws-1', providerId: 'claude' } as Agent,
-      { locationId: 'shared', workspaceId: 'ws-2', providerId: 'codex' } as Agent,
+      { locationId: 'shared', serverId: 'server-1', providerId: 'claude' } as Agent,
+      { locationId: 'shared', serverId: 'server-2', providerId: 'codex' } as Agent,
     ]);
 
-    scopeToWorkspace('ws-2');
+    switchServersStore.activeServerId = 'server-2';
     expect(store.locationProviderId('shared')).toBe('codex');
   });
 });
@@ -423,12 +408,12 @@ describe('SidebarStore filters', () => {
   }
 
   function linkAgent(locationId: string, fields: { providerId?: Agent['providerId'] }) {
-    agentsStore.byLocation.set(locationId, [{ locationId, workspaceId: null, ...fields } as Agent]);
+    agentsStore.byLocation.set(locationId, [{ locationId, serverId: null, ...fields } as Agent]);
   }
 
   afterEach(() => {
     agentsStore.byLocation.clear();
-    scopeToWorkspace(null);
+    switchServersStore.activeServerId = null;
   });
 
   it('returns all locations unfiltered when no filter is active', () => {

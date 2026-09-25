@@ -6,13 +6,12 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
 import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
+import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
@@ -44,10 +43,9 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const rooms = workspaceId === null ? [] : switchRoomsStore.readableRoomsInWorkspace(workspaceId);
-  const signedOut = switchRoomsStore.workspacesNotSignedIn.some((w) => w.id === workspaceId);
-  const failed = switchRoomsStore.workspacesThatFailedToLoad.some((w) => w.id === workspaceId);
+  const rooms = switchRoomsStore.readableRoomsOnServer(serverId);
+  const signedOut = switchRoomsStore.serversNotSignedIn.some((s) => s.id === serverId);
+  const failed = switchRoomsStore.serversThatFailedToLoad.some((s) => s.id === serverId);
 
   const query = filter.trim().toLowerCase();
   const matching = query === '' ? rooms : rooms.filter((r) => r.name.toLowerCase().includes(query));
@@ -58,24 +56,16 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
       title="Your Rooms"
       description={`Rooms on ${server?.name ?? 'this server'}. Create one, see who is in it, and where it is bridged.`}
       action={
-        <Button
-          size="sm"
-          disabled={signedOut || workspaceId === null}
-          onClick={() => showCreateRoomModal({ serverId })}
-        >
+        <Button size="sm" disabled={signedOut} onClick={() => showCreateRoomModal({ serverId })}>
           <Plus className="size-4" />
           Create room
         </Button>
       }
     >
-      {/* Four ways to have no rows, and only one of them means "there are no
-        rooms". Saying that in the others would send someone off to create a
+      {/* Three ways to have no rows, and only one of them means "there are no
+        rooms". Saying that in the other two would send someone off to create a
         room they already have. */}
-      {workspaceId === null ? (
-        <ServerTableEmpty>
-          This server has no workspace yet, so its rooms cannot be read.
-        </ServerTableEmpty>
-      ) : signedOut ? (
+      {signedOut ? (
         <ServerTableEmpty>
           Sign in to {server?.name ?? 'this server'} to see its rooms.
         </ServerTableEmpty>
@@ -108,7 +98,6 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
                 key={group.key}
                 group={group}
                 serverId={serverId}
-                workspaceId={workspaceId}
                 // Nothing folds while a filter is on. Typing a name and being
                 // shown a "Show 3 more" where the match is hiding is the one
                 // moment the fold would cost more than it saves.
@@ -182,12 +171,10 @@ const ROOMS_BEFORE_FOLD = 5;
 const MessagingAppGroup = observer(function MessagingAppGroup({
   group,
   serverId,
-  workspaceId,
   fold,
 }: {
   group: RoomGroup;
   serverId: string;
-  workspaceId: string;
   /** Whether long groups are cut short. False while the list is filtered. */
   fold: boolean;
 }) {
@@ -230,7 +217,7 @@ const MessagingAppGroup = observer(function MessagingAppGroup({
       {open && (
         <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
           {shown.map((room) => (
-            <RoomRow key={room.id} room={room} serverId={serverId} workspaceId={workspaceId} />
+            <RoomRow key={room.id} room={room} serverId={serverId} />
           ))}
           {fold && group.rooms.length > ROOMS_BEFORE_FOLD && (
             <button
@@ -253,14 +240,12 @@ const MessagingAppGroup = observer(function MessagingAppGroup({
 const RoomRow = observer(function RoomRow({
   room,
   serverId,
-  workspaceId,
 }: {
   room: RemoteRoomSummary;
   serverId: string;
-  workspaceId: string;
 }) {
   const members = switchRoomsStore.localMemberIds(room.id);
-  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
+  const { data: remoteAgents } = useRemoteAgents(serverId);
   const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
   const localAgents = agentsStore
     .agentsOnServer(serverId)

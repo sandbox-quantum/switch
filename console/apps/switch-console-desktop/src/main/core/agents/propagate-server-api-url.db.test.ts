@@ -5,7 +5,7 @@ import { openFixture } from '@tooling/utils/db';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
-import { agents, locations, switchServers, workspaces } from '@main/db/schema';
+import { agents, locations, switchServers } from '@main/db/schema';
 import { propagateServerApiUrl } from './propagate-server-api-url';
 import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 
@@ -69,13 +69,6 @@ describe('propagateServerApiUrl', () => {
         apiUrl: 'https://other-api.example.com',
       },
     ]);
-
-    // Deliberately not the servers' ids: the cascade has to find agents through
-    // their workspace, and identical ids would hide it not doing so.
-    await fixture.db.insert(workspaces).values([
-      { id: 'ws-pilot', serverId: 'pilot', name: 'Pilot' },
-      { id: 'ws-other', serverId: 'other', name: 'Other' },
-    ]);
   });
 
   afterEach(async () => {
@@ -103,7 +96,7 @@ describe('propagateServerApiUrl', () => {
       switchAgentId: 'switch-agent-1',
       providerId: 'claude',
       apiEndpoint: 'https://old-api.example.com',
-      workspaceId: 'ws-pilot',
+      serverId: 'pilot',
     });
 
     const results = await propagateServerApiUrl('pilot', 'https://new-api.example.com');
@@ -159,7 +152,7 @@ describe('propagateServerApiUrl', () => {
         locationId: 'named-location',
         name: 'named-agent',
         providerId,
-        workspaceId: 'ws-pilot',
+        serverId: 'pilot',
         apiEndpoint: env.SWITCH_API_ENDPOINT,
       });
       expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
@@ -192,7 +185,7 @@ describe('propagateServerApiUrl', () => {
       locationId: 'broken-location',
       name: 'broken-agent',
       providerId: 'codex',
-      workspaceId: 'ws-pilot',
+      serverId: 'pilot',
     });
     expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
       { agentId: 'broken-agent', outcome: 'failed', error: expect.stringContaining('invalid') },
@@ -218,7 +211,7 @@ describe('propagateServerApiUrl', () => {
         locationId: 'shared-location',
         name: 'agent-a',
         providerId: 'codex',
-        workspaceId: 'ws-pilot',
+        serverId: 'pilot',
         switchAgentId: 'agent-a-identity',
       },
       {
@@ -226,7 +219,7 @@ describe('propagateServerApiUrl', () => {
         locationId: 'shared-location',
         name: 'agent-b',
         providerId: 'claude',
-        workspaceId: 'ws-other',
+        serverId: 'other',
         switchAgentId: 'agent-b-identity',
       },
     ]);
@@ -246,7 +239,7 @@ describe('propagateServerApiUrl', () => {
       name: 'bare-agent',
       providerId: 'claude',
       apiEndpoint: null,
-      workspaceId: 'ws-pilot',
+      serverId: 'pilot',
     });
 
     const results = await propagateServerApiUrl('pilot', 'https://new-api.example.com');
@@ -279,7 +272,7 @@ describe('propagateServerApiUrl', () => {
       name: 'other-agent',
       providerId: 'claude',
       apiEndpoint: 'https://other-api.example.com',
-      workspaceId: 'ws-other',
+      serverId: 'other',
     });
 
     const results = await propagateServerApiUrl('pilot', 'https://new-api.example.com');

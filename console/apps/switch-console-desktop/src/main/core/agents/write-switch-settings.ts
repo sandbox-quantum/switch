@@ -405,11 +405,11 @@ export class ExistingAgentCredentialsError extends Error {
  * below re-checks, so a path that skips this one still cannot clobber.
  */
 export async function foreignCredentialsOwnerFs(
-  workdirFs: PluginFs,
+  workspaceFs: PluginFs,
   slug: string,
   apiEndpoint: string
 ): Promise<string | null> {
-  const existingRaw = await workdirFs.read(agentSettingsRelativePath(slug));
+  const existingRaw = await workspaceFs.read(agentSettingsRelativePath(slug));
   return foreignCredentialsEndpoint(existingRaw, apiEndpoint);
 }
 
@@ -474,11 +474,11 @@ export function existingAgentIdInSlot(
  * before the token reaches disk.
  */
 export async function writeNeutralAgentSettingsFs(
-  workdirFs: PluginFs,
+  workspaceFs: PluginFs,
   params: { slug: string; expectedAgentId?: string } & SwitchSettingsCredentials
 ): Promise<void> {
   const relPath = agentSettingsRelativePath(params.slug);
-  const existingRaw = await workdirFs.read(relPath);
+  const existingRaw = await workspaceFs.read(relPath);
   const existingEndpoint = foreignCredentialsEndpoint(existingRaw, params.apiEndpoint);
   if (existingEndpoint !== null) {
     throw new ForeignAgentCredentialsError({
@@ -508,8 +508,8 @@ export async function writeNeutralAgentSettingsFs(
     });
   }
 
-  if (!(await workdirFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
-    await workdirFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
+  if (!(await workspaceFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
+    await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
-  await workdirFs.write(relPath, mergeAgentCredentials(existingRaw, params));
+  await workspaceFs.write(relPath, mergeAgentCredentials(existingRaw, params));
 }

@@ -8,7 +8,7 @@ import {
   unregisteredSessionData,
   type SessionStore,
 } from '@renderer/features/sessions/stores/session-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import type { Snapshottable } from '@renderer/lib/stores/snapshottable';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import {
@@ -237,27 +237,27 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   }
 
   /**
-   * Whether a location has anything to show under the active workspace. The whole
-   * sidebar tree is scoped to one workspace at a time: a location shows when it
-   * holds at least one agent in {@link workspacesStore.activeId}. Unregistered
-   * locations (mid-onboarding, no agent row yet) always show so the user sees
-   * progress. When no workspace is active, nothing is hidden.
+   * Whether a location has anything to show under the active server. The whole
+   * sidebar tree is scoped to one server at a time: a location shows when it holds
+   * at least one agent linked to {@link switchServersStore.activeServerId}.
+   * Unregistered locations (mid-onboarding, no agent row yet) always show so the
+   * user sees progress. When no server is active, nothing is hidden.
    *
-   * A directory can hold agents for several workspaces, so this is "has any here",
+   * A directory can hold agents for several servers, so this is "has any here",
    * not "belongs to". Which of its agents are then drawn is
    * {@link scopedAgents}' business — a location being in scope does not put every
-   * agent in it on this workspace's tree (CHOO-2044).
+   * agent in it on this server's tree (CHOO-2044).
    */
   isLocationInActiveScope(locationId: string): boolean {
-    const activeWorkspaceId = workspacesStore.activeId;
-    if (!activeWorkspaceId) return true;
+    const activeServerId = switchServersStore.activeServerId;
+    if (!activeServerId) return true;
     const location = this.locationManager.locations.get(locationId);
     if (location && location.state === 'unregistered') return true;
-    return agentsStore.locationHasAgentsInWorkspace(locationId, activeWorkspaceId);
+    return agentsStore.locationHasAgentsOnServer(locationId, activeServerId);
   }
 
   /**
-   * Workspace-scoped locations, newest first. Locations are no longer a level of
+   * Server-scoped locations, newest first. Locations are no longer a level of
    * the sidebar tree — the manual order the user drags lives on agents and
    * rooms — so this is the plain default order the agent list is built from.
    */
@@ -271,12 +271,12 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
 
   /** The representative agent of a location (the agent shown on its sidebar row):
    * the first real (non-definition) agent, not a former subagent's row. Restricted
-   * to the active workspace, so a directory shared with another does not describe
-   * itself by an agent this tree is not showing. */
+   * to the active server, so a directory shared with another server does not
+   * describe itself by an agent this tree is not showing. */
   private parentAgent(locationId: string) {
-    const activeWorkspaceId = workspacesStore.activeId;
-    const agents = activeWorkspaceId
-      ? agentsStore.agentsInWorkspaceAtLocation(locationId, activeWorkspaceId)
+    const activeServerId = switchServersStore.activeServerId;
+    const agents = activeServerId
+      ? agentsStore.agentsOnServerAtLocation(locationId, activeServerId)
       : (agentsStore.byLocation.get(locationId) ?? []);
     return agents[0] ?? (agentsStore.byLocation.get(locationId) ?? [])[0];
   }

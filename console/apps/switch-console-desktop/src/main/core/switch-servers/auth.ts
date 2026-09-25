@@ -21,7 +21,7 @@ function gatewayUrl(server: SwitchServer, path: string): string {
 }
 
 /** Pull the `switch_auth` value out of the response's Set-Cookie headers. */
-export function extractAuthCookie(setCookies: string[]): string | null {
+function extractAuthCookie(setCookies: string[]): string | null {
   for (const raw of setCookies) {
     const [pair] = raw.split(';');
     const eq = pair.indexOf('=');

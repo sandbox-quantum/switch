@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import type { Agent, CreateAgentParams } from '@shared/core/agents/agents';
-import { mapAgentRow } from './utils';
+import { mapAgentRowToAgent } from './utils';
 
 /**
  * Insert an agent row. Main-process internal, and deliberately not an RPC
@@ -21,7 +21,7 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
       providerId: params.providerId,
       switchAgentId: params.switchAgentId,
       apiEndpoint: params.apiEndpoint,
-      workspaceId: params.workspaceId,
+      serverId: params.serverId,
       autoApprove: params.autoApprove,
       ownerName: params.ownerName ?? null,
       providerConfig: params.providerConfig ?? null,
@@ -29,5 +29,5 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
     })
     .returning();
 
-  return mapAgentRow(row);
+  return mapAgentRowToAgent(row);
 }

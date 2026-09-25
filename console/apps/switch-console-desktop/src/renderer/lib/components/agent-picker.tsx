@@ -15,13 +15,9 @@ export type AgentPick = {
  * type an agent is, not what provider drives it here; an agent registered from
  * another Switch Console has no local record and reads as a plain "Agent".
  */
-export function agentProviderLabelFor(switchAgentId: string, workspaceId: string | null): string {
+export function agentProviderLabelFor(switchAgentId: string, serverId: string): string {
   const local =
-    workspaceId === null
-      ? null
-      : (agentsStore
-          .agentsInWorkspace(workspaceId)
-          .find((a) => a.switchAgentId === switchAgentId) ?? null);
+    agentsStore.agentsOnServer(serverId).find((a) => a.switchAgentId === switchAgentId) ?? null;
   return agentProviderLabel(local?.providerId);
 }
 

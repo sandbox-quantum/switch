@@ -1,5 +1,4 @@
 import { makeAutoObservable, runInAction } from 'mobx';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
@@ -10,9 +9,9 @@ import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
 import { switchServersStore } from './switch-servers-store';
 
-/** Cache key for an agent's room membership: workspace + Switch agent id. */
-function key(workspaceId: string, switchAgentId: string): string {
-  return `${workspaceId}:${switchAgentId}`;
+/** Cache key for an agent's room membership: server + Switch agent id. */
+function key(serverId: string, switchAgentId: string): string {
+  return `${serverId}:${switchAgentId}`;
 }
 
 /**
@@ -21,50 +20,43 @@ function key(workspaceId: string, switchAgentId: string): string {
  * Entries are cached in memory and re-fetched on demand or on window focus, so
  * the "connect to room" picker and the room-focused sidebar grouping render the
  * last-known set instantly while a refresh runs.
- *
- * Everything here is keyed by workspace, because that is what a room belongs
- * to: one server can host several, and the same server answers with a different
- * set of rooms in each. Where a fact is about the gateway rather than about the
- * rooms — whether it is reachable, who is signed in, what its web app's URL is
- * — the server is resolved from the workspace and asked for that alone.
  */
 export class SwitchRoomsStore {
-  /** Membership per `${workspaceId}:${switchAgentId}`. */
+  /** Membership per `${serverId}:${switchAgentId}`. */
   private readonly roomsByAgent = new Map<string, RemoteAgentRoom[]>();
-  /** Room id → display name, aggregated across workspaces (room ids are
+  /** Room id → display name, aggregated across connected servers (room ids are
    * globally unique UUIDs, so a flat map is safe). Drives sidebar room headers. */
   private readonly roomNames = new Map<string, string>();
-  /** Room id → owning workspace id, so a room can be addressed and linked. */
-  private readonly roomWorkspaceById = new Map<string, string>();
+  /** Room id → owning server id, so a room can be linked to its gateway web app. */
+  private readonly roomServerById = new Map<string, string>();
   /** Room id → bridge type (`slack`, `mattermost`, …) when the room is bridged
    * to an external platform, so the sidebar can show that platform's icon. */
   private readonly bridgeTypeByRoom = new Map<string, string>();
   /** Room id → native deeplink that opens its channel in the messaging app's
    * desktop client, when the room is bridged and the link could be built. */
   private readonly channelUrlByRoom = new Map<string, string>();
-  /** Workspace id → the active rooms in it owned by the signed-in user.
+  /** Server id → the active rooms on that server owned by the signed-in user.
    * The sidebar lists these even when no session is connected to them, so a
    * room you create in Switch Console is visible the moment it exists rather than
    * only once an agent joins it. */
-  private readonly ownedRoomsByWorkspace = new Map<string, RemoteRoomSummary[]>();
-  /** Workspace id → every active room in it. Listed in full for a workspace on a
-   * server this install manages; elsewhere it backs lookups rather than the
-   * room list. */
-  private readonly allRoomsByWorkspace = new Map<string, RemoteRoomSummary[]>();
+  private readonly ownedRoomsByServer = new Map<string, RemoteRoomSummary[]>();
+  /** Server id → every active room on it. Listed in full for a server this
+   * install manages; elsewhere it backs lookups rather than the room list. */
+  private readonly allRoomsByServer = new Map<string, RemoteRoomSummary[]>();
   /** Keys with an in-flight fetch. */
   readonly loading = new Set<string>();
   /** Last error per key, if the most recent fetch failed. */
   readonly errors = new Map<string, string>();
-  /** Workspace id → why its room list could not be read, if the last try failed. */
+  /** Server id → why its room list could not be read, if the last try failed. */
   private readonly roomListErrors = new Map<string, string>();
-  /** Workspaces whose server was not connected when the room list was last
-   * refreshed, so their rooms were never asked for at all. */
-  private unreachableWorkspaceIds: string[] = [];
+  /** Servers that were not connected when the room list was last refreshed, so
+   * their rooms were never asked for at all. */
+  private unreachableServerIds: string[] = [];
   /** The agents whose membership this store is responsible for keeping current.
    * Recorded on {@link ensureMembershipsFor} so a refresh re-reads the current
    * set rather than only the keys that happen to be cached — an agent created
    * after the sidebar mounted is otherwise never fetched. */
-  private trackedIdentities: { workspaceId: string; switchAgentId: string }[] = [];
+  private trackedIdentities: { serverId: string; switchAgentId: string }[] = [];
 
   constructor() {
     makeAutoObservable(this);
@@ -87,26 +79,18 @@ export class SwitchRoomsStore {
     return this.channelUrlByRoom.get(roomId) ?? null;
   }
 
-  /** Id of the workspace a room belongs to, or null if not yet loaded. This is
-   * what a call about the room is addressed with. */
-  roomWorkspaceId(roomId: string): string | null {
-    return this.roomWorkspaceById.get(roomId) ?? null;
-  }
-
-  /** Id of the server hosting a room's workspace, for the things that are about
-   * the gateway rather than the room — its web app, its Mattermost session. */
+  /** Id of the server a room belongs to, or null if not yet loaded. The room
+   * view needs it to resolve that server's Mattermost session. */
   roomServerId(roomId: string): string | null {
-    const workspaceId = this.roomWorkspaceById.get(roomId);
-    if (!workspaceId) return null;
-    return workspacesStore.serverIdFor(workspaceId);
+    return this.roomServerById.get(roomId) ?? null;
   }
 
   /**
    * URL of a room's detail page in the gateway web app, or null if the room's
-   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames).
+   * owning server isn't known yet (names/servers are loaded by loadRoomNames).
    */
   gatewayRoomUrl(roomId: string): string | null {
-    const serverId = this.roomServerId(roomId);
+    const serverId = this.roomServerById.get(roomId);
     if (!serverId) return null;
     const server = switchServersStore.servers.find((s) => s.id === serverId);
     if (!server) return null;
@@ -131,69 +115,71 @@ export class SwitchRoomsStore {
    * considered — the ones that are there because of what they are, not because
    * one of this install's agents is in them.
    *
-   * In a workspace on a server this install manages, that is **every** room: you
-   * run the deployment, so there is nothing on it you should have to go
-   * elsewhere to see. Anywhere else it is the rooms you created, which would
-   * otherwise disappear the moment you made one and put no agent in it.
+   * On a server this install manages, that is **every** room: you run the
+   * deployment, so there is nothing on it you should have to go elsewhere to
+   * see. On any other server it is the rooms you created, which would otherwise
+   * disappear the moment you made one and put no agent in it.
    *
-   * The sidebar tree shows one workspace at a time, so these follow the same
-   * scope rule as locations do — including that no active workspace hides
-   * nothing.
+   * The sidebar tree shows one server at a time, so these follow the same scope
+   * rule as locations do — including that no active server hides nothing.
    */
   get listedRoomsInActiveScope(): RemoteRoomSummary[] {
-    const listed = this.workspaceIdsInScope.flatMap((id) => this.listedRoomsInWorkspace(id));
+    const activeServerId = switchServersStore.activeServerId;
+    const serverIds = activeServerId
+      ? [activeServerId]
+      : [...new Set([...this.allRoomsByServer.keys(), ...this.ownedRoomsByServer.keys()])];
+    const listed = serverIds.flatMap((serverId) => this.listedRoomsOnServer(serverId));
     return listed.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /**
-   * The rooms one workspace contributes to the lists above, under the same scope
-   * rule. Named separately so a page about a single workspace asks for that
-   * workspace rather than for whichever one happens to be active.
+   * The rooms one server contributes to the lists above, under the same scope
+   * rule. Named separately so a page about a single server asks for that
+   * server rather than for whichever one happens to be active.
    */
-  listedRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
-    const serverId = workspacesStore.serverIdFor(workspaceId);
+  listedRoomsOnServer(serverId: string): RemoteRoomSummary[] {
     const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
     return (
-      (managed
-        ? this.allRoomsByWorkspace.get(workspaceId)
-        : this.ownedRoomsByWorkspace.get(workspaceId)) ?? []
+      (managed ? this.allRoomsByServer.get(serverId) : this.ownedRoomsByServer.get(serverId)) ?? []
     );
   }
 
   /**
-   * Every active room the signed-in user can see in a workspace — what the
-   * gateway returned, which is already scoped to rooms they may read.
+   * Every active room the signed-in user can see on a server — what the gateway
+   * returned, which is already scoped to rooms they may read.
    *
-   * Wider than {@link listedRoomsInWorkspace} on purpose. A standing list has to
+   * Wider than {@link listedRoomsOnServer} on purpose. A standing list has to
    * earn its place on screen, so the sidebar shows only rooms with a claim on
    * you; a picker is a list you went looking for, and one that hides rooms you
    * have every right to join cannot be searched into showing them.
    */
-  readableRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
-    return this.allRoomsByWorkspace.get(workspaceId) ?? [];
+  readableRoomsOnServer(serverId: string): RemoteRoomSummary[] {
+    return this.allRoomsByServer.get(serverId) ?? [];
   }
 
   /**
    * The same listed rooms as {@link listedRoomsInActiveScope}, but across every
-   * workspace rather than the active one.
+   * server rather than the active one.
    *
-   * Search is deliberately not scoped to the active workspace: you search
-   * precisely because you do not know where a thing is, and a result set
-   * silently limited to the one you happen to be looking at cannot answer that.
-   * Navigating to one of these switches the active workspace (see
-   * `scopeToRoomWorkspace`), so the sidebar follows you there rather than
-   * filtering the room back out.
+   * Search is deliberately not scoped to the active server: you search precisely
+   * because you do not know where a thing is, and a result set silently limited
+   * to the server you happen to be looking at cannot answer that. Navigating to
+   * one of these switches the active server (see `scopeToRoomServer`), so the
+   * sidebar follows you there rather than filtering the room back out.
    */
-  get listedRoomsInAllWorkspaces(): RemoteRoomSummary[] {
-    const listed = workspacesStore.workspaces.flatMap((w) => this.listedRoomsInWorkspace(w.id));
+  get listedRoomsOnAllServers(): RemoteRoomSummary[] {
+    const serverIds = [
+      ...new Set([...this.allRoomsByServer.keys(), ...this.ownedRoomsByServer.keys()]),
+    ];
+    const listed = serverIds.flatMap((serverId) => this.listedRoomsOnServer(serverId));
     return listed.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /**
-   * The messaging-app values worth offering as a room filter in the active
-   * workspace: the bridge types actually in use, plus the unbridged sentinel
-   * when some room has no messaging app. Offering a platform with no rooms
-   * behind it would be a filter that can only ever empty the list.
+   * The messaging-app values worth offering as a room filter on the active
+   * server: the bridge types actually in use, plus the unbridged sentinel when
+   * some room has no messaging app. Offering a platform with no rooms behind it
+   * would be a filter that can only ever empty the list.
    */
   get bridgeFilterValuesInActiveScope(): string[] {
     const present = new Set<string>();
@@ -208,105 +194,102 @@ export class SwitchRoomsStore {
     });
   }
 
-  /** Full detail for a room, when its workspace's room list has been loaded. */
+  /** Full detail for a room, when its server's room list has been loaded. */
   roomSummaryById(roomId: string): RemoteRoomSummary | null {
-    const workspaceId = this.roomWorkspaceById.get(roomId);
-    if (!workspaceId) return null;
-    return this.allRoomsByWorkspace.get(workspaceId)?.find((room) => room.id === roomId) ?? null;
+    const serverId = this.roomServerById.get(roomId);
+    if (!serverId) return null;
+    return this.allRoomsByServer.get(serverId)?.find((room) => room.id === roomId) ?? null;
   }
 
   /**
    * Whether the signed-in user may delete a room: they own it, or they are an
-   * admin on the server hosting its workspace.
+   * admin on its server.
    *
    * This mirrors the gateway's own rule so the action is not offered where it
    * would only be refused. It is not the check that protects anything — the
    * server's is — and where ownership is unknown the answer is no, since
    * showing a delete that fails is worse than not showing one.
    */
-  canDeleteRoom(workspaceId: string, room: RemoteRoomSummary): boolean {
-    const serverId = workspacesStore.serverIdFor(workspaceId);
-    if (!serverId) return false;
+  canDeleteRoom(serverId: string, room: RemoteRoomSummary): boolean {
     const user = switchServersStore.statusFor(serverId)?.user ?? null;
     if (!user) return false;
     return room.ownerId === user.id || user.role === 'admin';
   }
 
   /**
-   * Delete a room in its workspace, then re-read what is left.
+   * Delete a room on its server, then re-read what is left.
    *
    * Throws on refusal rather than reporting a boolean: the caller is a
    * confirmation dialog, and a delete that quietly did nothing would leave the
    * room on screen with no account of why.
    */
-  async deleteRoom(workspaceId: string, roomId: string): Promise<void> {
-    await rpc.workspaces.deleteRoom({ workspaceId, roomId });
+  async deleteRoom(serverId: string, roomId: string): Promise<void> {
+    await rpc.switchServers.deleteRoom({ serverId, roomId });
     await this.refreshRoomState();
   }
 
   /**
-   * The workspaces whose state is on screen: the active one, or all of them
-   * when none is active (the same scope rule the room and location lists
-   * follow).
+   * The servers whose state is on screen: the active one, or all of them when
+   * none is active (the same scope rule the room and location lists follow).
    *
-   * Each workspace is its own world — its own rooms, its own agents. Reading or
-   * reporting on one you are not looking at is both wasted work and, worse,
-   * someone else's problem presented as yours.
+   * Each server is its own world — its own rooms, its own agents, its own
+   * connection. Reading or reporting on one you are not looking at is both
+   * wasted work and, worse, someone else's problem presented as yours.
    */
-  private get workspaceIdsInScope(): string[] {
-    const activeId = workspacesStore.activeId;
-    if (activeId) return [activeId];
-    return workspacesStore.workspaces.map((w) => w.id);
+  private get serverIdsInScope(): string[] {
+    const activeServerId = switchServersStore.activeServerId;
+    if (activeServerId) return [activeServerId];
+    return switchServersStore.servers.map((s) => s.id);
   }
 
   /**
-   * Refresh the room catalogue for the workspaces on screen.
+   * Refresh the room catalogue for the servers on screen.
    *
-   * A workspace that cannot be read keeps its last-known rooms rather than
-   * losing them, but the failure is recorded in {@link roomListErrors} instead
-   * of being swallowed: last-known data rendered as if it were current is the
-   * one outcome worse than showing nothing.
+   * A server that cannot be read keeps its last-known rooms rather than losing
+   * them, but the failure is recorded in {@link roomListErrors} instead of being
+   * swallowed: last-known data rendered as if it were current is the one outcome
+   * worse than showing nothing.
    */
   async loadRoomNames(): Promise<void> {
-    await this.loadRoomsFrom(this.workspaceIdsInScope);
+    await this.loadRoomsFrom(this.serverIdsInScope);
   }
 
   /**
-   * Refresh the room catalogue for **every** workspace.
+   * Refresh the room catalogue for **every** server.
    *
-   * Only for cross-workspace search, which is deliberately not scoped — you
-   * search because you do not know where a thing is. Everything else loads the
-   * workspaces it is actually showing.
+   * Only for cross-server search, which is deliberately not scoped — you search
+   * because you do not know where a thing is. Everything else loads the servers
+   * it is actually showing.
    */
-  async loadRoomsInAllWorkspaces(): Promise<void> {
-    await this.loadRoomsFrom(workspacesStore.workspaces.map((w) => w.id));
+  async loadRoomsOnAllServers(): Promise<void> {
+    await this.loadRoomsFrom(switchServersStore.servers.map((s) => s.id));
   }
 
-  private async loadRoomsFrom(workspaceIds: string[]): Promise<void> {
-    const asked = workspacesStore.workspaces.filter((w) => workspaceIds.includes(w.id));
-    const connected = asked.filter((w) => switchServersStore.isConnected(w.serverId));
+  private async loadRoomsFrom(serverIds: string[]): Promise<void> {
+    const servers = switchServersStore.servers.filter((s) => serverIds.includes(s.id));
+    const connected = servers.filter((s) => switchServersStore.isConnected(s.id));
     runInAction(() => {
       // Not being connected is not a failure — there is simply nothing to ask
-      // right now — but the rooms in that workspace are equally unknown, and the
+      // right now — but the rooms on that server are equally unknown, and the
       // sidebar has to be able to say so.
-      const askedIds = new Set(workspaceIds);
-      this.unreachableWorkspaceIds = [
-        ...this.unreachableWorkspaceIds.filter((id) => !askedIds.has(id)),
-        ...asked.filter((w) => !switchServersStore.isConnected(w.serverId)).map((w) => w.id),
+      const asked = new Set(serverIds);
+      this.unreachableServerIds = [
+        ...this.unreachableServerIds.filter((id) => !asked.has(id)),
+        ...servers.filter((s) => !switchServersStore.isConnected(s.id)).map((s) => s.id),
       ];
     });
     await Promise.all(
-      connected.map(async (workspace) => {
+      connected.map(async (server) => {
         try {
-          const rooms = await rpc.workspaces.listRooms(workspace.id);
+          const rooms = await rpc.switchServers.listRemoteRooms(server.id);
           // Ownership is per server: the same person is a different user row on
           // each gateway, so match against that server's signed-in identity.
-          const signedInUserId = switchServersStore.statusFor(workspace.serverId)?.user?.id ?? null;
+          const signedInUserId = switchServersStore.statusFor(server.id)?.user?.id ?? null;
           runInAction(() => {
-            this.roomListErrors.delete(workspace.id);
+            this.roomListErrors.delete(server.id);
             for (const room of rooms) {
               this.roomNames.set(room.id, room.name);
-              this.roomWorkspaceById.set(room.id, workspace.id);
+              this.roomServerById.set(room.id, server.id);
               if (room.bridgeType) this.bridgeTypeByRoom.set(room.id, room.bridgeType);
               else this.bridgeTypeByRoom.delete(room.id);
               if (room.externalChannelUrl)
@@ -314,17 +297,17 @@ export class SwitchRoomsStore {
               else this.channelUrlByRoom.delete(room.id);
             }
             const active = rooms.filter((r) => !r.archived);
-            this.allRoomsByWorkspace.set(workspace.id, active);
-            this.ownedRoomsByWorkspace.set(
-              workspace.id,
+            this.allRoomsByServer.set(server.id, active);
+            this.ownedRoomsByServer.set(
+              server.id,
               signedInUserId ? active.filter((r) => r.ownerId === signedInUserId) : []
             );
           });
         } catch (cause) {
           runInAction(() => {
             this.roomListErrors.set(
-              workspace.id,
-              failureText(cause, `Could not load the rooms in ${workspace.name}.`)
+              server.id,
+              failureText(cause, `Could not load the rooms on ${server.name}.`)
             );
           });
         }
@@ -341,44 +324,42 @@ export class SwitchRoomsStore {
    * being asked to wait or to act.
    */
   roomNameBlockedBySignIn(roomId: string): boolean {
-    const workspaceId = this.roomWorkspaceById.get(roomId) ?? workspacesStore.activeId;
-    if (!workspaceId) return false;
-    const serverId = workspacesStore.serverIdFor(workspaceId);
+    const serverId = this.roomServerById.get(roomId) ?? switchServersStore.activeServerId;
     if (!serverId) return false;
     return serverAvailability(serverId) === 'signed-out';
   }
 
   /**
-   * Workspaces on screen whose room list was asked for and failed.
+   * Servers on screen whose room list was asked for and failed.
    *
-   * Distinct from {@link workspacesNotSignedIn}: this is a fault, it may be
+   * Distinct from {@link serversNotSignedIn}: this is a fault, it may be
    * transient, and retrying is a sensible thing to offer.
    */
-  get workspacesThatFailedToLoad(): { id: string; name: string }[] {
-    return this.namedWorkspacesInScope([...this.roomListErrors.keys()]);
+  get serversThatFailedToLoad(): { id: string; name: string }[] {
+    return this.namedServersInScope([...this.roomListErrors.keys()]);
   }
 
   /**
-   * Workspaces on screen that were never asked because Switch Console is not
-   * signed in to their server.
+   * Servers on screen that were never asked because Switch Console is not signed in
+   * to them.
    *
    * Not a fault and not retryable — the user has to sign in. Reporting it as a
    * failure with a retry button offers an action that cannot work.
    */
-  get workspacesNotSignedIn(): { id: string; name: string }[] {
-    return this.namedWorkspacesInScope(
-      this.unreachableWorkspaceIds.filter((id) => {
-        const serverId = workspacesStore.serverIdFor(id);
-        return serverId !== null && serverAvailability(serverId) === 'signed-out';
-      })
+  get serversNotSignedIn(): { id: string; name: string }[] {
+    return this.namedServersInScope(
+      this.unreachableServerIds.filter((id) => serverAvailability(id) === 'signed-out')
     );
   }
 
-  private namedWorkspacesInScope(workspaceIds: string[]): { id: string; name: string }[] {
-    const inScope = new Set(this.workspaceIdsInScope);
-    return [...new Set(workspaceIds)]
+  private namedServersInScope(serverIds: string[]): { id: string; name: string }[] {
+    const inScope = new Set(this.serverIdsInScope);
+    return [...new Set(serverIds)]
       .filter((id) => inScope.has(id))
-      .map((id) => ({ id, name: workspacesStore.byId(id)?.name ?? id }))
+      .map((id) => ({
+        id,
+        name: switchServersStore.servers.find((s) => s.id === id)?.name ?? id,
+      }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -390,15 +371,15 @@ export class SwitchRoomsStore {
    */
   get agentsWithUnknownMembership(): number {
     return this.trackedIdentities.filter(
-      ({ workspaceId, switchAgentId }) =>
-        this.roomsByAgent.get(key(workspaceId, switchAgentId)) === undefined &&
-        !this.isLoading(workspaceId, switchAgentId)
+      ({ serverId, switchAgentId }) =>
+        this.roomsByAgent.get(key(serverId, switchAgentId)) === undefined &&
+        !this.isLoading(serverId, switchAgentId)
     ).length;
   }
 
   /** Cached membership, or undefined if never fetched. */
-  roomsFor(workspaceId: string, switchAgentId: string): RemoteAgentRoom[] | undefined {
-    return this.roomsByAgent.get(key(workspaceId, switchAgentId));
+  roomsFor(serverId: string, switchAgentId: string): RemoteAgentRoom[] | undefined {
+    return this.roomsByAgent.get(key(serverId, switchAgentId));
   }
 
   /**
@@ -455,23 +436,23 @@ export class SwitchRoomsStore {
    * agent's at a time.
    */
   async ensureMembershipsFor(
-    agents: { workspaceId: string; switchAgentId: string }[],
+    agents: { serverId: string; switchAgentId: string }[],
     options: { force?: boolean } = {}
   ): Promise<void> {
     runInAction(() => {
       this.trackedIdentities = agents;
     });
     await Promise.all(
-      agents.map((a) => this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options))
+      agents.map((a) => this.fetchAgentRooms(a.serverId, a.switchAgentId, options))
     );
   }
 
-  isLoading(workspaceId: string, switchAgentId: string): boolean {
-    return this.loading.has(key(workspaceId, switchAgentId));
+  isLoading(serverId: string, switchAgentId: string): boolean {
+    return this.loading.has(key(serverId, switchAgentId));
   }
 
-  errorFor(workspaceId: string, switchAgentId: string): string | null {
-    return this.errors.get(key(workspaceId, switchAgentId)) ?? null;
+  errorFor(serverId: string, switchAgentId: string): string | null {
+    return this.errors.get(key(serverId, switchAgentId)) ?? null;
   }
 
   /**
@@ -479,11 +460,11 @@ export class SwitchRoomsStore {
    * cache. Returns the membership, or null if the fetch failed.
    */
   async fetchAgentRooms(
-    workspaceId: string,
+    serverId: string,
     switchAgentId: string,
     options: { force?: boolean } = {}
   ): Promise<RemoteAgentRoom[] | null> {
-    const k = key(workspaceId, switchAgentId);
+    const k = key(serverId, switchAgentId);
     const cached = this.roomsByAgent.get(k);
     if (cached && !options.force) return cached;
 
@@ -492,7 +473,7 @@ export class SwitchRoomsStore {
       this.errors.delete(k);
     });
     try {
-      const rooms = await rpc.workspaces.listAgentRooms({ workspaceId, agentId: switchAgentId });
+      const rooms = await rpc.switchServers.listAgentRooms({ serverId, agentId: switchAgentId });
       runInAction(() => {
         this.roomsByAgent.set(k, rooms);
       });

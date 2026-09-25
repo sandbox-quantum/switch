@@ -29,51 +29,37 @@ import { fetchAgents, GatewayError, updateAgentIcon } from './gateway-client';
  * server — still show the lettered avatar. Nothing on screen would say why, so
  * the caller is handed what happened and tells the user.
  */
-export function backfillAgentIcons(
-  workspaceId: string,
-  server: SwitchServer
-): Promise<AgentIconBackfill> {
-  const settled = completed.get(workspaceId);
+export function backfillAgentIcons(server: SwitchServer): Promise<AgentIconBackfill> {
+  const settled = completed.get(server.id);
   if (settled !== undefined) return Promise.resolve(settled);
 
-  const running = inFlight.get(workspaceId);
+  const running = inFlight.get(server.id);
   if (running) return running;
 
-  const run = writeMissingIcons(workspaceId, server)
+  const run = writeMissingIcons(server)
     .then((outcome) => {
-      completed.set(workspaceId, outcome);
+      completed.set(server.id, outcome);
       return outcome;
     })
-    .finally(() => inFlight.delete(workspaceId));
+    .finally(() => inFlight.delete(server.id));
 
-  inFlight.set(workspaceId, run);
+  inFlight.set(server.id, run);
   return run;
 }
 
-/**
- * Workspaces already done this run, and what happened to each. Kept so opening
- * the agents page repeatedly does not re-ask the gateway; a workspace whose
- * pass threw is deliberately absent, so the next refresh tries again.
- *
- * Per workspace and not per server: `GET /agents` answers for the tenant the
- * session has selected, so one server's two workspaces are two different lists.
- * Keying on the server would let the first workspace's pass stand in for the
- * second's — the second's agents never written, and the first's outcome
- * reported under the second's name.
- */
+/** Servers already done this run, and what happened to each. Kept so opening
+ * the agents page repeatedly does not re-ask the gateway; a server that threw
+ * is deliberately absent, so the next refresh tries again. */
 const completed = new Map<string, AgentIconBackfill>();
 const inFlight = new Map<string, Promise<AgentIconBackfill>>();
 
-async function writeMissingIcons(
-  workspaceId: string,
-  server: SwitchServer
-): Promise<AgentIconBackfill> {
+async function writeMissingIcons(server: SwitchServer): Promise<AgentIconBackfill> {
   const [agents, local] = await Promise.all([fetchAgents(server), getAgents()]);
-  // `GET /agents` lists the whole workspace, most of which is nothing to do
-  // with this computer.
+  // `GET /agents` lists the whole server, most of which is nothing to do with
+  // this computer.
   const managed = new Set(
     local
-      .filter((agent) => agent.workspaceId === workspaceId && agent.switchAgentId !== null)
+      .filter((agent) => agent.serverId === server.id && agent.switchAgentId !== null)
       .map((agent) => agent.switchAgentId as string)
   );
   const missing = agents.filter((agent) => agent.iconUrl === null && managed.has(agent.id));
@@ -108,7 +94,6 @@ async function writeMissingIcons(
   if (written === 0 && notFound > 0 && notFound === missing.length) {
     log.warn('agent icon backfill: this server has no agent-icon endpoint', {
       event: 'agent_icon_backfill',
-      workspaceId,
       serverId: server.id,
       agents: missing.length,
     });
@@ -118,7 +103,6 @@ async function writeMissingIcons(
   if (failures.length > 0) {
     log.warn('agent icon backfill: some agents kept the lettered avatar', {
       event: 'agent_icon_backfill',
-      workspaceId,
       serverId: server.id,
       written,
       failed: failures.length,
@@ -129,7 +113,6 @@ async function writeMissingIcons(
 
   log.info('agent icon backfill: done', {
     event: 'agent_icon_backfill',
-    workspaceId,
     serverId: server.id,
     written,
   });

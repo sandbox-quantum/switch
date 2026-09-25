@@ -5,7 +5,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
 import type { SearchItem } from '@shared/core/search';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
 
@@ -14,7 +14,7 @@ import { PALETTE_ITEM_CLASS } from './palette-item-styles';
  * agent's own face leads, and what it runs on follows its name as a small mark.
  *
  * A row of its own rather than a branch of `PaletteKindIcon`, because the
- * chosen icon comes from a query keyed by workspace and a hook cannot be called
+ * chosen icon comes from a query keyed by server and a hook cannot be called
  * from inside a switch. An agent this app does not hold — a hit whose local row
  * has gone — still gets the bot drawn from its name, which is the same face the
  * Switch bridges show.
@@ -29,7 +29,7 @@ export const PaletteAgentItem = observer(function PaletteAgentItem({
   onSelect: () => void;
 }) {
   const agent = agentsStore.agentById(item.id);
-  const iconUrl = useAgentIconUrl(agent?.workspaceId ?? null, agent?.switchAgentId ?? null);
+  const iconUrl = useAgentIconUrl(agent?.serverId ?? null, agent?.switchAgentId ?? null);
 
   return (
     <Command.Item value={value} onSelect={onSelect} className={PALETTE_ITEM_CLASS}>

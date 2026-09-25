@@ -22,21 +22,20 @@ const LIVE_RUN_POLL_MS = 15_000;
  * Quiet on failure: an older server without runs answers 404 and the list
  * stays empty, and a failed refresh keeps what was already shown.
  */
-export function useTemplateRuns(workspaceId: string | null): {
+export function useTemplateRuns(serverId: string): {
   runs: TemplateRun[];
   replace: (run: TemplateRun) => void;
 } {
   const [runs, setRuns] = useState<TemplateRun[]>([]);
 
   const load = useCallback(async () => {
-    if (workspaceId === null) return;
     try {
-      const list = await rpc.workspaces.listTemplateRuns({ workspaceId });
+      const list = await rpc.switchServers.listTemplateRuns({ serverId });
       setRuns(list ?? []);
     } catch {
       // The runs are an addition to the recents; the section renders without them.
     }
-  }, [workspaceId]);
+  }, [serverId]);
 
   useEffect(() => {
     setRuns([]);
@@ -77,11 +76,11 @@ function RunStateChip({ run }: { run: TemplateRun }) {
  * owner Continue and Stop.
  */
 export function TemplateRunRow({
-  workspaceId,
+  serverId,
   run,
   onChanged,
 }: {
-  workspaceId: string;
+  serverId: string;
   run: TemplateRun;
   onChanged: (run: TemplateRun) => void;
 }) {
@@ -94,11 +93,11 @@ export function TemplateRunRow({
   const change = async (action: 'stop' | 'continue') => {
     setBusy(action);
     try {
-      const params = { workspaceId, rootRoomId: run.rootRoomId };
+      const params = { serverId, rootRoomId: run.rootRoomId };
       const updated =
         action === 'stop'
-          ? await rpc.workspaces.stopTemplateRun(params)
-          : await rpc.workspaces.continueTemplateRun(params);
+          ? await rpc.switchServers.stopTemplateRun(params)
+          : await rpc.switchServers.continueTemplateRun(params);
       onChanged(updated);
       if (action === 'stop') {
         const local = await stopRunSessions(updated.rooms.map((r) => r.id));

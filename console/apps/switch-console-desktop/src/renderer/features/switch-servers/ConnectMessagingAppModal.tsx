@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useMemo, useState } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -56,7 +55,6 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const { setCloseGuard } = useModalContext();
 
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
-  const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
   const isAdmin = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
 
@@ -75,9 +73,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const [error, setError] = useState<string | null>(null);
 
   const typesQuery = useQuery({
-    queryKey: ['remote-bridge-types', workspaceId],
-    queryFn: () => rpc.workspaces.listBridgeTypes(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-bridge-types', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridgeTypes(serverId),
+    enabled: !!serverId,
   });
 
   const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
@@ -115,12 +113,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     return !(value ?? '').trim();
   });
   const canSubmit =
-    workspaceId !== null &&
-    isAdmin &&
-    !!selectedType &&
-    !!trimmedName &&
-    !missingRequired &&
-    !isSubmitting;
+    !!serverId && isAdmin && !!selectedType && !!trimmedName && !missingRequired && !isSubmitting;
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit || !selectedType) return;
@@ -142,8 +135,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
         if (trimmed) connectionConfig[field.key] = trimmed;
       }
 
-      const result = await rpc.workspaces.createBridge({
-        workspaceId: workspaceId as string,
+      const result = await rpc.switchServers.createBridge({
+        serverId,
         bridgeType: selectedType.key,
         displayName: trimmedName,
         connectionConfig,
@@ -172,7 +165,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   }, [
     canSubmit,
     selectedType,
-    workspaceId,
+    serverId,
     trimmedName,
     config,
     setAsDefault,

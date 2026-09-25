@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import {
   Select,
@@ -16,7 +15,7 @@ import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-serve
 import { switchServersStore } from './switch-servers-store';
 
 /** Verification phase the picker reports up so a parent can gate submission. */
-export type ServerVerifyState = 'idle' | 'checking' | 'no-workspace' | AgentVerifyResult;
+export type ServerVerifyState = 'idle' | 'checking' | AgentVerifyResult;
 
 interface AgentServerPickerProps {
   /** The Switch agent id to verify against the chosen server. */
@@ -51,24 +50,17 @@ export const AgentServerPicker = observer(function AgentServerPicker({
 
   const servers = switchServersStore.servers;
 
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const verifyQuery = useQuery({
-    queryKey: ['verifyAgent', workspaceId, switchAgentId],
-    queryFn: () =>
-      rpc.workspaces.verifyAgent({ workspaceId: workspaceId!, agentId: switchAgentId }),
-    enabled: !!workspaceId && !!switchAgentId,
+    queryKey: ['verifyAgent', serverId, switchAgentId],
+    queryFn: () => rpc.switchServers.verifyAgent({ serverId: serverId!, agentId: switchAgentId }),
+    enabled: !!serverId && !!switchAgentId,
   });
 
-  // A disabled query reports `isPending` forever, so a server with no workspace
-  // to verify against has to be its own state: read as "checking" it would spin
-  // for as long as the dialog is open and never say why submit stays shut.
   const state: ServerVerifyState = !serverId
     ? 'idle'
-    : workspaceId === null
-      ? 'no-workspace'
-      : verifyQuery.isPending
-        ? 'checking'
-        : (verifyQuery.data ?? 'checking');
+    : verifyQuery.isPending
+      ? 'checking'
+      : (verifyQuery.data ?? 'checking');
 
   useEffect(() => {
     onVerifyStateChange(state);
@@ -122,13 +114,6 @@ function VerifyStatus({ state, serverName }: { state: ServerVerifyState; serverN
     return (
       <Row icon={<CheckCircle2 className="size-3.5 text-green-500" />}>
         Agent found on {serverName}
-      </Row>
-    );
-  }
-  if (state === 'no-workspace') {
-    return (
-      <Row icon={<CircleAlert className="size-3.5 text-amber-500" />}>
-        {serverName} has no workspace to register this agent in yet.
       </Row>
     );
   }

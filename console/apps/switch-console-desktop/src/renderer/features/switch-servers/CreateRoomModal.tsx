@@ -4,7 +4,6 @@ import { useCallback, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import {
   AgentPickerRow,
   ChosenAgentTile,
@@ -50,7 +49,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // asking again would let the user create a room somewhere they are not
   // looking, and then wonder where it went.
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
-  const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
 
   const [name, setName] = useState('');
@@ -63,20 +61,20 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const [error, setError] = useState<string | null>(null);
 
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', workspaceId],
-    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-bridges', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
+    enabled: !!serverId,
   });
   const agentsQuery = useQuery({
-    queryKey: ['remote-agents', workspaceId],
-    queryFn: () => rpc.workspaces.listAgents(workspaceId as string),
-    enabled: workspaceId !== null,
+    queryKey: ['remote-agents', serverId],
+    queryFn: () => rpc.switchServers.listRemoteAgents(serverId),
+    enabled: !!serverId,
   });
   // Which account on each app is the person creating the room. A room on an app
   // they have not claimed an account on works, but their own messages in it are
   // from a stranger as far as the agents are concerned — so it is said here,
   // while the app is being chosen, rather than discovered later.
-  const { identities } = useMyIdentities(workspaceId);
+  const { identities } = useMyIdentities(serverId);
 
   /**
    * Only agents this install registered on the server.
@@ -88,11 +86,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
    * follow.
    */
   const invitableAgents = (agentsQuery.data ?? []).filter((remote) =>
-    workspaceId === null
-      ? false
-      : agentsStore
-          .agentsInWorkspace(workspaceId)
-          .some((local) => local.switchAgentId === remote.id)
+    agentsStore.agentsOnServer(serverId).some((local) => local.switchAgentId === remote.id)
   );
 
   // Only a running bridge can back a new room, and creating a room here means
@@ -117,11 +111,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const trimmedName = name.trim();
   const trimmedDescription = description.trim();
   const canSubmit =
-    workspaceId !== null &&
-    !!trimmedName &&
-    !!trimmedDescription &&
-    !!selectedBridge &&
-    !isSubmitting;
+    !!serverId && !!trimmedName && !!trimmedDescription && !!selectedBridge && !isSubmitting;
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit || !selectedBridge) return;
@@ -130,8 +120,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     setError(null);
 
     try {
-      const result = await rpc.workspaces.createRoom({
-        workspaceId: workspaceId as string,
+      const result = await rpc.switchServers.createRoom({
+        serverId,
         name: trimmedName,
         description: trimmedDescription,
         instructions: instructions.trim() || undefined,
@@ -170,7 +160,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   }, [
     canSubmit,
     selectedBridge,
-    workspaceId,
+    serverId,
     trimmedName,
     trimmedDescription,
     instructions,
@@ -296,7 +286,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
-                    subtitle={agentProviderLabelFor(agent.id, workspaceId)}
+                    subtitle={agentProviderLabelFor(agent.id, serverId)}
                     onRemove={() =>
                       setAgents((current) => current.filter((a) => a.id !== agent.id))
                     }
@@ -310,10 +300,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               onPick={(next) => setAgents((current) => [...current, next])}
               searchText={(item) => item.name}
               renderItem={(item) => (
-                <AgentPickerRow
-                  agent={item}
-                  subtitle={agentProviderLabelFor(item.id, workspaceId)}
-                />
+                <AgentPickerRow agent={item} subtitle={agentProviderLabelFor(item.id, serverId)} />
               )}
               disabled={agentsQuery.isLoading}
               placeholder={agentsQuery.isLoading ? 'Loading agents…' : 'Search agents to add...'}

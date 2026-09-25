@@ -13,14 +13,15 @@ import {
 } from '@renderer/lib/ui/dialog';
 import type { LinkedIdentity } from '@shared/core/switch-servers/switch-servers';
 import { BridgeIdentitySearch } from './bridge-identity-search';
+import { switchServersStore } from './switch-servers-store';
 import { useMyIdentities } from './use-my-identities';
 
 type ClaimIdentityModalArgs = {
-  /** The workspace the account is claimed in. Required rather than defaulted to
-   * the active one: every entry point knows which workspace it opened from, and
-   * falling back would claim the account somewhere the user was not looking. */
-  workspaceId: string;
-  /** The messaging app to claim an account in. */
+  /** Claim on this server instead of the active one. */
+  serverId?: string;
+  /** The messaging app to claim an account in. Required: an account is claimed
+   * in one workspace, and every entry point knows which one it opened from —
+   * asking again would be a question the caller has already answered. */
   bridgeId: string;
 };
 
@@ -40,20 +41,22 @@ type Props = BaseModalProps<{ identity: LinkedIdentity }> & ClaimIdentityModalAr
  * never posted in.
  */
 export const ClaimIdentityModal = observer(function ClaimIdentityModal({
-  workspaceId,
+  serverId: overrideServerId,
   bridgeId,
   onSuccess,
   onClose,
 }: Props) {
+  const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
   // The search raises the close guard while a claim or unlink is in flight, so
   // this is also the signal that leaving now would abandon one.
   const { hasActiveCloseGuard } = useModalContext();
 
-  const { identities } = useMyIdentities(workspaceId);
+  const { identities } = useMyIdentities(serverId || null);
 
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', workspaceId],
-    queryFn: () => rpc.workspaces.listBridges(workspaceId),
+    queryKey: ['remote-bridges', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
+    enabled: !!serverId,
   });
   const bridges = bridgesQuery.data ?? [];
 
@@ -77,9 +80,15 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
             Tell Switch which account is you, so your own agents can tell it&apos;s you.
           </p>
 
+          {!serverId && (
+            <p className="text-xs text-destructive">
+              No Switch server is selected. Choose a server in the sidebar first.
+            </p>
+          )}
+
           {bridgeIsGone && (
             <p className="text-xs text-destructive">
-              That messaging app is no longer connected to this workspace.
+              That messaging app is no longer connected to this server.
             </p>
           )}
 
@@ -96,7 +105,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
           )}
 
           <BridgeIdentitySearch
-            workspaceId={workspaceId}
+            serverId={serverId}
             bridgeId={bridgeId}
             bridgeDisplayName={selectedBridge?.displayName ?? 'the workspace'}
             platform={bridgePlatformLabel(selectedBridge?.type ?? '')}

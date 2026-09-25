@@ -10,8 +10,6 @@ import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import { entryPointOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
-import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
-import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
@@ -33,7 +31,7 @@ import { syncAgentConfig } from './agent-config-sync';
 import { foreignCredentialsOwner, sameEndpointAgentId } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
-import { resolveWorkdirFsFor } from './agent-workdir-fs';
+import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { knownAgentTypeForProvider } from './known-agent-type';
 import { registerAgentIdentity } from './register-agent-identity';
@@ -193,7 +191,6 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       message: `No Switch server with id ${params.serverId}`,
     });
   }
-  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
 
   // Before minting an identity: the gateway's uniqueness check is scoped to the
   // Switch server, so it cannot see a name already taken in this directory. Two
@@ -259,28 +256,26 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     }
   }
 
-  const registered = await withWorkspaceSession(targetWorkspace.id, (target) =>
-    registerAgentIdentity(target, {
-      name: params.name,
-      description: params.description,
-      displayName: params.displayName,
-      repoDir: params.dir,
-      autoSession: params.autoSession,
-      agentType: knownAgentTypeForProvider(params.providerId),
-      iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
-    })
-  );
+  const registered = await registerAgentIdentity(server, {
+    name: params.name,
+    description: params.description,
+    displayName: params.displayName,
+    repoDir: params.dir,
+    autoSession: params.autoSession,
+    agentType: knownAgentTypeForProvider(params.providerId),
+    iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
+  });
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
-  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
+  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
     // Writing the per-agent Switch credentials is unconditional core behavior for
     // every provider, keyed by the agent's `name` — the single key-space every
     // reader (launch path, auto-session watcher, notification poller) uses
     // (CHOO-1440). Providers with repo-agent definitions (Claude) layer their
     // on-disk definition on top; that's the only provider-specific extra.
-    await writeNeutralAgentSettingsFs(workdir.fs, {
+    await writeNeutralAgentSettingsFs(workspace.fs, {
       slug: params.name,
       apiEndpoint: server.apiUrl,
       apiToken: registered.apiKey,
@@ -289,19 +284,19 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     });
     // The config file is the agent's configuration; the provider's own file is
     // generated from it, here and on every later edit.
-    await writeAgentConfigFile(workdir.fs, params.name, {
+    await writeAgentConfigFile(workspace.fs, params.name, {
       instructions: params.instructions,
       settings: params.definitionAttributes,
       ...(params.templateOrigin ? { template: params.templateOrigin } : {}),
     });
     await syncAgentConfig({
-      workdirFs: workdir.fs,
+      workspaceFs: workspace.fs,
       repoAgents: behavior ?? null,
       name: params.name,
       description: params.description,
     });
   } finally {
-    workdir.close();
+    workspace.close();
   }
 
   const location = await ensureLocation({
@@ -317,7 +312,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     providerId: params.providerId,
     switchAgentId: registered.id,
     apiEndpoint: server.apiUrl,
-    workspaceId: targetWorkspace.id,
+    serverId: params.serverId,
     autoApprove: params.autoApprove,
     providerConfig: params.providerConfig ?? null,
   });

@@ -1,5 +1,4 @@
 import { useId, useState } from 'react';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -54,18 +53,12 @@ export function SaveTemplateModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const workspaceId = workspacesStore.idOnServerInScope(serverId);
-
   const save = async () => {
-    if (workspaceId === null) {
-      setError('This server’s workspace is not known yet.');
-      return;
-    }
     setSaving(true);
     setError(null);
     try {
-      const saved = await rpc.workspaces.saveTemplate({
-        workspaceId,
+      const saved = await rpc.switchServers.saveTemplate({
+        serverId,
         name: name.trim(),
         description: description.trim(),
         kind,

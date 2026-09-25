@@ -13,7 +13,7 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -96,7 +96,7 @@ const AgentCard = observer(function AgentCard({
   const sshHost = location?.data?.sshHost ?? null;
   const label = agent.name || 'Unnamed agent';
   const provider = providerDisplayName(agent.providerId);
-  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(serverId, agent.switchAgentId);
 
   const gatewayUrl =
     agent.switchAgentId && switchRoomsStore.gatewayAgentUrl(serverId, agent.switchAgentId);

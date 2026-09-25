@@ -16,7 +16,7 @@ import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { scopeToLocationWorkspace } from '@renderer/lib/layout/scope-to-workspace';
+import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import { report } from '@renderer/lib/telemetry/report';
@@ -194,7 +194,7 @@ export function CommandPaletteModal({
   // Search spans every server, but the sidebar only loads the one it is showing
   // — so the others' rooms are pulled here, by the feature that needs them.
   useEffect(() => {
-    void switchRoomsStore.loadRoomsInAllWorkspaces();
+    void switchRoomsStore.loadRoomsOnAllServers();
   }, []);
 
   // Prefetch recents immediately on mount so the empty-query view is instant.
@@ -272,7 +272,7 @@ export function CommandPaletteModal({
   // span every server, not the active one: you search precisely because you do
   // not know where a thing is.
   const roomResults = useObserver(() =>
-    matchRooms(switchRoomsStore.listedRoomsInAllWorkspaces, debouncedQuery)
+    matchRooms(switchRoomsStore.listedRoomsOnAllServers, debouncedQuery)
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
 
@@ -325,7 +325,7 @@ export function CommandPaletteModal({
     if (!item.locationId) return;
     const locationId = item.locationId;
     handleClose();
-    void scopeToLocationWorkspace(locationId).then(() =>
+    void scopeToLocationServer(locationId).then(() =>
       navigate('session', { locationId, sessionId: item.id })
     );
   };
@@ -342,7 +342,7 @@ export function CommandPaletteModal({
     if (!item.locationId) return;
     const locationId = item.locationId;
     handleClose();
-    void scopeToLocationWorkspace(locationId).then(() => {
+    void scopeToLocationServer(locationId).then(() => {
       sidebarStore.ensureGroupExpanded(agentExpandKey(item.id));
       navigate('location', { locationId, agentName: item.title });
     });

@@ -115,5 +115,4 @@ apps/*/tooling/node-deps/node_modules/
 
 # Vitest / Browser testing
 .vitest-attachments/
-.vitest/
 **/__screenshots__/

@@ -1,7 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type {
@@ -10,13 +9,6 @@ import type {
   SwitchServer,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
-
-/**
- * How long the first read of the server list may take before the window says so
- * instead of staying blank. Generous: this is local IPC, so anything near it is
- * already a handler that is not coming back.
- */
-const LIST_READ_DEADLINE_MS = 10_000;
 
 /**
  * Renderer store for the Switch-server integration. Holds the registered
@@ -29,6 +21,7 @@ const LIST_READ_DEADLINE_MS = 10_000;
  */
 export class SwitchServersStore {
   servers: SwitchServer[] = [];
+  activeServerId: string | null = null;
 
   /** Connection status per server id, refreshed on focus / select / manually. */
   readonly statuses = new Map<string, ServerConnectionStatus>();
@@ -70,41 +63,9 @@ export class SwitchServersStore {
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
   errorDetail: string | null = null;
-  /**
-   * The list read's own failure, as opposed to {@link error}, which every
-   * action in this store writes — adding a server, renaming one, signing out.
-   *
-   * The shell decides what fills the window from this. Reading `error` there
-   * would put the whole window into its failure shape because a rename went
-   * wrong. Set only when a read fails and cleared only when one succeeds:
-   * clearing it as a retry starts would take the failure page off screen — and
-   * the retry button with it — for as long as the retry ran.
-   */
-  listError: string | null = null;
-  /** Diagnostics for the failure in {@link listError}. */
-  listErrorDetail: string | null = null;
-  /**
-   * Whether this install holds nothing at all — no server, no location, no
-   * agent. Read alongside the list, because the shell decides between the
-   * first-run page and the workspace from it and an empty server list is not
-   * the same question: removing a server keeps its agents and says so, and
-   * those agents plus the sessions running in them are still something to show.
-   *
-   * False until the first read lands; `loaded` is what separates that from an
-   * install that really is empty.
-   */
-  installIsEmpty = false;
-  /** The read in flight, so callers arriving together share one. Nothing renders it. */
-  initInFlight: Promise<void> | null = null;
-  /**
-   * Which read is allowed to write. Bumped by each new read and by the deadline
-   * below, so a read that has been given up on cannot land later and overwrite
-   * the answer of the one that replaced it. Nothing renders it.
-   */
-  private listReadGeneration = 0;
 
   constructor() {
-    makeAutoObservable(this, { initInFlight: false });
+    makeAutoObservable(this);
   }
 
   /** Headline and detail as one string, for the modals that have a single slot. */
@@ -121,24 +82,8 @@ export class SwitchServersStore {
     return hostReachabilityStore.isBlocked(server.sshHost);
   }
 
-  /**
-   * The server the window is scoped to.
-   *
-   * Read off the active workspace rather than held here, so the two cannot
-   * disagree. What the user selects is a workspace; the server is whichever one
-   * hosts it, and the main process resolves it the same way.
-   */
-  get activeServerId(): string | null {
-    return workspacesStore.activeServerId;
-  }
-
   get activeServer(): SwitchServer | null {
-    return this.serverById(this.activeServerId);
-  }
-
-  serverById(serverId: string | null): SwitchServer | null {
-    if (!serverId) return null;
-    return this.servers.find((s) => s.id === serverId) ?? null;
+    return this.servers.find((s) => s.id === this.activeServerId) ?? null;
   }
 
   statusFor(serverId: string): ServerConnectionStatus | null {
@@ -185,48 +130,21 @@ export class SwitchServersStore {
     return this.authConfigInFlight.has(serverId);
   }
 
-  /**
-   * Read the server list, once however many callers ask for it.
-   *
-   * The shell and the sidebar both ask on the first frame, and so does every
-   * panel that needs a server list to draw. They share the read in flight
-   * rather than making the same round-trip several times over; a caller
-   * arriving after it settles starts a fresh one, so this never hands back a
-   * stale answer to someone refreshing after a change of their own.
-   */
-  init(): Promise<void> {
-    if (this.initInFlight) return this.initInFlight;
-    // Only if it is still ours: a read given up on below is unhooked while it
-    // is still running, and its eventual settling must not unhook the read that
-    // replaced it.
-    const read = this.readServers().finally(() => {
-      if (this.initInFlight === read) this.initInFlight = null;
-    });
-    this.initInFlight = read;
-    return read;
-  }
-
-  private async readServers(): Promise<void> {
-    const generation = ++this.listReadGeneration;
+  async init(): Promise<void> {
     runInAction(() => {
       this.loadingServers = true;
       this.error = null;
       this.errorDetail = null;
     });
-    const deadline = setTimeout(() => this.giveUpOnListRead(generation), LIST_READ_DEADLINE_MS);
     try {
-      const [servers, installIsEmpty] = await Promise.all([
+      const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
-        rpc.onboarding.installIsEmpty(),
-        workspacesStore.refresh(),
+        rpc.switchServers.getActiveServerId(),
       ]);
-      if (generation !== this.listReadGeneration) return;
       runInAction(() => {
         this.servers = servers;
-        this.installIsEmpty = installIsEmpty;
+        this.activeServerId = activeServerId;
         this.loaded = true;
-        this.listError = null;
-        this.listErrorDetail = null;
       });
       // A page restored onto a server that has since been deleted can only be
       // judged once the list is known, and startup restores navigation before
@@ -235,63 +153,27 @@ export class SwitchServersStore {
       await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
-      if (generation !== this.listReadGeneration) return;
-      const { headline, detail } = this.setError(cause, 'Could not load your Switch servers.');
-      runInAction(() => {
-        this.listError = headline;
-        this.listErrorDetail = detail;
-      });
+      this.setError(cause, 'Could not load your Switch servers.');
     } finally {
-      clearTimeout(deadline);
-      if (generation === this.listReadGeneration) {
-        runInAction(() => {
-          this.loadingServers = false;
-        });
-      }
+      runInAction(() => {
+        this.loadingServers = false;
+      });
     }
   }
 
   /**
-   * Stop waiting on a read that has not answered.
+   * A server is a workspace: the switcher, the sidebar and the sessions under
+   * it all read the active one, so one must be selected whenever any server
+   * exists. Nothing on the main side picks it — adding the first server leaves
+   * the active id null — so every path that changes the list ends here.
    *
-   * Before the first one lands the shell has nothing to draw, so a handler that
-   * never settles leaves a blank, inert window with no way to say anything went
-   * wrong and no way to ask again. Saying so is the whole point: the read is
-   * abandoned rather than cancelled — it cannot be cancelled — and the
-   * generation bump is what stops it landing later on top of the retry's
-   * answer.
-   *
-   * Only before the first success. Once there is a list in hand, a slow refresh
-   * is not a reason to take the app away from someone using it.
-   */
-  private giveUpOnListRead(generation: number): void {
-    if (generation !== this.listReadGeneration || this.loaded) return;
-    this.listReadGeneration += 1;
-    this.initInFlight = null;
-    runInAction(() => {
-      this.loadingServers = false;
-      this.listError = 'Could not load your Switch servers.';
-      this.listErrorDetail = `Nothing came back after ${LIST_READ_DEADLINE_MS / 1000} seconds.`;
-    });
-  }
-
-  /**
-   * The switcher, the sidebar and the sessions under it all read the active
-   * workspace, so one must be selected whenever any exists. Nothing on the main
-   * side picks it — adding the first server leaves the selection empty — so
-   * every path that changes the list ends here.
-   *
-   * A stored selection that no longer names a workspace counts as none. It is
-   * not hypothetical: removing the active server and adding another leaves the
-   * id pointing at the removed one, and treating that as a selection left the
-   * app with no workspace at all — no switcher, no sidebar tree, no way back.
-   *
-   * Which one it lands on is expressed over servers rather than workspaces,
-   * because a server is what the user just added or removed, and its own
-   * workspaces are then the main process's to choose between.
+   * A stored id that no longer names a server counts as no selection. It is not
+   * hypothetical: removing the active server and adding another leaves the id
+   * pointing at the removed one, and treating that as a selection left the app
+   * with no workspace at all — no switcher, no sidebar tree, no way back.
    */
   private async ensureActiveServer(): Promise<void> {
-    if (workspacesStore.active) return;
+    if (this.activeServerId && this.servers.some((s) => s.id === this.activeServerId)) return;
     const first = this.servers[0];
     if (first) await this.setActive(first.id);
   }
@@ -446,12 +328,13 @@ export class SwitchServersStore {
     this.clearError();
     try {
       const created = await rpc.switchServers.addServer({ name, gatewayUrl, apiUrl });
-      const [servers] = await Promise.all([
+      const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
-        workspacesStore.refresh(),
+        rpc.switchServers.getActiveServerId(),
       ]);
       runInAction(() => {
         this.servers = servers;
+        this.activeServerId = activeServerId;
       });
       await this.ensureActiveServer();
       await this.refreshStatus(created.id);
@@ -530,12 +413,13 @@ export class SwitchServersStore {
     this.clearError();
     try {
       await rpc.switchServers.removeServer(serverId);
-      const [servers] = await Promise.all([
+      const [servers, activeServerId] = await Promise.all([
         rpc.switchServers.listServers(),
-        workspacesStore.refresh(),
+        rpc.switchServers.getActiveServerId(),
       ]);
       runInAction(() => {
         this.servers = servers;
+        this.activeServerId = activeServerId;
         this.statuses.delete(serverId);
         this.authConfigs.delete(serverId);
         this.authConfigWanted.delete(serverId);
@@ -552,20 +436,13 @@ export class SwitchServersStore {
     }
   }
 
-  /**
-   * Scope the window to a server, for the callers that know only one — adding
-   * a server, and following a navigation onto another server's room or agent.
-   *
-   * Which of its workspaces that lands on is the main process's to decide: it
-   * keeps the current selection if it is already on this server, and otherwise
-   * picks one. Picking here instead would make this store the second place that
-   * answers the same question.
-   */
   async setActive(serverId: string): Promise<void> {
     this.clearError();
     try {
       await rpc.switchServers.setActiveServer(serverId);
-      await workspacesStore.refresh();
+      runInAction(() => {
+        this.activeServerId = serverId;
+      });
     } catch (cause) {
       this.setError(cause, 'Could not switch to that server.');
     }
@@ -581,9 +458,7 @@ export class SwitchServersStore {
       });
       return false;
     }
-    // Signing in is when the server first says which workspaces the account
-    // belongs to, so the list this app holds is stale the moment it returns.
-    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+    await this.refreshStatus(serverId);
     return true;
   }
 
@@ -600,7 +475,7 @@ export class SwitchServersStore {
       }
       return false;
     }
-    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+    await this.refreshStatus(serverId);
     return true;
   }
 
@@ -626,17 +501,13 @@ export class SwitchServersStore {
    * shared boundary rather than carrying whatever was thrown. The fallback is
    * per-action: the store knows which request failed, and the failure itself
    * usually does not.
-   *
-   * Returns what it wrote, for the one caller that also keeps the failure in a
-   * slot of its own.
    */
-  private setError(cause: unknown, fallback: string): FailureDescription {
+  private setError(cause: unknown, fallback: string): void {
     const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
       this.error = headline;
       this.errorDetail = detail;
     });
-    return { headline, detail };
   }
 }
 
