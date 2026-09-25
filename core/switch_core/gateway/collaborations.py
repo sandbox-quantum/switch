@@ -126,6 +126,7 @@ async def _detail(
         status=bridge.status,
         agent_greetings_enabled=bridge.agent_greetings_enabled,
         is_default=bridge.is_default if is_default is None else is_default,
+        preconfigured=bridge.preconfigured,
         room_count=room_count,
         created_at=str(bridge.created_at),
         home_url=await _home_url(bridge.id, collab_lifecycle),
@@ -178,6 +179,7 @@ async def create_bridge(
             display_name=req.display_name,
             connection_config=dict(req.connection_config),
             channel_creation_enabled=req.channel_creation_enabled,
+            preconfigured=req.preconfigured,
         )
     except BridgeCredentialError as exc:
         # The platform's own words, verbatim — it knows what is wrong with the
@@ -286,6 +288,10 @@ async def update_bridge(
         bridge = await bridge_store.set_channel_creation_enabled(
             session, bridge_id, payload.channel_creation_enabled
         )
+    if payload.preconfigured is not None:
+        bridge = await bridge_store.set_preconfigured(
+            session, bridge_id, payload.preconfigured
+        )
     if payload.connection_config is not None:
         merged = {**(bridge.connection_config or {}), **payload.connection_config}
         try:
@@ -303,6 +309,8 @@ async def update_bridge(
     # next deploy.
     if payload.connection_config is not None:
         await collab_lifecycle.restart(bridge_id)
+    if payload.preconfigured is not None:
+        collab_lifecycle.note_preconfigured(bridge_id, payload.preconfigured)
     rooms = await room_store.get_by_bridge(session, bridge_id)
     return await _detail(
         bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle

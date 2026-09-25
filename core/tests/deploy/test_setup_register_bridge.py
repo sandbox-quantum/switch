@@ -233,3 +233,67 @@ def test_an_empty_list_still_registers_a_bridge(setup_script: Any) -> None:
         assert setup_script.register_bridge(client) == "bridge-new"
 
     assert writes == [("POST", "/gateway/collaborations")]
+
+
+def _recording(bridges: list[dict[str, Any]], sent: list[Any]) -> Any:
+    """Like `_listing`, but keeps each write's body too."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=bridges)
+        sent.append((request.method, request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={"bridge_id": "bridge-new"})
+
+    return handler
+
+
+def test_a_new_bridge_is_registered_as_preconfigured(setup_script: Any) -> None:
+    """This step registers it, not a person, so telemetry must not count it as
+    anyone connecting a platform."""
+    sent: list[Any] = []
+
+    with _client(_recording([], sent)) as client:
+        setup_script.register_bridge(client)
+
+    [(method, path, body)] = sent
+    assert (method, path) == ("POST", "/gateway/collaborations")
+    assert body["preconfigured"] is True
+
+
+def test_an_existing_bridge_not_yet_marked_is_marked_preconfigured(
+    setup_script: Any,
+) -> None:
+    """A bridge this step registered before the flag existed."""
+    sent: list[Any] = []
+    bridges = [
+        {
+            "bridge_id": "bridge-1",
+            "bridge_type": "mattermost",
+            "is_default": True,
+            "preconfigured": False,
+        }
+    ]
+
+    with _client(_recording(bridges, sent)) as client:
+        assert setup_script.register_bridge(client) == "bridge-1"
+
+    assert sent == [
+        ("PATCH", "/gateway/collaborations/bridge-1", {"preconfigured": True})
+    ]
+
+
+def test_an_existing_bridge_already_marked_is_left_alone(setup_script: Any) -> None:
+    writes: list[tuple[str, str]] = []
+    bridges = [
+        {
+            "bridge_id": "bridge-1",
+            "bridge_type": "mattermost",
+            "is_default": True,
+            "preconfigured": True,
+        }
+    ]
+
+    with _client(_listing(bridges, writes)) as client:
+        assert setup_script.register_bridge(client) == "bridge-1"
+
+    assert writes == []
