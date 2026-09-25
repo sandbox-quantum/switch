@@ -184,6 +184,13 @@ class User(Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Workspaces this person has created through self-service, which is what
+    # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
+    # than of current ownership, so handing a workspace to someone else does
+    # not free an allowance to create another.
+    workspaces_created: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
 
 
 # An OIDC login matches an account on email case-insensitively (CHOO-2624):

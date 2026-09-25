@@ -16,6 +16,7 @@ depending on. The unique-slug behaviour under test comes from the same
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ def _app(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     client_lifecycle: object | None = None,
+    max_workspaces_per_user: int = 3,
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -95,6 +97,7 @@ def _app(
         jwt_secret_key=_SECRET,
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
+        gateway_max_workspaces_per_user=max_workspaces_per_user,
     )
     return app
 
@@ -122,9 +125,16 @@ async def _make_member(
     tenant_id: str,
     role: str,
     email: str | None = None,
+    user_role: str = "user",
 ) -> str:
+    """A user with a membership in `tenant_id`.
+
+    `role` is the per-tenant membership role; `user_role` is the global
+    `users.role`, which is a different axis entirely — `"admin"` there is the
+    deployment operator bit, granted by nothing self-service.
+    """
     async with session_factory() as session:
-        user = User(name=name, email=email or f"{name}@example.invalid", role="user")
+        user = User(name=name, email=email or f"{name}@example.invalid", role=user_role)
         session.add(user)
         await session.flush()
         session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role=role))
@@ -264,6 +274,223 @@ class TestCreateTenant:
             response = await client.post("/tenants", json={"name": "!!!"})
 
         assert response.status_code == 400
+
+
+class TestWorkspaceCreationLimit:
+    """`POST /tenants` is the one route here with no tenant to authorize
+    against, so what stands in for its neighbours' role check is a bound on how
+    many workspaces one person may own. It exists because a workspace is not
+    just a row: `all_tenant_ids()` drives a fan-out per tenant at boot and a
+    sweep every few seconds (`docs/old/multi-tenancy-phase2-tenants.md`, §5).
+    """
+
+    async def test_a_caller_at_the_limit_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="serial-founder", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "serial-founder@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=2)
+        async with _client(app, token) as client:
+            assert (
+                await client.post("/tenants", json={"name": "First"})
+            ).status_code == 201
+            assert (
+                await client.post("/tenants", json={"name": "Second"})
+            ).status_code == 201
+            third = await client.post("/tenants", json={"name": "Third"})
+
+        assert third.status_code == 403
+        assert "created 2 workspaces" in third.json()["detail"]
+
+    async def test_nothing_is_provisioned_for_a_refused_caller(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The bound is checked before `create_tenant`, so a refusal must not
+        # leave the orphan workspace the handler's own docstring warns about.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="blocked-founder", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "blocked-founder@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=0)
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Never Made"})
+
+        assert response.status_code == 403
+        async with session_factory() as session:
+            found = await session.scalars(
+                select(Tenant).where(Tenant.slug == "never-made")
+            )
+            assert found.first() is None
+
+    async def test_handing_a_workspace_over_does_not_free_the_allowance(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # What is bounded is creation. Were it ownership, creating, promoting a
+        # second account and stepping down would reset the count every time.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="hand-off", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "hand-off@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, token) as client:
+            first = await client.post("/tenants", json={"name": "Handed Over"})
+            async with session_factory() as session:
+                member = await session.get(TenantMember, (first.json()["id"], user_id))
+                assert member is not None
+                member.role = "member"
+                await session.commit()
+            second = await client.post("/tenants", json={"name": "One Too Many"})
+
+        assert first.status_code == 201
+        assert second.status_code == 403
+
+    async def test_concurrent_requests_cannot_all_pass_the_check(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="burst", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "burst@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, token) as client:
+            responses = await asyncio.gather(
+                *(
+                    client.post("/tenants", json={"name": f"Burst {i}"})
+                    for i in range(5)
+                )
+            )
+
+        codes = sorted(r.status_code for r in responses)
+        assert codes.count(201) == 1
+        assert set(codes) - {201} <= {403, 409}
+        async with session_factory() as session:
+            owned = await session.scalars(
+                select(TenantMember).where(
+                    TenantMember.user_id == user_id, TenantMember.role == "owner"
+                )
+            )
+            assert len(owned.all()) == 1
+
+    async def test_a_request_during_another_creation_is_refused_not_queued(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Waiting would hold a pool connection for as long as the other
+        # creation takes; refusing at once holds none.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="in-flight", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "in-flight@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=3)
+        async with session_factory() as holder:
+            await holder.scalar(
+                select(User).where(User.id == user_id).with_for_update(key_share=True)
+            )
+            async with _client(app, token) as client:
+                response = await client.post("/tenants", json={"name": "Queued"})
+
+        assert response.status_code == 409
+        assert "being created" in response.json()["detail"]
+
+    async def test_a_limit_of_zero_says_creation_is_disabled(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Zero is how a deployment closes the route, and it must not be
+        # reported as though the caller had used up an allowance.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="early-bird", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(user_id, "early-bird@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=0)
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Too Early"})
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == (
+            "Workspace creation is disabled on this deployment"
+        )
+
+    async def test_memberships_the_caller_does_not_own_are_free(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Being invited into someone else's workspace must not spend an
+        # allowance: the invitee cannot get it back without being removed.
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        user_id = await _make_member(
+            session_factory, name="joiner", tenant_id=TENANT_A, role="admin"
+        )
+        async with session_factory() as session:
+            session.add(
+                TenantMember(tenant_id=TENANT_B, user_id=user_id, role="member")
+            )
+            await session.commit()
+        token = _token(user_id, "joiner@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, token) as client:
+            response = await client.post("/tenants", json={"name": "Mine At Last"})
+
+        assert response.status_code == 201, response.text
+
+    async def test_an_operator_is_exempt(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # `users.role == "admin"` is the deployment operator bit, and this
+        # bound is about self-service. An operator provisioning workspaces for
+        # other people is exactly who it must not stop — the same bypass
+        # `authz.administers_tenant` and `authz.owns_tenant` already give them.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory,
+            name="the-operator",
+            tenant_id=TENANT_A,
+            role="member",
+            user_role="admin",
+        )
+        token = _token(user_id, "the-operator@example.invalid", TENANT_A)
+
+        app = _app(session_factory, max_workspaces_per_user=0)
+        async with _client(app, token) as client:
+            first = await client.post("/tenants", json={"name": "Customer One"})
+            second = await client.post("/tenants", json={"name": "Customer Two"})
+
+        assert first.status_code == 201, first.text
+        assert second.status_code == 201, second.text
+
+    async def test_the_operator_bit_is_read_fresh_not_from_the_token(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The JWT carries a role claim from login. Trusting it would keep a
+        # revoked operator exempt for the life of their cookie, so the bit
+        # comes from the `users` row on every request.
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name="demoted", tenant_id=TENANT_A, role="member"
+        )
+        stale_operator_token = create_jwt(
+            user_id, "demoted@example.invalid", "admin", _SECRET, TENANT_A
+        )
+
+        async with _client(
+            _app(session_factory, max_workspaces_per_user=0), stale_operator_token
+        ) as client:
+            response = await client.post("/tenants", json={"name": "Not Allowed"})
+
+        assert response.status_code == 403
 
 
 class TestInvitationAuthorisation:

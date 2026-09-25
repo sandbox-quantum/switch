@@ -165,11 +165,19 @@ async def get_authenticated_user_id(
 
 @dataclass(frozen=True)
 class AuthenticatedCaller:
-    """An authenticated caller with no tenant bound — id and email, read from
-    `users`, which carries neither a tenant nor a policy."""
+    """An authenticated caller with no tenant bound — read from `users`, which
+    carries neither a tenant nor a policy.
+
+    `is_operator` is `users.role == "admin"`, the same global bit
+    `require_admin` gates on and the same one `authz.administers_tenant` takes
+    as its bypass. It is meaningful here, before any tenant is bound, precisely
+    because it is not granted per tenant: a route that has no tenant to ask
+    about can still ask whether the caller runs the deployment.
+    """
 
     id: str
     email: str
+    is_operator: bool
 
 
 async def get_authenticated_caller(
@@ -180,21 +188,26 @@ async def get_authenticated_caller(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> AuthenticatedCaller:
-    """Like `get_authenticated_user_id`, but with the caller's own email too.
+    """Like `get_authenticated_user_id`, but with the whole `users` row's worth
+    of the caller that routes with no tenant bound actually need.
 
-    Backs `POST /invitations/accept` (`gateway/tenants.py`), which has
-    to check an email-bound invitation against the caller's *current* address
-    before any tenant is bound — the same "no tenant chosen yet" shape as
-    `get_authenticated_user_id`, plus one more column of the same global,
-    unscoped `users` row. Reads the row fresh rather than trusting the JWT's
-    own `email` claim, which is a snapshot from login and can go stale.
+    Backs `POST /invitations/accept` and `POST /tenants`
+    (`gateway/tenants.py`): the first checks an email-bound invitation against
+    the caller's *current* address, the second asks whether the caller runs the
+    deployment. Both decide before any tenant is bound — the same "no tenant
+    chosen yet" shape as `get_authenticated_user_id` — and both read the same
+    global, unscoped `users` row. Read fresh rather than trusting the JWT's own
+    claims, which are a snapshot from login: an address can change, and a
+    revoked operator bit must not stay valid for the life of a cookie.
     """
     payload = await _authenticate(request, session_factory, user_store, config)
     async with session_factory() as system_session:
         user = await user_store.get(system_session, payload["sub"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    return AuthenticatedCaller(id=user.id, email=user.email)
+    return AuthenticatedCaller(
+        id=user.id, email=user.email, is_operator=user.role == "admin"
+    )
 
 
 async def tenant_of_invitation_token(

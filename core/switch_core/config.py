@@ -141,6 +141,23 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §4.
     gateway_tenant_choice_enabled: bool = False
 
+    # How many workspaces one person may own here. 0 turns `POST /tenants` into
+    # a 403 outright, so this single value is both the cap and the gate.
+    #
+    # It exists because workspace creation is an amplification vector rather
+    # than just a row: `all_tenant_ids()` drives a fan-out per tenant at boot
+    # and a sweep every few seconds, across clients, collaboration bridges,
+    # server connectors and rooms. Unbounded self-service creation therefore
+    # buys steady-state work in the deployment, not storage.
+    #
+    # Counts `owner` memberships only, so being invited into someone else's
+    # workspace never spends an allowance the invitee cannot get back. Deployment
+    # operators (`users.role == "admin"`) are exempt, on the same grounds as
+    # every other operator bypass in `authz.py`: this bounds self-service, and
+    # an operator provisioning workspaces for other people is not that.
+    # docs/old/multi-tenancy-phase2-tenants.md, §5.
+    gateway_max_workspaces_per_user: int = 3
+
     # ── Logging ──────────────────────────────────────────────────────────────
     # "text" for a terminal, "json" for a log pipeline that parses fields.
     log_format: str = "text"
@@ -594,6 +611,16 @@ class SwitchConfig(BaseSettings):
     @property
     def observability_enabled(self) -> bool:
         return self.otlp_endpoint is not None
+
+    @model_validator(mode="after")
+    def _validate_max_workspaces_per_user(self) -> "SwitchConfig":
+        if self.gateway_max_workspaces_per_user < 0:
+            raise ValueError(
+                "GATEWAY_MAX_WORKSPACES_PER_USER must not be negative (0 "
+                "disables workspace creation), got "
+                f"{self.gateway_max_workspaces_per_user!r}."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":
