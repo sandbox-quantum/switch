@@ -8,9 +8,14 @@ import pytest
 
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_client import (
+    _HOSTED_ERROR_MESSAGE,
+    _HOSTED_REMOVED_MESSAGE,
+    _HOSTED_STOPPED_MESSAGE,
     _STARTING_SESSION_MESSAGE,
+    _WAKING_MESSAGE,
     AUTO_REPLY_FLAG,
     AgentClient,
+    HostedNote,
     _GateOutcome,
 )
 from switch_core.transport import InboundMessage, RoomRef
@@ -300,3 +305,52 @@ async def test_a_kickoff_that_wants_the_channel_gets_its_reply_at_top_level() ->
     assert len(send_message.calls) == 1
     assert send_message.calls[0]["thread_root_id"] is None
     assert send_message.calls[0]["body"].startswith("@dantas.abel ")
+
+
+def _hosted(send_message: _Recorder, **launch: object) -> SimpleNamespace:
+    fake = _fake_self(
+        send_message, unavailable_reply="cd /data/workspace && claude ..."
+    )
+    fake._note_hosted_addressed = AsyncMock(
+        return_value=HostedNote(
+            launch=SimpleNamespace(revision=8, **launch),  # type: ignore[arg-type]
+            refusal=None,
+            deliver=True,
+        )
+    )
+    fake._waking_notice_revisions = {}
+    return fake
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("launch", "notice"),
+    [
+        (
+            {"desired_state": "stopped", "sleeping": False, "state": "stopped"},
+            _HOSTED_STOPPED_MESSAGE,
+        ),
+        (
+            {"desired_state": "deleted", "sleeping": False, "state": "deleting"},
+            _HOSTED_REMOVED_MESSAGE,
+        ),
+        (
+            {"desired_state": "running", "sleeping": False, "state": "error"},
+            _HOSTED_ERROR_MESSAGE,
+        ),
+        (
+            {"desired_state": "running", "sleeping": True, "state": "queued"},
+            _WAKING_MESSAGE,
+        ),
+    ],
+)
+async def test_an_unavailable_hosted_agent_says_what_its_worker_is_doing(
+    launch: dict[str, object], notice: str
+) -> None:
+    # Not the local terminal command: the agent runs on a cloud worker.
+    send_message = _Recorder()
+    await AgentClient.on_message(
+        _hosted(send_message, **launch), RoomRef(room_id="!matrix:server"), _event(None)
+    )
+
+    assert [call["body"] for call in send_message.calls] == [f"@louisa {notice}"]

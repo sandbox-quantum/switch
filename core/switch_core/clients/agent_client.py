@@ -194,6 +194,34 @@ class HostedNote:
     deliver: bool
 
 
+_HOSTED_STOPPED_MESSAGE = (
+    "My cloud worker is stopped, so I did not process this message. "
+    "Start me again in Switch Console, then send it again."
+)
+_HOSTED_REMOVED_MESSAGE = (
+    "My cloud worker has been removed, so I cannot process messages."
+)
+_HOSTED_ERROR_MESSAGE = (
+    "My cloud worker has a problem, so I did not process this message. "
+    "My owner can check it in Switch Console."
+)
+
+
+def _hosted_unavailable(launch: HostedLaunch) -> str | None:
+    """Why a hosted agent that takes no mail cannot answer, for the room.
+
+    The generic unavailable reply offers a terminal command, which means
+    nothing for an agent that runs on a cloud worker.
+    """
+    if launch.desired_state == "deleted":
+        return _HOSTED_REMOVED_MESSAGE
+    if launch.state == "error":
+        return _HOSTED_ERROR_MESSAGE
+    if launch.desired_state == "stopped" and not launch.sleeping:
+        return _HOSTED_STOPPED_MESSAGE
+    return None
+
+
 def _takes_mail(launch: HostedLaunch) -> bool:
     """Whether an addressed event goes into the launch's wake mailbox.
 
@@ -569,6 +597,8 @@ class AgentClient(ClientBase[ClientConfig]):
                 if self._waking_notice_revisions.get(meta.room_id) != launch.revision:
                     self._waking_notice_revisions[meta.room_id] = launch.revision
                     unavailable = _WAKING_MESSAGE
+            elif unavailable is not None and launch is not None:
+                unavailable = _hosted_unavailable(launch) or unavailable
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
