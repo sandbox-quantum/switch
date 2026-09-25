@@ -104,6 +104,7 @@ export class HostedSession {
       items: [],
       requests: [],
       commandStatuses: [],
+      notices: [],
       nextPageToken: null,
     };
     // Replay old history before announcing the recovered generation.
