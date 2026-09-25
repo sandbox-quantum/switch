@@ -1,5 +1,5 @@
 import { Boxes, ChevronRight, DoorOpen, Play, Repeat, Square } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TemplateRun } from '@main/core/switch-servers/gateway-client';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -27,11 +27,15 @@ export function useTemplateRuns(serverId: string): {
   replace: (run: TemplateRun) => void;
 } {
   const [runs, setRuns] = useState<TemplateRun[]>([]);
+  // An answer that lands after the listing moved to another server belongs
+  // to the old one and is dropped.
+  const shownServer = useRef(serverId);
+  shownServer.current = serverId;
 
   const load = useCallback(async () => {
     try {
       const list = await rpc.switchServers.listTemplateRuns({ serverId });
-      setRuns(list ?? []);
+      if (shownServer.current === serverId) setRuns(list ?? []);
     } catch {
       // The runs are an addition to the recents; the section renders without them.
     }
