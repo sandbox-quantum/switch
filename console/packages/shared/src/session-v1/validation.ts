@@ -206,6 +206,16 @@ export const snapshotSchema: z.ZodType<Snapshot> = z.object({
     })
   ),
   commandStatuses: z.array(commandStatusSchema),
+  notices: z
+    .array(
+      z.strictObject({
+        level: z.enum(['info', 'warning', 'error']),
+        code: id,
+        message: z.string(),
+        afterItemId: id.nullable(),
+      })
+    )
+    .default([]),
   nextPageToken: id.nullable(),
 });
 export const commandSchema: z.ZodType<Command> = z.strictObject({
